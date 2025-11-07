@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 # DTS playback restoration script for LG OLED CX
-# Copyright (c) 2022-2024 Pete Batard <pete@akeo.ie>
+# Copyright (c) 2022-2025 Pete Batard <pete@akeo.ie>
 # See https://github.com/RootMyTV/RootMyTV.github.io/issues/72#issuecomment-1343204028
 
 # Get the path where the script is located.
@@ -93,7 +93,7 @@ cat <<EOS > $SCRIPT_DIR/init_dts.sh
 #!/bin/bash
 
 # Override the GST plugins that were nerfed by LG
-for lib in libgstmatroska.so libgstlibav.so; do
+for lib in libgstisomp4.so libgstisomp4_1_8.so libgstmatroska.so libgstlibav.so; do
   if [[ -f $GST_SRC/\$lib ]]; then
     echo "Installing /usr/lib/gstreamer-1.0/\$lib override"
     mount -n --bind -o ro $GST_SRC/\$lib /usr/lib/gstreamer-1.0/\$lib
@@ -138,5 +138,5 @@ ln -s $SCRIPT_DIR/init_dts.sh $INIT_DIR/restore_dts
 if [[ ! -f /tmp/gstcool.conf ]]; then
   echo "Running $INIT_DIR/restore_dts"
   source $INIT_DIR/restore_dts || exit 1
-  echo "DTS playback has been permanently re-enabled - Enjoy!"
+  echo "DTS and MKV DV playback have been enabled - Enjoy!"
 fi

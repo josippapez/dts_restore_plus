@@ -1,5 +1,5 @@
 This archive contains libraries and scripts needed to restore DTS playback
-on LG Smart TVs, such as OLED CX models.
+as well as add Matroska DV support on LG Smart TVs, such as OLED CX models.
 
 See https://github.com/RootMyTV/RootMyTV.github.io/issues/72 for details.
 
@@ -23,7 +23,6 @@ Limitations:
 ------------
 
 - Root required (https://github.com/RootMyTV/RootMyTV.github.io/issues/85)
-- Only mkv playback supported (no .mp4, no .dts).
 - Only PCM stereo downmix supported (no multichannel, no passthrough).
 - The libraries and scripts have been designed for LG OLED CX models.
   While there is a good chance that, if your TV is not too dissimilar to
@@ -38,9 +37,9 @@ Installation:
 - Open a root shell to your TV *using ssh* (not telnet!)
 - Download, extract and run the installer by issuing something like:
   cd ~
-  wget https://github.com/lgstreamer/dts_restore/archive/refs/tags/1.2.tar.gz
-  tar -xzvf 1.2.tar.gz
-  ./dts_restore-1.2/install.sh
+  wget https://github.com/lgstreamer/dts_restore/archive/refs/tags/2.0.tar.gz
+  tar -xzvf 2.0.tar.gz
+  ./dts_restore-2.0/install.sh
 
 
 Uninstallation:
@@ -49,7 +48,7 @@ Uninstallation:
 - Open a root shell to your TV
 - Run the commands:
   cd ~
-  ./dts_restore-1.2/uninstall.sh
+  ./dts_restore-2.0/uninstall.sh
 - Fully power off or reboot your TV.
 
 
@@ -66,15 +65,33 @@ Additional notes:
 - If you want to adjust the stereo downmix settings, you can edit the
   [downmix] section from /var/lib/webosbrew/init.d/restore_dts (permanent)
   of /etc/gst/gstcool.conf (temporary).
+- It is possible to disable DV support by simply creating a /tmp/dv_disable
+  file on your system. If that file is found, then hybrid DV + HDR media
+  will play as HDR. If using https://github.com/andrewfraley/magic_mapper
+  you can map a DV enable/disable toggle by following the steps described
+  at https://gist.github.com/pbatard/ea04494c0de63cd5d38b1f607ef64fbd.
+- Depending on how they were mastered, hybrid DV + HDR media may use HDR
+  rather than Dolby Vision. If that is the case, this is because the DV
+  configuration used is *INCOMPATIBLE* with LG's implementation (meaning
+  that trying to force DV over HDR would not work anyway).
+- Depending on how they were mastered, hybrid DV + HDR media playing as
+  DV may display a black screen when not started from the beginning (i.e.
+  after performing a seek or resuming to a non 00:00:00 timestamp). If
+  that is the case, use the disable DV switch above to play as HDR.
 
 
 Source code:
 ------------
 
-- libgstmatroska.so was compiled from the 1.14.4 LG 'gst-plugins-good'
-  source for OLED CX models, with matroska audio DTS demuxing re-enabled.
+- libgstmatroska.so, libgstisomp4.so and libgstisomp4_1_8.so were compiled
+  from the 1.14.4 LG 'gst-plugins-good' source for OLED CX models, with
+  audio DTS demuxing re-enabled (and for Matroska Dolby Vision support added).
   The complete source for it, along with compilation instructions, can be
   found at: https://github.com/lgstreamer/gst-plugins-good
+- libgstmpegtsdemux.so was compiled from the 1.14.4 LG 'gst-plugins-bad'
+  source for OLED CX models, with audio DTS demuxing re-enabled.
+  The complete source for it, along with compilation instructions, can be
+  found at: https://github.com/lgstreamer/gst-plugins-bad
 - libgstlibav.so was compiled from the 1.14.4 LG 'gst-libav' source for
   OLED CX models with the following changes applied for DTS (dca) decoding:
   * Force stereo downmix always.
