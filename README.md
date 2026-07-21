@@ -62,7 +62,7 @@ list below can still install (the installer just warns first), using the same bi
 | OLED C2 / G2 | 6.x / "22" | 1.14-class | Community-confirmed |
 | NanoCell / LCD (UN7xxx, NANO7xx, 2020–2022) | 5.x / 6.x | 1.14-class | Community-confirmed |
 | webOS 22 / 23 / 24 | — | — | Not covered (no source drop; no durable root path) |
-| webOS 25 (C5/G5) | "10" | **1.24** | Needs a full rebuild — not these binaries |
+| webOS 25 (C5/G5) | "10" | **1.24** | Not these binaries — needs an aarch64/1.24 decoder ([WEBOS25-DTS.md](WEBOS25-DTS.md)) |
 
 ## Persistence — what survives a reboot
 
