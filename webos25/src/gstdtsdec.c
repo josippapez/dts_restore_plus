@@ -120,9 +120,12 @@ typedef struct dts_state_s dca_state_t;
 #define SAMPLE_FORMAT GST_AUDIO_NE(F64)
 #define SAMPLE_TYPE GST_AUDIO_FORMAT_F64
 #else
+/* webOS: LG's audiosink accepts only integer PCM (no F32/F64). libdca decodes
+ * to float; we emit S32LE (native-endian S32 on the LE TV) by converting in the
+ * output loop below. Width stays 32 bits, so buffer sizing is unchanged. */
 #define SAMPLE_WIDTH 32
-#define SAMPLE_FORMAT GST_AUDIO_NE(F32)
-#define SAMPLE_TYPE GST_AUDIO_FORMAT_F32
+#define SAMPLE_FORMAT GST_AUDIO_NE(S32)
+#define SAMPLE_TYPE GST_AUDIO_FORMAT_S32
 #endif
 
 GST_DEBUG_CATEGORY_STATIC (dtsdec_debug);
@@ -654,8 +657,16 @@ gst_dtsdec_handle_frame (GstAudioDecoder * bdec, GstBuffer * buffer)
 
         for (n = 0; n < 256; n++) {
           for (c = 0; c < chans; c++) {
-            ((sample_t *) ptr)[n * chans + reorder_map[c]] =
-                dts->samples[c * 256 + n];
+            {
+              /* webOS: convert libdca's normalized float (~[-1,1]) to S32LE
+               * with clamping, so LG's integer-only audiosink accepts it. */
+              gdouble s = (gdouble) dts->samples[c * 256 + n] * 2147483648.0;
+              if (s > 2147483647.0)
+                s = 2147483647.0;
+              else if (s < -2147483648.0)
+                s = -2147483648.0;
+              ((gint32 *) ptr)[n * chans + reorder_map[c]] = (gint32) s;
+            }
           }
         }
       }
