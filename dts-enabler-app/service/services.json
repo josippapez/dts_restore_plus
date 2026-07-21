@@ -1,0 +1,19 @@
+{
+  "id": "org.webosbrew.dtsenabler.service",
+  "description": "DTS Enabler privileged backend",
+  "services": [
+    {
+      "name": "org.webosbrew.dtsenabler.service",
+      "description": "Enable/disable DTS restore, report status, tune downmix, toggle Dolby Vision. All privileged work is proxied through the Homebrew Channel exec service.",
+      "commands": [
+        { "name": "enable",        "description": "Install init.d stub + apply bind-mounts now" },
+        { "name": "disable",       "description": "Remove init.d stub (+ best-effort unmount)" },
+        { "name": "status",        "description": "Report model/webOS/GStreamer, mount + rank + DV state" },
+        { "name": "setDownmix",    "description": "Persist downmix coefficients and re-apply gstcool.conf" },
+        { "name": "getDownmix",    "description": "Return persisted downmix coefficients" },
+        { "name": "setDvDisabled", "description": "Create/remove /tmp/dv_disable and persist the choice" },
+        { "name": "getConfig",     "description": "Return persisted downmix + DV configuration" }
+      ]
+    }
+  ]
+}

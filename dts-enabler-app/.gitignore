@@ -1,0 +1,17 @@
+# Node
+node_modules/
+service/node_modules/
+npm-debug.log*
+
+# Build / packaging output
+*.ipk
+/dist/
+/build/
+.ares/
+
+# Generated icon (regenerate from icon.svg during packaging)
+# icon.png   # <- uncomment if you prefer to commit the source SVG only
+
+# OS cruft
+.DS_Store
+Thumbs.db
