@@ -1,0 +1,44 @@
+payload/webos25-truehd/  --  webOS-25 (C5-class) TrueHD/MLP decoder payload
+===========================================================================
+
+Profile: webos25-armel-gst124   (VERIFIED mechanism -- see ../../README.md)
+
+This is the TrueHD/MLP half of the unified webOS-25 mechanism (the DTS half is
+in ../webos25/). Drop these cross-built ARM soft-float (armel, EABI5) binaries
+HERE before packaging the .ipk:
+
+    libgstlibav.so              gst-libav 1.18 with avdec_truehd / avdec_mlp
+    libavcodec.so.*  (+soname symlinks)   minimal ffmpeg n4.4.4 (truehd+mlp only)
+    libavutil.so.*   (+soname symlinks)
+    libavformat.so.* (+soname symlinks)
+    libavfilter.so.* (+soname symlinks)
+    libswresample.so.*(+soname symlinks)
+
+Keep the version symlinks (libavcodec.so.58 -> libavcodec.so.58.x.y): the load
+chain libgstlibav -> libavcodec -> libavutil resolves by soname, and every real
+.so carries RPATH /var/lib/webosbrew/truehd/libs.
+
+Where they come from
+--------------------
+    cd ../../../webos25
+    ./build-truehd.sh          # -> webos25/truehd-out/libgstlibav.so + libav*/libsw*
+    cp -P truehd-out/libgstlibav.so truehd-out/libav*.so* truehd-out/libsw*.so* \
+       ../dts-enabler-universal/payload/webos25-truehd/
+
+At enable time the JS service copies these to:
+    /var/lib/webosbrew/truehd/libgstlibav.so
+    /var/lib/webosbrew/truehd/libs/libav*.so* , libsw*.so*
+then bind-mounts our libgstlibav over LG's TrueHD-less
+/usr/lib/gstreamer-1.0/libgstlibav.so, adds TRUEHD/MLP to the umediaserver codec
+capability config and avdec_truehd/mlp=310 to gstcool.conf [sw_decoder] (both by
+editing the TV's own live /etc files -- no LG config is shipped), and regenerates
+the media GStreamer registry with LD_LIBRARY_PATH=/var/lib/webosbrew/truehd/libs.
+
+ABI constraints (must hold or the plugin will not load on the C5)
+-----------------------------------------------------------------
+  - 32-bit ARM, EABI5 soft-float  (loader ld-linux.so.3, e_flags 0x05000200)
+  - max referenced GLIBC symbol <= GLIBC_2.35  (TV has glibc 2.35)
+  - gst-libav 1.18 plugin ABI (loads in the TV's 1.24 -- verified on-device)
+
+These .so files are NOT committed (see ../../.gitignore). ffmpeg/gst-libav are
+LGPL-2.1+; ship the corresponding source offer with any distributed .ipk.

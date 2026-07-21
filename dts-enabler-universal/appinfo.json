@@ -1,0 +1,22 @@
+{
+  "id": "org.webosbrew.dtsenabler",
+  "version": "2.1.0",
+  "vendor": "webosbrew community (dts_restore by Pete Batard; webOS-25 mechanism by this project)",
+  "type": "web",
+  "main": "index.html",
+  "title": "DTS Enabler",
+  "icon": "icon.png",
+  "largeIcon": "icon.png",
+  "iconColor": "#101418",
+  "bgColor": "#101418",
+  "uiRevision": 2,
+  "resolution": "1920x1080",
+  "disableBackHistoryAPI": true,
+  "handlesRelaunch": true,
+  "requiredPermissions": [
+    "activitymanager.read",
+    "activitymanager.write"
+  ],
+  "_comment_permissions": "This web app holds NO root. All privileged work is delegated to the Homebrew Channel exec service (luna://org.webosbrew.hbchannel.service/exec), called from the app's own JS service. On a rooted TV luna access is unrestricted; on retail firmware these calls are rejected by ACG (expected -- the app is meaningless without root + the Homebrew Channel).",
+  "_comment_icon": "icon.png must be a real 80x80 PNG for on-TV display. A vector source (icon.svg) is provided; convert with e.g. `rsvg-convert -w 80 -h 80 icon.svg > icon.png` before packaging."
+}

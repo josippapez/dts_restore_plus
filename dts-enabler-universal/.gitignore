@@ -1,0 +1,21 @@
+# Node
+node_modules/
+service/node_modules/
+npm-debug.log*
+
+# Build / packaging output
+*.ipk
+/dist/
+/build/
+.ares/
+
+# Payload binaries (LGPL release artifacts -- vendored at packaging time, not committed)
+*.so
+*.so.*
+
+# Generated icon (regenerate from icon.svg during packaging)
+# icon.png
+
+# OS cruft
+.DS_Store
+Thumbs.db

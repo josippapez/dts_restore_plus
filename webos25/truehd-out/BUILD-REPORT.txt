@@ -1,0 +1,117 @@
+===================================================================
+ TrueHD gst-libav bundle for LG C5 / webOS 25 — BUILD REPORT
+===================================================================
+Generated:  Tue Jul 21 19:12:20 UTC 2026
+Build host: debian:11-slim (bullseye, glibc 2.31), --platform linux/arm64
+Toolchain:  arm-linux-gnueabi-gcc 10.2.1 (soft-float EABI5)
+ffmpeg:     n4.4.4 — minimal: only truehd+mlp decoders, mlp parser, truehd+mlp demuxers
+gst-libav:  1.18 branch (d9b1bb5), meson cross-build
+Target ABI: 32-bit ARM EABI5 soft-float (gnueabi/armel), e_flags 0x05000200
+            runtime loader on target: /lib/ld-linux.so.3 (.so carry no PT_INTERP — normal)
+            RUNPATH on every lib = /var/lib/webosbrew/truehd/libs (transitive chain resolves)
+glibc rule: every symbol version <= GLIBC_2.35
+
+===================== PER-FILE VERIFICATION =====================
+---- libgstlibav.so ----
+  file:     ELF 32-bit LSB shared object, ARM, EABI5 version 1 (SYSV), dynamically linked
+  e_flags:  05000200  [OK EABI5 soft-float]
+  maxGLIBC: GLIBC_2.7  [OK <=2.35]
+  NEEDED:   [libavfilter.so.7] [libavformat.so.58] [libavcodec.so.58] [libavutil.so.56] [libgstreamer-1.0.so.0] [libgobject-2.0.so.0] [libglib-2.0.so.0] [libgstbase-1.0.so.0] [libgstvideo-1.0.so.0] [libgstaudio-1.0.so.0] [libgstpbutils-1.0.so.0] [libc.so.6] 
+  RPATH:    [/var/lib/webosbrew/truehd/libs]
+
+---- libavcodec.so.58 ----
+  file:     symbolic link to libavcodec.so.58.134.100
+  e_flags:  05000200  [OK EABI5 soft-float]
+  maxGLIBC: GLIBC_2.4  [OK <=2.35]
+  NEEDED:   [libavutil.so.56] [libm.so.6] [libpthread.so.0] [libc.so.6] 
+  RPATH:    [/var/lib/webosbrew/truehd/libs]
+
+---- libavcodec.so.58.134.100 ----
+  file:     ELF 32-bit LSB shared object, ARM, EABI5 version 1 (SYSV), dynamically linked
+  e_flags:  05000200  [OK EABI5 soft-float]
+  maxGLIBC: GLIBC_2.4  [OK <=2.35]
+  NEEDED:   [libavutil.so.56] [libm.so.6] [libpthread.so.0] [libc.so.6] 
+  RPATH:    [/var/lib/webosbrew/truehd/libs]
+
+---- libavfilter.so.7 ----
+  file:     symbolic link to libavfilter.so.7.110.100
+  e_flags:  05000200  [OK EABI5 soft-float]
+  maxGLIBC: GLIBC_2.4  [OK <=2.35]
+  NEEDED:   [libavutil.so.56] [libm.so.6] [libpthread.so.0] [libc.so.6] 
+  RPATH:    [/var/lib/webosbrew/truehd/libs]
+
+---- libavfilter.so.7.110.100 ----
+  file:     ELF 32-bit LSB shared object, ARM, EABI5 version 1 (SYSV), dynamically linked
+  e_flags:  05000200  [OK EABI5 soft-float]
+  maxGLIBC: GLIBC_2.4  [OK <=2.35]
+  NEEDED:   [libavutil.so.56] [libm.so.6] [libpthread.so.0] [libc.so.6] 
+  RPATH:    [/var/lib/webosbrew/truehd/libs]
+
+---- libavformat.so.58 ----
+  file:     symbolic link to libavformat.so.58.76.100
+  e_flags:  05000200  [OK EABI5 soft-float]
+  maxGLIBC: GLIBC_2.7  [OK <=2.35]
+  NEEDED:   [libavcodec.so.58] [libavutil.so.56] [libm.so.6] [libpthread.so.0] [libc.so.6] 
+  RPATH:    [/var/lib/webosbrew/truehd/libs]
+
+---- libavformat.so.58.76.100 ----
+  file:     ELF 32-bit LSB shared object, ARM, EABI5 version 1 (SYSV), dynamically linked
+  e_flags:  05000200  [OK EABI5 soft-float]
+  maxGLIBC: GLIBC_2.7  [OK <=2.35]
+  NEEDED:   [libavcodec.so.58] [libavutil.so.56] [libm.so.6] [libpthread.so.0] [libc.so.6] 
+  RPATH:    [/var/lib/webosbrew/truehd/libs]
+
+---- libavutil.so.56 ----
+  file:     symbolic link to libavutil.so.56.70.100
+  e_flags:  05000200  [OK EABI5 soft-float]
+  maxGLIBC: GLIBC_2.29  [OK <=2.35]
+  NEEDED:   [libm.so.6] [libpthread.so.0] [libc.so.6] 
+  RPATH:    [/var/lib/webosbrew/truehd/libs]
+
+---- libavutil.so.56.70.100 ----
+  file:     ELF 32-bit LSB shared object, ARM, EABI5 version 1 (SYSV), dynamically linked
+  e_flags:  05000200  [OK EABI5 soft-float]
+  maxGLIBC: GLIBC_2.29  [OK <=2.35]
+  NEEDED:   [libm.so.6] [libpthread.so.0] [libc.so.6] 
+  RPATH:    [/var/lib/webosbrew/truehd/libs]
+
+---- libswresample.so.3 ----
+  file:     symbolic link to libswresample.so.3.9.100
+  e_flags:  05000200  [OK EABI5 soft-float]
+  maxGLIBC: GLIBC_2.29  [OK <=2.35]
+  NEEDED:   [libavutil.so.56] [libm.so.6] [libpthread.so.0] [libc.so.6] 
+  RPATH:    [/var/lib/webosbrew/truehd/libs]
+
+---- libswresample.so.3.9.100 ----
+  file:     ELF 32-bit LSB shared object, ARM, EABI5 version 1 (SYSV), dynamically linked
+  e_flags:  05000200  [OK EABI5 soft-float]
+  maxGLIBC: GLIBC_2.29  [OK <=2.35]
+  NEEDED:   [libavutil.so.56] [libm.so.6] [libpthread.so.0] [libc.so.6] 
+  RPATH:    [/var/lib/webosbrew/truehd/libs]
+
+===================== TRUEHD / MLP DECODER CHECK =====================
+  libavcodec truehd/mlp strings: TrueHD truehd 
+  libavcodec descriptor: MLP (Meridian Lossless Packing)
+  libgstlibav decode API: yes (avcodec_open2, av_codec_is_decoder, avcodec_send_packet)
+  => TrueHD decoder PRESENT in bundle
+
+===================== BUNDLE CONTENTS + SIZE =====================
+        24  /out/libavcodec.so
+        24  /out/libavcodec.so.58
+    320416  /out/libavcodec.so.58.134.100
+        24  /out/libavfilter.so
+        24  /out/libavfilter.so.7
+    102584  /out/libavfilter.so.7.110.100
+        24  /out/libavformat.so
+        24  /out/libavformat.so.58
+    212736  /out/libavformat.so.58.76.100
+        22  /out/libavutil.so
+        22  /out/libavutil.so.56
+    618908  /out/libavutil.so.56.70.100
+    242948  /out/libgstlibav.so
+        24  /out/libswresample.so
+        24  /out/libswresample.so.3
+     91784  /out/libswresample.so.3.9.100
+  TOTAL: 1.6M
+
+OVERALL: PASS — all 11 ELF objects ARM EABI5 soft-float (05000200), max GLIBC 2.29 (<=2.35), TrueHD decoder present, plugin links libavcodec decode API, RUNPATH set on all.

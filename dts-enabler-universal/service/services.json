@@ -1,0 +1,17 @@
+{
+  "id": "org.webosbrew.dtsenabler.service",
+  "description": "DTS Enabler (universal) privileged backend",
+  "services": [
+    {
+      "name": "org.webosbrew.dtsenabler.service",
+      "description": "Detect the LG TV generation and apply the correct DTS-restore mechanism. All privileged work is proxied through the Homebrew Channel exec service.",
+      "commands": [
+        { "name": "detect",    "description": "Run the read-only detection probe; return the target profile + raw probes" },
+        { "name": "status",    "description": "Detect + report model/webOS/GStreamer and whether the matched patch is active" },
+        { "name": "enable",    "description": "Apply the DTS-restore mechanism matching the detected profile" },
+        { "name": "disable",   "description": "Remove the boot hook + best-effort unmount for the detected profile" },
+        { "name": "uninstall", "description": "Disable + remove all on-device state for the detected profile" }
+      ]
+    }
+  ]
+}

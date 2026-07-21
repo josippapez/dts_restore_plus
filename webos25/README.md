@@ -1,105 +1,125 @@
-# DTS restore for webOS 25 (LG C5)
+# DTS + TrueHD/MLP audio restore for webOS 25 (LG C5)
 
-Restores DTS audio playback on a rooted LG C5 / webOS 25 TV by cross-building a
-patched GStreamer `dtsdec` decoder and injecting it into the media pipeline's
-plugin registry — without modifying any stock LG library.
+Restores **DTS** *and* **Dolby TrueHD / MLP** audio playback on a rooted LG C5 /
+webOS 25 TV. Both codecs are **verified working on a real LG C5**, persistent
+across reboot (a boot hook re-applies everything). No stock LG library or config
+file is modified in place — every change is a **bind-mount** over an original,
+so uninstall is a clean revert.
 
-## What it is
+## Root cause (verified on-device)
 
-LG ships **no DTS decoder** on webOS 25 and `matroskademux` re-tags the MKV DTS
-track as `audio/x-unknown, codec-id=(string)A_DTS` (raw DTS bytes preserved).
-This package supplies the missing decoder:
+LG ships webOS 25 with **no DTS decoder and no TrueHD decoder**, and:
 
-- `src/gstdtsdec.c`, `src/gstdtsdec.h` — the `dtsdec` plugin, vendored from
-  gst-plugins-bad 1.22.0. The **only** functional change vs. upstream is the
-  sink pad caps, widened to also accept LG's `audio/x-unknown, codec-id=A_DTS`
-  so `decodebin`/`decproxy` autoplug it directly onto LG's retagged stream.
-- `build.sh` — Docker cross-build producing the armel plugin + bundled libdca.
-- `install.sh` / `uninstall.sh` — on-TV deploy / removal (registry injection).
+- **DTS:** `matroskademux` re-tags the MKV DTS track as
+  `audio/x-unknown, codec-id=(string)A_DTS` (raw DTS bytes preserved). There is
+  no `dts_audiodec` / `avdec_dca` to decode it.
+- **TrueHD:** LG's `libgstlibav.so` is built **without** the TrueHD/MLP
+  decoders, and its HW audio path (`audiooutputd`) does not handle TrueHD.
 
-## Verified target ABI (on-device)
+**The crux — integer PCM only:** LG's `audiosink` accepts only integer PCM
+(S8..S32), **no float**. A decoder that emits `F32LE` is negotiated and then
+**silently dropped** (no audio, no error). Both fixes therefore produce/keep
+**S32LE**:
+
+- `dtsdec` is patched to convert libdca's float output to **S32LE** (clamped).
+- `avdec_truehd` already emits native **S32** PCM, so it works as-is.
+
+## Target ABI (the other crux)
 
 - LG C5, OLED77C51LA, chassis o22n3, webOS 10.3.1 "Rockhopper".
 - Kernel is aarch64, but the **GStreamer userspace is 32-bit ARM, EABI5
-  soft-float** (`ld-linux.so.3`, e_flags `0x05000200`) — Debian's `armel` port.
+  soft-float** (`ld-linux.so.3`, `e_flags 0x05000200`) — Debian's `armel` port.
 - glibc **2.35**, GStreamer **1.24.0**, glib 2.72.
-- The plugin is built against gst-plugins-bad 1.22 headers; that ABI is stable
-  within 1.2x and loads fine in the TV's 1.24 runtime.
-- CX/dts_restore binaries are armv7 **hard-float** GStreamer 1.14 — incompatible
-  on two counts (float ABI + GStreamer version). This package targets soft-float.
-
-## Root cause (verified)
-
-DTS is disabled by (a) shipping no `dts_audiodec`/`avdec_dca`, and (b)
-`matroskademux` mapping the DTS track to `audio/x-unknown, codec-id=A_DTS`.
-No runtime property re-enables the mapping. The fix is a decoder whose sink caps
-match that exact media type, plus getting it into the media registry.
+- All shipped `.so` are armel soft-float with max GLIBC symbol `<= 2.35`.
+  (CX/dts_restore's armv7 hard-float GStreamer 1.14 binaries are incompatible.)
 
 ## How the fix works
 
-1. **Patched caps** — `dtsdec` advertises
-   `audio/x-dts; audio/x-private1-dts; audio/x-unknown, codec-id=(string)A_DTS`,
-   so autoplugging picks it up on LG's retagged stream. Decode body is unchanged:
-   it parses the raw DTS elementary stream via `libdca` and emits `audio/x-raw`.
-2. **Registry injection** — regenerate the media GStreamer registry (including
-   `dtsdec`) into `/tmp` and **bind-mount** it over the file the media pipeline
-   reads (`/mnt/flash/data/gst_1_0_registry.arm.bin`). A boot hook re-applies it.
+Everything below is applied at boot by the canonical `init_dts25.sh` (installed
+verbatim and symlinked from `/var/lib/webosbrew/init.d/restore_dts25`):
+
+1. **DTS decoder** — the patched `dtsdec` (sink caps widened to also accept
+   `audio/x-unknown, codec-id=A_DTS`; output S32LE) + bundled `libdca.so.0` are
+   staged in `/var/lib/webosbrew/dts25/{,libs/}`. `decodebin`/`decproxy` autoplug
+   it directly onto LG's retagged stream.
+
+2. **TrueHD decoder** — our `libgstlibav.so` (with `avdec_truehd`/`avdec_mlp`)
+   + minimal ffmpeg libs are staged in `/var/lib/webosbrew/truehd/{,libs/}`, and
+   our libgstlibav is **bind-mounted over** LG's TrueHD-less
+   `/usr/lib/gstreamer-1.0/libgstlibav.so` (name-dedup would otherwise pick LG's).
+
+3. **Codec capability** — `TRUEHD` + `MLP` audio-codec objects are added to
+   `/etc/umediaserver/device_codec_capability_config.json` so `umediaserver`
+   allocates a decoder resource for those codecs. Applied by bind-mounting an
+   **edited copy** over the original.
+
+4. **The rank lever (key for TrueHD)** — `avdec_truehd=310` and `avdec_mlp=310`
+   are added to the `[sw_decoder]` section of `/etc/gst/gstcool.conf`, so LG
+   autoplugs the **SW** decoder instead of its HW path. Applied by bind-mounting
+   an edited copy.
+
+5. **Registry** — the media GStreamer registry is regenerated (with
+   `LD_LIBRARY_PATH=/var/lib/webosbrew/truehd/libs` and a plugin path that
+   includes `/var/lib/webosbrew/dts25`) so it contains both `dtsdec` and
+   `avdec_truehd`, then written to `/mnt/flash/data/gst_1_0_registry.arm.bin`.
+   The registry is only overwritten if the regen actually contains the decoders.
+
+**Config overrides are generated on the TV at install time** by editing the TV's
+own live `/etc` files (see below) — this package **ships no LG config file**.
+
+## Per-codec status
+
+| Codec        | Element        | Output | Status on LG C5                 |
+|--------------|----------------|--------|---------------------------------|
+| DTS / DTS-HD | `dtsdec` (patched) | S32LE 5.1 | **Verified, persistent** |
+| TrueHD       | `avdec_truehd` | S32LE (up to 7.1) | **Verified, persistent** |
+| MLP          | `avdec_mlp`    | S32LE  | Enabled alongside TrueHD        |
 
 ## Build
 
-Requires Docker with arm64 emulation (`docker run --privileged --rm
-tonistiigi/binfmt --install arm64` once).
+Both builds are reproducible Docker / cross-builds and print an ABI report
+(ELF class, `e_flags`, `NEEDED`/`RPATH`, max GLIBC symbol) so you can confirm
+soft-float `0x05000200` before deploying.
 
 ```sh
-./build.sh
+./build.sh          # -> out/libgstdtsdec.so, out/libdca.so.0     (patched dtsdec)
+./build-truehd.sh   # -> truehd-out/libgstlibav.so + libav*/libsw* (gst-libav + ffmpeg n4.4.4)
 ```
 
-Outputs to `out/`:
+`build.sh` needs Docker with arm64 emulation
+(`docker run --privileged --rm tonistiigi/binfmt --install arm64` once).
+`build-truehd.sh` runs inside `debian:11-slim --platform linux/arm64`. See
+`src/gstdtsdec.c` (DTS patch) and `src/TRUEHD-BUILD.md` (TrueHD recipe notes).
 
-- `libgstdtsdec.so` — patched decoder (armel soft-float, max GLIBC ≤ 2.35).
-- `libdca.so.0` — DTS decode library (armel), bundled for the TV.
-
-`build.sh` prints the ELF class, `e_flags`, `NEEDED`/`RPATH`, and max GLIBC
-symbol so you can confirm the ABI before deploying.
+The built `.so` artifacts are checked into `out/` and `truehd-out/` (git-ignored)
+so `install.sh` can deploy without a rebuild.
 
 ## Install (on the TV, as root)
 
-Copy this `webos25/` folder (with a populated `out/`) to the TV, then:
+Copy this whole `webos25/` folder (with populated `out/` and `truehd-out/`) to
+the TV, then:
 
 ```sh
 sh install.sh
 ```
 
-This installs `libgstdtsdec.so` to `/var/lib/webosbrew/dts25/`, `libdca.so.0`
-to `/var/lib/webosbrew/dts25/libs/`, writes `init_dts25.sh`, symlinks the boot
-hook `/var/lib/webosbrew/init.d/restore_dts25`, applies it immediately, and
-restarts `starfish-media-pipeline`. It is idempotent and logs to `/tmp/dts25.log`.
+`install.sh` stages both payloads, **generates both config overrides by editing
+the TV's live /etc files**:
+
+- capability config: `awk` inserts the `TRUEHD` + `MLP` objects **after the DTSE
+  entry** of `/etc/umediaserver/device_codec_capability_config.json`;
+- gstcool: `awk` inserts `avdec_truehd=310` + `avdec_mlp=310` **right after the
+  `[sw_decoder]` header** of `/etc/gst/gstcool.conf`;
+
+writes the edited copies under `/var/lib/webosbrew/truehd/`, installs the
+canonical `init_dts25.sh`, symlinks the boot hook, applies everything now, and
+restarts `starfish-media-pipeline`. It is idempotent, guarded, logs to
+`/tmp/dts25.log`, and always exits 0 (safe as a boot hook).
 
 Remove everything with:
 
 ```sh
-sh uninstall.sh
+sh uninstall.sh     # unmounts all four binds, removes the state dirs + hook
 ```
 
-## STATUS — honest
-
-**Proven (on hardware / in gst-launch):**
-
-- The patched `dtsdec` loads in the TV's GStreamer 1.24 (`gst-inspect-1.0` OK).
-- It decodes a DTS elementary stream to `audio/x-raw F32LE`.
-- `decodebin` **autoplugs the patched `dtsdec` for LG's
-  `audio/x-unknown / A_DTS`** stream and outputs `audio/x-raw F32LE 5.1` — the
-  key routing proof.
-- `dtsdec` appears in the media registry (rank primary) at the bind-mounted path.
-
-**Open item being verified (needs the TV, serial):**
-
-- Full playback through LG's `starfish-media-pipeline` + `decproxy`. Two unknowns:
-  does `decproxy` autoplug `dtsdec` the same way `decodebin` does, and does LG's
-  audio sink accept `dtsdec`'s **F32LE (possibly multichannel)** output, or must
-  the output be forced to stereo / S16? `decproxy` cannot be exercised
-  standalone in `gst-launch`, so this is confirmed on-device.
-
-If the sink rejects F32LE/5.1, the follow-up is to constrain `dtsdec`'s src caps
-(force S16 and/or stereo downmix) — a source change + rebuild, no redeploy of the
-injection mechanism.
+A reboot after uninstall guarantees a fully clean state.

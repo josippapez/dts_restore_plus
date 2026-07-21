@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=1920, initial-scale=1">
+  <title>DTS Enabler</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <h1>DTS&nbsp;Enabler</h1>
+      <div id="masterState" class="pill pill--unknown" aria-live="polite">detecting&hellip;</div>
+    </header>
+
+    <!-- Non-blocking toast / status line for command results -->
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+    <main class="grid">
+
+      <!-- ===== Detected target / status panel ===== -->
+      <section class="card card--wide" aria-labelledby="h-status">
+        <h2 id="h-status">Detected target</h2>
+        <p class="muted">
+          The app probes this TV at runtime and picks the matching DTS-restore
+          mechanism. Nothing is applied until you press <strong>Enable</strong>.
+        </p>
+        <dl class="status">
+          <dt>Profile</dt><dd id="stProfile">&mdash;</dd>
+          <dt>Mechanism</dt><dd id="stMech">&mdash;</dd>
+          <dt>Model</dt><dd id="stModel">&mdash;</dd>
+          <dt>webOS</dt><dd id="stWebos">&mdash;</dd>
+          <dt>GStreamer</dt><dd id="stGst">&mdash;</dd>
+          <dt>Float ABI</dt><dd id="stAbi">&mdash;</dd>
+          <dt>DTS disabled by</dt><dd id="stDisable">&mdash;</dd>
+          <dt>Patch active</dt><dd id="stActive">&mdash;</dd>
+          <dt>Verified on hardware</dt><dd id="stVerified">&mdash;</dd>
+        </dl>
+      </section>
+
+      <!-- ===== Actions ===== -->
+      <section class="card card--wide" aria-labelledby="h-actions">
+        <h2 id="h-actions">Actions</h2>
+        <p class="muted">
+          <strong>Enable</strong> stages the payload and installs the boot hook for the
+          detected profile (applied now, no reboot). <strong>Disable</strong> removes the
+          boot hook and unmounts (LG's own files are never modified &mdash; fully reversible).
+          <strong>Uninstall</strong> also removes all on-device state.
+        </p>
+        <div class="row">
+          <button id="btnEnable"    class="btn btn--primary focusable" data-nav disabled>Enable</button>
+          <button id="btnDisable"   class="btn btn--danger  focusable" data-nav disabled>Disable</button>
+          <button id="btnUninstall" class="btn btn--danger  focusable" data-nav disabled>Uninstall</button>
+          <button id="btnRefresh"   class="btn             focusable" data-nav>Refresh / re-detect</button>
+        </div>
+        <p id="unsupportedNote" class="muted note-warn" hidden>
+          This TV does not match a supported profile, so Enable is refused. Only
+          <code>webos25-armel-gst124</code> (verified) and <code>cx-armv7-gst114</code>
+          (unverified) mechanisms are implemented.
+        </p>
+      </section>
+
+    </main>
+
+    <footer class="footbar muted">
+      <span>Delegates root work to the Homebrew Channel exec service. Requires a rooted TV with the Homebrew Channel installed.</span>
+    </footer>
+  </div>
+
+  <!-- webOSTV.js is normally injected by the platform; app.js also works with a
+       PalmServiceBridge fallback, so no external <script src> is required. -->
+  <script src="js/app.js"></script>
+</body>
+</html>

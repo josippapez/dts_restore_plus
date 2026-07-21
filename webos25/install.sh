@@ -1,132 +1,170 @@
 #!/bin/sh
 #
-# install.sh — Install the patched dtsdec DTS decoder on a rooted LG webOS 25 TV.
+# install.sh - Install the unified DTS + TrueHD/MLP audio restore on a rooted
+#              LG webOS 25 TV (C5 class). PROVEN working on a real LG C5.
 #
-# Run as root ON THE TV, from a directory that also contains ./out/ with the
-# cross-built artifacts (libgstdtsdec.so, libdca.so.0). Copy this whole webos25/
-# folder to the TV (e.g. via scp) and run: sh install.sh
+# Run as root ON THE TV, from this webos25/ directory (copied via scp), which
+# must contain:
+#     out/libgstdtsdec.so        patched dtsdec (S32LE, accepts A_DTS)   [build.sh]
+#     out/libdca.so.0            DTS decode library (armel)              [build.sh]
+#     truehd-out/libgstlibav.so  gst-libav with avdec_truehd/avdec_mlp   [build-truehd.sh]
+#     truehd-out/libav*.so*      minimal ffmpeg n4.4.4 libs (+symlinks)  [build-truehd.sh]
+#     truehd-out/libsw*.so*      libswresample (+symlinks)               [build-truehd.sh]
+#     init_dts25.sh              canonical boot/apply script (verbatim)
 #
-# What it does (all idempotent, guarded, logged to /tmp/dts25.log):
-#   1. Installs libgstdtsdec.so -> /var/lib/webosbrew/dts25/
-#      and libdca.so.0        -> /var/lib/webosbrew/dts25/libs/
-#   2. Writes /var/lib/webosbrew/dts25/init_dts25.sh which regenerates the
-#      media GStreamer registry (including dtsdec) into /tmp and bind-mounts it
-#      over the media registry the starfish media pipeline reads.
-#   3. Symlinks that into /var/lib/webosbrew/init.d/restore_dts25 (boot hook).
-#   4. Applies it now and restarts the media pipeline.
+#   sh install.sh
 #
-# Always exits 0 so it is safe as a boot hook.
+# What it does (idempotent, guarded, logged to /tmp/dts25.log, always exit 0):
+#   1. Stages the DTS payload  -> /var/lib/webosbrew/dts25/{,libs/}
+#   2. Stages the TrueHD payload-> /var/lib/webosbrew/truehd/{,libs/}
+#   3. GENERATES two config overrides by EDITING the TV's own live /etc files
+#      (no LG config file is shipped):
+#        a. /etc/umediaserver/device_codec_capability_config.json
+#           -> insert TRUEHD + MLP audio-codec objects after the DTSE entry
+#        b. /etc/gst/gstcool.conf
+#           -> insert avdec_truehd=310 + avdec_mlp=310 after [sw_decoder]
+#      Both are written to /var/lib/webosbrew/truehd/ and bind-mounted by the
+#      boot hook (originals are never modified in place - fully reversible).
+#   4. Installs the canonical init_dts25.sh and symlinks the boot hook
+#      /var/lib/webosbrew/init.d/restore_dts25 -> it.
+#   5. Applies everything now (runs the init script) + restarts the media pipe.
 #
 set -u
 
 LOG=/tmp/dts25.log
-DEST=/var/lib/webosbrew/dts25
-LIBS=$DEST/libs
+DTS_DEST=/var/lib/webosbrew/dts25
+DTS_LIBS=$DTS_DEST/libs
+THD_DEST=/var/lib/webosbrew/truehd
+THD_LIBS=$THD_DEST/libs
 INITD=/var/lib/webosbrew/init.d
 HOOK=$INITD/restore_dts25
-INIT_SCRIPT=$DEST/init_dts25.sh
+INIT_SCRIPT=$DTS_DEST/init_dts25.sh
+
+# Live LG config files we derive our (bind-mounted) overrides from.
+CFG_LIVE=/etc/umediaserver/device_codec_capability_config.json
+CFG_OVR=$THD_DEST/codec_capability.json
+GC_LIVE=/etc/gst/gstcool.conf
+GC_OVR=$THD_DEST/gstcool.conf
+
+# Bind targets the boot hook manages (unmount here so we read pristine originals).
+LGLIBAV=/usr/lib/gstreamer-1.0/libgstlibav.so
 REG_TARGET=/mnt/flash/data/gst_1_0_registry.arm.bin
 
-# Directory this script lives in (so it finds ./out/ regardless of cwd).
 SELF_DIR=$(cd "$(dirname "$0")" && pwd)
 
 log() { echo "[dts25-install $(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG" 2>&1; }
 
-log "=== install start ==="
+log "=== unified DTS+TrueHD install start ==="
 
-# --- 1. Install binaries ---------------------------------------------------
-mkdir -p "$LIBS" || { log "FATAL: cannot create $LIBS"; exit 0; }
+# --- 1. Stage DTS payload --------------------------------------------------
+mkdir -p "$DTS_LIBS" || { log "FATAL: cannot create $DTS_LIBS"; exit 0; }
 
 if [ -f "$SELF_DIR/out/libgstdtsdec.so" ]; then
-  cp -f "$SELF_DIR/out/libgstdtsdec.so" "$DEST/libgstdtsdec.so" \
-    && log "installed libgstdtsdec.so -> $DEST/" \
-    || log "WARN: failed to copy libgstdtsdec.so"
+  cp -f "$SELF_DIR/out/libgstdtsdec.so" "$DTS_DEST/libgstdtsdec.so" \
+    && log "installed libgstdtsdec.so -> $DTS_DEST/" || log "WARN: copy libgstdtsdec.so failed"
 else
-  log "WARN: $SELF_DIR/out/libgstdtsdec.so not found (build it first)"
+  log "WARN: $SELF_DIR/out/libgstdtsdec.so not found (run build.sh first)"
 fi
-
 if [ -f "$SELF_DIR/out/libdca.so.0" ]; then
-  cp -f "$SELF_DIR/out/libdca.so.0" "$LIBS/libdca.so.0" \
-    && log "installed libdca.so.0 -> $LIBS/" \
-    || log "WARN: failed to copy libdca.so.0"
+  cp -f "$SELF_DIR/out/libdca.so.0" "$DTS_LIBS/libdca.so.0" \
+    && log "installed libdca.so.0 -> $DTS_LIBS/" || log "WARN: copy libdca.so.0 failed"
 else
-  log "WARN: $SELF_DIR/out/libdca.so.0 not found (build it first)"
+  log "WARN: $SELF_DIR/out/libdca.so.0 not found (run build.sh first)"
 fi
 
-# --- 2. Write the runtime init script (registry regen + bind-mount) --------
-# This is what actually injects dtsdec into the media pipeline's registry.
-# It regenerates a fresh registry that includes dtsdec (by pointing the plugin
-# path at our dir plus the stock plugin dirs), then bind-mounts the result over
-# the registry file the media process trusts. GST_REGISTRY_UPDATE=yes on the
-# regen; the media process itself uses UPDATE=no and simply reads our file.
-cat > "$INIT_SCRIPT" <<'INITEOF'
-#!/bin/sh
-# init_dts25.sh — regenerate + bind-mount the media GStreamer registry so that
-# the patched dtsdec is available to starfish-media-pipeline. Idempotent.
-set -u
+# --- 2. Stage TrueHD payload (preserve the .so version symlinks) -----------
+mkdir -p "$THD_LIBS" || { log "FATAL: cannot create $THD_LIBS"; exit 0; }
 
-LOG=/tmp/dts25.log
-DEST=/var/lib/webosbrew/dts25
-REG_TMP=/tmp/gst_dts_reg.bin
-REG_TARGET=/mnt/flash/data/gst_1_0_registry.arm.bin
-
-log() { echo "[dts25-init $(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG" 2>&1; }
-
-log "init: regenerating registry"
-
-# Regenerate a registry that includes our plugin. Search stock plugin dirs plus
-# our dts25 dir. gst-inspect-1.0 with GST_REGISTRY_UPDATE=yes writes REG_TMP.
-GST_REGISTRY_1_0="$REG_TMP" \
-GST_PLUGIN_PATH_1_0=/usr/lib/gstreamer-1.0:/mnt/lg/res/lglib/gstreamer-1.0:"$DEST" \
-GST_REGISTRY_UPDATE=yes \
-  gst-inspect-1.0 >/dev/null 2>>"$LOG"
-
-if [ ! -f "$REG_TMP" ]; then
-  log "init: ERROR registry regen produced no $REG_TMP"
-  exit 0
-fi
-
-# Confirm dtsdec made it into the regenerated registry (best-effort check).
-if GST_REGISTRY_1_0="$REG_TMP" GST_REGISTRY_UPDATE=no \
-     GST_PLUGIN_PATH_1_0=/usr/lib/gstreamer-1.0:/mnt/lg/res/lglib/gstreamer-1.0:"$DEST" \
-     gst-inspect-1.0 dtsdec >/dev/null 2>&1; then
-  log "init: dtsdec present in regenerated registry"
+if [ -f "$SELF_DIR/truehd-out/libgstlibav.so" ]; then
+  cp -f "$SELF_DIR/truehd-out/libgstlibav.so" "$THD_DEST/libgstlibav.so" \
+    && log "installed libgstlibav.so -> $THD_DEST/" || log "WARN: copy libgstlibav.so failed"
 else
-  log "init: WARN dtsdec not confirmed in regenerated registry"
+  log "WARN: $SELF_DIR/truehd-out/libgstlibav.so not found (run build-truehd.sh first)"
 fi
 
-# Bind-mount our registry over the one the media pipeline reads. If already
-# mounted, refresh by re-mounting (unmount first, ignore errors).
-if mount | grep -q " $REG_TARGET "; then
-  umount "$REG_TARGET" 2>>"$LOG" || log "init: WARN could not umount existing bind"
-fi
+n=0
+for f in "$SELF_DIR"/truehd-out/libav*.so* "$SELF_DIR"/truehd-out/libsw*.so*; do
+  [ -e "$f" ] || continue
+  # cp -P preserves the soname symlinks (libavcodec.so.58 -> libavcodec.so.58.x.y).
+  cp -Pf "$f" "$THD_LIBS/" && n=$((n+1))
+done
+log "staged $n ffmpeg lib entries -> $THD_LIBS/"
 
-if mount --bind "$REG_TMP" "$REG_TARGET" 2>>"$LOG"; then
-  log "init: bind-mounted $REG_TMP over $REG_TARGET"
+# --- 3. Unmount any existing binds so we regenerate from PRISTINE originals -
+for T in "$CFG_LIVE" "$GC_LIVE" "$LGLIBAV" "$REG_TARGET"; do
+  if grep -q " $T " /proc/mounts 2>/dev/null; then
+    umount "$T" 2>>"$LOG" && log "unmounted stale bind $T" || log "WARN: could not umount $T"
+  fi
+done
+
+# --- 3a. Generate the codec-capability override (insert TRUEHD+MLP after DTSE)
+# awk is idempotent: it only injects when the DTSE object is seen and, guarded
+# below, only when TRUEHD is not already present in the source.
+if [ -f "$CFG_LIVE" ]; then
+  if grep -q '"TRUEHD"' "$CFG_LIVE"; then
+    log "note: live capability config already has TRUEHD; copying as-is"
+    cp -f "$CFG_LIVE" "$CFG_OVR"
+  else
+    awk '
+      /"name" : "DTSE"/ { indts=1 }
+      { print }
+      indts && /^ *},/ {
+        print "    {";
+        print "      \"name\" : \"TRUEHD\",";
+        print "      \"channels\" : 8";
+        print "    },";
+        print "";
+        print "    {";
+        print "      \"name\" : \"MLP\",";
+        print "      \"channels\" : 8";
+        print "    },";
+        indts=0
+      }
+    ' "$CFG_LIVE" > "$CFG_OVR" && log "generated capability override $CFG_OVR (TRUEHD+MLP after DTSE)" \
+      || log "WARN: capability override generation failed"
+  fi
 else
-  log "init: ERROR bind-mount failed"
+  log "WARN: $CFG_LIVE not present; cannot generate capability override"
 fi
-INITEOF
-chmod 0755 "$INIT_SCRIPT" && log "wrote $INIT_SCRIPT"
 
-# --- 3. Boot hook symlink --------------------------------------------------
+# --- 3b. Generate the gstcool.conf override (avdec_truehd/mlp=310 rank lever)
+if [ -f "$GC_LIVE" ]; then
+  if grep -q '^avdec_truehd=' "$GC_LIVE"; then
+    log "note: live gstcool.conf already has avdec_truehd; copying as-is"
+    cp -f "$GC_LIVE" "$GC_OVR"
+  else
+    awk '
+      { print }
+      /^\[sw_decoder\]/ { print "avdec_truehd=310"; print "avdec_mlp=310" }
+    ' "$GC_LIVE" > "$GC_OVR" && log "generated gstcool override $GC_OVR (avdec_truehd/mlp=310)" \
+      || log "WARN: gstcool override generation failed"
+  fi
+else
+  log "WARN: $GC_LIVE not present; cannot generate gstcool override"
+fi
+
+# --- 4. Install the canonical boot/apply script + hook ---------------------
+if [ -f "$SELF_DIR/init_dts25.sh" ]; then
+  cp -f "$SELF_DIR/init_dts25.sh" "$INIT_SCRIPT" && chmod 0755 "$INIT_SCRIPT" \
+    && log "installed init_dts25.sh -> $INIT_SCRIPT" || log "WARN: copy init_dts25.sh failed"
+else
+  log "FATAL: $SELF_DIR/init_dts25.sh missing"; exit 0
+fi
+
 mkdir -p "$INITD"
-if [ -L "$HOOK" ] || [ -e "$HOOK" ]; then
-  rm -f "$HOOK"
-fi
+if [ -L "$HOOK" ] || [ -e "$HOOK" ]; then rm -f "$HOOK"; fi
 ln -s "$INIT_SCRIPT" "$HOOK" && log "linked boot hook $HOOK -> $INIT_SCRIPT"
 
-# --- 4. Apply now ----------------------------------------------------------
-log "applying now"
+# --- 5. Apply now ----------------------------------------------------------
+log "applying now (running $INIT_SCRIPT)"
 sh "$INIT_SCRIPT"
 
-# Restart the media pipeline so it picks up the new registry.
 if killall starfish-media-pipeline 2>>"$LOG"; then
   log "restarted starfish-media-pipeline"
 else
-  log "note: starfish-media-pipeline not running (will start fresh on next playback)"
+  log "note: starfish-media-pipeline not running (starts fresh on next playback)"
 fi
 
-log "=== install done ==="
-echo "dts25 install complete. See $LOG for details."
+log "=== unified DTS+TrueHD install done ==="
+echo "DTS + TrueHD install complete. See $LOG for details."
 exit 0

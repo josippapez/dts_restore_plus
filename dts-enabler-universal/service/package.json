@@ -1,0 +1,11 @@
+{
+  "name": "org.webosbrew.dtsenabler.service",
+  "version": "2.1.0",
+  "description": "Privileged backend for the universal DTS Enabler app. Detects the LG TV generation and delegates the matching root shell work to the Homebrew Channel exec service.",
+  "main": "service.js",
+  "license": "LGPL-2.1-or-later",
+  "engines": {
+    "node": ">=0.12"
+  },
+  "dependencies": {}
+}

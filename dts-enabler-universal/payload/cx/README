@@ -1,0 +1,38 @@
+payload/cx/  --  OLED CX-class demuxer-override payload
+=======================================================
+
+Profile: cx-armv7-gst114   (UNVERIFIED -- carried over from the shipping
+dts_restore tool; no CX hardware was available to this project. See
+../../README.md STATUS matrix.)
+
+Drop the rebuilt LG GStreamer .so set HERE before packaging the .ipk:
+
+    payload/cx/libgstisomp4.so
+    payload/cx/libgstisomp4_1_8.so
+    payload/cx/libgstmatroska.so
+    payload/cx/libgstlibav.so
+    payload/cx/libgstmpegtsdemux.so     (optional -- m2ts/BD; skipped if absent)
+
+Where they come from
+--------------------
+These are the .so files from the repo root's gst/ directory (the shipping
+dts_restore CX payload, built from LG's 1.14.4 GStreamer source with DTS demux
+re-enabled + forced stereo-integer downmix):
+
+    cp ../../../gst/*.so  ../dts-enabler-universal/payload/cx/
+
+At enable time the JS service copies these to /var/lib/webosbrew/dtsenabler/cx/gst/
+and bind-mounts them (read-only) over /usr/lib/gstreamer-1.0/, refreshes the
+GStreamer registry, and bumps avdec_dca 0 -> 290 (+ [downmix]) in gstcool.conf.
+
+WARNING: applying this mechanism on a NON-CX (e.g. webOS 25 / 1.24) TV would
+bind-mount 1.14/armv7 libraries over 1.24 ones and break MKV/MP4 playback. The
+service only ever selects this payload when the detector reports the
+cx-armv7-gst114 profile (GStreamer 1.14.x); it refuses on any other profile.
+
+Float-ABI caveat: MULTI-MODEL.md flags the CX "armv7 hard-float" claim as repo
+lore, never measured on-device. The detector captures the loader + e_flags so
+the real ABI can be confirmed before trusting this build.
+
+These .so files are NOT committed (see ../../.gitignore). They are LGPL-2.1+;
+ship the corresponding source offer with any distributed .ipk.

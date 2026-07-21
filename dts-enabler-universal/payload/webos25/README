@@ -1,0 +1,38 @@
+payload/webos25/  --  webOS-25 (C5-class) decoder-inject payload
+=================================================================
+
+Profile: webos25-armel-gst124   (VERIFIED mechanism -- see ../../README.md)
+
+Drop the two cross-built ARM soft-float (armel, EABI5) binaries HERE before
+packaging the .ipk:
+
+    payload/webos25/libgstdtsdec.so     patched dtsdec (gst-plugins-bad 1.22,
+                                        sink caps widened to also accept
+                                        audio/x-unknown, codec-id=A_DTS)
+    payload/webos25/libdca.so.0         bundled DTS decode library (armel)
+
+Where they come from
+--------------------
+Build them with the reproducible Docker cross-build in the repo:
+
+    cd ../../../webos25
+    ./build.sh                 # -> webos25/out/libgstdtsdec.so
+                               #    webos25/out/libdca.so.0
+    cp out/libgstdtsdec.so out/libdca.so.0 \
+       ../dts-enabler-universal/payload/webos25/
+
+At enable time the JS service copies these to:
+    /var/lib/webosbrew/dts25/libgstdtsdec.so
+    /var/lib/webosbrew/dts25/libs/libdca.so.0
+(libgstdtsdec.so has RPATH baked to /var/lib/webosbrew/dts25/libs), then
+regenerates the media GStreamer registry including dtsdec and bind-mounts it
+over /mnt/flash/data/gst_1_0_registry.arm.bin. No LG library is overridden.
+
+ABI constraints (must hold or the plugin will not load on the C5)
+-----------------------------------------------------------------
+  - 32-bit ARM, EABI5 soft-float  (loader ld-linux.so.3, e_flags 0x05000200)
+  - max referenced GLIBC symbol <= 2.4  (TV has glibc 2.35)
+  - GStreamer 1.22 plugin ABI (loads in the TV's 1.24 -- verified on-device)
+
+These .so files are NOT committed (see ../../.gitignore). They are LGPL-2.1+;
+ship the corresponding source offer with any distributed .ipk.

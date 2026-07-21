@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Placeholder launcher icon for DTS Enabler (universal).
+  webOS wants an 80x80 PNG (appinfo.json -> "icon": "icon.png").
+  Convert this SVG before packaging, e.g.:
+    rsvg-convert -w 80 -h 80 icon.svg > icon.png
+  or open in any editor and export at 80x80 (and 130x130 for largeIcon).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80" viewBox="0 0 80 80">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1b2735"/>
+      <stop offset="1" stop-color="#0d1117"/>
+    </linearGradient>
+  </defs>
+  <rect width="80" height="80" rx="16" fill="url(#g)"/>
+  <rect x="1" y="1" width="78" height="78" rx="15" fill="none" stroke="#2dd4bf" stroke-width="2" opacity="0.5"/>
+  <text x="40" y="34" text-anchor="middle" font-family="Arial, sans-serif" font-size="20" font-weight="700" fill="#2dd4bf">DTS</text>
+  <text x="40" y="56" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="600" fill="#e6edf3" letter-spacing="1">UNIVERSAL</text>
+</svg>
