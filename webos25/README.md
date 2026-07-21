@@ -6,6 +6,29 @@ across reboot (a boot hook re-applies everything). No stock LG library or config
 file is modified in place — every change is a **bind-mount** over an original,
 so uninstall is a clean revert.
 
+## Quick install (prebuilt — no build needed)
+
+The DTS and TrueHD decoders are **prebuilt and bundled** here (`out/` + `truehd-out/`),
+and `install.sh` is a **single self-contained script** (the boot hook is embedded
+in it). You do NOT need Docker or to build anything.
+
+On a rooted webOS-25 TV with the Homebrew Channel + root SSH:
+
+```sh
+# from your computer: copy this folder (or the release tarball) to the TV
+scp -r webos25 root@<TV-IP>:/tmp/
+
+# on the TV, as root:
+cd /tmp/webos25 && sh install.sh
+```
+
+That one command stages both decoders, applies the routing overrides (all
+bind-mounts), installs the reboot-persistent boot hook, and activates it now —
+then play a DTS or TrueHD file. To revert: `sh uninstall.sh`.
+
+*(To rebuild the binaries yourself instead of using the bundled ones, see
+`build.sh` (DTS) and `build-truehd.sh` (TrueHD) — requires Docker.)*
+
 ## Root cause (verified on-device)
 
 LG ships webOS 25 with **no DTS decoder and no TrueHD decoder**, and:

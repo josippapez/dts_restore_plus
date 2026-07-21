@@ -1,6 +1,3 @@
-# Build outputs (binaries are reproducible via build.sh / build-truehd.sh).
-# Keep source + scripts in git; keep the artifacts out.
-out/
-truehd-out/*.so
-truehd-out/*.so.*
+# Build scratch (the prebuilt payloads in out/ and truehd-out/ ARE committed)
 *.ipk
+build/
