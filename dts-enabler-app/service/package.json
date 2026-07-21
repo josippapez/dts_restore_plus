@@ -1,6 +1,6 @@
 {
   "name": "org.webosbrew.dtsenabler.service",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Privileged backend for the DTS Enabler app. Delegates root shell work to the Homebrew Channel exec service.",
   "main": "service.js",
   "license": "LGPL-2.1-or-later",

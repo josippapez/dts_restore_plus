@@ -38,10 +38,15 @@ var HBC_EXEC = "luna://org.webosbrew.hbchannel.service/exec";
 
 /* ---- Stable on-device paths -------------------------------------------- */
 
-// Where this app is installed. The service runs from <app>/service.
-var APP_ROOT = path.resolve(__dirname, "..");
-// Vendored patched GStreamer plugins shipped inside the .ipk.
-var PAYLOAD_GST = path.join(APP_ROOT, "vendor", "gst");
+// On webOS the app and its JS service install into SEPARATE trees
+// (/usr/palm/applications/<appId> vs /usr/palm/services/<serviceId>), so the
+// service canNOT reach the vendored payload via a path relative to __dirname
+// (that would point at /usr/palm/services/vendor/gst, which does not exist).
+// Address the application install dir explicitly.
+var APP_ID = "org.webosbrew.dtsenabler";
+var APP_INSTALL = "/usr/palm/applications/" + APP_ID;
+// Vendored patched GStreamer plugins shipped inside the .ipk (under the app).
+var PAYLOAD_GST = path.join(APP_INSTALL, "vendor", "gst");
 
 // Persistent, root-owned working area (survives reboots; readable by init.d).
 var STATE_DIR   = "/var/lib/webosbrew/dtsenabler";
@@ -232,9 +237,10 @@ function cmdWriteInitScript(scriptBody) {
 function cmdStagePayload() {
   return [
     'mkdir -p "' + STATE_GST + '"',
-    // Copy every shipped .so; -f to overwrite on app update.
-    'for f in "' + PAYLOAD_GST + '"/*.so; do [ -f "$f" ] && cp -f "$f" "' + STATE_GST + '/"; done',
-    'echo "staged payload" >> "' + LOG + '"'
+    // Copy every shipped .so; -f to overwrite on app update. Count what we find
+    // so the log makes a missing/empty payload dir obvious.
+    'n=0; for f in "' + PAYLOAD_GST + '"/*.so; do [ -f "$f" ] && cp -f "$f" "' + STATE_GST + '/" && n=$((n+1)); done',
+    'echo "staged payload: $n .so from ' + PAYLOAD_GST + '" >> "' + LOG + '"'
   ].join("\n");
 }
 
@@ -288,9 +294,12 @@ function cmdApplyMounts() {
   GST_LIBS.forEach(function (lib) {
     var src = STATE_GST + "/" + lib;
     var dst = GST_TARGET + "/" + lib;
+    // Log every outcome so a failed/missing mount is diagnosable from the log.
     lines.push(
-      'if [ -f "' + src + '" ] && ! grep -q "' + dst + '" /proc/mounts; then ' +
-      'mount -n --bind -o ro "' + src + '" "' + dst + '"; fi'
+      'if [ ! -f "' + src + '" ]; then echo "MISSING ' + lib + ' (payload not staged)" >> "' + LOG + '"; ' +
+      'elif grep -q "' + dst + '" /proc/mounts; then echo "already mounted ' + lib + '" >> "' + LOG + '"; ' +
+      'else mount -n --bind -o ro "' + src + '" "' + dst + '" && echo "mounted ' + lib + '" >> "' + LOG + '" ' +
+      '|| echo "FAILED mount ' + lib + '" >> "' + LOG + '"; fi'
     );
   });
   return lines.join("\n");

@@ -1,6 +1,6 @@
 {
   "id": "org.webosbrew.dtsenabler",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "vendor": "webosbrew community (dts_restore by Pete Batard)",
   "type": "web",
   "main": "index.html",
