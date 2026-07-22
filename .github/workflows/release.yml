@@ -106,6 +106,10 @@ jobs:
           tag_name: ${{ steps.rel.outputs.name }}
           name: "webOS 25 — DTS + TrueHD + container support (${{ steps.rel.outputs.name }})"
           generate_release_notes: true
+          # Mark this the "latest" release so releases/latest/download (used by the
+          # self-hosted manifest and the webosbrew apps-repo entry) always resolves
+          # to the newest webos25 build without a manual flag flip.
+          make_latest: true
           body: |
             Prebuilt, **on-device-verified** DTS restore for rooted **LG webOS 25** TVs
             (C5 class — 32-bit ARM soft-float, GStreamer 1.24). Not for CX/webOS 3–6
