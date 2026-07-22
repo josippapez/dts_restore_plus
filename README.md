@@ -105,6 +105,11 @@ list below can still install (the installer just warns first), using the same bi
 
 ## Tuning the stereo downmix
 
+> **CX / webOS 3–6 only.** This applies to the CX tool's binaries, whose gst-libav forces a
+> stereo downmix. The **webOS 25** build does **not** downmix — it decodes native discrete 5.1
+> (verified on a C5), so there is no `downmix.conf` there. See
+> [`webos25/README.md`](webos25/README.md).
+
 DTS is decoded and **downmixed to 2.0 PCM** (see [Limitations](#limitations)). The mix is
 controlled by `/var/lib/webosbrew/dts_restore/downmix.conf`:
 
@@ -148,12 +153,14 @@ The flag is checked at each playback start (no reboot needed) but **resets on re
 
 ## Limitations
 
-- **Stereo (2.0) downmix only** — no multichannel, no passthrough. LG routes multichannel and
-  bitstream passthrough exclusively through its **proprietary** audio decoder/sink; open decoders
-  (including the one used here) can only reach a stereo-limited sink. Stock multichannel FLAC hits
-  the same wall on unmodified firmware. Passthrough to an AVR is out of reach without reverse-
-  engineering LG's proprietary libraries. *(An experimental route to real multichannel is being
-  explored — see [Experimental: multichannel](#experimental--extras) below.)*
+> These limitations describe the **CX / webOS 3–6** tool (the binaries in `gst/`). The
+> **webOS 25** build is different — it decodes **discrete 5.1 (no downmix)**; see its own
+> [limitations/caveats](webos25/README.md#per-codec-status).
+
+- **Stereo (2.0) downmix only *(CX tool)*** — the CX gst-libav forces a 2.0 downmix; it does
+  not reach LG's multichannel sink. (This does **not** apply to the webOS 25 build, which emits
+  discrete 5.1 — measured on a C5 to match a reference decoder within ~0.1–0.2 dB per channel.)
+  Bitstream passthrough to an AVR is out of scope on either platform (decode-to-PCM only).
 - **Root required.**
 - **4K content cannot 2× fast-forward** — a stock LG limitation that also applies to AC3/AAC.
 
