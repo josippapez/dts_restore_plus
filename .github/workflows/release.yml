@@ -154,6 +154,10 @@ jobs:
           python-version: "3.11"   # avoid the 3.14 pathlib.samefile quirk
 
       - name: Generate the repo API from the registry YAML
+        env:
+          CI: ""   # skip repogen obtain_icon (it would rewrite iconUri to the
+                   # cloned apps-repo's repo.webosbrew.org CNAME → 404). Keep our
+                   # raw.githubusercontent icon URL from the manifest.
         run: |
           git clone --depth 1 https://github.com/webosbrew/apps-repo /tmp/apps-repo
           cd /tmp/apps-repo
