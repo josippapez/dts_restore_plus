@@ -1,0 +1,105 @@
+name: Release (webOS 25)
+
+# Release-on-tag. Pushing a version tag packages the ALREADY-COMMITTED, verified
+# prebuilt binaries into release assets — it does NOT rebuild the .so from source
+# (the cross-compiled armel binaries are vendored in the repo and verified
+# on-device before commit; see RELEASING.md). Assets published:
+#   - dts_restore_plus-webos25-restore-<tag>.tar.gz  (the CLI: restore/ with
+#     out/ + truehd-out/ + demux-out/ + install.sh — one-command install)
+#   - org.webosbrew.dtsenabler_<ver>_all.ipk         (the Homebrew app)
+#
+# Trigger:  git tag webos25-1.2 && git push origin webos25-1.2
+#           (or a v* tag, or run manually via workflow_dispatch)
+
+on:
+  push:
+    tags:
+      - "webos25-*"
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag/name for a manual release (e.g. webos25-1.2)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Resolve release name
+        id: rel
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          NAME="$REF_NAME"
+          [ "$EVENT_NAME" = "workflow_dispatch" ] && NAME="$INPUT_TAG"
+          # allow only safe tag characters
+          case "$NAME" in
+            *[!A-Za-z0-9._-]*) echo "invalid release name: $NAME"; exit 1 ;;
+          esac
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Sanity-check committed binaries are present
+        run: |
+          set -e
+          cd webos25/restore
+          for f in out/libgstdtsdec.so out/libdca.so.0 \
+                   truehd-out/libgstlibav.so \
+                   demux-out/libgstisomp4.so demux-out/libgstmpegtsdemux.so; do
+            [ -f "$f" ] || { echo "MISSING committed binary: $f"; exit 1; }
+          done
+          echo "all prebuilt binaries present"
+
+      - name: Package the CLI restore tarball
+        run: |
+          cd webos25
+          tar czf "../dts_restore_plus-webos25-restore-${{ steps.rel.outputs.name }}.tar.gz" restore
+
+      - name: Install ares-cli
+        run: npm install -g @webosose/ares-cli
+
+      - name: Populate app payloads from the committed restore/ binaries
+        run: |
+          cd webos25/app
+          cp -f  ../restore/out/libgstdtsdec.so ../restore/out/libdca.so.0        payload/webos25/
+          cp -Pf ../restore/truehd-out/libgstlibav.so                             payload/webos25-truehd/
+          cp -Pf ../restore/truehd-out/libav*.so* ../restore/truehd-out/libsw*.so* payload/webos25-truehd/
+          cp -f  ../restore/demux-out/libgstisomp4.so ../restore/demux-out/libgstmpegtsdemux.so payload/webos25-demux/
+
+      - name: Build the .ipk
+        run: |
+          cd webos25/app
+          mkdir -p dist
+          ares-package . service -o dist
+          ls -la dist/*.ipk
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.rel.outputs.name }}
+          name: "webOS 25 DTS + TrueHD + containers (${{ steps.rel.outputs.name }})"
+          generate_release_notes: true
+          body: |
+            Prebuilt, on-device-verified restore for **LG webOS 25 (C5)**.
+
+            **Assets**
+            - `dts_restore_plus-webos25-restore-*.tar.gz` — CLI: `scp -r` the `restore/`
+              folder to the TV and run `sh install.sh` (DTS + TrueHD + mp4/ts/m2ts DTS).
+            - `org.webosbrew.dtsenabler_*.ipk` — the DTS Enabler Homebrew app
+              (enable/disable/uninstall + self-test + play-by-ear).
+
+            See `webos25/README.md` and `RELEASING.md`.
+          files: |
+            dts_restore_plus-webos25-restore-*.tar.gz
+            webos25/app/dist/*.ipk

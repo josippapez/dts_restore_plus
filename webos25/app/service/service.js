@@ -75,7 +75,15 @@ var HBC_EXEC = "luna://org.webosbrew.hbchannel.service/exec";
 // service cannot reach the payload via a path relative to __dirname. Address
 // the application install dir explicitly.
 var APP_ID       = "org.webosbrew.dtsenabler";
-var APP_INSTALL  = "/usr/palm/applications/" + APP_ID;
+// The app dir differs by install type: homebrew/dev apps live under
+// /media/developer/apps/..., production apps under /usr/palm/applications/...
+// Resolve it at runtime in the shell via $APPBASE (defined by APPBASE_PRELUDE,
+// which every payload-using builder prepends). PAYLOAD_* therefore carry a shell
+// variable reference, expanded inside the double-quoted command strings.
+var APPBASE_PRELUDE =
+  'APPBASE=/media/developer/apps/usr/palm/applications/' + APP_ID + '; ' +
+  '[ -d "$APPBASE" ] || APPBASE=/usr/palm/applications/' + APP_ID;
+var APP_INSTALL  = "$APPBASE";
 var PAYLOAD_W25     = APP_INSTALL + "/payload/webos25";          // libgstdtsdec.so + libdca.so.0
 var PAYLOAD_W25_THD = APP_INSTALL + "/payload/webos25-truehd";   // libgstlibav.so + ffmpeg libs
 var PAYLOAD_W25_DMX = APP_INSTALL + "/payload/webos25-demux";    // patched isomp4 + mpegtsdemux
@@ -175,7 +183,15 @@ function rootExec(command) {
   return new Promise(function (resolve, reject) {
     service.call(HBC_EXEC, { command: command }, function (msg) {
       var p = (msg && msg.payload) ? msg.payload : {};
-      if (p.returnValue === false && p.stdout === undefined && p.stderr === undefined) {
+      // The Homebrew Channel exec service returns the output in `stdoutString` /
+      // `stderrString` (plus base64 `stdoutBytes`/`stderrBytes`) -- NOT `stdout` /
+      // `stderr`. Read the *String fields (fall back to the plain names in case a
+      // future/other bridge uses them).
+      var out = (p.stdoutString !== undefined) ? p.stdoutString : (p.stdout || "");
+      var err = (p.stderrString !== undefined) ? p.stderrString : (p.stderr || "");
+      var noOutput = p.stdout === undefined && p.stderr === undefined &&
+                     p.stdoutString === undefined && p.stderrString === undefined;
+      if (p.returnValue === false && noOutput) {
         reject({
           errorText: p.errorText || "exec call failed - is the Homebrew Channel installed and the TV rooted?",
           raw: p
@@ -183,8 +199,8 @@ function rootExec(command) {
         return;
       }
       resolve({
-        stdout: p.stdout || "",
-        stderr: p.stderr || "",
+        stdout: out,
+        stderr: err,
         returnValue: p.returnValue !== false
       });
     });
@@ -372,9 +388,11 @@ function w25Enable() {
   var b64gc   = Buffer.from(W25_GC_AWK, "utf8").toString("base64");
   return [
     "set -u",
+    APPBASE_PRELUDE,
     'LOG=' + LOG,
     'log() { echo "[dts25-install $(date \'+%Y-%m-%d %H:%M:%S\')] $*" >> "$LOG" 2>&1; }',
     'log "=== enable (webos25 DTS+TrueHD) start ==="',
+    'log "app base: $APPBASE"',
     // 1. Stage the DTS payload.
     'mkdir -p "' + W25_LIBS + '" || { log "FATAL: cannot create ' + W25_LIBS + '"; exit 0; }',
     'if [ -f "' + PAYLOAD_W25 + '/libgstdtsdec.so" ]; then',
@@ -480,6 +498,7 @@ var TEST_CASES = [
 function w25SelfTest() {
   var lines = [
     "set -u",
+    APPBASE_PRELUDE,
     'LOG=' + LOG,
     'REG=' + W25_REG_TARGET,
     'OUT=/tmp/dtsenabler_selftest.wav',
@@ -492,7 +511,7 @@ function w25SelfTest() {
     lines.push('F="' + f + '"');
     lines.push('rm -f "$OUT"');
     lines.push('if [ -f "$F" ]; then');
-    lines.push('  gst-launch-1.0 -q filesrc location="$F" ! ' + t.demux + ' name=d d. ! queue ! dtsdec ! audioconvert ! wavenc ! filesink location="$OUT" >/dev/null 2>&1');
+    lines.push('  timeout 25 gst-launch-1.0 -q filesrc location="$F" ! ' + t.demux + ' name=d d. ! queue ! dtsdec ! audioconvert ! wavenc ! filesink location="$OUT" >/dev/null 2>&1');
     lines.push('  SZ=$(stat -c%s "$OUT" 2>/dev/null || echo 0)');
     lines.push('  if [ "$SZ" -ge ' + TEST_WAV_MIN + ' ]; then echo "' + t.key + '=PASS:$SZ"; else echo "' + t.key + '=FAIL:$SZ"; fi');
     lines.push('else echo "' + t.key + '=MISSING:0"; fi');
@@ -569,6 +588,7 @@ function cxEnable() {
   var b64 = Buffer.from(cxInitScriptBody(), "utf8").toString("base64");
   return [
     "set -u",
+    APPBASE_PRELUDE,
     'LOG=' + LOG,
     'log() { echo "[dts_restore-cx-install $(date \'+%Y-%m-%d %H:%M:%S\')] $*" >> "$LOG" 2>&1; }',
     'log "=== enable (cx) start ==="',
@@ -718,7 +738,10 @@ service.register("status", function (message) {
         base.mpegtsBound = tsdbind;
         base.demuxPayloadStaged = kv.DMXSTAGED === "1";
         base.containersActive = hook && isobind && tsdbind;   // mp4/ts/m2ts DTS
-        base.dtsActive = hook && regbind && dtsdec;
+        // The registry is regenerated + COPIED over the media path (not bind-mounted),
+        // so registryBound is expected false. `dtsdecPresent` (gst-inspect finds dtsdec)
+        // is the authoritative signal that the live registry carries the DTS decoder.
+        base.dtsActive = hook && dtsdec;
         base.truehdActive = hook && libavbind && cfgbind && gcbind && truehd;
         base.active = base.dtsActive && base.truehdActive;
         base.verified = true;   // both codecs verified on a real C5 (decode + autoplug)
