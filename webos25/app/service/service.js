@@ -78,7 +78,9 @@ var APP_ID       = "org.webosbrew.dtsenabler";
 var APP_INSTALL  = "/usr/palm/applications/" + APP_ID;
 var PAYLOAD_W25     = APP_INSTALL + "/payload/webos25";          // libgstdtsdec.so + libdca.so.0
 var PAYLOAD_W25_THD = APP_INSTALL + "/payload/webos25-truehd";   // libgstlibav.so + ffmpeg libs
+var PAYLOAD_W25_DMX = APP_INSTALL + "/payload/webos25-demux";    // patched isomp4 + mpegtsdemux
 var PAYLOAD_CX      = APP_INSTALL + "/payload/cx";               // CX demuxer/libav .so set
+var PAYLOAD_TESTS   = APP_INSTALL + "/payload/testfiles";        // DTS container samples (self-test)
 
 var LOG = "/tmp/dtsenabler.log";
 
@@ -105,6 +107,12 @@ var W25_CFG_OVR     = W25_THD_DEST + "/codec_capability.json";
 var W25_GC_LIVE     = "/etc/gst/gstcool.conf";
 var W25_GC_OVR      = W25_THD_DEST + "/gstcool.conf";
 var W25_LGLIBAV     = "/usr/lib/gstreamer-1.0/libgstlibav.so";
+/* Container-demuxer side: patched isomp4/mpegtsdemux (dts_support default TRUE)
+ * so DTS works in mp4/ts/m2ts, not just MKV. Staged then bind-mounted over LG's
+ * demuxers BEFORE the registry regen (fully reversible). */
+var W25_DMX_DEST    = "/var/lib/webosbrew/demux25";
+var W25_ISO_LIVE    = "/usr/lib/gstreamer-1.0/libgstisomp4.so";
+var W25_TSD_LIVE    = "/usr/lib/gstreamer-1.0/libgstmpegtsdemux.so";
 /* awk programs that generate the two overrides (same logic as install.sh;
  * written to the TV via base64 heredoc + run with `awk -f` to avoid any
  * shell quoting hazard). Author constants only -- nothing caller-supplied. */
@@ -333,6 +341,12 @@ function w25InitScriptBody() {
     "# 2b) gstcool.conf: give avdec_truehd a high SW rank so LG autoplugs it (not the HW path)",
     "GC=/etc/gst/gstcool.conf",
     '[ -f /var/lib/webosbrew/truehd/gstcool.conf ] && ! grep -q " $GC " /proc/mounts 2>/dev/null && mount -n --bind /var/lib/webosbrew/truehd/gstcool.conf "$GC" 2>>$LOG',
+    "# 2c) container demuxers with DTS re-enabled (mp4/ts/m2ts DTS -> audio/x-dts).",
+    "#     Bound BEFORE the regen below so the registry picks them up at their normal path.",
+    "ISO=/usr/lib/gstreamer-1.0/libgstisomp4.so",
+    "TSD=/usr/lib/gstreamer-1.0/libgstmpegtsdemux.so",
+    '[ -f /var/lib/webosbrew/demux25/libgstisomp4.so ] && ! grep -q " $ISO " /proc/mounts 2>/dev/null && mount -n --bind -o ro /var/lib/webosbrew/demux25/libgstisomp4.so "$ISO" 2>>$LOG',
+    '[ -f /var/lib/webosbrew/demux25/libgstmpegtsdemux.so ] && ! grep -q " $TSD " /proc/mounts 2>/dev/null && mount -n --bind -o ro /var/lib/webosbrew/demux25/libgstmpegtsdemux.so "$TSD" 2>>$LOG',
     "# 3) regenerate the media registry (fresh) with dtsdec + our libav, then write it to the media path",
     "rm -f /tmp/gst_dts_reg.bin",
     "LD_LIBRARY_PATH=/var/lib/webosbrew/truehd/libs \\",
@@ -376,8 +390,13 @@ function w25Enable() {
     'else log "WARN: ' + PAYLOAD_W25_THD + '/libgstlibav.so not found (populate payload before packaging)"; fi',
     'n=0; for f in "' + PAYLOAD_W25_THD + '"/libav*.so* "' + PAYLOAD_W25_THD + '"/libsw*.so*; do [ -e "$f" ] && cp -Pf "$f" "' + W25_THD_LIBS + '/" && n=$((n+1)); done',
     'log "staged $n ffmpeg lib entries -> ' + W25_THD_LIBS + '"',
+    // 2c. Stage the container-demuxer payload (optional; skipped if absent).
+    'mkdir -p "' + W25_DMX_DEST + '" || log "WARN: cannot create ' + W25_DMX_DEST + '"',
+    'for so in libgstisomp4.so libgstmpegtsdemux.so; do',
+    '  if [ -f "' + PAYLOAD_W25_DMX + '/$so" ]; then cp -f "' + PAYLOAD_W25_DMX + '/$so" "' + W25_DMX_DEST + '/$so" && log "installed $so"; else log "note: ' + PAYLOAD_W25_DMX + '/$so absent; container DTS skipped"; fi',
+    'done',
     // 3. Unmount any stale binds so overrides are generated from PRISTINE /etc.
-    'for T in "' + W25_CFG_LIVE + '" "' + W25_GC_LIVE + '" "' + W25_LGLIBAV + '" "' + W25_REG_TARGET + '"; do',
+    'for T in "' + W25_CFG_LIVE + '" "' + W25_GC_LIVE + '" "' + W25_LGLIBAV + '" "' + W25_ISO_LIVE + '" "' + W25_TSD_LIVE + '" "' + W25_REG_TARGET + '"; do',
     '  if grep -q " $T " /proc/mounts 2>/dev/null; then umount "$T" 2>>"$LOG" && log "unmounted stale bind $T" || log "WARN: could not umount $T"; fi',
     'done',
     // 3a. Generate the codec-capability override (insert TRUEHD+MLP after DTSE).
@@ -422,7 +441,7 @@ function w25Disable() {
     'log() { echo "[dts25-disable $(date \'+%Y-%m-%d %H:%M:%S\')] $*" >> "$LOG" 2>&1; }',
     'log "=== disable (webos25) start ==="',
     'if [ -L "' + W25_HOOK + '" ] || [ -e "' + W25_HOOK + '" ]; then rm -f "' + W25_HOOK + '" && log "removed boot hook"; else log "boot hook not present"; fi',
-    'for T in "' + W25_CFG_LIVE + '" "' + W25_GC_LIVE + '" "' + W25_LGLIBAV + '" "' + W25_REG_TARGET + '"; do',
+    'for T in "' + W25_CFG_LIVE + '" "' + W25_GC_LIVE + '" "' + W25_LGLIBAV + '" "' + W25_ISO_LIVE + '" "' + W25_TSD_LIVE + '" "' + W25_REG_TARGET + '"; do',
     '  if grep -q " $T " /proc/mounts 2>/dev/null; then umount "$T" 2>>"$LOG" && log "unmounted bind over $T (reverted)" || log "WARN could not umount $T"; else log "no bind over $T"; fi',
     'done',
     'rm -f "' + W25_REG_TMP + '" 2>/dev/null',
@@ -437,10 +456,50 @@ function w25Disable() {
 function w25Uninstall() {
   return [
     w25Disable().replace(/\necho OK\nexit 0$/, ""),
-    'rm -rf "' + W25_DEST + '" "' + W25_THD_DEST + '" && echo "[dts25-uninstall] removed ' + W25_DEST + ' + ' + W25_THD_DEST + '" >> "' + LOG + '" 2>&1',
+    'rm -rf "' + W25_DEST + '" "' + W25_THD_DEST + '" "' + W25_DMX_DEST + '" && echo "[dts25-uninstall] removed ' + W25_DEST + ' + ' + W25_THD_DEST + ' + ' + W25_DMX_DEST + '" >> "' + LOG + '" 2>&1',
     'echo OK',
     "exit 0"
   ].join("\n");
+}
+
+/* =======================================================================
+ * Self-test (webOS 25): decode each bundled DTS sample through the REAL
+ * media registry and report PASS/FAIL per container. This exercises the
+ * exact demux+decode chain the media pipeline uses, so a PASS means the
+ * patch is actually working (independent of speakers / the output stage).
+ * A decode that produces real PCM yields a multi-100KB WAV; a broken chain
+ * (demuxer doesn't emit audio/x-dts, or no decoder) yields a header-only or
+ * absent file. Author constants only.
+ * ===================================================================== */
+var TEST_WAV_MIN = 100000;   // bytes; a real decode is far larger, a fail is ~44 (header) or 0
+var TEST_CASES = [
+  { key: "mp4",  file: "DTS-in-mp4.mp4",     demux: "qtdemux" },
+  { key: "ts",   file: "DTS-HD-MA-5.1.ts",   demux: "tsdemux" },
+  { key: "m2ts", file: "DTS-HD-MA-5.1.m2ts", demux: "tsdemux" }
+];
+function w25SelfTest() {
+  var lines = [
+    "set -u",
+    'LOG=' + LOG,
+    'REG=' + W25_REG_TARGET,
+    'OUT=/tmp/dtsenabler_selftest.wav',
+    'export LD_LIBRARY_PATH=' + W25_LIBS + ':' + W25_THD_LIBS,
+    'export GST_REGISTRY_1_0="$REG" GST_REGISTRY_UPDATE=no',
+    'echo "DTSDEC=$(gst-inspect-1.0 dtsdec >/dev/null 2>&1 && echo 1 || echo 0)"'
+  ];
+  TEST_CASES.forEach(function (t) {
+    var f = PAYLOAD_TESTS + "/" + t.file;
+    lines.push('F="' + f + '"');
+    lines.push('rm -f "$OUT"');
+    lines.push('if [ -f "$F" ]; then');
+    lines.push('  gst-launch-1.0 -q filesrc location="$F" ! ' + t.demux + ' name=d d. ! queue ! dtsdec ! audioconvert ! wavenc ! filesink location="$OUT" >/dev/null 2>&1');
+    lines.push('  SZ=$(stat -c%s "$OUT" 2>/dev/null || echo 0)');
+    lines.push('  if [ "$SZ" -ge ' + TEST_WAV_MIN + ' ]; then echo "' + t.key + '=PASS:$SZ"; else echo "' + t.key + '=FAIL:$SZ"; fi');
+    lines.push('else echo "' + t.key + '=MISSING:0"; fi');
+  });
+  lines.push('rm -f "$OUT" 2>/dev/null');
+  lines.push("exit 0");
+  return lines.join("\n");
 }
 
 /* =======================================================================
@@ -582,7 +641,10 @@ function w25StatusProbe() {
     'echo "DTSDEC=$(gst-inspect-1.0 dtsdec >/dev/null 2>&1 && echo 1 || echo 0)"',
     'echo "TRUEHD=$(gst-inspect-1.0 avdec_truehd >/dev/null 2>&1 && echo 1 || echo 0)"',
     'echo "DTSLIBSTAGED=$([ -f ' + W25_DEST + '/libgstdtsdec.so ] && echo 1 || echo 0)"',
-    'echo "THDLIBSTAGED=$([ -f ' + W25_THD_DEST + '/libgstlibav.so ] && echo 1 || echo 0)"'
+    'echo "THDLIBSTAGED=$([ -f ' + W25_THD_DEST + '/libgstlibav.so ] && echo 1 || echo 0)"',
+    'echo "ISOBIND=$(grep -c " ' + W25_ISO_LIVE + ' " /proc/mounts 2>/dev/null)"',
+    'echo "TSDBIND=$(grep -c " ' + W25_TSD_LIVE + ' " /proc/mounts 2>/dev/null)"',
+    'echo "DMXSTAGED=$([ -f ' + W25_DMX_DEST + '/libgstisomp4.so ] && [ -f ' + W25_DMX_DEST + '/libgstmpegtsdemux.so ] && echo 1 || echo 0)"'
   ].join("\n");
 }
 function cxStatusProbe() {
@@ -650,6 +712,12 @@ service.register("status", function (message) {
         base.truehdPresent = truehd;
         base.dtsPayloadStaged = kv.DTSLIBSTAGED === "1";
         base.truehdPayloadStaged = kv.THDLIBSTAGED === "1";
+        var isobind = parseInt(kv.ISOBIND, 10) > 0;
+        var tsdbind = parseInt(kv.TSDBIND, 10) > 0;
+        base.isomp4Bound = isobind;
+        base.mpegtsBound = tsdbind;
+        base.demuxPayloadStaged = kv.DMXSTAGED === "1";
+        base.containersActive = hook && isobind && tsdbind;   // mp4/ts/m2ts DTS
         base.dtsActive = hook && regbind && dtsdec;
         base.truehdActive = hook && libavbind && cfgbind && gcbind && truehd;
         base.active = base.dtsActive && base.truehdActive;
@@ -699,6 +767,53 @@ service.register("disable", function (message) {
 /* uninstall: detect, branch, refuse on unknown. */
 service.register("uninstall", function (message) {
   runMechanism(message, "uninstall");
+});
+
+/* test: decode each bundled DTS sample through the media registry and report
+ * PASS/FAIL per container. Only defined for the webOS 25 profile. */
+service.register("test", function (message) {
+  detectProfile().then(function (d) {
+    if (d.profile !== PROFILE_W25) {
+      message.respond({
+        returnValue: false, profile: d.profile, supported: false,
+        errorText: "Self-test is only available on the webOS 25 profile (found '" + d.profile + "')."
+      });
+      return;
+    }
+    return rootExec(w25SelfTest()).then(function (r) {
+      var kv = parseKv(r.stdout);
+      var results = {};
+      var allPass = true, anyRun = false;
+      TEST_CASES.forEach(function (t) {
+        var raw = kv[t.key] || "MISSING:0";
+        var verdict = raw.split(":")[0];
+        var bytes = parseInt((raw.split(":")[1] || "0"), 10) || 0;
+        results[t.key] = { verdict: verdict, bytes: bytes, file: t.file };
+        if (verdict === "PASS") anyRun = true; else if (verdict === "FAIL") { anyRun = true; allPass = false; }
+      });
+      message.respond({
+        returnValue: true,
+        profile: d.profile,
+        dtsdecPresent: kv.DTSDEC === "1",
+        results: results,
+        pass: anyRun && allPass,
+        summary: anyRun ? (allPass ? "All containers decode DTS — patch is working."
+                                   : "Some containers failed to decode — patch not fully active.")
+                        : "No test samples found (payload/testfiles not bundled)."
+      });
+    });
+  }).catch(function (e) {
+    message.respond({ returnValue: false, errorText: e.errorText || e.message || String(e) });
+  });
+});
+
+/* testfiles: return the on-device paths of the bundled samples so the UI can
+ * play them by ear in an in-app <video>. Read-only, no privilege needed. */
+service.register("testfiles", function (message) {
+  var files = TEST_CASES.map(function (t) {
+    return { key: t.key, file: t.file, path: PAYLOAD_TESTS + "/" + t.file };
+  });
+  message.respond({ returnValue: true, dir: PAYLOAD_TESTS, files: files });
 });
 
 /**

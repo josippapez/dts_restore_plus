@@ -90,24 +90,28 @@ string sent to the Homebrew Channel (HBC) exec service via the hardened
 
 ## Per-profile mechanism
 
-### `webos25-armel-gst124` — decoder-inject (VERIFIED)
+### `webos25-armel-gst124` — decoder-inject + demux-enable (VERIFIED)
 
-Mirrors `../webos25/install.sh` exactly. LG webOS 25 keeps a working demuxer but
-re-tags the DTS track as `audio/x-unknown, codec-id=A_DTS` and ships **no**
-decoder.
+Mirrors `../webos25/restore/install.sh` + `init_dts25.sh` exactly. Restores **DTS
+(incl. mp4/ts/m2ts containers) and TrueHD/MLP**.
 
-- **Enable:** stage `libgstdtsdec.so` → `/var/lib/webosbrew/dts25/` and
-  `libdca.so.0` → `/var/lib/webosbrew/dts25/libs/`; write
-  `init_dts25.sh` that regenerates the media GStreamer registry including dtsdec
-  (`GST_REGISTRY_1_0=/tmp/gst_dts_reg.bin`,
-  `GST_PLUGIN_PATH_1_0=/usr/lib/gstreamer-1.0:/mnt/lg/res/lglib/gstreamer-1.0:/var/lib/webosbrew/dts25`,
-  `GST_REGISTRY_UPDATE=yes`, `gst-inspect-1.0`) and bind-mounts it over
-  `/mnt/flash/data/gst_1_0_registry.arm.bin`; symlink the boot hook
-  `/var/lib/webosbrew/init.d/restore_dts25`; apply now; restart
-  `starfish-media-pipeline`. **No LG library is overridden.**
-- **Disable:** remove the boot hook, unmount the registry bind (reverting to
-  LG's original registry). Staged libs kept.
-- **Uninstall:** disable + `rm -rf /var/lib/webosbrew/dts25`.
+- **Enable:** stage three payloads — DTS (`libgstdtsdec.so` + `libdca.so.0` →
+  `/var/lib/webosbrew/dts25/`), TrueHD (`libgstlibav.so` + ffmpeg libs →
+  `/var/lib/webosbrew/truehd/`), and the container demuxers (patched
+  `libgstisomp4.so` + `libgstmpegtsdemux.so`, `dts_support` default TRUE →
+  `/var/lib/webosbrew/demux25/`). Generate the two `/etc` overrides
+  (codec-capability TRUEHD/MLP; gstcool `avdec_truehd/mlp=310`). Write the
+  canonical `init_dts25.sh`, which bind-mounts our libav, the demuxers, and the
+  overrides, then regenerates the media GStreamer registry and writes it to
+  `/mnt/flash/data/gst_1_0_registry.arm.bin`. Symlink the boot hook, apply now,
+  restart `starfish-media-pipeline`.
+- **Disable:** remove the boot hook, unmount every bind (libav, demuxers, both
+  `/etc` overrides, registry) → LG originals restored. Staged libs kept.
+- **Uninstall:** disable + `rm -rf /var/lib/webosbrew/{dts25,truehd,demux25}`.
+- **Test (self-check):** the `test` method decodes a bundled DTS sample per
+  container (mp4/ts/m2ts) through the media registry and returns PASS/FAIL — an
+  objective "is the patch working" check independent of the speaker/output stage.
+  The UI also offers **play-by-ear** of the bundled samples (in-app `<video>`).
 
 ### `cx-armv7-gst114` — demuxer-override (UNVERIFIED)
 
@@ -127,6 +131,37 @@ DTS pad from the demuxer, so the fix is library-override-centric.
 ---
 
 ## Security model
+
+### Exec-bridge permissions (why the service can reach hbchannel)
+
+hbchannel's `/exec` is already a **public** method that accepts any caller (once the
+TV is rooted, hbchannel rewrites the device LS2 config to `allowedNames:["*"]` /
+`inbound:["*"]`). The gate is on **our** side: a JS service's default role does not
+grant **outbound** access, so its call to hbchannel is rejected. We therefore ship
+three ACG manifest files next to `services.json` (discovered by naming convention;
+appinstalld builds the `manifests.d` entry from them):
+
+- `org.webosbrew.dtsenabler.service.role.json` — `permissions[].outbound:["*"]`
+  (the load-bearing line — lets us call `org.webosbrew.hbchannel.service`),
+  `inbound:["*"]`, `allowedNames`.
+- `org.webosbrew.dtsenabler.service.api.json` — declares our own methods `public`.
+- `org.webosbrew.dtsenabler.service.perm.json` — client/outbound ACG grant.
+
+**Guaranteed fallback (rooted TV):** if a given firmware doesn't auto-discover them,
+copy the three files into the live LS2 dev config and restart the hub once:
+
+```sh
+cp org.webosbrew.dtsenabler.service.role.json /var/luna-service2-dev/roles.d/
+cp org.webosbrew.dtsenabler.service.api.json  /var/luna-service2-dev/api-permissions.d/
+cp org.webosbrew.dtsenabler.service.perm.json /var/luna-service2-dev/client-permissions.d/
+ls-control scan-services 2>/dev/null || killall -HUP ls-hubd 2>/dev/null || reboot
+```
+
+This is exactly the mechanism hbchannel uses for itself
+(`webos-homebrew-channel/services/elevate-service.ts`). **Status: shipped in the
+service dir; on-device auto-discovery vs. the fallback is still to be confirmed.**
+
+### Security model
 
 - **Everything handed to the exec service runs as root.**
 - This app takes **no caller-controlled shell input**: no method has a free-form
@@ -178,8 +213,14 @@ want to support.
 
 ```sh
 # 1. Populate the payloads (see payload/*/README for provenance)
-cp ../webos25/out/libgstdtsdec.so ../webos25/out/libdca.so.0  payload/webos25/
-cp ../gst/*.so                                                payload/cx/
+cp ../restore/out/libgstdtsdec.so ../restore/out/libdca.so.0   payload/webos25/
+cp ../restore/truehd-out/libgstlibav.so ../restore/truehd-out/libav*.so* \
+   ../restore/truehd-out/libsw*.so*                            payload/webos25-truehd/
+cp ../restore/demux-out/libgstisomp4.so ../restore/demux-out/libgstmpegtsdemux.so \
+                                                               payload/webos25-demux/
+# small DTS samples for the self-test / play-by-ear (already bundled)
+# payload/testfiles/{DTS-in-mp4.mp4,DTS-HD-MA-5.1.ts,DTS-HD-MA-5.1.m2ts}
+cp ../gst/*.so                                                 payload/cx/  # CX only
 
 # 2. Generate the icon
 rsvg-convert -w 80 -h 80 icon.svg > icon.png
@@ -215,7 +256,7 @@ service for all root work.
 
 | Profile | TV family | Mechanism | Status |
 |---|---|---|---|
-| `webos25-armel-gst124` | LG C5 / G5 (webOS 25, GStreamer 1.24, armel soft-float) | decoder-inject (patched dtsdec + libdca) + TrueHD (avdec_truehd) | **Mechanism VERIFIED playing on a real C5** (via the `restore/` CLI install): both DTS and TrueHD decode and play, LG's sink receives `audio/x-raw, S32LE` (5.1), persistent across reboot. NOTE: the **app's own** detect/enable is currently **non-functional** — the service is missing the webOS role/permission manifest to call the Homebrew Channel exec bridge, so it shows "unsupported TV". Fix pending; until then use `restore/install.sh`. |
+| `webos25-armel-gst124` | LG C5 / G5 (webOS 25, GStreamer 1.24, armel soft-float) | decoder-inject (patched dtsdec + libdca) + TrueHD (avdec_truehd) | **Mechanism VERIFIED playing on a real C5** (via the `restore/` CLI install): both DTS and TrueHD decode and play, LG's sink receives `audio/x-raw, S32LE` (5.1), persistent across reboot. NOTE: the exec-bridge **role/permission manifest is now shipped** (service `*.role.json` with `outbound:["*"]` + api/perm files — see "Exec-bridge permissions"), so the app's detect/enable/test should reach the Homebrew Channel; **on-device confirmation (auto-discovery vs. the `/var/luna-service2-dev/` fallback) is pending**. The `restore/install.sh` CLI path remains the verified route. The app now also stages the **container demuxers** and includes a **self-test + play-by-ear** for mp4/ts/m2ts. |
 | `cx-armv7-gst114` | OLED CX / BX / C1 / C2 / NanoCell (webOS 3–6, GStreamer 1.14) | demuxer-override (rebuilt LG libs + `avdec_dca` rank) | **Carried over, UNVERIFIED by this project** — no CX hardware. Mechanism is the field-used shipping `dts_restore` recipe, but its "armv7 hard-float" ABI claim was never measured on-device (the C5 proved the same triplet can be soft-float). Confirm the loader/e_flags via `detect` before trusting. |
 | webOS 22 / 23 / 24 (C2/C3/C4/G-series) | — | none | **No recipe.** Arch/ABI/GStreamer/disable-mechanism all unknown; the detector emits an `unknown-*` profile and the app **refuses**. |
 | anything else | — | none | Detector emits `unknown-*`; app refuses. |

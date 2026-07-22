@@ -168,3 +168,13 @@ code {
 
 /* ---- Foot bar ---- */
 .footbar { margin-top: 24px; font-size: 21px; }
+
+/* In-app play-by-ear player (Test panel) */
+.testvideo {
+  width: 100%;
+  max-width: 640px;
+  margin-top: 12px;
+  background: #000;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 8px;
+}

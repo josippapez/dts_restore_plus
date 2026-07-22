@@ -10,7 +10,9 @@
         { "name": "status",    "description": "Detect + report model/webOS/GStreamer and whether the matched patch is active" },
         { "name": "enable",    "description": "Apply the DTS-restore mechanism matching the detected profile" },
         { "name": "disable",   "description": "Remove the boot hook + best-effort unmount for the detected profile" },
-        { "name": "uninstall", "description": "Disable + remove all on-device state for the detected profile" }
+        { "name": "uninstall", "description": "Disable + remove all on-device state for the detected profile" },
+        { "name": "test",      "description": "Decode each bundled DTS sample (mp4/ts/m2ts) through the media registry; report PASS/FAIL per container" },
+        { "name": "testfiles", "description": "Return on-device paths of the bundled DTS samples for in-app play-by-ear" }
       ]
     }
   ]

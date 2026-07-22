@@ -1,0 +1,7 @@
+Small DTS container samples used by the app's "Test patch" self-check and
+play-by-ear. Each decodes to real DTS PCM when the patch is active:
+  DTS-in-mp4.mp4      H.264 video + DTS 5.1 (dtsc)   -> qtdemux
+  DTS-HD-MA-5.1.ts    real DTS-HD MA (core) 5.1      -> tsdemux
+  DTS-HD-MA-5.1.m2ts  same stream, .m2ts extension   -> tsdemux
+(Trimmed to a few seconds to keep the .ipk small; full-length copies are in
+../../restore/testfiles/.)

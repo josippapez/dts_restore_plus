@@ -34,6 +34,7 @@
           <dt>Float ABI</dt><dd id="stAbi">&mdash;</dd>
           <dt>DTS disabled by</dt><dd id="stDisable">&mdash;</dd>
           <dt>Patch active</dt><dd id="stActive">&mdash;</dd>
+          <dt>Containers (mp4/ts/m2ts)</dt><dd id="stContainers">&mdash;</dd>
           <dt>Verified on hardware</dt><dd id="stVerified">&mdash;</dd>
         </dl>
       </section>
@@ -57,6 +58,34 @@
           This TV does not match a supported profile, so Enable is refused. Only
           <code>webos25-armel-gst124</code> (verified) and <code>cx-armv7-gst114</code>
           (unverified) mechanisms are implemented.
+        </p>
+      </section>
+
+      <!-- ===== Test the patch ===== -->
+      <section class="card card--wide" aria-labelledby="h-test">
+        <h2 id="h-test">Test the patch</h2>
+        <p class="muted">
+          <strong>Run self-test</strong> decodes a bundled DTS sample in each container
+          (mp4, ts, m2ts) through the TV's media pipeline and reports PASS/FAIL &mdash; an
+          objective check that the patch works, no speakers needed. <strong>Play</strong>
+          plays a sample so you can confirm by ear.
+        </p>
+        <div class="row">
+          <button id="btnTest" class="btn btn--primary focusable" data-nav disabled>Run self-test</button>
+          <button id="btnPlayMp4"  class="btn focusable" data-nav disabled>Play&nbsp;.mp4</button>
+          <button id="btnPlayTs"   class="btn focusable" data-nav disabled>Play&nbsp;.ts</button>
+          <button id="btnPlayM2ts" class="btn focusable" data-nav disabled>Play&nbsp;.m2ts</button>
+        </div>
+        <dl class="status">
+          <dt>mp4 (qtdemux)</dt><dd id="tRmp4">&mdash;</dd>
+          <dt>ts (tsdemux)</dt><dd id="tRts">&mdash;</dd>
+          <dt>m2ts (tsdemux)</dt><dd id="tRm2ts">&mdash;</dd>
+        </dl>
+        <video id="testVideo" class="testvideo" controls playsinline hidden></video>
+        <p class="muted note-warn">
+          Play-by-ear runs the sample in-app; <code>.mp4</code> is the most reliable there.
+          If <code>.ts</code>/<code>.m2ts</code> won't play in-app, use the full files from a
+          USB stick in the Media Player &mdash; the self-test already covers all three.
         </p>
       </section>
 

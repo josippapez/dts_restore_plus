@@ -105,6 +105,14 @@
     var active = !!s.active;
     setVal("stActive", active ? "yes" : "no", active ? "ok" : "off");
 
+    // Container support (mp4/ts/m2ts) — only meaningful on the webOS 25 profile.
+    if (profile === "webos25-armel-gst124") {
+      var cont = !!s.containersActive;
+      setVal("stContainers", cont ? "yes" : "no", cont ? "ok" : "off");
+    } else {
+      setVal("stContainers", "n/a");
+    }
+
     if (!supported) {
       setVal("stVerified", "n/a", "warn");
     } else if (s.verified) {
@@ -131,6 +139,27 @@
     $("btnDisable").disabled = !supported;
     $("btnUninstall").disabled = !supported;
     $("unsupportedNote").hidden = supported;
+
+    // Test features: only the webOS 25 profile has a self-test + bundled samples.
+    var canTest = profile === "webos25-armel-gst124";
+    $("btnTest").disabled = !canTest;
+    $("btnPlayMp4").disabled = !canTest;
+    $("btnPlayTs").disabled = !canTest;
+    $("btnPlayM2ts").disabled = !canTest;
+  }
+
+  /* Map a self-test verdict to a status cell. */
+  function renderTestResults(res) {
+    var r = (res && res.results) || {};
+    [["mp4", "tRmp4"], ["ts", "tRts"], ["m2ts", "tRm2ts"]].forEach(function (pair) {
+      var v = r[pair[0]] || {};
+      var verdict = v.verdict || "—";
+      var cls = verdict === "PASS" ? "ok" : (verdict === "FAIL" ? "warn" : null);
+      var label = verdict === "PASS" ? "PASS (decoded)"
+                : verdict === "FAIL" ? "FAIL (no audio)"
+                : verdict === "MISSING" ? "sample missing" : "—";
+      setVal(pair[1], label, cls);
+    });
   }
 
   /* ---------------------------------------------------------------------- */
@@ -172,6 +201,41 @@
       toast("Uninstalled (power-cycle the TV to clear any registry override)", "ok");
       return refreshStatus();
     }).catch(function (e) { toast("Uninstall failed: " + errText(e), "err"); });
+  }
+
+  function doTest() {
+    toast("Running self-test (decoding samples)…", "busy");
+    ["tRmp4", "tRts", "tRm2ts"].forEach(function (id) { setVal(id, "testing…"); });
+    callService("test", {}).then(function (res) {
+      renderTestResults(res);
+      toast(res.summary || "Self-test done", res.pass ? "ok" : "err");
+    }).catch(function (e) {
+      ["tRmp4", "tRts", "tRm2ts"].forEach(function (id) { setVal(id, "—"); });
+      toast("Self-test failed: " + errText(e), "err");
+    });
+  }
+
+  // Play a bundled sample in-app (relative path resolves under the app root).
+  var TEST_FILES = {
+    mp4:  "payload/testfiles/DTS-in-mp4.mp4",
+    ts:   "payload/testfiles/DTS-HD-MA-5.1.ts",
+    m2ts: "payload/testfiles/DTS-HD-MA-5.1.m2ts"
+  };
+  function doPlay(key) {
+    var v = $("testVideo");
+    var src = TEST_FILES[key];
+    if (!src) return;
+    v.hidden = false;
+    v.src = src;
+    v.setAttribute("data-nav", "");   // make it focusable/scrollable
+    toast("Playing " + key + " sample… (listen for audio)", "busy");
+    var p = v.play();
+    if (p && typeof p.catch === "function") {
+      p.catch(function () {
+        toast("In-app player couldn't play the " + key + " sample; try it from USB in Media Player.", "err");
+      });
+    }
+    v.scrollIntoView({ block: "nearest" });
   }
 
   /* ---------------------------------------------------------------------- */
@@ -267,6 +331,10 @@
     $("btnDisable").addEventListener("click", doDisable);
     $("btnUninstall").addEventListener("click", doUninstall);
     $("btnRefresh").addEventListener("click", refreshStatus);
+    $("btnTest").addEventListener("click", doTest);
+    $("btnPlayMp4").addEventListener("click", function () { doPlay("mp4"); });
+    $("btnPlayTs").addEventListener("click", function () { doPlay("ts"); });
+    $("btnPlayM2ts").addEventListener("click", function () { doPlay("m2ts"); });
 
     wirePointerFocus();
     document.addEventListener("keydown", onKey);

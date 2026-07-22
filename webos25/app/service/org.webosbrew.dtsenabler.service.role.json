@@ -1,0 +1,15 @@
+{
+  "appId": "org.webosbrew.dtsenabler.service",
+  "type": "regular",
+  "allowedNames": [
+    "org.webosbrew.dtsenabler.service",
+    "org.webosbrew.dtsenabler.service-*"
+  ],
+  "permissions": [
+    {
+      "service": "org.webosbrew.dtsenabler.service",
+      "inbound": ["*"],
+      "outbound": ["*"]
+    }
+  ]
+}
