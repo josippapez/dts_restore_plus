@@ -1,76 +1,38 @@
-BUILD REPORT — webOS-25 GStreamer demuxers with DTS re-enabled
-================================================================
-Date: 2026-07-22
-Target: LG C5 (webOS 25), 32-bit ARM EABI5 soft-float (arm-linux-gnueabi),
-        glibc 2.35, GStreamer 1.24
+Container-demuxer rebuild — DTS re-enabled for mp4/ts/m2ts (webOS 25 / C5)
+==========================================================================
 
-Build approach that succeeded: APPROACH 2 (LG source, full mini-stack)
-----------------------------------------------------------------------
-Built from LG's own webOS-25 monorepo source (GStreamer 1.24.0), i.e. all LG
-customizations in qtdemux/tsdemux are preserved (DV-in-mp4, trickplay,
-decproxy hints, webOS-specific caps fields). No Debian/upstream plugin source
-was used — the "last-resort fallback" was NOT needed.
+Source: LG webOS-25 GStreamer 1.24 monorepo (lgstreamer/gstreamer-webos-25).
+Built reproducibly by build-demux.sh (debian:11-slim, arm-linux-gnueabi-gcc, meson).
 
-Approach 1 (link against Debian armel GStreamer 1.22 dev packages) was not
-viable because Debian bullseye's armel repos no longer exist on
-deb.debian.org (armel dropped from bullseye dists in Aug 2025) and bullseye
-only ever shipped GStreamer 1.18 anyway. Instead, the minimal LG 1.24 stack
-was cross-built inside debian:11-slim (glibc 2.31 build env → symbol ceiling
-far below 2.35):
-  1. gstreamer (core)                        -Dtools/tests/etc=disabled
-  2. gst-plugins-base (libraries only)       -Dauto_features=disabled
-  3. gst-plugins-good                        -Dauto_features=disabled -Disomp4=enabled -Ddca=true
-  4. gst-plugins-bad                         -Dauto_features=disabled -Dmpegtsdemux=enabled -Ddca=true
-All with meson 1.4.2 cross file (arm-linux-gnueabi-gcc 10.2, soft-float).
-armel sysroot packages (libglib2.0-dev:armel 2.66.8, zlib1g-dev:armel) came
-from snapshot.debian.org 20250601T000000Z pinned at priority 1001 (last
-snapshot where bullseye/main still carried armel).
+Why a rebuild was needed
+------------------------
+LG ships isomp4/mpegtsdemux with the DTS caps paths compiled out. Building with
+-Ddca=true recompiles those paths, but they are ALSO gated at runtime by a
+GObject property `dts_support` that LG defaults to FALSE — so mp4/ts DTS still
+fell out as untargetable audio/x-gst-fourcc-dtsc. The fix is a 2-line source
+patch flipping that default to TRUE:
 
--Ddca=true sets #define DTS_SUPPORT in config.h of both plugin sets, so the
-LG #ifdef DTS_SUPPORT code paths in qtdemux.c / tsdemux.c are compiled in.
+  gst-plugins-good/gst/isomp4/qtdemux.c        qtdemux->dts_support = FALSE -> TRUE
+  gst-plugins-bad/gst/mpegtsdemux/tsdemux.c    demux->dts_support   = FALSE -> TRUE
 
-One minimal build-system patch (no C code touched):
-  gst-plugins-bad/gst-libs/gst/mpdclient/meson.build — LG bug: pkg_name /
-  gstmpdclient are referenced after the "if xml2_dep.found()" endif, which
-  aborts configuration when dash is disabled. The endif was moved to end of
-  file (block skipped entirely; mpdclient is unrelated to tsdemux).
+(each file has exactly one such assignment; nothing else changed; no later code
+re-sets it to FALSE.)
 
-Verification (from arm-linux-gnueabi binutils inside the container)
--------------------------------------------------------------------
-libgstisomp4.so (627,384 bytes, stripped)
-  file:      ELF 32-bit LSB shared object, ARM, EABI5 version 1 (SYSV)
-  e_flags:   05000200  (EABI5, soft-float ABI — REQUIRED value, matches)
-  max GLIBC: GLIBC_2.7  (<= 2.35 requirement, huge margin)
-  NEEDED:    libgstreamer-1.0, libgobject-2.0, libglib-2.0, libgstriff-1.0,
-             libgstaudio-1.0, libgstbase-1.0, libgstvideo-1.0, libgstrtp-1.0,
-             libgsttag-1.0, libgstpbutils-1.0, libz, libm, libc
-  DTS caps:  strings show audio/x-dts, x-dtsh, x-dtsl, x-dtse, x-dtsx (5 hits)
-  sha256:    5606612ce29e70d263740e0b5bdecb1d2c9f4e2e2949cbba430bd4ae1c4e9ee0
+ABI (both artifacts, stripped) — must match the C5 GStreamer userspace
+---------------------------------------------------------------------
+  file        : ELF 32-bit LSB shared object, ARM, EABI5 (soft-float)
+  e_flags     : 0x05000200   (od -An -tx4 -j36 -N4)
+  interpreter : /lib/ld-linux.so.3
+  max GLIBC   : 2.7  (well under the C5's 2.35 ceiling)
+  GStreamer   : 1.24
+  strings     : audio/x-dts + "DTS audio" present
 
-libgstmpegtsdemux.so (273,236 bytes, stripped)
-  file:      ELF 32-bit LSB shared object, ARM, EABI5 version 1 (SYSV)
-  e_flags:   05000200  (EABI5, soft-float ABI — matches)
-  max GLIBC: GLIBC_2.7
-  NEEDED:    libgstcodecparsers-1.0, libgstmpegts-1.0, libgstbase-1.0,
-             libgstreamer-1.0, libgobject-2.0, libglib-2.0, libgsttag-1.0,
-             libgstpbutils-1.0, libgstaudio-1.0, libdl, libc
-  DTS caps:  tsdemux audio src pad template now contains
-             "...audio/x-ac4;audio/x-dts; audio/x-dtsh; audio/x-dtse;
-              audio/x-dtsl;..." (6 x-dts string hits)
-  sha256:    5d6d5cb7ce5f5dcf20e1c96375af65092dca2d30dd7cc568dbcb73e6f2ef45a7
-
-Notes / tradeoffs
------------------
-- Both .so were built against our own 1.24.0 core/base/bad libs; on the TV
-  they resolve against LG's shipped 1.24 libs by soname (.so.0), same as the
-  earlier dtsdec/truehd builds. libgstmpegtsdemux.so additionally NEEDS
-  libgstcodecparsers-1.0.so.0 and libgstmpegts-1.0.so.0, both of which ship
-  with LG's gst-plugins-bad on the device (LG's own tsdemux has the same
-  deps).
-- Binaries were stripped (--strip-unneeded) to match device convention;
-  unstripped versions can be regenerated with build-demux.sh.
-- Not tested on-device (per instructions: no TV connection). Static ABI
-  checks all pass.
-
-Reproduce: ./build-demux.sh <webos25-monorepo-path> <out-dir>
-Build log: demux-build/build.log in the session scratchpad.
+On-device validation (real LG C5, via the media registry)
+---------------------------------------------------------
+Real Blu-ray DTS-HD MA 5.1 in .ts  -> gst-discoverer reports "audio: DTS,
+  6 channels (FL FR FC LFE RL RR), 48000 Hz, 32-bit" and decodes to non-silent
+  S32LE PCM end-to-end (dtsdec).
+mp4 (dtsc)                          -> decodes to PCM.
+normal AAC mp4                      -> unaffected (no regression).
+(A residual/XLL-only DTS-HD test m2ts with no decodable core stays silent — a
+ content limitation; reference ffmpeg fails on it too. Demux/routing is correct.)

@@ -14,6 +14,13 @@ echo "--- dts25+truehd $(date) ---" >> $LOG 2>&1
 # 2b) gstcool.conf: give avdec_truehd a high SW rank so LG autoplugs it (not the HW path)
 GC=/etc/gst/gstcool.conf
 [ -f /var/lib/webosbrew/truehd/gstcool.conf ] && ! grep -q " $GC " /proc/mounts 2>/dev/null && mount -n --bind /var/lib/webosbrew/truehd/gstcool.conf "$GC" 2>>$LOG
+# 2c) container demuxers with DTS re-enabled (mp4/ts/m2ts DTS -> audio/x-dts).
+#     Patched isomp4/mpegtsdemux default dts_support=TRUE. Bound BEFORE the regen
+#     below so the registry picks them up at their normal path.
+ISO=/usr/lib/gstreamer-1.0/libgstisomp4.so
+TSD=/usr/lib/gstreamer-1.0/libgstmpegtsdemux.so
+[ -f /var/lib/webosbrew/demux25/libgstisomp4.so ] && ! grep -q " $ISO " /proc/mounts 2>/dev/null && mount -n --bind -o ro /var/lib/webosbrew/demux25/libgstisomp4.so "$ISO" 2>>$LOG
+[ -f /var/lib/webosbrew/demux25/libgstmpegtsdemux.so ] && ! grep -q " $TSD " /proc/mounts 2>/dev/null && mount -n --bind -o ro /var/lib/webosbrew/demux25/libgstmpegtsdemux.so "$TSD" 2>>$LOG
 # 3) regenerate the media registry (fresh) with dtsdec + our libav, then write it to the media path
 rm -f /tmp/gst_dts_reg.bin
 LD_LIBRARY_PATH=/var/lib/webosbrew/truehd/libs \

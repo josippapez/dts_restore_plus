@@ -8,10 +8,11 @@ so uninstall is a clean revert.
 
 ## Quick install (prebuilt — no build needed)
 
-The DTS and TrueHD decoders are **prebuilt and bundled** in `restore/`
-(`restore/out/` + `restore/truehd-out/`), and `restore/install.sh` is a **single
-self-contained script** (the boot hook is embedded in it). You do NOT need Docker
-or to build anything.
+The DTS and TrueHD decoders — plus the container demuxers — are **prebuilt and
+bundled** in `restore/` (`restore/out/` + `restore/truehd-out/` +
+`restore/demux-out/`), and `restore/install.sh` is a **single self-contained
+script** (the boot hook is embedded in it). You do NOT need Docker or to build
+anything.
 
 On a rooted webOS-25 TV with the Homebrew Channel + root SSH:
 
@@ -29,8 +30,9 @@ then play a DTS or TrueHD file. To revert: `sh uninstall.sh`.
 
 ## Folder layout
 
-- `restore/` — the CLI tool: prebuilt decoders + `install.sh`/`uninstall.sh` + the
-  `build*.sh` scripts to rebuild them (Docker).
+- `restore/` — the CLI tool: prebuilt decoders (`out/`, `truehd-out/`) + container
+  demuxers (`demux-out/`) + `install.sh`/`uninstall.sh` + the `build*.sh` scripts to
+  rebuild them (Docker).
 - `app/` — the "DTS Enabler" webOS homebrew app (GUI enable/disable/uninstall).
 - `docs/` — design notes (`MULTI-MODEL.md`), the target-detection probe
   (`detect-target.sh`), background (`WEBOS25-DTS.md`), and `experimental/`.
@@ -80,6 +82,13 @@ verbatim and symlinked from `/var/lib/webosbrew/init.d/restore_dts25`):
    our libgstlibav is **bind-mounted over** LG's TrueHD-less
    `/usr/lib/gstreamer-1.0/libgstlibav.so` (name-dedup would otherwise pick LG's).
 
+2c. **Container demuxers (mp4/ts/m2ts DTS)** — patched `libgstisomp4.so` and
+   `libgstmpegtsdemux.so` (built with `dca=true` **and** `dts_support` defaulting
+   TRUE) are staged in `/var/lib/webosbrew/demux25/` and **bind-mounted over** LG's
+   `/usr/lib/gstreamer-1.0/libgst{isomp4,mpegtsdemux}.so` **before** the registry
+   regen, so the demuxers emit `audio/x-dts` for mp4/ts/m2ts instead of an
+   untargetable fourcc. Video pads (H.264/HEVC/DV) are untouched.
+
 3. **Codec capability** — `TRUEHD` + `MLP` audio-codec objects are added to
    `/etc/umediaserver/device_codec_capability_config.json` so `umediaserver`
    allocates a decoder resource for those codecs. Applied by bind-mounting an
@@ -107,15 +116,24 @@ own live `/etc` files (see below) — this package **ships no LG config file**.
 | TrueHD       | `avdec_truehd` | S32LE (up to 7.1) | **Verified, persistent** |
 | MLP          | `avdec_mlp`    | S32LE  | Enabled alongside TrueHD        |
 
-**Container support:** **MKV is verified** (DTS + TrueHD). **`.mp4` and `.m2ts`/`.ts` are not yet
-supported** — LG's `qtdemux`/`tsdemux` have DTS demuxing compiled out, so mp4 DTS comes out as
-untargetable `audio/x-unknown` and ts DTS errors. Re-enabling it (rebuild those demuxers with
-`dca=true`) is **in progress**.
+**Container support:** **MKV, `.mp4`, and `.ts`/`.m2ts` are all supported** for DTS. LG ships
+`qtdemux`/`tsdemux` with DTS demuxing compiled out *and* gated behind a runtime `dts_support`
+property that defaults FALSE — so stock mp4 DTS came out as untargetable `audio/x-gst-fourcc-dtsc`
+and `.ts` DTS didn't route. The fix rebuilds those two demuxers from LG's webOS-25 source with
+`dca=true` **and** a 2-line patch flipping `dts_support` to default TRUE
+(`qtdemux.c` / `tsdemux.c`), staged in `restore/demux-out/` and bind-mounted by the boot hook.
+Verified on the C5 against **real Blu-ray DTS-HD MA content**: a 5.1 `.ts` sample decodes to
+`audio/x-raw, S32LE, 6 channels (FL FR FC LFE RL RR), 48000 Hz`, an `.mp4` (dtsc) decodes to PCM,
+and normal AAC mp4 playback is unaffected. (TrueHD is verified in MKV; `.mp4`/`.ts` TrueHD is not
+separately tested.)
 
 **Caveats (honest):**
-- **Surround at the output is not independently confirmed.** The decoders emit up to 5.1/7.1 S32LE
-  and LG's sink accepts multichannel caps, but whether the C5 renders all channels to speakers/eARC
-  (vs downmixing to stereo) hasn't been measured. Verify by ear / on an AVR.
+- **Decode is discrete 5.1 and accurate — no downmix at our layer.** Measured on a real C5: `dtsdec`
+  emits native **discrete 5.1** (6 channels carrying distinct content) as S32LE/48 kHz, matching a
+  reference DTS core decoder within ~0.1–0.2 dB per channel. This is unlike the CX/upstream tool,
+  which force-downmixes to 2.0. **The final render is the TV's, not ours:** internal speakers always
+  fold 5.1 into the built-in array; **HDMI eARC/optical to an AVR** can carry the multichannel PCM
+  (subject to the TV's Sound Out / PCM settings). Confirm discrete 5.1 on an AVR's input display.
 - **DTS-HD:** `avdec_dca` decodes the DTS **core**, not the DTS-HD MA lossless (XLL) extension.
   **TrueHD:** decoded as base channels (Atmos objects fold in).
 - **No bitstream passthrough** to an AVR (decode-to-PCM only) — out of scope.
@@ -129,6 +147,7 @@ soft-float `0x05000200` before deploying.
 ```sh
 ./build.sh          # -> out/libgstdtsdec.so, out/libdca.so.0     (patched dtsdec)
 ./build-truehd.sh   # -> truehd-out/libgstlibav.so + libav*/libsw* (gst-libav + ffmpeg n4.4.4)
+./build-demux.sh    # -> demux-out/libgst{isomp4,mpegtsdemux}.so   (DTS demux, dts_support=TRUE)
 ```
 
 `build.sh` needs Docker with arm64 emulation

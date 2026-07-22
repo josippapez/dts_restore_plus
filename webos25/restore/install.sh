@@ -10,6 +10,8 @@
 #     truehd-out/libgstlibav.so  gst-libav with avdec_truehd/avdec_mlp   [build-truehd.sh]
 #     truehd-out/libav*.so*      minimal ffmpeg n4.4.4 libs (+symlinks)  [build-truehd.sh]
 #     truehd-out/libsw*.so*      libswresample (+symlinks)               [build-truehd.sh]
+#     demux-out/libgstisomp4.so       mp4 demux, DTS re-enabled (OPTIONAL) [build-demux.sh]
+#     demux-out/libgstmpegtsdemux.so  ts/m2ts demux, DTS re-enabled (OPT.) [build-demux.sh]
 #   (the boot/apply script is EMBEDDED in this installer - no sibling file needed)
 #
 # All binaries are PREBUILT and bundled; you do NOT need Docker or to build
@@ -20,6 +22,8 @@
 # What it does (idempotent, guarded, logged to /tmp/dts25.log, always exit 0):
 #   1. Stages the DTS payload  -> /var/lib/webosbrew/dts25/{,libs/}
 #   2. Stages the TrueHD payload-> /var/lib/webosbrew/truehd/{,libs/}
+#   2c. Stages the container demuxers (if demux-out/ present)
+#        -> /var/lib/webosbrew/demux25/ (mp4/ts/m2ts DTS; boot hook binds them)
 #   3. GENERATES two config overrides by EDITING the TV's own live /etc files
 #      (no LG config file is shipped):
 #        a. /etc/umediaserver/device_codec_capability_config.json
@@ -93,8 +97,24 @@ for f in "$SELF_DIR"/truehd-out/libav*.so* "$SELF_DIR"/truehd-out/libsw*.so*; do
 done
 log "staged $n ffmpeg lib entries -> $THD_LIBS/"
 
+# --- 2c. Stage container-demuxer payload (mp4/ts/m2ts DTS re-enabled) -------
+# Patched isomp4/mpegtsdemux (dts_support default TRUE). Optional: if demux-out/
+# is absent the boot hook simply skips the demuxer binds (MKV DTS still works).
+DMX_DEST=/var/lib/webosbrew/demux25
+DMX_ISO=/usr/lib/gstreamer-1.0/libgstisomp4.so
+DMX_TSD=/usr/lib/gstreamer-1.0/libgstmpegtsdemux.so
+mkdir -p "$DMX_DEST" || log "WARN: cannot create $DMX_DEST"
+for so in libgstisomp4.so libgstmpegtsdemux.so; do
+  if [ -f "$SELF_DIR/demux-out/$so" ]; then
+    cp -f "$SELF_DIR/demux-out/$so" "$DMX_DEST/$so" \
+      && log "installed $so -> $DMX_DEST/" || log "WARN: copy $so failed"
+  else
+    log "note: $SELF_DIR/demux-out/$so not found; container DTS (mp4/ts/m2ts) will be skipped"
+  fi
+done
+
 # --- 3. Unmount any existing binds so we regenerate from PRISTINE originals -
-for T in "$CFG_LIVE" "$GC_LIVE" "$LGLIBAV" "$REG_TARGET"; do
+for T in "$CFG_LIVE" "$GC_LIVE" "$LGLIBAV" "$DMX_ISO" "$DMX_TSD" "$REG_TARGET"; do
   if grep -q " $T " /proc/mounts 2>/dev/null; then
     umount "$T" 2>>"$LOG" && log "unmounted stale bind $T" || log "WARN: could not umount $T"
   fi
@@ -151,7 +171,7 @@ fi
 # self-contained script (no sibling init file needed). Decodes verbatim to the
 # proven init_dts25.sh.
 base64 -d > "$INIT_SCRIPT" <<'INIT_B64'
-IyEvYmluL3NoCiMgd2ViT1MyNSBEVFMgKyBUcnVlSEQgcmVzdG9yZS4gUnVucyBhdCBib290IHZpYSAvdmFyL2xpYi93ZWJvc2JyZXcvaW5pdC5kL3Jlc3RvcmVfZHRzMjUuCnNldCAtdQpSRUc9L21udC9mbGFzaC9kYXRhL2dzdF8xXzBfcmVnaXN0cnkuYXJtLmJpbgpDRkc9L2V0Yy91bWVkaWFzZXJ2ZXIvZGV2aWNlX2NvZGVjX2NhcGFiaWxpdHlfY29uZmlnLmpzb24KTEdMSUJBVj0vdXNyL2xpYi9nc3RyZWFtZXItMS4wL2xpYmdzdGxpYmF2LnNvCk1ZTElCQVY9L3Zhci9saWIvd2Vib3NicmV3L3RydWVoZC9saWJnc3RsaWJhdi5zbwpMT0c9L3RtcC9kdHMyNS5sb2cKZWNobyAiLS0tIGR0czI1K3RydWVoZCAkKGRhdGUpIC0tLSIgPj4gJExPRyAyPiYxCiMgMSkgY29kZWMtY2FwYWJpbGl0eSBvdmVycmlkZSAoYWRkcyBUUlVFSEQvTUxQIHNvIHVtZWRpYXNlcnZlciBhbGxvY2F0ZXMgYSBkZWNvZGVyIHJlc291cmNlKQpbIC1mIC92YXIvbGliL3dlYm9zYnJldy90cnVlaGQvY29kZWNfY2FwYWJpbGl0eS5qc29uIF0gJiYgISBncmVwIC1xICIgJENGRyAiIC9wcm9jL21vdW50cyAyPi9kZXYvbnVsbCAmJiBtb3VudCAtbiAtLWJpbmQgL3Zhci9saWIvd2Vib3NicmV3L3RydWVoZC9jb2RlY19jYXBhYmlsaXR5Lmpzb24gIiRDRkciIDI+PiRMT0cKIyAyKSByZXBsYWNlIExHLnMgdHJ1ZWhkLWxlc3MgbGliYXYgd2l0aCBvdXJzIChoYXMgYXZkZWNfdHJ1ZWhkL2F2ZGVjX21scCkKWyAtZiAiJE1ZTElCQVYiIF0gJiYgISBncmVwIC1xICIgJExHTElCQVYgIiAvcHJvYy9tb3VudHMgMj4vZGV2L251bGwgJiYgbW91bnQgLW4gLS1iaW5kIC1vIHJvICIkTVlMSUJBViIgIiRMR0xJQkFWIiAyPj4kTE9HCiMgMmIpIGdzdGNvb2wuY29uZjogZ2l2ZSBhdmRlY190cnVlaGQgYSBoaWdoIFNXIHJhbmsgc28gTEcgYXV0b3BsdWdzIGl0IChub3QgdGhlIEhXIHBhdGgpCkdDPS9ldGMvZ3N0L2dzdGNvb2wuY29uZgpbIC1mIC92YXIvbGliL3dlYm9zYnJldy90cnVlaGQvZ3N0Y29vbC5jb25mIF0gJiYgISBncmVwIC1xICIgJEdDICIgL3Byb2MvbW91bnRzIDI+L2Rldi9udWxsICYmIG1vdW50IC1uIC0tYmluZCAvdmFyL2xpYi93ZWJvc2JyZXcvdHJ1ZWhkL2dzdGNvb2wuY29uZiAiJEdDIiAyPj4kTE9HCiMgMykgcmVnZW5lcmF0ZSB0aGUgbWVkaWEgcmVnaXN0cnkgKGZyZXNoKSB3aXRoIGR0c2RlYyArIG91ciBsaWJhdiwgdGhlbiB3cml0ZSBpdCB0byB0aGUgbWVkaWEgcGF0aApybSAtZiAvdG1wL2dzdF9kdHNfcmVnLmJpbgpMRF9MSUJSQVJZX1BBVEg9L3Zhci9saWIvd2Vib3NicmV3L3RydWVoZC9saWJzIFwKR1NUX1JFR0lTVFJZXzFfMD0vdG1wL2dzdF9kdHNfcmVnLmJpbiBcCkdTVF9QTFVHSU5fUEFUSF8xXzA9L3Vzci9saWIvZ3N0cmVhbWVyLTEuMDovbW50L2xnL3Jlcy9sZ2xpYi9nc3RyZWFtZXItMS4wOi92YXIvbGliL3dlYm9zYnJldy9kdHMyNSBcCkdTVF9SRUdJU1RSWV9VUERBVEU9eWVzIC91c3IvYmluL2dzdC1pbnNwZWN0LTEuMCA+L2Rldi9udWxsIDI+PiRMT0cKIyBvbmx5IG92ZXJ3cml0ZSB0aGUgbWVkaWEgcmVnaXN0cnkgaWYgb3VyIHJlZ2VuIGFjdHVhbGx5IGNvbnRhaW5zIHRoZSBkZWNvZGVycwppZiBHU1RfUkVHSVNUUllfMV8wPS90bXAvZ3N0X2R0c19yZWcuYmluIEdTVF9SRUdJU1RSWV9VUERBVEU9bm8gL3Vzci9iaW4vZ3N0LWluc3BlY3QtMS4wIGF2ZGVjX3RydWVoZCA+L2Rldi9udWxsIDI+JjE7IHRoZW4KICBjcCAtZiAvdG1wL2dzdF9kdHNfcmVnLmJpbiAiJFJFRyIgMj4+JExPRyAmJiBlY2hvICJyZWdpc3RyeSB1cGRhdGVkIChkdHNkZWMrdHJ1ZWhkKSIgPj4kTE9HCmVsc2UKICBlY2hvICJXQVJOOiByZWdlbiBtaXNzaW5nIGF2ZGVjX3RydWVoZCwgbGVmdCByZWdpc3RyeSB1bnRvdWNoZWQiID4+JExPRwpmaQpleGl0IDAK
+IyEvYmluL3NoCiMgd2ViT1MyNSBEVFMgKyBUcnVlSEQgcmVzdG9yZS4gUnVucyBhdCBib290IHZpYSAvdmFyL2xpYi93ZWJvc2JyZXcvaW5pdC5kL3Jlc3RvcmVfZHRzMjUuCnNldCAtdQpSRUc9L21udC9mbGFzaC9kYXRhL2dzdF8xXzBfcmVnaXN0cnkuYXJtLmJpbgpDRkc9L2V0Yy91bWVkaWFzZXJ2ZXIvZGV2aWNlX2NvZGVjX2NhcGFiaWxpdHlfY29uZmlnLmpzb24KTEdMSUJBVj0vdXNyL2xpYi9nc3RyZWFtZXItMS4wL2xpYmdzdGxpYmF2LnNvCk1ZTElCQVY9L3Zhci9saWIvd2Vib3NicmV3L3RydWVoZC9saWJnc3RsaWJhdi5zbwpMT0c9L3RtcC9kdHMyNS5sb2cKZWNobyAiLS0tIGR0czI1K3RydWVoZCAkKGRhdGUpIC0tLSIgPj4gJExPRyAyPiYxCiMgMSkgY29kZWMtY2FwYWJpbGl0eSBvdmVycmlkZSAoYWRkcyBUUlVFSEQvTUxQIHNvIHVtZWRpYXNlcnZlciBhbGxvY2F0ZXMgYSBkZWNvZGVyIHJlc291cmNlKQpbIC1mIC92YXIvbGliL3dlYm9zYnJldy90cnVlaGQvY29kZWNfY2FwYWJpbGl0eS5qc29uIF0gJiYgISBncmVwIC1xICIgJENGRyAiIC9wcm9jL21vdW50cyAyPi9kZXYvbnVsbCAmJiBtb3VudCAtbiAtLWJpbmQgL3Zhci9saWIvd2Vib3NicmV3L3RydWVoZC9jb2RlY19jYXBhYmlsaXR5Lmpzb24gIiRDRkciIDI+PiRMT0cKIyAyKSByZXBsYWNlIExHLnMgdHJ1ZWhkLWxlc3MgbGliYXYgd2l0aCBvdXJzIChoYXMgYXZkZWNfdHJ1ZWhkL2F2ZGVjX21scCkKWyAtZiAiJE1ZTElCQVYiIF0gJiYgISBncmVwIC1xICIgJExHTElCQVYgIiAvcHJvYy9tb3VudHMgMj4vZGV2L251bGwgJiYgbW91bnQgLW4gLS1iaW5kIC1vIHJvICIkTVlMSUJBViIgIiRMR0xJQkFWIiAyPj4kTE9HCiMgMmIpIGdzdGNvb2wuY29uZjogZ2l2ZSBhdmRlY190cnVlaGQgYSBoaWdoIFNXIHJhbmsgc28gTEcgYXV0b3BsdWdzIGl0IChub3QgdGhlIEhXIHBhdGgpCkdDPS9ldGMvZ3N0L2dzdGNvb2wuY29uZgpbIC1mIC92YXIvbGliL3dlYm9zYnJldy90cnVlaGQvZ3N0Y29vbC5jb25mIF0gJiYgISBncmVwIC1xICIgJEdDICIgL3Byb2MvbW91bnRzIDI+L2Rldi9udWxsICYmIG1vdW50IC1uIC0tYmluZCAvdmFyL2xpYi93ZWJvc2JyZXcvdHJ1ZWhkL2dzdGNvb2wuY29uZiAiJEdDIiAyPj4kTE9HCiMgMmMpIGNvbnRhaW5lciBkZW11eGVycyB3aXRoIERUUyByZS1lbmFibGVkIChtcDQvdHMvbTJ0cyBEVFMgLT4gYXVkaW8veC1kdHMpLgojICAgICBQYXRjaGVkIGlzb21wNC9tcGVndHNkZW11eCBkZWZhdWx0IGR0c19zdXBwb3J0PVRSVUUuIEJvdW5kIEJFRk9SRSB0aGUgcmVnZW4KIyAgICAgYmVsb3cgc28gdGhlIHJlZ2lzdHJ5IHBpY2tzIHRoZW0gdXAgYXQgdGhlaXIgbm9ybWFsIHBhdGguCklTTz0vdXNyL2xpYi9nc3RyZWFtZXItMS4wL2xpYmdzdGlzb21wNC5zbwpUU0Q9L3Vzci9saWIvZ3N0cmVhbWVyLTEuMC9saWJnc3RtcGVndHNkZW11eC5zbwpbIC1mIC92YXIvbGliL3dlYm9zYnJldy9kZW11eDI1L2xpYmdzdGlzb21wNC5zbyBdICYmICEgZ3JlcCAtcSAiICRJU08gIiAvcHJvYy9tb3VudHMgMj4vZGV2L251bGwgJiYgbW91bnQgLW4gLS1iaW5kIC1vIHJvIC92YXIvbGliL3dlYm9zYnJldy9kZW11eDI1L2xpYmdzdGlzb21wNC5zbyAiJElTTyIgMj4+JExPRwpbIC1mIC92YXIvbGliL3dlYm9zYnJldy9kZW11eDI1L2xpYmdzdG1wZWd0c2RlbXV4LnNvIF0gJiYgISBncmVwIC1xICIgJFRTRCAiIC9wcm9jL21vdW50cyAyPi9kZXYvbnVsbCAmJiBtb3VudCAtbiAtLWJpbmQgLW8gcm8gL3Zhci9saWIvd2Vib3NicmV3L2RlbXV4MjUvbGliZ3N0bXBlZ3RzZGVtdXguc28gIiRUU0QiIDI+PiRMT0cKIyAzKSByZWdlbmVyYXRlIHRoZSBtZWRpYSByZWdpc3RyeSAoZnJlc2gpIHdpdGggZHRzZGVjICsgb3VyIGxpYmF2LCB0aGVuIHdyaXRlIGl0IHRvIHRoZSBtZWRpYSBwYXRoCnJtIC1mIC90bXAvZ3N0X2R0c19yZWcuYmluCkxEX0xJQlJBUllfUEFUSD0vdmFyL2xpYi93ZWJvc2JyZXcvdHJ1ZWhkL2xpYnMgXApHU1RfUkVHSVNUUllfMV8wPS90bXAvZ3N0X2R0c19yZWcuYmluIFwKR1NUX1BMVUdJTl9QQVRIXzFfMD0vdXNyL2xpYi9nc3RyZWFtZXItMS4wOi9tbnQvbGcvcmVzL2xnbGliL2dzdHJlYW1lci0xLjA6L3Zhci9saWIvd2Vib3NicmV3L2R0czI1IFwKR1NUX1JFR0lTVFJZX1VQREFURT15ZXMgL3Vzci9iaW4vZ3N0LWluc3BlY3QtMS4wID4vZGV2L251bGwgMj4+JExPRwojIG9ubHkgb3ZlcndyaXRlIHRoZSBtZWRpYSByZWdpc3RyeSBpZiBvdXIgcmVnZW4gYWN0dWFsbHkgY29udGFpbnMgdGhlIGRlY29kZXJzCmlmIEdTVF9SRUdJU1RSWV8xXzA9L3RtcC9nc3RfZHRzX3JlZy5iaW4gR1NUX1JFR0lTVFJZX1VQREFURT1ubyAvdXNyL2Jpbi9nc3QtaW5zcGVjdC0xLjAgYXZkZWNfdHJ1ZWhkID4vZGV2L251bGwgMj4mMTsgdGhlbgogIGNwIC1mIC90bXAvZ3N0X2R0c19yZWcuYmluICIkUkVHIiAyPj4kTE9HICYmIGVjaG8gInJlZ2lzdHJ5IHVwZGF0ZWQgKGR0c2RlYyt0cnVlaGQpIiA+PiRMT0cKZWxzZQogIGVjaG8gIldBUk46IHJlZ2VuIG1pc3NpbmcgYXZkZWNfdHJ1ZWhkLCBsZWZ0IHJlZ2lzdHJ5IHVudG91Y2hlZCIgPj4kTE9HCmZpCmV4aXQgMAo=
 INIT_B64
 chmod 0755 "$INIT_SCRIPT" && log "installed embedded init_dts25.sh -> $INIT_SCRIPT" || log "WARN: writing init_dts25.sh failed"
 

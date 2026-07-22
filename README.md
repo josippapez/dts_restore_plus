@@ -23,7 +23,9 @@ upstream project is the reference. This fork adds and changes the following on t
 **soft-float**, GStreamer 1.24). `webos25/` is a self-contained tool that restores **both DTS
 and TrueHD/MLP** there:
 - `webos25/restore/` — prebuilt soft-float decoders (patched `dtsdec` → S32LE; `avdec_truehd` from
-  a minimal ffmpeg) + a single self-contained `install.sh`. Verified playing on a real C5.
+  a minimal ffmpeg) + patched container demuxers (`isomp4`/`mpegtsdemux` with `dts_support` default
+  TRUE, so **DTS in `.mp4`/`.ts`/`.m2ts`** works, not just MKV) + a single self-contained
+  `install.sh`. Verified playing on a real C5, including against real Blu-ray DTS-HD MA samples.
 - `webos25/app/` — a "DTS Enabler" webOS homebrew app (GUI); `webos25/docs/` — design notes + the
   target-detection probe.
 

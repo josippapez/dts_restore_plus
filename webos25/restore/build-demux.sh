@@ -1,11 +1,16 @@
 #!/bin/bash
-# Reproducible cross-build of LG webOS-25 GStreamer 1.24 demuxers with DTS re-enabled.
+# Reproducible cross-build of LG webOS-25 GStreamer 1.24 demuxers with DTS
+# re-enabled BOTH at compile time (-Ddca=true => #ifdef DTS_SUPPORT) AND at
+# RUNTIME via a 2-line source patch that flips the default of the GObject
+# property `dts_support` from FALSE to TRUE (LG never sets it true on-device,
+# so mp4 DTS fell back to audio/x-gst-fourcc-dtsc).
+#
 # Produces libgstisomp4.so + libgstmpegtsdemux.so for LG C5 (webOS 25):
-#   32-bit ARM EABI5 soft-float (arm-linux-gnueabi), glibc <= 2.31 symbols (target 2.35).
+#   32-bit ARM EABI5 soft-float (arm-linux-gnueabi), e_flags 0x05000200,
+#   ld-linux.so.3, glibc <= 2.35 (built on debian:11-slim). GStreamer 1.24.
 #
 # Usage: ./build-demux.sh <path-to-webos25-monorepo> <out-dir>
-# Requires: docker, rsync. Build context files (Dockerfile, cross-armel.txt,
-# build-inside.sh) live next to this script or are regenerated below.
+# Requires: docker (or podman aliased to docker), rsync.
 set -euo pipefail
 
 MONOREPO=${1:-/Users/josippapez/dts_restore_work/scratch/gstreamer-webos-25}
@@ -17,6 +22,27 @@ mkdir -p "$OUT" "$CTX/src"
 for p in gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad; do
   rsync -a "$MONOREPO/subprojects/$p" "$CTX/src/"
 done
+
+# ---------------------------------------------------------------------------
+# 2-LINE DTS RUNTIME PATCH: flip the default of the `dts_support` property
+# from FALSE to TRUE in both demuxers (only the default-init assignments,
+# inside #ifdef DTS_SUPPORT). Applied to the copied source, then verified.
+# ---------------------------------------------------------------------------
+QTDEMUX="$CTX/src/gst-plugins-good/gst/isomp4/qtdemux.c"
+TSDEMUX="$CTX/src/gst-plugins-bad/gst/mpegtsdemux/tsdemux.c"
+
+perl -0pi -e 's/qtdemux->dts_support = FALSE;/qtdemux->dts_support = TRUE;/g' "$QTDEMUX"
+perl -0pi -e 's/demux->dts_support = FALSE;/demux->dts_support = TRUE;/g'     "$TSDEMUX"
+
+echo "=== DTS patch verification ==="
+for f in "$QTDEMUX" "$TSDEMUX"; do
+  echo "--- $f"
+  grep -n 'dts_support = TRUE'  "$f" || { echo "PATCH FAILED: no TRUE in $f"; exit 1; }
+  if grep -n 'dts_support = FALSE' "$f"; then
+    echo "PATCH FAILED: dts_support = FALSE still present in $f"; exit 1
+  fi
+done
+echo "=== DTS patch OK (both files: dts_support = TRUE, no remaining FALSE) ==="
 
 # Minimal patch for an LG meson bug: gst-libs/gst/mpdclient/meson.build uses
 # gstmpdclient/pkg_name outside the "if xml2_dep.found()" guard, which breaks
@@ -57,6 +83,11 @@ SRC=/src; WORK=/work; PREFIX=/opt/gst; CROSS=/cross-armel.txt; OUT=/out
 mkdir -p "$WORK" "$OUT"
 export PATH="$PREFIX/bin:$PATH"
 
+# Re-confirm the DTS patch is present in the source seen inside the container.
+echo "=== in-container DTS patch check ==="
+grep -n 'qtdemux->dts_support = TRUE' "$SRC/gst-plugins-good/gst/isomp4/qtdemux.c"
+grep -n 'demux->dts_support = TRUE'   "$SRC/gst-plugins-bad/gst/mpegtsdemux/tsdemux.c"
+
 COMMON="--cross-file $CROSS --prefix $PREFIX --libdir lib --buildtype release
   -Dexamples=disabled -Dtests=disabled -Ddoc=disabled
   -Dnls=disabled -Dglib-asserts=disabled -Dglib-checks=disabled
@@ -94,6 +125,7 @@ for so in "$OUT"/libgstisomp4.so "$OUT"/libgstmpegtsdemux.so; do
   echo -n "max GLIBC: "; arm-linux-gnueabi-objdump -T "$so" | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -1
   echo "NEEDED:"; arm-linux-gnueabi-readelf -d "$so" | grep NEEDED
   echo -n "x-dts strings: "; strings "$so" | grep -c 'audio/x-dts'
+  echo -n "DTS audio strings: "; strings "$so" | grep -c 'DTS audio'
 done
 echo "BUILD OK"
 EOF
