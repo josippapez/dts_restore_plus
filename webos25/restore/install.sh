@@ -3,7 +3,7 @@
 # install.sh - Install the unified DTS + TrueHD/MLP audio restore on a rooted
 #              LG webOS 25 TV (C5 class). PROVEN working on a real LG C5.
 #
-# Run as root ON THE TV, from this webos25/ directory (copied via scp), which
+# Run as root ON THE TV, from this restore/ directory (copied via scp), which
 # must contain:
 #     out/libgstdtsdec.so        patched dtsdec (S32LE, accepts A_DTS)   [build.sh]
 #     out/libdca.so.0            DTS decode library (armel)              [build.sh]

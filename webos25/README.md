@@ -8,26 +8,35 @@ so uninstall is a clean revert.
 
 ## Quick install (prebuilt — no build needed)
 
-The DTS and TrueHD decoders are **prebuilt and bundled** here (`out/` + `truehd-out/`),
-and `install.sh` is a **single self-contained script** (the boot hook is embedded
-in it). You do NOT need Docker or to build anything.
+The DTS and TrueHD decoders are **prebuilt and bundled** in `restore/`
+(`restore/out/` + `restore/truehd-out/`), and `restore/install.sh` is a **single
+self-contained script** (the boot hook is embedded in it). You do NOT need Docker
+or to build anything.
 
 On a rooted webOS-25 TV with the Homebrew Channel + root SSH:
 
 ```sh
-# from your computer: copy this folder (or the release tarball) to the TV
-scp -r webos25 root@<TV-IP>:/tmp/
+# from your computer: copy the restore/ folder (or the release tarball) to the TV
+scp -r webos25/restore root@<TV-IP>:/tmp/dtsrestore
 
 # on the TV, as root:
-cd /tmp/webos25 && sh install.sh
+cd /tmp/dtsrestore && sh install.sh
 ```
 
 That one command stages both decoders, applies the routing overrides (all
 bind-mounts), installs the reboot-persistent boot hook, and activates it now —
 then play a DTS or TrueHD file. To revert: `sh uninstall.sh`.
 
-*(To rebuild the binaries yourself instead of using the bundled ones, see
-`build.sh` (DTS) and `build-truehd.sh` (TrueHD) — requires Docker.)*
+## Folder layout
+
+- `restore/` — the CLI tool: prebuilt decoders + `install.sh`/`uninstall.sh` + the
+  `build*.sh` scripts to rebuild them (Docker).
+- `app/` — the "DTS Enabler" webOS homebrew app (GUI enable/disable/uninstall).
+- `docs/` — design notes (`MULTI-MODEL.md`), the target-detection probe
+  (`detect-target.sh`), background (`WEBOS25-DTS.md`), and `experimental/`.
+
+*(To rebuild the binaries instead of using the bundled ones, see
+`restore/build.sh` (DTS) and `restore/build-truehd.sh` (TrueHD) — requires Docker.)*
 
 ## Root cause (verified on-device)
 
@@ -114,12 +123,12 @@ soft-float `0x05000200` before deploying.
 `build-truehd.sh` runs inside `debian:11-slim --platform linux/arm64`. See
 `src/gstdtsdec.c` (DTS patch) and `src/TRUEHD-BUILD.md` (TrueHD recipe notes).
 
-The built `.so` artifacts are checked into `out/` and `truehd-out/` (git-ignored)
-so `install.sh` can deploy without a rebuild.
+The built `.so` artifacts are committed under `restore/out/` and
+`restore/truehd-out/` so `install.sh` can deploy without a rebuild.
 
 ## Install (on the TV, as root)
 
-Copy this whole `webos25/` folder (with populated `out/` and `truehd-out/`) to
+Copy the `restore/` folder (with populated `out/` and `truehd-out/`) to
 the TV, then:
 
 ```sh
