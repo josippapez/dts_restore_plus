@@ -128,12 +128,17 @@ and normal AAC mp4 playback is unaffected. (TrueHD is verified in MKV; `.mp4`/`.
 separately tested.)
 
 **Caveats (honest):**
-- **Decode is discrete 5.1 and accurate — no downmix at our layer.** Measured on a real C5: `dtsdec`
-  emits native **discrete 5.1** (6 channels carrying distinct content) as S32LE/48 kHz, matching a
-  reference DTS core decoder within ~0.1–0.2 dB per channel. This is unlike the CX/upstream tool,
-  which force-downmixes to 2.0. **The final render is the TV's, not ours:** internal speakers always
-  fold 5.1 into the built-in array; **HDMI eARC/optical to an AVR** can carry the multichannel PCM
-  (subject to the TV's Sound Out / PCM settings). Confirm discrete 5.1 on an AVR's input display.
+- **Discrete 5.1 reaches LG's sink — confirmed in real playback, no downmix in the pipeline.**
+  Measured on a real C5: `dtsdec` emits native discrete 5.1 (6 channels of distinct content) as
+  S32LE/48 kHz, matching a reference DTS core decoder within ~0.1–0.2 dB per channel. During actual
+  Media-Player playback the GStreamer debug log shows LG's `audiosink` negotiating
+  `audio/x-raw, S32LE, 48000, channels=6` (its sink pad advertises `channels=[1,10]`), so full 5.1
+  PCM is delivered end-to-end to LG's audio HAL — there is **no stereo downmix anywhere in the
+  GStreamer path** (unlike the CX/upstream tool, which force-downmixes to 2.0). A BD-LPCM re-frame is
+  therefore **not needed** to reach a multichannel sink. **The only remaining variable is the TV's
+  own output stage:** internal speakers fold 5.1 into the built-in array, while **HDMI eARC/optical to
+  an AVR** carries the multichannel PCM subject to the "Digital Sound Output" setting. Confirm 5.1 on
+  an AVR's input display.
 - **DTS-HD:** `avdec_dca` decodes the DTS **core**, not the DTS-HD MA lossless (XLL) extension.
   **TrueHD:** decoded as base channels (Atmos objects fold in).
 - **No bitstream passthrough** to an AVR (decode-to-PCM only) — out of scope.

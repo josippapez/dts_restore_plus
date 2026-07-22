@@ -33,15 +33,26 @@ GStreamer/LG-source/RootMyTV-#72 research.)
    "Digital Sound Output" (Auto/Pass-Through/PCM) setting**, inside compiled code and
    the SoC audio driver. There is no JSON/caps lever to flip.
 
-## What IS potentially possible (future work — multichannel, not passthrough)
+## Multichannel PCM — already delivered to the sink (BD-LPCM reframe NOT needed)
 
-- **DTS → BluRay-LPCM reframe** (the `experimental/gst-dtstolpcm/` idea): LG's
-  proprietary **multichannel** path stays reachable for the whitelisted
-  `audio/x-private-ts-lpcm` (BD-LPCM) caps + `pcm_audiodec`. Decode DTS→PCM and
-  re-frame as BD-LPCM so `decodebin` re-enters LG's autoplug onto the multichannel
-  sink → real 5.1/7.1 **PCM to the speakers/eARC**. This is still decode-to-PCM (no
-  bitstream), but it would upgrade beyond what the sink renders today. Highest-effort
-  of the realistic options and unvalidated on hardware.
+Update after on-device verification: LG's `audiosink` (`lgaudiosink`) advertises
+`audio/x-raw … channels=[1,10]`, and a **real Media-Player playback** of a 5.1 DTS
+file shows it negotiating `audio/x-raw, S32LE, 48000, channels=6` on its sink pad.
+So the current `dtsdec → S32LE 5.1 → audiosink` path **already hands full discrete
+5.1 PCM to LG's audio HAL** — there is no stereo downmix in the GStreamer path.
+
+The **DTS → BluRay-LPCM reframe** (the `experimental/gst-dtstolpcm/` idea) was
+premised on the sink being stereo-only; since the sink takes up to 10 channels
+directly, that reframe is **unnecessary** to reach a multichannel sink. It would
+only matter if LG's HAL gated eARC multichannel output specifically to the
+proprietary `pcm_audiodec` path — which can be checked with an AVR (see below).
+
+**The remaining variable is the TV's output stage, not the pipeline:** whether the
+HAL renders the delivered 5.1 to eARC or folds it to the built-in speakers depends
+on the "Digital Sound Output" setting + eARC EDID. Confirm on an AVR's input
+display; if an AVR shows 2.0 while the pipeline delivers 6ch, the fold happens in
+the closed HAL (not fixable from our layer) and only then is the `pcm_audiodec`
+path worth attempting.
 
 ## Likely impossible without proprietary reverse-engineering
 
