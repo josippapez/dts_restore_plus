@@ -34,7 +34,7 @@ Prefer a GUI? Add this repository in the Homebrew Channel
 (**Settings → Add repository**):
 
 ```
-https://josippapez.github.io/dts_restore_plus/
+https://josippapez.github.io/dts_restore_plus/api/apps.json
 ```
 
 Then install **DTS Enabler** from the list (Enable / Disable / Uninstall + a

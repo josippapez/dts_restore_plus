@@ -171,7 +171,7 @@ jobs:
           <!doctype html><meta charset="utf-8"><title>dts_restore_plus — Homebrew repo</title>
           <h1>dts_restore_plus — webOS Homebrew Channel repository</h1>
           <p>Add this URL in the Homebrew Channel → Settings → Add repository:</p>
-          <pre>https://josippapez.github.io/dts_restore_plus/</pre>
+          <pre>https://josippapez.github.io/dts_restore_plus/api/apps.json</pre>
           <p>App list: <a href="api/apps.json">api/apps.json</a>. Source:
           <a href="https://github.com/josippapez/dts_restore_plus">github.com/josippapez/dts_restore_plus</a>.</p>
           HTML

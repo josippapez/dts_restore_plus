@@ -240,7 +240,7 @@ clear WARN to `/tmp/dtsenabler.log`.
 In the Homebrew Channel go to **Settings → Add repository** and paste:
 
 ```
-https://josippapez.github.io/dts_restore_plus/
+https://josippapez.github.io/dts_restore_plus/api/apps.json
 ```
 
 "DTS Enabler" then appears in the app list and installs — the `.ipk` is pulled from

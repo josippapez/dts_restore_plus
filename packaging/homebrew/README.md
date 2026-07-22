@@ -29,7 +29,7 @@ The Homebrew Channel (HBC) uses a **two-file model**:
 A ready-to-use repository is published via GitHub Pages from this fork's
 `gh-pages` branch:
 
-> **Repository URL:** `https://josippapez.github.io/dts_restore_plus/`
+> **Repository URL:** `https://josippapez.github.io/dts_restore_plus/api/apps.json`
 
 In the Homebrew Channel: **Settings → Add repository →** paste that URL. "DTS
 Enabler" then appears in the list and installs (the `.ipk` is pulled from the

@@ -13,6 +13,24 @@ temporary overlays that a full power-off reverts.
 
 ---
 
+## webOS 25 (LG C5/G5) — install the app from the Homebrew Channel
+
+On a rooted **webOS 25** TV, the easiest install is the **DTS Enabler** app. In the
+Homebrew Channel go to **Settings → Add repository** and paste this URL:
+
+```
+https://josippapez.github.io/dts_restore_plus/api/apps.json
+```
+
+Then install **DTS Enabler** from the list — it restores **DTS + Dolby TrueHD/MLP**
+(incl. DTS in `.mkv`/`.mp4`/`.ts`/`.m2ts`) with Enable/Disable/Uninstall, a self-test,
+and play-by-ear. The `.ipk` is pulled from the release and **sha256-verified**;
+updates are automatic. Prefer SSH? Use the CLI in [`webos25/`](webos25/README.md).
+
+*(For OLED CX / webOS 3–6, see the sections below.)*
+
+---
+
 ## This fork vs. upstream [`lgstreamer/dts_restore`](https://github.com/lgstreamer/dts_restore)
 
 This is a fork of the original `dts_restore`. For **OLED CX and other webOS 3–6 TVs**, the
@@ -27,7 +45,7 @@ and TrueHD/MLP** there:
   TRUE, so **DTS in `.mp4`/`.ts`/`.m2ts`** works, not just MKV) + a single self-contained
   `install.sh`. Verified playing on a real C5, including against real Blu-ray DTS-HD MA samples.
 - `webos25/app/` — a "DTS Enabler" webOS homebrew app (GUI). **Install via the Homebrew Channel**
-  by adding the repository `https://josippapez.github.io/dts_restore_plus/` (Settings → Add
+  by adding the repository `https://josippapez.github.io/dts_restore_plus/api/apps.json` (Settings → Add
   repository), then pick "DTS Enabler". `webos25/docs/` — design notes + the target-detection probe.
 
 **Modified — CX tool hardening (root files, on top of upstream):**
