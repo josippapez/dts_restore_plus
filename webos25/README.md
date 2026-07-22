@@ -28,6 +28,20 @@ That one command stages both decoders, applies the routing overrides (all
 bind-mounts), installs the reboot-persistent boot hook, and activates it now —
 then play a DTS or TrueHD file. To revert: `sh uninstall.sh`.
 
+## Install the app via the Homebrew Channel (no SSH)
+
+Prefer a GUI? Add this repository in the Homebrew Channel
+(**Settings → Add repository**):
+
+```
+https://josippapez.github.io/dts_restore_plus/
+```
+
+Then install **DTS Enabler** from the list (Enable / Disable / Uninstall + a
+self-test and play-by-ear). The `.ipk` is pulled from the GitHub release and
+sha256-verified; updates flow automatically. Requires a rooted TV with the
+Homebrew Channel. (The CLI `restore/install.sh` above remains the SSH-based route.)
+
 ## Folder layout
 
 - `restore/` — the CLI tool: prebuilt decoders (`out/`, `truehd-out/`) + container

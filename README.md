@@ -26,8 +26,9 @@ and TrueHD/MLP** there:
   a minimal ffmpeg) + patched container demuxers (`isomp4`/`mpegtsdemux` with `dts_support` default
   TRUE, so **DTS in `.mp4`/`.ts`/`.m2ts`** works, not just MKV) + a single self-contained
   `install.sh`. Verified playing on a real C5, including against real Blu-ray DTS-HD MA samples.
-- `webos25/app/` — a "DTS Enabler" webOS homebrew app (GUI); `webos25/docs/` — design notes + the
-  target-detection probe.
+- `webos25/app/` — a "DTS Enabler" webOS homebrew app (GUI). **Install via the Homebrew Channel**
+  by adding the repository `https://josippapez.github.io/dts_restore_plus/` (Settings → Add
+  repository), then pick "DTS Enabler". `webos25/docs/` — design notes + the target-detection probe.
 
 **Modified — CX tool hardening (root files, on top of upstream):**
 - `install.sh` / `uninstall.sh` — fixed the `#!/usr/bin/env sh` vs bash shebang, the off-by-one
