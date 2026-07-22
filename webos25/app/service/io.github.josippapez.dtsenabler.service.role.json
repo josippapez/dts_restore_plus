@@ -1,0 +1,15 @@
+{
+  "appId": "io.github.josippapez.dtsenabler.service",
+  "type": "regular",
+  "allowedNames": [
+    "io.github.josippapez.dtsenabler.service",
+    "io.github.josippapez.dtsenabler.service-*"
+  ],
+  "permissions": [
+    {
+      "service": "io.github.josippapez.dtsenabler.service",
+      "inbound": ["*"],
+      "outbound": ["*"]
+    }
+  ]
+}

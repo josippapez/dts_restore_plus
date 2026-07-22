@@ -6,7 +6,7 @@ name: Release (webOS 25)
 # on-device before commit; see RELEASING.md). Assets published:
 #   - dts_restore_plus-webos25-restore-<tag>.tar.gz  (the CLI: restore/ with
 #     out/ + truehd-out/ + demux-out/ + install.sh — one-command install)
-#   - org.webosbrew.dtsenabler_<ver>_all.ipk         (the Homebrew app)
+#   - io.github.josippapez.dtsenabler_<ver>_all.ipk         (the Homebrew app)
 #
 # Trigger:  git tag webos25-1.2 && git push origin webos25-1.2
 #           (or a v* tag, or run manually via workflow_dispatch)
@@ -95,10 +95,10 @@ jobs:
           SIZE=$(stat -c%s "$IPK")
           # ipkUrl is a bare filename: repogen urljoin()s it against manifestUrl,
           # so it resolves to the same release the manifest is hosted in.
-          cat > webos25/app/dist/org.webosbrew.dtsenabler.manifest.json <<EOF
-          {"id":"org.webosbrew.dtsenabler","version":"$VER","type":"web","title":"DTS Enabler","appDescription":"Restore DTS and Dolby TrueHD/MLP audio on rooted LG webOS 25 TVs, including DTS in mp4/ts/m2ts containers. Decodes native discrete 5.1. Requires the Homebrew Channel + root.","iconUri":"https://raw.githubusercontent.com/josippapez/dts_restore_plus/main/assets/icon160.png","sourceUrl":"https://github.com/josippapez/dts_restore_plus","rootRequired":true,"ipkUrl":"$IPK_NAME","ipkSize":$SIZE,"ipkHash":{"sha256":"$SHA"}}
+          cat > webos25/app/dist/io.github.josippapez.dtsenabler.manifest.json <<EOF
+          {"id":"io.github.josippapez.dtsenabler","version":"$VER","type":"web","title":"DTS Enabler","appDescription":"Restore DTS and Dolby TrueHD/MLP audio on rooted LG webOS 25 TVs, including DTS in mp4/ts/m2ts containers. Decodes native discrete 5.1. Requires the Homebrew Channel + root.","iconUri":"https://raw.githubusercontent.com/josippapez/dts_restore_plus/main/assets/icon160.png","sourceUrl":"https://github.com/josippapez/dts_restore_plus","rootRequired":true,"ipkUrl":"$IPK_NAME","ipkSize":$SIZE,"ipkHash":{"sha256":"$SHA"}}
           EOF
-          cat webos25/app/dist/org.webosbrew.dtsenabler.manifest.json
+          cat webos25/app/dist/io.github.josippapez.dtsenabler.manifest.json
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
@@ -129,7 +129,7 @@ jobs:
               scp -r webos25/restore root@<TV-IP>:/tmp/dtsrestore
               ssh root@<TV-IP> 'cd /tmp/dtsrestore && sh install.sh'
               ```
-            - **`org.webosbrew.dtsenabler_<ver>_all.ipk`** — the DTS Enabler Homebrew app:
+            - **`io.github.josippapez.dtsenabler_<ver>_all.ipk`** — the DTS Enabler Homebrew app:
               enable / disable / uninstall, a **self-test** (decodes a sample per container
               → PASS/FAIL), and **play-by-ear**. Requires a rooted TV + Homebrew Channel.
 
@@ -139,7 +139,7 @@ jobs:
           files: |
             dts_restore_plus-restore-*.tar.gz
             webos25/app/dist/*.ipk
-            webos25/app/dist/org.webosbrew.dtsenabler.manifest.json
+            webos25/app/dist/io.github.josippapez.dtsenabler.manifest.json
 
   # After the release is published, regenerate the self-hosted Homebrew repo
   # (gh-pages) so `https://<owner>.github.io/<repo>/api/apps.json` reflects the new
@@ -167,7 +167,7 @@ jobs:
           cd /tmp/apps-repo
           pip install -q -r requirements.txt
           mkdir -p mypackages
-          cp "$GITHUB_WORKSPACE/packaging/homebrew/org.webosbrew.dtsenabler.yml" mypackages/
+          cp "$GITHUB_WORKSPACE/packaging/homebrew/io.github.josippapez.dtsenabler.yml" mypackages/
           # content/schemas ships with the clone and is required by the import-time
           # assert — do NOT delete content/. Generate only the API into it.
           python3 -c "from pathlib import Path; from repogen import pkg_info, apidata; apidata.generate(pkg_info.list_packages(Path('mypackages')), Path('content/api'))"

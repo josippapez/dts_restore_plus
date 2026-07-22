@@ -1,9 +1,9 @@
 {
-  "id": "org.webosbrew.dtsenabler.service",
+  "id": "io.github.josippapez.dtsenabler.service",
   "description": "DTS Enabler (universal) privileged backend",
   "services": [
     {
-      "name": "org.webosbrew.dtsenabler.service",
+      "name": "io.github.josippapez.dtsenabler.service",
       "description": "Detect the LG TV generation and apply the correct DTS-restore mechanism. All privileged work is proxied through the Homebrew Channel exec service.",
       "commands": [
         { "name": "detect",    "description": "Run the read-only detection probe; return the target profile + raw probes" },

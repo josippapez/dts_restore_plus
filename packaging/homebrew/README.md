@@ -3,20 +3,20 @@
 The Homebrew Channel (HBC) uses a **two-file model**:
 
 1. A **manifest JSON** hosted on our GitHub release
-   (`org.webosbrew.dtsenabler.manifest.json`) — carries the version, `ipkUrl`
+   (`io.github.josippapez.dtsenabler.manifest.json`) — carries the version, `ipkUrl`
    (bare filename, resolved against the manifest URL), and the ipk `sha256`. This
    is **generated and uploaded automatically by the release workflow**
    (`.github/workflows/release.yml`) on every tag.
-2. A **registry YAML** (`org.webosbrew.dtsenabler.yml`, this folder) submitted to
+2. A **registry YAML** (`io.github.josippapez.dtsenabler.yml`, this folder) submitted to
    the official [`webosbrew/apps-repo`](https://github.com/webosbrew/apps-repo) —
    points HBC at the manifest via
-   `…/releases/latest/download/org.webosbrew.dtsenabler.manifest.json` (so future
+   `…/releases/latest/download/io.github.josippapez.dtsenabler.manifest.json` (so future
    releases update automatically, no new PR needed).
 
 ## Option A — official listing (appears in HBC for everyone)
 
 1. Fork `webosbrew/apps-repo`.
-2. Copy this file to `packages/org.webosbrew.dtsenabler.yml` in the fork.
+2. Copy this file to `packages/io.github.josippapez.dtsenabler.yml` in the fork.
 3. Open a PR. Their CI (`repogen.lintpkg` + `downloadipk` sha256 check +
    `check_compat`) must pass — so the release manifest/ipk URLs must be public and
    the hash correct (they are, produced by our workflow).
@@ -43,7 +43,7 @@ release, regenerate and push it:
 ```sh
 git clone https://github.com/webosbrew/apps-repo && cd apps-repo
 python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt
-mkdir mypackages && cp <this-repo>/packaging/homebrew/org.webosbrew.dtsenabler.yml mypackages/
+mkdir mypackages && cp <this-repo>/packaging/homebrew/io.github.josippapez.dtsenabler.yml mypackages/
 # generate ONLY the API (content/schemas ships with the clone; don't delete it):
 python3 -c "from pathlib import Path; from repogen import pkg_info, apidata; \
   apidata.generate(pkg_info.list_packages(Path('mypackages')), Path('content/api'))"

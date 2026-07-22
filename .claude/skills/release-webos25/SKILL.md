@@ -47,7 +47,7 @@ rebuild — but still cut a release so the assets carry the change.
    ```
 6. Watch the **Release (webOS 25)** Action. When green, confirm the release has
    both assets: `dts_restore_plus-webos25-restore-*.tar.gz` and
-   `org.webosbrew.dtsenabler_*_all.ipk`.
+   `io.github.josippapez.dtsenabler_*_all.ipk`.
 
 ## Verify locally without tagging (optional)
 

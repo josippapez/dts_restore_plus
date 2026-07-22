@@ -7,7 +7,7 @@ LGLIBAV=/usr/lib/gstreamer-1.0/libgstlibav.so
 MYLIBAV=/var/lib/webosbrew/truehd/libgstlibav.so
 LOG=/tmp/dts25.log
 EXPECT_GST=1.24
-toast() { luna-send -n 1 luna://com.webos.notification/createToast "{\"sourceId\":\"org.webosbrew.dtsenabler\",\"message\":\"$1\"}" >/dev/null 2>&1; }
+toast() { luna-send -n 1 luna://com.webos.notification/createToast "{\"sourceId\":\"io.github.josippapez.dtsenabler\",\"message\":\"$1\"}" >/dev/null 2>&1; }
 echo "--- dts25+truehd $(date) ---" >> $LOG 2>&1
 # 0) firmware-update / ABI guard. Our bind-over libs (libav/isomp4/mpegtsdemux) are armel
 #    GStreamer-1.24 builds; binding them over a different-ABI LG lib after an OTA would break

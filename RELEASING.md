@@ -60,7 +60,7 @@ MKV + an mp4/ts/m2ts DTS file; TrueHD MKV). Only then commit the new `.so`.
 
    The Action packages `dts_restore_plus-webos25-restore-<tag>.tar.gz` (the CLI:
    `restore/` with `install.sh`) **and** builds
-   `org.webosbrew.dtsenabler_<ver>_all.ipk` (the app), then publishes a GitHub
+   `io.github.josippapez.dtsenabler_<ver>_all.ipk` (the app), then publishes a GitHub
    release with both. You can also trigger it manually from the Actions tab
    (workflow_dispatch, supply the tag name).
 
@@ -75,7 +75,7 @@ cp -Pf ../restore/truehd-out/libgstlibav.so ../restore/truehd-out/libav*.so* \
 cp -f  ../restore/demux-out/libgstisomp4.so ../restore/demux-out/libgstmpegtsdemux.so \
                                                                         payload/webos25-demux/
 npm install -g @webosose/ares-cli
-ares-package . service -o dist        # -> dist/org.webosbrew.dtsenabler_<ver>_all.ipk
+ares-package . service -o dist        # -> dist/io.github.josippapez.dtsenabler_<ver>_all.ipk
 ```
 
 ## Checklist

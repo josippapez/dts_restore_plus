@@ -1,6 +1,6 @@
 /* DTS Enabler (universal) - frontend controller.
  *
- * Talks to our own JS service (org.webosbrew.dtsenabler.service), which detects
+ * Talks to our own JS service (io.github.josippapez.dtsenabler.service), which detects
  * the TV generation and shells the matching mechanism out as root through the
  * Homebrew Channel exec service. The frontend never touches root directly and
  * sends NO free-form parameters (the methods take none) -- it only invokes
@@ -13,7 +13,7 @@
 (function () {
   "use strict";
 
-  var SERVICE = "luna://org.webosbrew.dtsenabler.service";
+  var SERVICE = "luna://io.github.josippapez.dtsenabler.service";
 
   /* ---------------------------------------------------------------------- */
   /* Service bridge                                                          */
