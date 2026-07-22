@@ -62,9 +62,11 @@ jobs:
           echo "all prebuilt binaries present"
 
       - name: Package the CLI restore tarball
+        env:
+          REL_NAME: ${{ steps.rel.outputs.name }}
         run: |
           cd webos25
-          tar czf "../dts_restore_plus-webos25-restore-${{ steps.rel.outputs.name }}.tar.gz" restore
+          tar czf "../dts_restore_plus-restore-${REL_NAME}.tar.gz" restore
 
       - name: Install ares-cli
         run: npm install -g @webosose/ares-cli
@@ -88,18 +90,34 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.rel.outputs.name }}
-          name: "webOS 25 DTS + TrueHD + containers (${{ steps.rel.outputs.name }})"
+          name: "webOS 25 — DTS + TrueHD + container support (${{ steps.rel.outputs.name }})"
           generate_release_notes: true
           body: |
-            Prebuilt, on-device-verified restore for **LG webOS 25 (C5)**.
+            Prebuilt, **on-device-verified** DTS restore for rooted **LG webOS 25** TVs
+            (C5 class — 32-bit ARM soft-float, GStreamer 1.24). Not for CX/webOS 3–6
+            (use upstream `lgstreamer/dts_restore` for those).
 
-            **Assets**
-            - `dts_restore_plus-webos25-restore-*.tar.gz` — CLI: `scp -r` the `restore/`
-              folder to the TV and run `sh install.sh` (DTS + TrueHD + mp4/ts/m2ts DTS).
-            - `org.webosbrew.dtsenabler_*.ipk` — the DTS Enabler Homebrew app
-              (enable/disable/uninstall + self-test + play-by-ear).
+            ## What works (verified on a real LG C5)
+            - **DTS** — MKV **and** `.mp4` / `.ts` / `.m2ts` (patched demuxers with
+              `dts_support` enabled). Decodes to native **discrete 5.1** S32LE, matching a
+              reference decoder within ~0.1–0.2 dB per channel — **no stereo downmix**.
+            - **Dolby TrueHD / MLP** — in MKV.
+            - Audio-only patch: **Dolby Vision / HDR video is unaffected**.
+            - No firmware modified — everything is bind-mounts, reverted by uninstall/reboot.
 
-            See `webos25/README.md` and `RELEASING.md`.
+            ## Assets
+            - **`dts_restore_plus-restore-<tag>.tar.gz`** — the CLI (no app needed):
+              ```sh
+              scp -r webos25/restore root@<TV-IP>:/tmp/dtsrestore
+              ssh root@<TV-IP> 'cd /tmp/dtsrestore && sh install.sh'
+              ```
+            - **`org.webosbrew.dtsenabler_<ver>_all.ipk`** — the DTS Enabler Homebrew app:
+              enable / disable / uninstall, a **self-test** (decodes a sample per container
+              → PASS/FAIL), and **play-by-ear**. Requires a rooted TV + Homebrew Channel.
+
+            ## Requirements
+            Rooted webOS-25 TV with the Homebrew Channel. See `webos25/README.md`;
+            maintainers see `RELEASING.md`.
           files: |
-            dts_restore_plus-webos25-restore-*.tar.gz
+            dts_restore_plus-restore-*.tar.gz
             webos25/app/dist/*.ipk
