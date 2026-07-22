@@ -167,14 +167,14 @@ dts_restore/
   an on-device measurement. The C5 proved the `arm-webos-linux-gnueabi` triplet can be *soft*-float,
   so CX's loader name + e_flags must be read on a real CX before the `cx-armv7-gst114` profile can
   assert hard-float. `detect-target.sh` captures exactly these.
-- **Multichannel / sink-format open question (both families):** decoders here yield **2.0 stereo**
-  only; LG routes multichannel/passthrough through its proprietary sink. On C5 it is still open
-  whether LG's audio sink accepts `dtsdec`'s F32LE (possibly 5.1) output or whether we must force
-  stereo/S16 — untestable without `decproxy` on real playback (EPIC "Remaining / unknowns"). The
-  `gst-dtstolpcm/` LPCM-converter route would need a 1.24/armel rebuild.
-- **Real-playback proof on C5 still pending:** autoplug through `decodebin` is verified, but full
-  playback through LG's `starfish-media-pipeline`+`decproxy` (does decproxy autoplug the injected
-  `dtsdec`? does the sink accept its output?) needs the on-device serial test (EPIC).
+- **Surround-at-output open question (C5):** RESOLVED that LG's sink is **integer-only** — `dtsdec`
+  now emits **S32LE** (up to 5.1), which the sink accepts (the earlier F32LE issue is fixed). The
+  remaining unknown is whether the TV **renders full surround** to speakers/eARC or downmixes to
+  stereo (not independently measured). Bitstream passthrough is out of scope; the `experimental/`
+  LPCM-converter route would only be needed if the sink turns out to downmix.
+- **Real-playback proof on C5: DONE** — both DTS and TrueHD confirmed playing on-device through LG's
+  `starfish-media-pipeline`/`decproxy` (decproxy autoplugs the injected decoders; the sink receives
+  S32LE), not just `decodebin`. Persistent across reboot.
 - **Root-availability limits (webOS 22+):** even a perfect build is moot without root. RootMyTV
   excludes webOS 7(22)/8(23); webOS 9(24) release firmware is patched; webOS 25 is faultmanager-only
   on pre-10.1 factory firmware. Root, not the build, is the harder gate above CX-era (issue-03 §4).

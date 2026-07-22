@@ -215,15 +215,17 @@ service for all root work.
 
 | Profile | TV family | Mechanism | Status |
 |---|---|---|---|
-| `webos25-armel-gst124` | LG C5 / G5 (webOS 25, GStreamer 1.24, armel soft-float) | decoder-inject (patched dtsdec + libdca) | **Verified on a real C5**: dtsdec loads in the TV's 1.24, decodes DTS → `F32LE`, and `decodebin` **autoplugs** it for LG's `audio/x-unknown/A_DTS`. **Full playback** through `starfish-media-pipeline`/`decproxy` (autoplug + sink accepting the output format) is **pending on-device confirmation** — EPIC.md's only open gate. |
+| `webos25-armel-gst124` | LG C5 / G5 (webOS 25, GStreamer 1.24, armel soft-float) | decoder-inject (patched dtsdec + libdca) + TrueHD (avdec_truehd) | **Mechanism VERIFIED playing on a real C5** (via the `restore/` CLI install): both DTS and TrueHD decode and play, LG's sink receives `audio/x-raw, S32LE` (5.1), persistent across reboot. NOTE: the **app's own** detect/enable is currently **non-functional** — the service is missing the webOS role/permission manifest to call the Homebrew Channel exec bridge, so it shows "unsupported TV". Fix pending; until then use `restore/install.sh`. |
 | `cx-armv7-gst114` | OLED CX / BX / C1 / C2 / NanoCell (webOS 3–6, GStreamer 1.14) | demuxer-override (rebuilt LG libs + `avdec_dca` rank) | **Carried over, UNVERIFIED by this project** — no CX hardware. Mechanism is the field-used shipping `dts_restore` recipe, but its "armv7 hard-float" ABI claim was never measured on-device (the C5 proved the same triplet can be soft-float). Confirm the loader/e_flags via `detect` before trusting. |
 | webOS 22 / 23 / 24 (C2/C3/C4/G-series) | — | none | **No recipe.** Arch/ABI/GStreamer/disable-mechanism all unknown; the detector emits an `unknown-*` profile and the app **refuses**. |
 | anything else | — | none | Detector emits `unknown-*`; app refuses. |
 
-Other open questions (both families): decoders here yield **2.0 stereo**; whether
-LG's proprietary sink accepts the decoder's F32LE (possibly multichannel) output
-or requires forcing stereo/S16 is untestable without on-device `decproxy`
-playback. See `../webos25/MULTI-MODEL.md` §4 for the full gap list.
+Open questions: DTS decodes to **S32LE, up to 5.1**, and TrueHD to **S32LE** —
+LG's integer-only sink accepts these (confirmed on-device; the earlier F32LE issue
+was fixed by converting dtsdec's output to S32LE). The remaining unknown is whether
+the TV **renders full surround** to speakers/eARC or downmixes to stereo (not
+independently measured). Bitstream **passthrough** to an AVR is out of scope
+(months of proprietary-lib RE). See `../docs/MULTI-MODEL.md` for the full gap list.
 
 ## License
 

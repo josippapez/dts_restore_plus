@@ -13,6 +13,32 @@ temporary overlays that a full power-off reverts.
 
 ---
 
+## This fork vs. upstream [`lgstreamer/dts_restore`](https://github.com/lgstreamer/dts_restore)
+
+This is a fork of the original `dts_restore`. For **OLED CX and other webOS 3–6 TVs**, the
+upstream project is the reference. This fork adds and changes the following on top of it:
+
+**Added — webOS 25 support (new platform, `webos25/`):** the upstream tool is CX-only
+(armv7 / GStreamer 1.14) and does **not** work on 2025 webOS-25 TVs (e.g. LG C5: 32-bit ARM
+**soft-float**, GStreamer 1.24). `webos25/` is a self-contained tool that restores **both DTS
+and TrueHD/MLP** there:
+- `webos25/restore/` — prebuilt soft-float decoders (patched `dtsdec` → S32LE; `avdec_truehd` from
+  a minimal ffmpeg) + a single self-contained `install.sh`. Verified playing on a real C5.
+- `webos25/app/` — a "DTS Enabler" webOS homebrew app (GUI); `webos25/docs/` — design notes + the
+  target-detection probe.
+
+**Modified — CX tool hardening (root files, on top of upstream):**
+- `install.sh` / `uninstall.sh` — fixed the `#!/usr/bin/env sh` vs bash shebang, the off-by-one
+  media-player check (`[s]tarfish` never self-matches), non-idempotent `ln -s`, missing root/tool
+  preflight; added a community model allowlist, `set -u`, a self-owned payload dir (no dangling
+  symlink), and a complete uninstall (unmounts + payload removal).
+- `init_dts.sh` (shipped instead of heredoc-generated) + externalized `downmix.conf`.
+- This `README.md` (was `README.txt`): model table, persistence model, troubleshooting, changelog.
+
+The upstream CX binaries in `gst/` are unchanged.
+
+---
+
 ## Requirements
 
 - A **rooted** LG TV (see [webosbrew.org/rooting](https://www.webosbrew.org/rooting/)) with the

@@ -107,6 +107,19 @@ own live `/etc` files (see below) — this package **ships no LG config file**.
 | TrueHD       | `avdec_truehd` | S32LE (up to 7.1) | **Verified, persistent** |
 | MLP          | `avdec_mlp`    | S32LE  | Enabled alongside TrueHD        |
 
+**Container support:** **MKV is verified** (DTS + TrueHD). **`.mp4` and `.m2ts`/`.ts` are not yet
+supported** — LG's `qtdemux`/`tsdemux` have DTS demuxing compiled out, so mp4 DTS comes out as
+untargetable `audio/x-unknown` and ts DTS errors. Re-enabling it (rebuild those demuxers with
+`dca=true`) is **in progress**.
+
+**Caveats (honest):**
+- **Surround at the output is not independently confirmed.** The decoders emit up to 5.1/7.1 S32LE
+  and LG's sink accepts multichannel caps, but whether the C5 renders all channels to speakers/eARC
+  (vs downmixing to stereo) hasn't been measured. Verify by ear / on an AVR.
+- **DTS-HD:** `avdec_dca` decodes the DTS **core**, not the DTS-HD MA lossless (XLL) extension.
+  **TrueHD:** decoded as base channels (Atmos objects fold in).
+- **No bitstream passthrough** to an AVR (decode-to-PCM only) — out of scope.
+
 ## Build
 
 Both builds are reproducible Docker / cross-builds and print an ABI report
