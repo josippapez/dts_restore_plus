@@ -117,7 +117,19 @@ verbatim and symlinked from `/var/lib/webosbrew/init.d/restore_dts25`):
    `LD_LIBRARY_PATH=/var/lib/webosbrew/truehd/libs` and a plugin path that
    includes `/var/lib/webosbrew/dts25`) so it contains both `dtsdec` and
    `avdec_truehd`, then written to `/mnt/flash/data/gst_1_0_registry.arm.bin`.
-   The registry is only overwritten if the regen actually contains the decoders.
+   The registry is only overwritten if the regen contains **both** `dtsdec` **and**
+   `avdec_truehd`.
+
+**Boot-hook resilience (v2.1.1).** The hook is written to survive an unattended
+reboot and a firmware update:
+- **Firmware-update / ABI guard** — before touching anything it checks the core
+  GStreamer version (`gst-inspect-1.0 --version`). If it is no longer `1.24` (a
+  webOS OTA bumped it), the hook skips **all** overrides and exits, so binding an
+  ABI-mismatched armel library can never break stock mp4/ts/mkv playback. DTS/TrueHD
+  simply pause (a toast asks you to re-open DTS Enabler); normal playback is safe.
+- **Bounded regen** — the registry regen runs in-process under `timeout` so a hung
+  scan cannot trip the Homebrew Channel failsafe.
+- **Fail-safe toasts** on abort or an incomplete regen.
 
 **Config overrides are generated on the TV at install time** by editing the TV's
 own live `/etc` files (see below) — this package **ships no LG config file**.
@@ -202,7 +214,8 @@ restarts `starfish-media-pipeline`. It is idempotent, guarded, logs to
 Remove everything with:
 
 ```sh
-sh uninstall.sh     # unmounts all four binds, removes the state dirs + hook
+sh uninstall.sh     # unmounts all binds (capability, gstcool, libav, isomp4,
+                    # mpegtsdemux, registry), removes the state dirs + hook
 ```
 
 A reboot after uninstall guarantees a fully clean state.
