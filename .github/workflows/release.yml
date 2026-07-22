@@ -86,6 +86,20 @@ jobs:
           ares-package . service -o dist
           ls -la dist/*.ipk
 
+      - name: Generate Homebrew Channel manifest
+        run: |
+          IPK=$(ls webos25/app/dist/*.ipk | head -1)
+          IPK_NAME=$(basename "$IPK")
+          VER=$(node -e "console.log(require('./webos25/app/appinfo.json').version)")
+          SHA=$(sha256sum "$IPK" | awk '{print $1}')
+          SIZE=$(stat -c%s "$IPK")
+          # ipkUrl is a bare filename: repogen urljoin()s it against manifestUrl,
+          # so it resolves to the same release the manifest is hosted in.
+          cat > webos25/app/dist/org.webosbrew.dtsenabler.manifest.json <<EOF
+          {"id":"org.webosbrew.dtsenabler","version":"$VER","type":"web","title":"DTS Enabler","appDescription":"Restore DTS and Dolby TrueHD/MLP audio on rooted LG webOS 25 TVs, including DTS in mp4/ts/m2ts containers. Decodes native discrete 5.1. Requires the Homebrew Channel + root.","iconUri":"https://raw.githubusercontent.com/josippapez/dts_restore_plus/main/assets/icon160.png","sourceUrl":"https://github.com/josippapez/dts_restore_plus","rootRequired":true,"ipkUrl":"$IPK_NAME","ipkSize":$SIZE,"ipkHash":{"sha256":"$SHA"}}
+          EOF
+          cat webos25/app/dist/org.webosbrew.dtsenabler.manifest.json
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
@@ -121,3 +135,4 @@ jobs:
           files: |
             dts_restore_plus-restore-*.tar.gz
             webos25/app/dist/*.ipk
+            webos25/app/dist/org.webosbrew.dtsenabler.manifest.json
