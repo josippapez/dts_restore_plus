@@ -190,7 +190,7 @@
   function doDisable() {
     toast("Disabling DTS…", "busy");
     callService("disable", {}).then(function (r) {
-      toast("DTS disabled (reboot to fully clear the registry override)", "ok");
+      toast("DTS disabled (registry restored to stock; no reboot needed)", "ok");
       return refreshStatus();
     }).catch(function (e) { toast("Disable failed: " + errText(e), "err"); });
   }
@@ -198,7 +198,7 @@
   function doUninstall() {
     toast("Uninstalling…", "busy");
     callService("uninstall", {}).then(function (r) {
-      toast("Uninstalled (power-cycle the TV to clear any registry override)", "ok");
+      toast("Uninstalled (registry restored to stock; no reboot needed)", "ok");
       return refreshStatus();
     }).catch(function (e) { toast("Uninstall failed: " + errText(e), "err"); });
   }

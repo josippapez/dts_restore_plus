@@ -60,10 +60,21 @@ fi
 cd ffmpeg
 make distclean >/dev/null 2>&1 || true
 
+# IMPORTANT: this libgstlibav.so is BIND-MOUNTED over LG's stock one, so it must
+# provide EVERYTHING stock libav provided PLUS truehd/mlp. A truehd/mlp-only build
+# strips the system's software decoders (avdec_aac/ac3/eac3/mp3/flac/h264/vp8/vp9/
+# wma*, ...) when enabled, which breaks apps that decode via libav -- notably
+# Spotify (audio/mpeg -> avdec_aac) went silent while the mod was enabled.
+# Root-caused on a real C5 (2026-07-23) by enumerating stock `gst-inspect-1.0 libav`.
+# Keep this decoder set matching (or a superset of) stock LG libav; DTS stays out
+# (handled by the separate libgstdtsdec.so + libdca), exactly as LG shipped it.
+STOCK_DECODERS="aac,ac3,eac3,alac,amrnb,amrwb,flac,mp3,h264,mjpeg,vp8,vp9,wmapro,wmav1,wmav2,wmavoice"
 CONFIG_COMMON="--cross-prefix=arm-linux-gnueabi- --enable-cross-compile --arch=arm --target-os=linux \
   --cc=arm-linux-gnueabi-gcc \
-  --disable-everything --enable-decoder=truehd --enable-decoder=mlp --enable-parser=mlp \
-  --enable-demuxer=truehd --enable-demuxer=mlp \
+  --disable-everything \
+  --enable-decoder=truehd,mlp,${STOCK_DECODERS} \
+  --enable-parser=mlp,aac,ac3,flac,mpegaudio,h264,vp8,vp9 \
+  --enable-demuxer=truehd,mlp \
   --enable-avcodec --enable-avformat --enable-avfilter --enable-swresample \
   --enable-shared --disable-static --disable-programs --disable-doc \
   --disable-avdevice --disable-swscale --disable-postproc --disable-network --disable-debug \
@@ -161,7 +172,10 @@ ver_le(){ [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" = "$2" ]; }  # 
   echo "Generated:  $(date -u)"
   echo "Build host: debian:11-slim (bullseye, glibc 2.31), --platform linux/arm64"
   echo "Toolchain:  $(arm-linux-gnueabi-gcc --version | head -1) (soft-float EABI5)"
-  echo "ffmpeg:     $FFTAG — minimal: only truehd+mlp decoders, mlp parser, truehd+mlp demuxers"
+  echo "ffmpeg:     $FFTAG — full stock LG decoder set (aac/ac3/eac3/alac/amrnb/amrwb/flac/mp3/"
+  echo "            h264/mjpeg/vp8/vp9/wma*) PLUS truehd+mlp. Must be a SUPERSET of stock libav:"
+  echo "            this .so bind-mounts over LG's, so a truehd-only build strips system codecs"
+  echo "            (broke Spotify's avdec_aac when enabled — regression fixed 2026-07-23)."
   echo "gst-libav:  $(cd /build/gst-libav && git describe --tags --always 2>/dev/null) (meson cross-build)"
   echo "Target ABI: 32-bit ARM EABI5 soft-float (gnueabi/armel), e_flags 0x05000200"
   echo "            runtime loader on target: /lib/ld-linux.so.3 (.so carry no PT_INTERP — normal)"

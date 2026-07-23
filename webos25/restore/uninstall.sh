@@ -63,6 +63,28 @@ for T in "$CFG_LIVE" "$GC_LIVE" "$LGLIBAV" "$DMX_ISO" "$DMX_TSD" "$REG_TARGET"; 
 done
 rm -f "$REG_TMP" 2>/dev/null
 
+# --- 2b. Regenerate a clean STOCK GStreamer registry -----------------------
+# The registry is written by init_dts25.sh with `cp -f` (a PERSISTENT overwrite),
+# NOT a bind-mount -- so the umount above can never revert it. Left alone, the
+# stale registry keeps referencing the /var/lib/webosbrew/* plugins removed in
+# step 3, which breaks media-pipeline app audio (e.g. Spotify) even after a
+# reboot, until a valid registry is regenerated. (Root-caused on a real C5,
+# 2026-07-23.) The binds above are already removed, so regenerate from the
+# pristine on-disk stock plugins and overwrite the registry.
+CLEAN_REG=/tmp/gst_clean_reg.bin
+rm -f "$CLEAN_REG" 2>/dev/null
+if GST_REGISTRY_1_0="$CLEAN_REG" \
+   GST_PLUGIN_PATH_1_0=/usr/lib/gstreamer-1.0:/mnt/lg/res/lglib/gstreamer-1.0 \
+   GST_REGISTRY_FORK=no GST_REGISTRY_UPDATE=yes \
+   timeout 60 /usr/bin/gst-inspect-1.0 >/dev/null 2>>"$LOG"; then
+  cp -f "$CLEAN_REG" "$REG_TARGET" 2>>"$LOG" \
+    && log "regenerated clean stock registry (reverted cp-based override)" \
+    || log "WARN could not write clean registry"
+else
+  log "WARN clean registry regen failed; leaving existing registry untouched (may still be stale)"
+fi
+rm -f "$CLEAN_REG" 2>/dev/null
+
 # --- 3. Remove install dirs ------------------------------------------------
 for D in "$DTS_DEST" "$THD_DEST" "$DMX_DEST"; do
   if [ -d "$D" ]; then

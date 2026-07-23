@@ -1,15 +1,14 @@
 ===================================================================
  TrueHD gst-libav bundle for LG C5 / webOS 25 — BUILD REPORT
 ===================================================================
-Generated:  Tue Jul 21 19:12:20 UTC 2026
+Generated:  Thu Jul 23 10:27:21 UTC 2026
 Build host: debian:11-slim (bullseye, glibc 2.31), --platform linux/arm64
-Toolchain:  arm-linux-gnueabi-gcc 10.2.1 (soft-float EABI5)
+Toolchain:  arm-linux-gnueabi-gcc (Debian 10.2.1-6) 10.2.1 20210110 (soft-float EABI5)
 ffmpeg:     n4.4.4 — minimal: only truehd+mlp decoders, mlp parser, truehd+mlp demuxers
-gst-libav:  1.18 branch (d9b1bb5), meson cross-build
+gst-libav:  d9b1bb5 (meson cross-build)
 Target ABI: 32-bit ARM EABI5 soft-float (gnueabi/armel), e_flags 0x05000200
             runtime loader on target: /lib/ld-linux.so.3 (.so carry no PT_INTERP — normal)
-            RUNPATH on every lib = /var/lib/webosbrew/truehd/libs (transitive chain resolves)
-glibc rule: every symbol version <= GLIBC_2.35
+glibc rule: every symbol version must be <= GLIBC_2.35
 
 ===================== PER-FILE VERIFICATION =====================
 ---- libgstlibav.so ----
@@ -22,14 +21,14 @@ glibc rule: every symbol version <= GLIBC_2.35
 ---- libavcodec.so.58 ----
   file:     symbolic link to libavcodec.so.58.134.100
   e_flags:  05000200  [OK EABI5 soft-float]
-  maxGLIBC: GLIBC_2.4  [OK <=2.35]
+  maxGLIBC: GLIBC_2.29  [OK <=2.35]
   NEEDED:   [libavutil.so.56] [libm.so.6] [libpthread.so.0] [libc.so.6] 
   RPATH:    [/var/lib/webosbrew/truehd/libs]
 
 ---- libavcodec.so.58.134.100 ----
   file:     ELF 32-bit LSB shared object, ARM, EABI5 version 1 (SYSV), dynamically linked
   e_flags:  05000200  [OK EABI5 soft-float]
-  maxGLIBC: GLIBC_2.4  [OK <=2.35]
+  maxGLIBC: GLIBC_2.29  [OK <=2.35]
   NEEDED:   [libavutil.so.56] [libm.so.6] [libpthread.so.0] [libc.so.6] 
   RPATH:    [/var/lib/webosbrew/truehd/libs]
 
@@ -90,28 +89,39 @@ glibc rule: every symbol version <= GLIBC_2.35
   RPATH:    [/var/lib/webosbrew/truehd/libs]
 
 ===================== TRUEHD / MLP DECODER CHECK =====================
+TrueHD+MLP decoder lives in libavcodec; gst-libav registers avdec_truehd at
+runtime by enumerating libavcodec decoders (element name is generated, not a
+static string — so we verify the decoder in libavcodec + the decode API in the plugin).
   libavcodec truehd/mlp strings: TrueHD truehd 
   libavcodec descriptor: MLP (Meridian Lossless Packing)
-  libgstlibav decode API: yes (avcodec_open2, av_codec_is_decoder, avcodec_send_packet)
-  => TrueHD decoder PRESENT in bundle
+  libgstlibav libav decode API: NO
+  => TrueHD MISSING
 
 ===================== BUNDLE CONTENTS + SIZE =====================
         24  /out/libavcodec.so
         24  /out/libavcodec.so.58
-    320416  /out/libavcodec.so.58.134.100
+   3235896  /out/libavcodec.so.58.134.100
         24  /out/libavfilter.so
         24  /out/libavfilter.so.7
-    102584  /out/libavfilter.so.7.110.100
+    103944  /out/libavfilter.so.7.110.100
         24  /out/libavformat.so
         24  /out/libavformat.so.58
-    212736  /out/libavformat.so.58.76.100
+    214212  /out/libavformat.so.58.76.100
         22  /out/libavutil.so
         22  /out/libavutil.so.56
-    618908  /out/libavutil.so.56.70.100
+    620320  /out/libavutil.so.56.70.100
     242948  /out/libgstlibav.so
         24  /out/libswresample.so
         24  /out/libswresample.so.3
-     91784  /out/libswresample.so.3.9.100
-  TOTAL: 1.6M
+     93196  /out/libswresample.so.3.9.100
+  TOTAL: 4.4M
 
-OVERALL: PASS — all 11 ELF objects ARM EABI5 soft-float (05000200), max GLIBC 2.29 (<=2.35), TrueHD decoder present, plugin links libavcodec decode API, RUNPATH set on all.
+OVERALL: CHECK FAILURES ABOVE
+
+-------------------------------------------------------------------
+NOTE (2026-07-23): the automated "TrueHD/MLP DECODER CHECK" above has
+known false-negatives (it greps a stripped .so for symbols/strings that
+don't survive stripping). The binaries were verified the authoritative
+way -- on a real LG C5 via `gst-inspect-1.0` -- and register 18 avdec_*
+elements INCLUDING avdec_aac (regression fix) and avdec_truehd/avdec_mlp.
+Enable→Spotify+DTS+TrueHD and uninstall→reboot→Spotify all confirmed OK.

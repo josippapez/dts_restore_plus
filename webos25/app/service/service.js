@@ -479,6 +479,19 @@ function w25Disable() {
     'for T in "' + W25_CFG_LIVE + '" "' + W25_GC_LIVE + '" "' + W25_LGLIBAV + '" "' + W25_ISO_LIVE + '" "' + W25_TSD_LIVE + '" "' + W25_REG_TARGET + '"; do',
     '  if grep -q " $T " /proc/mounts 2>/dev/null; then umount "$T" 2>>"$LOG" && log "unmounted bind over $T (reverted)" || log "WARN could not umount $T"; else log "no bind over $T"; fi',
     'done',
+    // The registry is written with `cp -f` (persistent), NOT bind-mounted -- so a
+    // umount can never revert it (that was the bug: disable/uninstall left a stale
+    // registry referencing our removed /var/lib/webosbrew libs, which breaks
+    // media-pipeline app audio like Spotify until a valid registry is regenerated;
+    // root-caused on a real C5, 2026-07-23). The binds above are already removed, so
+    // regenerate a clean STOCK catalog from the pristine on-disk plugins.
+    'CLEAN_REG=/tmp/gst_clean_reg.bin; rm -f "$CLEAN_REG" 2>/dev/null',
+    'if GST_REGISTRY_1_0="$CLEAN_REG" GST_PLUGIN_PATH_1_0=/usr/lib/gstreamer-1.0:/mnt/lg/res/lglib/gstreamer-1.0 GST_REGISTRY_FORK=no GST_REGISTRY_UPDATE=yes timeout 60 /usr/bin/gst-inspect-1.0 >/dev/null 2>>"$LOG"; then',
+    '  cp -f "$CLEAN_REG" "' + W25_REG_TARGET + '" 2>>"$LOG" && log "regenerated clean stock registry (reverted cp-based override)" || log "WARN: could not write clean registry"',
+    'else',
+    '  log "WARN: clean registry regen failed; leaving existing registry untouched (may still be stale)"',
+    'fi',
+    'rm -f "$CLEAN_REG" 2>/dev/null',
     'rm -f "' + W25_REG_TMP + '" 2>/dev/null',
     'if killall starfish-media-pipeline 2>>"$LOG"; then log "restarted media pipeline"; else log "note: media pipeline not running"; fi',
     'log "=== disable (webos25) done ==="',

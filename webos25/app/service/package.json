@@ -1,6 +1,6 @@
 {
   "name": "io.github.josippapez.dtsenabler.service",
-  "version": "2.2.0",
+  "version": "2.2.2",
   "description": "Privileged backend for the universal DTS Enabler app. Detects the LG TV generation and delegates the matching root shell work to the Homebrew Channel exec service.",
   "main": "service.js",
   "license": "LGPL-2.1-or-later",

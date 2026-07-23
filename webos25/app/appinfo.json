@@ -1,6 +1,6 @@
 {
   "id": "io.github.josippapez.dtsenabler",
-  "version": "2.2.0",
+  "version": "2.2.2",
   "vendor": "webosbrew community (dts_restore by Pete Batard; webOS-25 mechanism by this project)",
   "type": "web",
   "main": "index.html",
