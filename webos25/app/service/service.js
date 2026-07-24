@@ -186,11 +186,18 @@ function w25SetGainScript(dtsDb, thdDb) {
   ].join("\n");
 }
 
-/** Read both gain.conf files back (for the UI to show the current value). */
+/** Read both gain.conf files back (for the UI to show the current value).
+ *  Parses the same way the decoders do (see EPIC config-file contract): skip
+ *  `#` comment lines and blank lines, take the first data line, strip its
+ *  whitespace. So a hand-edited config with a comment reads back correctly. */
+function w25ReadGain(path) {
+  return "$(awk '/^[[:space:]]*#/{next} /^[[:space:]]*$/{next} " +
+         "{gsub(/[[:space:]]/,\"\"); print; exit}' \"" + path + "\" 2>/dev/null)";
+}
 function w25GetGainScript() {
   return [
-    'DTS=$(cat "' + DTS_GAIN_CONF + '" 2>/dev/null | tr -d "[:space:]")',
-    'THD=$(cat "' + THD_GAIN_CONF + '" 2>/dev/null | tr -d "[:space:]")',
+    "DTS=" + w25ReadGain(DTS_GAIN_CONF),
+    "THD=" + w25ReadGain(THD_GAIN_CONF),
     'echo "DTS_GAIN=$DTS"',
     'echo "THD_GAIN=$THD"',
     "exit 0"
