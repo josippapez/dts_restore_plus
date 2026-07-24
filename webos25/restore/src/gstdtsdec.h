@@ -17,8 +17,9 @@
  * Boston, MA 02110-1301, USA.
  */
 
-/* Vendored verbatim from gst-plugins-bad 1.22.0 (ext/dts/gstdtsdec.h).
- * No changes from upstream. See gstdtsdec.c for the single caps patch. */
+/* Vendored from gst-plugins-bad 1.22.0 (ext/dts/gstdtsdec.h). Only change
+ * from upstream is the two make-up-gain fields below (webOS 25 patch).
+ * See gstdtsdec.c file header for the full list of functional changes. */
 
 #ifndef __GST_DTSDEC_H__
 #define __GST_DTSDEC_H__
@@ -64,6 +65,14 @@ struct _GstDtsDec {
   sample_t 	 level;
   sample_t 	 bias;
   gboolean 	 dynamic_range_compression;
+
+  /* webOS 25 patch: user-tunable make-up gain. makeup_gain_db is the
+   * clamped [-20,+20] dB value (also the get-property value);
+   * makeup_gain_linear is the cached pow(10, dB/20) multiplier applied in
+   * the float->S32 output loop (1.0f exactly when makeup_gain_db == 0.0). */
+  gfloat 	 makeup_gain_db;
+  gfloat 	 makeup_gain_linear;
+
   sample_t 	*samples;
 #ifndef DTS_OLD
   dca_state_t   *state;

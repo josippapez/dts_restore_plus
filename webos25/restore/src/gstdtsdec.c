@@ -19,11 +19,13 @@
  */
 
 /* ==========================================================================
- * webOS 25 DTS-restore patch (single functional change vs. upstream)
+ * webOS 25 DTS-restore patch (two functional changes vs. upstream)
  * --------------------------------------------------------------------------
- * Vendored from gst-plugins-bad 1.22.0 (ext/dts/gstdtsdec.c). The ONLY
- * functional change from upstream is the sink pad template caps below
- * (the GST_STATIC_CAPS string on the "sink" pad).
+ * Vendored from gst-plugins-bad 1.22.0 (ext/dts/gstdtsdec.c). Functional
+ * changes from upstream:
+ *
+ * 1. The sink pad template caps below (the GST_STATIC_CAPS string on the
+ *    "sink" pad).
  *
  * Upstream:
  *     GST_STATIC_CAPS ("audio/x-dts; audio/x-private1-dts")
@@ -39,6 +41,19 @@
  * stream — no need to patch matroskademux or any LG library. The decoder
  * body is unchanged: it still parses/decodes the raw DTS elementary stream
  * via libdca and emits audio/x-raw.
+ *
+ * 2. A user-tunable "makeup-gain-db" property (float, default 0.0 dB =
+ *    unity = exact no-op) applied in the float->S32 output conversion loop,
+ *    BEFORE the existing integer clamp. The default value is read once at
+ *    decoder init from /var/lib/webosbrew/dts25/gain.conf (a single ASCII
+ *    dB float; missing/empty/unparseable -> 0.0 dB unity; clamped to
+ *    [-20, +20] dB); an explicit property set (e.g. the app self-test)
+ *    overrides the config-file value.
+ *
+ * WHY: DTS plays noticeably quieter than LG's native AAC/AC-3/Atmos decoders
+ * on webOS 25 because they bake in dialnorm/DRC that this custom decoder
+ * does not apply. See .orchestration/dts-loudness-makeup-gain/EPIC.md
+ * (ADR-001) for the full rationale and config-file contract.
  * ========================================================================== */
 
 /**
@@ -67,6 +82,8 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
+#include <math.h>
 
 #include <gst/gst.h>
 #include <gst/audio/audio.h>
@@ -134,8 +151,14 @@ GST_DEBUG_CATEGORY_STATIC (dtsdec_debug);
 enum
 {
   PROP_0,
-  PROP_DRC
+  PROP_DRC,
+  PROP_MAKEUP_GAIN_DB
 };
+
+/* webOS 25 patch: make-up gain config-file contract (see file header + EPIC). */
+#define DTS_MAKEUP_GAIN_CONF_PATH "/var/lib/webosbrew/dts25/gain.conf"
+#define DTS_MAKEUP_GAIN_DB_MIN (-20.0f)
+#define DTS_MAKEUP_GAIN_DB_MAX (20.0f)
 
 /* webOS 25 patch: sink caps widened to also accept LG's retagged raw DTS
  * ("audio/x-unknown, codec-id=(string)A_DTS"). See file header for rationale. */
@@ -172,6 +195,10 @@ static void gst_dtsdec_set_property (GObject * object, guint prop_id,
 static void gst_dtsdec_get_property (GObject * object, guint prop_id,
     GValue * value, GParamSpec * pspec);
 static gboolean dtsdec_element_init (GstPlugin * plugin);
+
+/* webOS 25 patch: make-up gain helpers (see file header + EPIC). */
+static gfloat gst_dtsdec_read_makeup_gain_config (void);
+static void gst_dtsdec_apply_makeup_gain_db (GstDtsDec * dts, gfloat gain_db);
 
 G_DEFINE_TYPE (GstDtsDec, gst_dtsdec, GST_TYPE_AUDIO_DECODER);
 GST_ELEMENT_REGISTER_DEFINE_CUSTOM (dtsdec, dtsdec_element_init);
@@ -218,6 +245,22 @@ gst_dtsdec_class_init (GstDtsDecClass * klass)
           "Use Dynamic Range Compression", FALSE,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
+  /**
+   * GstDtsDec::makeup-gain-db
+   *
+   * webOS 25 patch: user-tunable make-up gain, in dB, applied to the
+   * decoded PCM output (before the final S32 clamp). Default 0.0 dB is
+   * unity — an exact no-op matching upstream behaviour. The default is
+   * read once at decoder init from /var/lib/webosbrew/dts25/gain.conf;
+   * setting this property explicitly (e.g. the app self-test) overrides
+   * that file value. Clamped to [-20.0, +20.0] dB.
+   */
+  g_object_class_install_property (G_OBJECT_CLASS (klass), PROP_MAKEUP_GAIN_DB,
+      g_param_spec_float ("makeup-gain-db", "Make-up Gain (dB)",
+          "User-tunable make-up gain in dB applied to decoded PCM output",
+          DTS_MAKEUP_GAIN_DB_MIN, DTS_MAKEUP_GAIN_DB_MAX, 0.0,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
   klass->dts_cpuflags = 0;
 
 #if HAVE_ORC
@@ -236,11 +279,73 @@ gst_dtsdec_class_init (GstDtsDecClass * klass)
   GST_LOG ("CPU flags: dts=%08x, orc=%08x", klass->dts_cpuflags, cpuflags);
 }
 
+/* webOS 25 patch: clamp + cache the linear multiplier for a dB gain value.
+ * gain_db == 0.0 always yields an exact linear 1.0 (no powf rounding), so
+ * the hot loop's multiply-by-linear-gain is a bit-exact no-op at unity. */
+static void
+gst_dtsdec_apply_makeup_gain_db (GstDtsDec * dts, gfloat gain_db)
+{
+  if (gain_db > DTS_MAKEUP_GAIN_DB_MAX)
+    gain_db = DTS_MAKEUP_GAIN_DB_MAX;
+  else if (gain_db < DTS_MAKEUP_GAIN_DB_MIN)
+    gain_db = DTS_MAKEUP_GAIN_DB_MIN;
+
+  dts->makeup_gain_db = gain_db;
+  dts->makeup_gain_linear = (gain_db == 0.0f) ? 1.0f :
+      powf (10.0f, gain_db / 20.0f);
+}
+
+/* webOS 25 patch: read the user-tunable make-up gain (dB) from the on-device
+ * config file at decoder init. Contract (see file header + EPIC): a single
+ * ASCII float dB value, '#' comment lines and blank lines ignored, leading/
+ * trailing whitespace tolerated. Missing file, empty file, or unparseable
+ * content -> 0.0 dB (unity, no-op) — this must never fail decode. */
+static gfloat
+gst_dtsdec_read_makeup_gain_config (void)
+{
+  FILE *f;
+  gchar line[128];
+  gfloat gain_db = 0.0f;
+
+  f = fopen (DTS_MAKEUP_GAIN_CONF_PATH, "r");
+  if (!f)
+    return 0.0f;
+
+  while (fgets (line, sizeof (line), f)) {
+    gchar *p = line;
+    gchar *endptr = NULL;
+    gdouble parsed;
+
+    while (*p == ' ' || *p == '\t')
+      p++;
+    if (*p == '\0' || *p == '\n' || *p == '\r' || *p == '#')
+      continue;
+
+    parsed = g_ascii_strtod (p, &endptr);
+    if (endptr != p) {
+      gain_db = (gfloat) parsed;
+      break;
+    }
+  }
+  fclose (f);
+
+  return gain_db;
+}
+
 static void
 gst_dtsdec_init (GstDtsDec * dtsdec)
 {
   dtsdec->request_channels = DCA_CHANNEL;
   dtsdec->dynamic_range_compression = FALSE;
+
+  /* webOS 25 patch: default make-up gain from the on-device config file
+   * (0.0 dB unity if absent/empty/invalid); an explicit property set later
+   * (e.g. the app self-test) overrides this via gst_dtsdec_set_property(). */
+  gst_dtsdec_apply_makeup_gain_db (dtsdec,
+      gst_dtsdec_read_makeup_gain_config ());
+  GST_INFO_OBJECT (dtsdec,
+      "makeup-gain-db effective at init: %.2f dB (linear %.4f)",
+      dtsdec->makeup_gain_db, dtsdec->makeup_gain_linear);
 
   gst_audio_decoder_set_use_default_pad_acceptcaps (GST_AUDIO_DECODER_CAST
       (dtsdec), TRUE);
@@ -659,8 +764,13 @@ gst_dtsdec_handle_frame (GstAudioDecoder * bdec, GstBuffer * buffer)
           for (c = 0; c < chans; c++) {
             {
               /* webOS: convert libdca's normalized float (~[-1,1]) to S32LE
-               * with clamping, so LG's integer-only audiosink accepts it. */
-              gdouble s = (gdouble) dts->samples[c * 256 + n] * 2147483648.0;
+               * with clamping, so LG's integer-only audiosink accepts it.
+               * webOS 25 patch: apply the user-tunable make-up gain (linear;
+               * default 1.0 = exact no-op) BEFORE the scale/clamp below, so
+               * the existing clipping guard still protects the output. */
+              gdouble sample = (gdouble) dts->samples[c * 256 + n] *
+                  (gdouble) dts->makeup_gain_linear;
+              gdouble s = sample * 2147483648.0;
               if (s > 2147483647.0)
                 s = 2147483647.0;
               else if (s < -2147483648.0)
@@ -801,6 +911,9 @@ gst_dtsdec_set_property (GObject * object, guint prop_id, const GValue * value,
     case PROP_DRC:
       dts->dynamic_range_compression = g_value_get_boolean (value);
       break;
+    case PROP_MAKEUP_GAIN_DB:
+      gst_dtsdec_apply_makeup_gain_db (dts, g_value_get_float (value));
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -816,6 +929,9 @@ gst_dtsdec_get_property (GObject * object, guint prop_id, GValue * value,
   switch (prop_id) {
     case PROP_DRC:
       g_value_set_boolean (value, dts->dynamic_range_compression);
+      break;
+    case PROP_MAKEUP_GAIN_DB:
+      g_value_set_float (value, dts->makeup_gain_db);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
