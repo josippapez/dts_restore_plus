@@ -61,6 +61,22 @@
         </p>
       </section>
 
+      <!-- ===== Per-codec make-up gain ===== -->
+      <section class="card card--wide" aria-labelledby="h-gain">
+        <h2 id="h-gain">Make-up gain</h2>
+        <p class="muted">
+          The custom DTS and TrueHD decoders play quieter than LG's native codecs.
+          Tune a per-codec make-up gain (dB) here &mdash; no SSH or rebuild needed.
+          The value is written on-device and takes effect on the <strong>next
+          playback</strong> (decoder init), not the current one.
+        </p>
+        <div class="row">
+          <label for="gainDts">DTS&nbsp;gain&nbsp;(dB)&nbsp;<input type="number" id="gainDts" class="focusable" data-nav min="-20" max="20" step="0.5" value="0.0"></label>
+          <label for="gainTruehd">TrueHD&nbsp;gain&nbsp;(dB)&nbsp;<input type="number" id="gainTruehd" class="focusable" data-nav min="-20" max="20" step="0.5" value="0.0"></label>
+          <button id="btnSaveGain" class="btn btn--primary focusable" data-nav>Save gain</button>
+        </div>
+      </section>
+
       <!-- ===== Test the patch ===== -->
       <section class="card card--wide" aria-labelledby="h-test">
         <h2 id="h-test">Test the patch</h2>

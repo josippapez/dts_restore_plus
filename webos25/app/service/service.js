@@ -146,6 +146,58 @@ var W25_GC_AWK = [
 ].join("\n");
 
 /* =======================================================================
+ * Make-up gain config files (per the EPIC config-file contract): a single
+ * ASCII dB float, read by each decoder at init (dts25/gain.conf ->
+ * gstdtsdec, truehd/gain.conf -> the ffmpeg mlpdec.c patch). Written from
+ * the app via rootExec, mirroring the existing config-write pattern above
+ * (mkdir -p the parent, write, no live-file editing needed here since
+ * these are OUR files, not a bind-mount override of an LG /etc file).
+ * No gstreamer registry re-init needed -- the decoder reads its config at
+ * the NEXT playback init, so the value just needs to be on disk.
+ * ===================================================================== */
+var DTS_GAIN_CONF = W25_DEST + "/gain.conf";
+var THD_GAIN_CONF = W25_THD_DEST + "/gain.conf";
+
+/**
+ * Clamp a caller-supplied gain to the contract range [-20, +20] dB and
+ * round to 0.1 dB. Returns null (never NaN) for anything non-finite so
+ * callers can reject bad input instead of silently writing garbage.
+ */
+function clampGainDb(v) {
+  var n = Number(v);
+  if (!isFinite(n)) return null;
+  if (n < -20) n = -20;
+  else if (n > 20) n = 20;
+  return Math.round(n * 10) / 10;
+}
+
+/** Write BOTH gain.conf files (temp file + mv so a decoder never reads a
+ *  half-written file). mkdir -p the parent dirs first -- they may not
+ *  exist yet if Enable was never run (decoders default to 0.0 dB unity
+ *  regardless, per the contract's fault-tolerant default). */
+function w25SetGainScript(dtsDb, thdDb) {
+  return [
+    "set -u",
+    'mkdir -p "' + W25_DEST + '" "' + W25_THD_DEST + '" || { echo "FAIL: mkdir"; exit 0; }',
+    'printf "%s\\n" "' + dtsDb.toFixed(1) + '" > "' + DTS_GAIN_CONF + '.tmp" && mv -f "' + DTS_GAIN_CONF + '.tmp" "' + DTS_GAIN_CONF + '" || echo "FAIL: dts write"',
+    'printf "%s\\n" "' + thdDb.toFixed(1) + '" > "' + THD_GAIN_CONF + '.tmp" && mv -f "' + THD_GAIN_CONF + '.tmp" "' + THD_GAIN_CONF + '" || echo "FAIL: truehd write"',
+    'echo OK',
+    "exit 0"
+  ].join("\n");
+}
+
+/** Read both gain.conf files back (for the UI to show the current value). */
+function w25GetGainScript() {
+  return [
+    'DTS=$(cat "' + DTS_GAIN_CONF + '" 2>/dev/null | tr -d "[:space:]")',
+    'THD=$(cat "' + THD_GAIN_CONF + '" 2>/dev/null | tr -d "[:space:]")',
+    'echo "DTS_GAIN=$DTS"',
+    'echo "THD_GAIN=$THD"',
+    "exit 0"
+  ].join("\n");
+}
+
+/* =======================================================================
  * CX mechanism constants  (mirror repo-root install.sh / init_dts.sh)
  * ===================================================================== */
 var CX_STATE       = "/var/lib/webosbrew/dtsenabler/cx";
@@ -867,6 +919,67 @@ service.register("testfiles", function (message) {
     return { key: t.key, file: t.file, path: PAYLOAD_TESTS + "/" + t.file };
   });
   message.respond({ returnValue: true, dir: PAYLOAD_TESTS, files: files });
+});
+
+/* setMakeupGain: write BOTH gain.conf files (DTS + TrueHD/MLP) via rootExec.
+ * Only meaningful on the webOS 25 profile (the only profile with a
+ * make-up-gain-aware decoder); refuse cleanly elsewhere. Clamps to
+ * [-20,+20] and rejects NaN/non-finite before ever touching rootExec. No
+ * registry re-init needed -- applies on the next playback. */
+service.register("setMakeupGain", function (message) {
+  var p = message.payload || {};
+  var dts = clampGainDb(p.dts);
+  var thd = clampGainDb(p.truehd);
+  if (dts === null || thd === null) {
+    message.respond({
+      returnValue: false,
+      errorText: "Gain must be a finite number in [-20, 20] dB (got dts=" + p.dts + ", truehd=" + p.truehd + ")."
+    });
+    return;
+  }
+  detectProfile().then(function (d) {
+    if (d.profile !== PROFILE_W25) {
+      message.respond({
+        returnValue: false, profile: d.profile,
+        errorText: "Make-up gain is only available on the webOS 25 profile (found '" + d.profile + "')."
+      });
+      return;
+    }
+    return rootExec(w25SetGainScript(dts, thd)).then(function (r) {
+      if ((r.stdout || "").indexOf("OK") === -1) {
+        message.respond({ returnValue: false, errorText: "Failed to write gain config: " + (r.stdout || r.stderr || "unknown error") });
+        return;
+      }
+      message.respond({ returnValue: true, dts: dts, truehd: thd });
+    });
+  }).catch(function (e) {
+    message.respond({ returnValue: false, errorText: e.errorText || e.message || String(e) });
+  });
+});
+
+/* getMakeupGain: read both gain.conf files back so the UI can reflect the
+ * current values. Missing/empty/unparseable -> 0.0, mirroring the
+ * decoders' own fault-tolerant default; never fails on a bad/missing file. */
+service.register("getMakeupGain", function (message) {
+  detectProfile().then(function (d) {
+    if (d.profile !== PROFILE_W25) {
+      message.respond({ returnValue: true, profile: d.profile, dts: 0, truehd: 0 });
+      return;
+    }
+    return rootExec(w25GetGainScript()).then(function (r) {
+      var kv = parseKv(r.stdout);
+      var dts = clampGainDb(parseFloat(kv.DTS_GAIN));
+      var thd = clampGainDb(parseFloat(kv.THD_GAIN));
+      message.respond({
+        returnValue: true,
+        profile: d.profile,
+        dts: dts === null ? 0 : dts,
+        truehd: thd === null ? 0 : thd
+      });
+    });
+  }).catch(function (e) {
+    message.respond({ returnValue: false, errorText: e.errorText || e.message || String(e) });
+  });
 });
 
 /**

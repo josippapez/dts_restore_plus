@@ -2,9 +2,10 @@
  *
  * Talks to our own JS service (io.github.josippapez.dtsenabler.service), which detects
  * the TV generation and shells the matching mechanism out as root through the
- * Homebrew Channel exec service. The frontend never touches root directly and
- * sends NO free-form parameters (the methods take none) -- it only invokes
- * detect/status/enable/disable/uninstall.
+ * Homebrew Channel exec service. The frontend never touches root directly.
+ * Most calls (detect/status/enable/disable/uninstall/test) take no parameters;
+ * setMakeupGain is the one exception, sending {dts, truehd} dB values that the
+ * service clamps to [-20,+20] before they ever reach a shell command.
  *
  * callService() uses webOS.service.request when the platform bridge is present,
  * and falls back to a raw PalmServiceBridge so the UI is testable in a plain
@@ -239,6 +240,34 @@
   }
 
   /* ---------------------------------------------------------------------- */
+  /* Per-codec make-up gain                                                  */
+  /* ---------------------------------------------------------------------- */
+
+  // Read the current on-device values back, if the service exposes them
+  // (nice-to-have; on failure the inputs just keep their 0.0 defaults).
+  function loadGain() {
+    return callService("getMakeupGain", {}).then(function (res) {
+      if (res && typeof res.dts === "number") $("gainDts").value = res.dts;
+      if (res && typeof res.truehd === "number") $("gainTruehd").value = res.truehd;
+    }).catch(function () { /* leave the 0.0 defaults in place */ });
+  }
+
+  function doSaveGain() {
+    var dts = parseFloat($("gainDts").value);
+    var thd = parseFloat($("gainTruehd").value);
+    if (!isFinite(dts) || !isFinite(thd)) {
+      toast("Gain must be a number", "err");
+      return;
+    }
+    toast("Saving make-up gain…", "busy");
+    callService("setMakeupGain", { dts: dts, truehd: thd }).then(function (r) {
+      if (typeof r.dts === "number") $("gainDts").value = r.dts;
+      if (typeof r.truehd === "number") $("gainTruehd").value = r.truehd;
+      toast("Gain saved: DTS " + r.dts + " dB, TrueHD " + r.truehd + " dB (applies next playback)", "ok");
+    }).catch(function (e) { toast("Save gain failed: " + errText(e), "err"); });
+  }
+
+  /* ---------------------------------------------------------------------- */
   /* Spatial (D-pad) navigation                                             */
   /* ---------------------------------------------------------------------- */
 
@@ -335,12 +364,14 @@
     $("btnPlayMp4").addEventListener("click", function () { doPlay("mp4"); });
     $("btnPlayTs").addEventListener("click", function () { doPlay("ts"); });
     $("btnPlayM2ts").addEventListener("click", function () { doPlay("m2ts"); });
+    $("btnSaveGain").addEventListener("click", doSaveGain);
 
     wirePointerFocus();
     document.addEventListener("keydown", onKey);
     setFocus($("btnRefresh"));
 
     refreshStatus();
+    loadGain();
   }
 
   if (document.readyState === "loading") {
