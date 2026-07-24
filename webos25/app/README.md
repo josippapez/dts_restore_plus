@@ -113,6 +113,31 @@ Mirrors `../webos25/restore/install.sh` + `init_dts25.sh` exactly. Restores **DT
   objective "is the patch working" check independent of the speaker/output stage.
   The UI also offers **play-by-ear** of the bundled samples (in-app `<video>`).
 
+### Make-up gain control
+
+DTS and TrueHD decode quieter than LG's native AAC/AC-3/Atmos (no dialnorm/DRC
+in the custom decoders — see
+[`../docs/WEBOS25-DTS.md#loudness--make-up-gain`](../docs/WEBOS25-DTS.md#loudness--make-up-gain)
+for the mechanism). The `webos25-armel-gst124` profile's status panel has a
+**Make-up gain** card (`index.html:64-76`) with two dB fields, **DTS** and
+**TrueHD** (range `[-20, +20]`, step `0.5`, default `0.0`):
+
+- **Save gain** calls the service's `setMakeupGain({dts, truehd})`
+  (`js/app.js:255-267`), which clamps both values server-side and rejects
+  non-finite input, then writes both `gain.conf` files via `rootExec`
+  (`service/service.js:929-958`) — `/var/lib/webosbrew/dts25/gain.conf` and
+  `/var/lib/webosbrew/truehd/gain.conf`, each a single ASCII dB float written
+  temp-file-then-`mv` so a decoder never reads a half-written value.
+- On load (and Refresh), the panel calls `getMakeupGain()`
+  (`js/app.js:248-253`, `service/service.js:960-975`) to read the current
+  values back from both files.
+- The new value takes effect on the **next playback** — no re-detect, no
+  reboot, no rebuild. Only available on the `webos25-armel-gst124` profile;
+  refused cleanly elsewhere.
+- For the config-file format, the range clamp, and the by-ear tuning +
+  release runbook, see
+  [`../restore/TUNING-RUNBOOK.md`](../restore/TUNING-RUNBOOK.md).
+
 ### `cx-armv7-gst114` — demuxer-override (UNVERIFIED)
 
 Mirrors the repo-root `install.sh` / `init_dts.sh`. CX-era firmware strips the

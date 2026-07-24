@@ -1,8 +1,9 @@
 # TrueHD / MLP decoder build notes
 
 Unlike the DTS side (a patched gst-plugins-bad `dtsdec`, whose source is vendored
-here as `gstdtsdec.c` / `gstdtsdec.h`), the TrueHD/MLP support needs **no source
-patch**. It is produced by a plain, reproducible cross-build of upstream sources:
+here as `gstdtsdec.c` / `gstdtsdec.h`), the TrueHD/MLP decoder set itself is a
+plain, reproducible cross-build of **upstream** ffmpeg + gst-libav sources — no
+patch is needed to get `avdec_truehd`/`avdec_mlp` registered at all:
 
 - **ffmpeg n4.4.4**, configured minimally: only the `truehd` + `mlp` decoders,
   the `mlp` parser, and the `truehd` + `mlp` demuxers. Everything else is
@@ -34,6 +35,25 @@ built artifacts in `../truehd-out/build-truehd.sh`). It writes the plugin +
 ffmpeg libs and a `BUILD-REPORT.txt` (per-file `e_flags`, max GLIBC, TrueHD
 decoder presence) to its `/out`. Those artifacts are checked into
 `../truehd-out/` so `install.sh` can deploy them without a rebuild.
+
+## Make-up gain patch (loudness fix — NOT "no source patch" anymore)
+
+`build-truehd.sh` now applies one inline source patch before `./configure`:
+a make-up-gain patch to ffmpeg's `libavcodec/mlpdec.c` (`build-truehd.sh:64-257`,
+generated to `/tmp/mlpdec-makeup-gain.patch` and applied with `git apply`,
+falling back to `patch -p1`). It reads a user-tunable gain (dB) once at
+`mlp_decode_init` from `/var/lib/webosbrew/truehd/gain.conf` (missing/invalid
+file -> 0.0 dB unity, clamped to [-20, +20]), caches it as a linear multiplier
+on `MLPDecodeContext`, and applies it to the packed PCM output in
+`output_data()` with a saturating S32/S16 clamp. The patch adds only new,
+uniquely-named static symbols confined to the mlp/truehd translation unit —
+decoder registration, ABI, and the GLIBC ceiling below are unaffected, and
+AAC/AC-3/E-AC-3/ALAC decoding in the same `libgstlibav.so` is untouched
+(build-truehd.sh self-verifies this: `grep mlp_apply_makeup_gain`,
+`build-truehd.sh:252-257`). See
+[`../../docs/WEBOS25-DTS.md#loudness--make-up-gain`](../../docs/WEBOS25-DTS.md#loudness--make-up-gain)
+for the full mechanism and [`../TUNING-RUNBOOK.md`](../TUNING-RUNBOOK.md) for
+tuning + the rebuild/release loop this patch makes binary-affecting.
 
 ## Why S32LE matters (shared with DTS)
 

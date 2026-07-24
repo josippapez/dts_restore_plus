@@ -108,3 +108,65 @@ DTS MKV should play in stereo.
 **Bottom line:** DTS on the C5 is achievable but requires an aarch64 / GStreamer
 1.24 decoder cross-build — it cannot be done with the CX binaries in this repo,
 and it cannot be produced without the webOS-25 toolchain.
+
+## Loudness / make-up gain
+
+Once DTS and TrueHD decode at all, they play **noticeably quieter** than LG's
+native AAC / AC-3 / Atmos on the same TV. Root cause (confirmed against the
+code, not guessed): LG's closed native decoders bake in dialnorm/DRC loudness
+management; the custom `dtsdec` and the ffmpeg `mlpdec`/TrueHD path apply
+**none** — DTS decode is a straight `libdca` float-to-S32 conversion
+(`webos25/restore/src/gstdtsdec.c:766-777`) and stock ffmpeg's `mlpdec.c` has
+no loudness stage at all. There is no per-stream DTS DIALNORM parsing here
+(`libdca` doesn't cleanly expose it) — the fix is a fixed, user-tunable
+**make-up gain**, not true dialnorm normalization.
+
+**Mechanism:** each decoder gets a make-up gain (dB) applied to its decoded PCM
+in **float**, immediately **before** the existing float→S32 scale/clamp, so
+the pre-existing clipping guard still protects the output:
+
+- **DTS** (`gstdtsdec.c`) — a `makeup-gain-db` GObject property
+  (`:249-263`), mirroring the existing `drc` property. The default is read
+  once at decoder init (`:340-348`) from the config file below; the gain is
+  cached as a linear multiplier and applied in the per-sample loop
+  (`:766-777`) before the S32 clamp. `dts2lpcm` inherits this for free — it
+  wraps the same `dtsdec` internally.
+- **TrueHD/MLP** — `build-truehd.sh` applies an inline source patch to ffmpeg
+  n4.4.4's `libavcodec/mlpdec.c` before `./configure` (`:64-257`). The patch
+  reads the config file once at `mlp_decode_init`, caches a linear multiplier
+  on `MLPDecodeContext`, and scales the packed PCM output in `output_data()`
+  with a saturating S32/S16 clamp. The patch is confined to the mlp/truehd
+  translation unit — it cannot touch AAC/AC-3/E-AC-3/ALAC decoding in the
+  shared `libgstlibav.so` (see `webos25/restore/src/TRUEHD-BUILD.md`).
+
+**Config-file contract (identical for both codecs):**
+
+| Codec  | Path | Read by |
+|---|---|---|
+| DTS    | `/var/lib/webosbrew/dts25/gain.conf`   | `gstdtsdec.c` decoder init |
+| TrueHD/MLP | `/var/lib/webosbrew/truehd/gain.conf` | patched `mlpdec.c` decoder init |
+
+A single ASCII float = make-up gain in **dB** (e.g. `6.0`). `#` comment lines
+and blank lines are ignored; leading/trailing whitespace tolerated. Missing
+file, empty file, or unparseable content → **0.0 dB = unity = today's
+behavior** (never fails decode). Parsed value is clamped to **[-20.0,
++20.0] dB** before conversion to a linear multiplier
+(`linear = pow(10, dB/20)`); 0.0 dB always yields an exact linear `1.0` (no
+`pow`/`powf` rounding), so the unity case is a bit-exact no-op versus stock.
+Takes effect on the **next playback** (decoder init reads the file fresh) —
+no registry re-init needed.
+
+**App control:** the "DTS Enabler" app has a **Make-up gain** card with a DTS
+field and a TrueHD field (dB, range [-20, +20], step 0.5) — see
+[`../app/README.md`](../app/README.md#make-up-gain-control). No SSH or
+rebuild is needed to change the value.
+
+**DRC left off:** this is a loudness-level fix only, not a dynamics fix — the
+existing `drc` property/behavior on both paths is untouched and stays off by
+default.
+
+**Tuning + release runbook:** see
+[`../restore/TUNING-RUNBOOK.md`](../restore/TUNING-RUNBOOK.md) for the by-ear
+tuning procedure and the rebuild → on-device-verify → recommit → tag release
+loop required whenever `gstdtsdec.c` or `build-truehd.sh` changes (per
+[`.claude/rules/releasing.md`](../../.claude/rules/releasing.md)).

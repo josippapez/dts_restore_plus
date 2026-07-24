@@ -51,6 +51,14 @@ Homebrew Channel. (The CLI `restore/install.sh` above remains the SSH-based rout
 - `docs/` — design notes (`MULTI-MODEL.md`), the target-detection probe
   (`detect-target.sh`), background (`WEBOS25-DTS.md`), and `experimental/`.
 
+## Make-up gain (DTS/TrueHD quieter than native)
+
+Both custom decoders now apply a tunable make-up gain so DTS/TrueHD match LG's
+native AAC/AC-3/Atmos loudness — tunable from the app, no rebuild needed. See
+[`docs/WEBOS25-DTS.md#loudness--make-up-gain`](docs/WEBOS25-DTS.md#loudness--make-up-gain)
+for the mechanism and [`restore/TUNING-RUNBOOK.md`](restore/TUNING-RUNBOOK.md)
+for the by-ear tuning steps and the rebuild/verify/release loop.
+
 *(To rebuild the binaries instead of using the bundled ones, see
 `restore/build.sh` (DTS) and `restore/build-truehd.sh` (TrueHD) — requires Docker.)*
 
