@@ -60,6 +60,202 @@ fi
 cd ffmpeg
 make distclean >/dev/null 2>&1 || true
 
+# ---------------------------------------------------------------------------
+# webOS 25 make-up gain patch (loudness fix — mirrors the DTS side in
+# src/gstdtsdec.c). Applied to libavcodec/mlpdec.c BEFORE ./configure. mlpdec.c
+# is the translation unit that decodes ONLY truehd+mlp, so the change is
+# codec-local and CANNOT touch aac/ac3/eac3/alac output in this same
+# libgstlibav.so (the 2026-07-23 Spotify regression class). The decoder set,
+# ABI, and GLIBC ceiling below are unchanged. Default 0.0 dB = unity = exact
+# no-op: an un-tuned build decodes bit-identically to stock. Patch is inlined
+# (self-contained, like build-demux.sh's dts_support patch) so the recipe
+# travels with truehd-out/ and needs no external files. See EPIC ADR-001.
+# ---------------------------------------------------------------------------
+cat > /tmp/mlpdec-makeup-gain.patch <<'PATCH_EOF'
+diff --git a/libavcodec/mlpdec.c b/libavcodec/mlpdec.c
+index 7563fb0..ba537bb 100644
+--- a/libavcodec/mlpdec.c
++++ b/libavcodec/mlpdec.c
+@@ -25,6 +25,10 @@
+  */
+
+ #include <stdint.h>
++/* webOS 25 make-up-gain patch: config-file read (stdio/stdlib) + pow() (math). */
++#include <stdio.h>
++#include <stdlib.h>
++#include <math.h>
+
+ #include "avcodec.h"
+ #include "libavutil/internal.h"
+@@ -164,6 +168,11 @@ typedef struct MLPDecodeContext {
+     DECLARE_ALIGNED(32, int32_t, sample_buffer)[MAX_BLOCKSIZE][MAX_CHANNELS];
+
+     MLPDSPContext dsp;
++
++    /// webOS 25 make-up-gain patch: cached linear make-up gain read once at
++    /// decoder init from the on-device config file. 1.0 == unity == exact
++    /// no-op (stock-identical decode). See mlp_decode_init().
++    double      makeup_gain_linear;
+ } MLPDecodeContext;
+
+ static const uint64_t thd_channel_order[] = {
+@@ -276,6 +285,107 @@ static inline int read_huff_channels(MLPDecodeContext *m, GetBitContext *gbp,
+     return 0;
+ }
+
++/* ==========================================================================
++ * webOS 25 TrueHD/MLP make-up gain (single functional change vs. upstream
++ * n4.4.4). This translation unit decodes ONLY truehd + mlp, so the change is
++ * codec-local: it cannot affect the other decoders that share libgstlibav.so
++ * (aac/ac3/eac3/alac/...), whose output paths never enter this file.
++ *
++ * Contract (identical to the DTS path in gstdtsdec.c; see the epic ADR-001):
++ *  - Read at decoder init from /var/lib/webosbrew/truehd/gain.conf.
++ *  - A single ASCII float = make-up gain in dB; '#' comments + blank lines
++ *    ignored; leading/trailing whitespace tolerated.
++ *  - Missing / empty / unparseable -> 0.0 dB (unity, no-op). Never fail decode.
++ *  - Clamp parsed dB to [-20, +20], then linear = pow(10, dB/20).
++ *  - 0 dB yields an EXACT linear 1.0 (no pow rounding), and the apply step
++ *    short-circuits at unity, so a default/un-tuned build is bit-identical to
++ *    stock. Gain is applied to the packed integer PCM with a saturating clamp
++ *    (never wraps), matching the sample format chosen by read_major_sync().
++ * ========================================================================== */
++#define MLP_MAKEUP_GAIN_CONF_PATH "/var/lib/webosbrew/truehd/gain.conf"
++#define MLP_MAKEUP_GAIN_DB_MIN (-20.0)
++#define MLP_MAKEUP_GAIN_DB_MAX (20.0)
++
++/* Read the make-up gain (dB) from the on-device config file. A fault (no file,
++ * empty, or no parseable number) returns 0.0 dB (unity) and never breaks decode. */
++static double mlp_read_makeup_gain_db(void)
++{
++    FILE *f;
++    char line[128];
++    double gain_db = 0.0;
++
++    f = fopen(MLP_MAKEUP_GAIN_CONF_PATH, "r");
++    if (!f)
++        return 0.0;
++
++    while (fgets(line, sizeof(line), f)) {
++        char *p = line;
++        char *endptr = NULL;
++        double parsed;
++
++        while (*p == ' ' || *p == '\t')
++            p++;
++        if (*p == '\0' || *p == '\n' || *p == '\r' || *p == '#')
++            continue;
++
++        parsed = strtod(p, &endptr);
++        if (endptr != p) {
++            gain_db = parsed;
++            break;
++        }
++    }
++    fclose(f);
++
++    return gain_db;
++}
++
++/* Clamp dB to the contract range and convert to a linear multiplier. 0 dB maps
++ * to an exact 1.0 (no pow rounding) so unity is a bit-exact no-op. */
++static double mlp_makeup_gain_db_to_linear(double gain_db)
++{
++    if (gain_db > MLP_MAKEUP_GAIN_DB_MAX)
++        gain_db = MLP_MAKEUP_GAIN_DB_MAX;
++    else if (gain_db < MLP_MAKEUP_GAIN_DB_MIN)
++        gain_db = MLP_MAKEUP_GAIN_DB_MIN;
++
++    return (gain_db == 0.0) ? 1.0 : pow(10.0, gain_db / 20.0);
++}
++
++/* Apply the cached linear gain to the packed, interleaved PCM output frame in
++ * place, saturating (never wrapping) at the range of the active sample format.
++ * At unity the buffer is left untouched -> provable exact no-op. */
++static void mlp_apply_makeup_gain(void *data, int nb_samples, int channels,
++                                  int is32, double gain_linear)
++{
++    int64_t n = (int64_t) nb_samples * channels;
++    int64_t i;
++
++    if (gain_linear == 1.0)
++        return;
++
++    if (is32) {
++        int32_t *p = data;
++        for (i = 0; i < n; i++) {
++            double v = (double) p[i] * gain_linear;
++            if (v > 2147483647.0)
++                v = 2147483647.0;
++            else if (v < -2147483648.0)
++                v = -2147483648.0;
++            p[i] = (int32_t) v;
++        }
++    } else {
++        int16_t *p = data;
++        for (i = 0; i < n; i++) {
++            double v = (double) p[i] * gain_linear;
++            if (v > 32767.0)
++                v = 32767.0;
++            else if (v < -32768.0)
++                v = -32768.0;
++            p[i] = (int16_t) v;
++        }
++    }
++}
++
+ static av_cold int mlp_decode_init(AVCodecContext *avctx)
+ {
+     static AVOnce init_static_once = AV_ONCE_INIT;
+@@ -289,6 +399,15 @@ static av_cold int mlp_decode_init(AVCodecContext *avctx)
+
+     ff_thread_once(&init_static_once, init_static);
+
++    /* webOS 25 make-up-gain patch: read + cache the gain ONCE here at init
++     * (never per-sample/frame). Default 0.0 dB -> linear 1.0 -> exact no-op. */
++    m->makeup_gain_linear =
++        mlp_makeup_gain_db_to_linear(mlp_read_makeup_gain_db());
++    av_log(avctx, AV_LOG_INFO,
++           "webOS25 mlp/truehd make-up gain effective at init: linear %.4f%s\n",
++           m->makeup_gain_linear,
++           m->makeup_gain_linear == 1.0 ? " (unity, no-op)" : "");
++
+     return 0;
+ }
+
+@@ -1118,6 +1237,13 @@ static int output_data(MLPDecodeContext *m, unsigned int substr,
+                                                     s->max_matrix_channel,
+                                                     is32);
+
++    /* webOS 25 make-up-gain patch: scale the freshly-packed, interleaved PCM
++     * output (frame->data[0], avctx->channels == s->max_matrix_channel + 1,
++     * verified above) by the cached linear gain, with a saturating clamp.
++     * Unity (default) short-circuits -> bit-identical to stock. */
++    mlp_apply_makeup_gain(frame->data[0], s->blockpos, avctx->channels,
++                          is32, m->makeup_gain_linear);
++
+     /* Update matrix encoding side data */
+     if ((ret = ff_side_data_update_matrix_encoding(frame, s->matrix_encoding)) < 0)
+         return ret;
+PATCH_EOF
+
+echo "--- applying mlpdec make-up gain patch ---"
+# Cloned with git (depth 1) so `git apply` works; fall back to plain `patch`.
+if git apply --check /tmp/mlpdec-makeup-gain.patch 2>/dev/null; then
+  git apply /tmp/mlpdec-makeup-gain.patch
+elif patch -p1 --dry-run < /tmp/mlpdec-makeup-gain.patch >/dev/null 2>&1; then
+  patch -p1 < /tmp/mlpdec-makeup-gain.patch
+else
+  echo "PATCH FAILED: mlpdec-makeup-gain.patch does not apply to $FFTAG libavcodec/mlpdec.c"; exit 1
+fi
+
+echo "=== make-up gain patch verification ==="
+grep -q 'mlp_apply_makeup_gain' libavcodec/mlpdec.c \
+  || { echo "PATCH VERIFY FAILED: mlp_apply_makeup_gain missing"; exit 1; }
+grep -q '/var/lib/webosbrew/truehd/gain.conf' libavcodec/mlpdec.c \
+  || { echo "PATCH VERIFY FAILED: truehd gain.conf path missing"; exit 1; }
+echo "=== make-up gain patch OK (mlpdec.c only; aac/ac3/eac3/alac untouched) ==="
+
 # IMPORTANT: this libgstlibav.so is BIND-MOUNTED over LG's stock one, so it must
 # provide EVERYTHING stock libav provided PLUS truehd/mlp. A truehd/mlp-only build
 # strips the system's software decoders (avdec_aac/ac3/eac3/mp3/flac/h264/vp8/vp9/
