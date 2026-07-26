@@ -736,9 +736,17 @@ retired_gate_holds (float level_dbfs)
 
 /* NEGATIVE CONTROL ONLY — the naive detector bound, `level < FLOOR ? FLOOR :
  * level`. It passes NaN straight through, which is exactly what the shipped
- * inverted comparison in dts_drc_level_dbfs() prevents. With the gate retired
- * that inversion is the ONLY thing standing between a NaN sample and a
- * permanently poisoned smoother, so the test below pins it against this. */
+ * inverted comparison in dts_drc_level_dbfs() prevents.
+ *
+ * Restated for the NaN-hardening chunk: this control used to assert that the
+ * naive bound poisons the smoother PERMANENTLY. That is no longer true of
+ * either path, because dts_drc_smooth_step() is now self-recovering (it snaps
+ * to the next finite target rather than tracking towards it from a NaN). The
+ * separation the control still makes — and the one that matters — is that the
+ * naive bound corrupts the gain for at least one block, i.e. real samples get
+ * multiplied by NaN, while the shipped inverted comparison never lets a single
+ * block go bad. The inversion is still load-bearing; it is now the FIRST line
+ * of defence rather than the only one. */
 static float
 naive_level_dbfs (float sum_sq, int count)
 {
@@ -962,6 +970,7 @@ test_silence_no_gate (void)
     float rel = dts_drc_smooth_coef (250.0f, period);
     float shipped = 0.0f, naive = 0.0f;
     int i, shipped_finite = 1;
+    int naive_bad_blocks = 0, naive_recovered = 0;
 
     for (i = 0; i < 200; i++) {
       float sum = (i == 50) ? (float) (0.0 / 0.0)
@@ -977,12 +986,24 @@ test_silence_no_gate (void)
                   ln), 100.0f, 100.0f), atk, rel);
       if (!(shipped > -1e6f && shipped < 1e6f))
         shipped_finite = 0;
+      if (!(naive > -1e6f && naive < 1e6f))
+        naive_bad_blocks++;
     }
+    naive_recovered = (naive > -1e6f && naive < 1e6f);
     report (shipped_finite,
         "NaN and +inf blocks cannot poison the smoother across 200 blocks");
-    /* NEGATIVE CONTROL: the naive bound poisons permanently. */
-    report (!(naive == naive),
-        "negative control: the naive `level < FLOOR` bound leaves it NaN");
+    /* NEGATIVE CONTROL: the naive bound still corrupts the gain for real
+     * blocks — it just no longer does so forever. If this ever reads 0 the
+     * assertion above has become vacuous. */
+    printf ("  ---- naive bound corrupted %d of 200 blocks; shipped bound "
+        "corrupted 0\n", naive_bad_blocks);
+    report (naive_bad_blocks > 0,
+        "negative control: the naive `level < FLOOR` bound does corrupt blocks");
+    /* Self-recovery (the second line of defence): even the naive path is back
+     * to a finite gain by the end of the run, so a single bad block can no
+     * longer poison the rest of the stream. */
+    report (naive_recovered,
+        "the smoother recovers to a finite gain after a non-finite block");
   }
 
   /* Steady state must still be zipper-free: once converged, from == to and the
@@ -1191,6 +1212,178 @@ test_boost_decay (void)
       "the fade now decays essentially all the way back to unity");
 }
 
+/* ------------------------------------------------ 13. NaN hardening (config)
+ *
+ * A non-finite value must not be able to reach the DSP from ANY config key.
+ * This is reachable in production, not theoretical: the companion app writes
+ * the config from JavaScript and String(NaN) is the literal "NaN", which
+ * strtod() parses happily. What used to happen:
+ *   center=nan    -> center_boost_linear NaN, drc_active 1 -> centre samples
+ *                    become (gint32) NaN, which is UNDEFINED BEHAVIOUR;
+ *   drc_boost=nan -> the smoothed gain goes NaN and stays NaN on every channel
+ *                    for the rest of the stream.
+ * inf and -inf were always fine (they are ordered, so they clamped); NaN was
+ * the only value that slipped, because `v > hi` and `v < lo` are BOTH false
+ * for it.
+ * ------------------------------------------------------------------------- */
+
+/* NEGATIVE CONTROL ONLY — the pre-fix clamp. Every assertion below that claims
+ * the shipped clamp stops a NaN is paired with this, so a reverted fix cannot
+ * read as a pass. */
+static float
+naive_clampf (float v, float lo, float hi)
+{
+  if (v > hi)
+    return hi;
+  if (v < lo)
+    return lo;
+  return v;
+}
+
+static int
+is_finitef (float v)
+{
+  return (v == v) && (v > -1e30f) && (v < 1e30f);
+}
+
+static void
+test_nan_hardening (void)
+{
+  DtsDrcConfig c;
+  const float nan_f = (float) (0.0 / 0.0);
+  static const char *spellings[] = { "nan", "NaN", "NAN", "-nan", "+NaN" };
+  size_t k;
+
+  puts ("[13] NaN hardening — no config key can put a NaN into the DSP");
+
+  /* (a) the clamp itself, over every range the contract uses */
+  report (dts_drc_clampf (nan_f, DTS_DRC_PCT_MIN, DTS_DRC_PCT_MAX)
+      == DTS_DRC_PCT_MIN, "clampf(NaN) over 0..100 -> 0, not NaN");
+  report (dts_drc_clampf (nan_f, DTS_DRC_CENTER_DB_MIN, DTS_DRC_CENTER_DB_MAX)
+      == DTS_DRC_CENTER_DB_MIN, "clampf(NaN) over -10..+10 -> -10, not NaN");
+  report (dts_drc_clampf (nan_f, DTS_MAKEUP_GAIN_DB_MIN,
+          DTS_MAKEUP_GAIN_DB_MAX) == DTS_MAKEUP_GAIN_DB_MIN,
+      "clampf(NaN) over -20..+20 -> -20, not NaN");
+  /* NEGATIVE CONTROL: the old form passed it straight through. */
+  report (!(naive_clampf (nan_f, DTS_DRC_PCT_MIN, DTS_DRC_PCT_MAX)
+          == naive_clampf (nan_f, DTS_DRC_PCT_MIN, DTS_DRC_PCT_MAX)),
+      "negative control: the pre-fix clamp returns NaN for the same input");
+
+  /* Finite and infinite inputs must behave as before the fix — the hardening
+   * must not have moved the contract. Both clamps are compared over the whole
+   * range plus the two infinities.
+   *
+   * Precisely what this proves: the two forms compare EQUAL for every finite
+   * value, which is not quite the same as bit-identical. `==` cannot see the
+   * sign of zero, and there is exactly one input where they differ in it: with
+   * lo == 0.0f (the 0..100 pct range) the pre-fix form returned -0.0f for an
+   * input of -0.0f, where this one returns +0.0f. Inert everywhere it is used
+   * — the pct values are only ever multiplied by 0.01f and then by a gain in
+   * dB, and -0.0f and +0.0f multiply and compare the same — so the claim is
+   * "equal for all finite values", deliberately not "bit-identical". */
+  {
+    int same = 1;
+    int i;
+
+    for (i = -3000; i <= 3000; i++) {
+      float v = (float) i * 0.05f;      /* -150 .. +150 in 0.05 steps */
+
+      if (dts_drc_clampf (v, DTS_DRC_CENTER_DB_MIN, DTS_DRC_CENTER_DB_MAX)
+          != naive_clampf (v, DTS_DRC_CENTER_DB_MIN, DTS_DRC_CENTER_DB_MAX))
+        same = 0;
+      if (dts_drc_clampf (v, DTS_DRC_PCT_MIN, DTS_DRC_PCT_MAX)
+          != naive_clampf (v, DTS_DRC_PCT_MIN, DTS_DRC_PCT_MAX))
+        same = 0;
+    }
+    report (same, "6001 finite values clamp identically to the pre-fix form");
+  }
+  report (dts_drc_clampf ((float) (1.0 / 0.0), DTS_DRC_PCT_MIN,
+          DTS_DRC_PCT_MAX) == DTS_DRC_PCT_MAX, "+inf still clamps to hi");
+  report (dts_drc_clampf ((float) (-1.0 / 0.0), DTS_DRC_CENTER_DB_MIN,
+          DTS_DRC_CENTER_DB_MAX) == DTS_DRC_CENTER_DB_MIN,
+      "-inf still clamps to lo");
+
+  /* (b) every config key, in every spelling strtod() accepts. A NaN is not an
+   * out-of-range number, so it is treated as unparseable: that key keeps its
+   * DEFAULT (inert), rather than clamping to the bottom of its range. */
+  for (k = 0; k < sizeof (spellings) / sizeof (spellings[0]); k++) {
+    char buf[256];
+    char label[160];
+
+    snprintf (buf, sizeof (buf),
+        "%s\ndrc=line\ndrc_boost=%s\ndrc_cut=%s\ncenter=%s\n",
+        spellings[k], spellings[k], spellings[k], spellings[k]);
+    write_conf (buf);
+    dts_drc_config_read_file (conf_path, &c);
+
+    snprintf (label, sizeof (label),
+        "\"%s\" in every key -> finite, inert defaults", spellings[k]);
+    report (is_finitef (c.gain_db) && is_finitef (c.drc_boost_pct)
+        && is_finitef (c.drc_cut_pct) && is_finitef (c.center_db)
+        && c.gain_db == 0.0f && c.drc_boost_pct == 100.0f
+        && c.drc_cut_pct == 100.0f && c.center_db == 0.0f, label);
+  }
+
+  /* inf via the config keeps clamping (amendment B), so the fix is narrow. */
+  write_conf ("inf\ndrc_boost=inf\ndrc_cut=-inf\ncenter=-inf\n");
+  dts_drc_config_read_file (conf_path, &c);
+  report (c.gain_db == DTS_MAKEUP_GAIN_DB_MAX
+      && c.drc_boost_pct == DTS_DRC_PCT_MAX
+      && c.drc_cut_pct == DTS_DRC_PCT_MIN
+      && c.center_db == DTS_DRC_CENTER_DB_MIN,
+      "inf/-inf still CLAMP (amendment B), only NaN falls back to default");
+
+  /* (c) the UB path: center=nan must not reach the (gint32) conversion. The
+   * decoder computes center_boost_linear = db_to_linear(clamp(center_db)); if
+   * that is NaN, every centre sample is (gint32) NaN. */
+  write_conf ("center=nan\n");
+  dts_drc_config_read_file (conf_path, &c);
+  {
+    float lin = dts_drc_db_to_linear (dts_drc_clampf (c.center_db,
+            DTS_DRC_CENTER_DB_MIN, DTS_DRC_CENTER_DB_MAX));
+    float naive_lin = dts_drc_db_to_linear (naive_clampf (nan_f,
+            DTS_DRC_CENTER_DB_MIN, DTS_DRC_CENTER_DB_MAX));
+
+    report (is_finitef (lin) && lin == 1.0f,
+        "center=nan -> centre multiplier is an exact finite 1.0 (no UB)");
+    report (!is_finitef (naive_lin),
+        "negative control: the pre-fix path produced a NaN multiplier here");
+  }
+
+  /* (d) the poisoning path: a NaN boost% must not wedge the smoother, and the
+   * smoother must recover even if a NaN somehow reaches it anyway. */
+  {
+    const float period = (float) DTS_DRC_BLOCK_SAMPLES / 48000.0f;
+    float atk = dts_drc_smooth_coef (10.0f, period);
+    float rel = dts_drc_smooth_coef (250.0f, period);
+    float g = 0.0f;
+    int b, finite_throughout = 1;
+
+    write_conf ("drc=line\ndrc_boost=nan\ndrc_cut=nan\n");
+    dts_drc_config_read_file (conf_path, &c);
+    for (b = 0; b < 100; b++) {
+      float target = dts_drc_scale_gain_db (dts_drc_target_gain_db (c.drc_mode,
+              -46.0f), c.drc_boost_pct, c.drc_cut_pct);
+
+      g = dts_drc_smooth_step (g, target, atk, rel);
+      if (!is_finitef (g))
+        finite_throughout = 0;
+    }
+    report (finite_throughout,
+        "drc_boost=nan -> the smoothed gain is finite on all 100 blocks");
+    report (g > 0.5f,
+        "  ...and the default 100% boost is what got used (not 0%)");
+
+    /* Direct recovery proof: hand the smoother a NaN state and a finite
+     * target, exactly the situation that used to be permanent. */
+    g = dts_drc_smooth_step (nan_f, -3.25f, atk, rel);
+    report (g == -3.25f,
+        "a NaN smoother state snaps to the next finite target (recovery)");
+    g = dts_drc_smooth_step (g, -3.25f, atk, rel);
+    report (is_finitef (g), "  ...and stays finite on the block after that");
+  }
+}
+
 int
 main (int argc, char **argv)
 {
@@ -1214,6 +1407,7 @@ main (int argc, char **argv)
   test_end_to_end ();
   test_silence_no_gate ();
   test_boost_decay ();
+  test_nan_hardening ();
 
   printf ("\n=== %d checks, %d failures ===\n", checks, failures);
   return (failures == 0) ? 0 : 1;

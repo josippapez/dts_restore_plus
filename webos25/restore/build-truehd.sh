@@ -75,7 +75,15 @@ make distclean >/dev/null 2>&1 || true
 # The DSP block between the DRC-CORE-BEGIN / DRC-CORE-END markers inside the
 # patch is a BYTE-FOR-BYTE copy of the same block in src/gstdtsdec.c (the
 # reference implementation). Keeping it textually identical — dts_ prefixes and
-# all — is what makes drift between the two decoders mechanically detectable:
+# all — is what makes drift between the two decoders mechanically detectable,
+# and that detection is now an ENFORCED TEST, not a comment: check 6 of
+# `sh src/test/run-tests.sh` does exactly this diff and fails the run if it is
+# non-empty. Checks 7-9 there also re-check this patch's hunk arithmetic and
+# unit-test the host binding below, all without a cross-toolchain. Run it after
+# ANY edit to this heredoc — a change made here and not in src/gstdtsdec.c (or
+# vice versa) is a silent divergence between the two decoders.
+#
+# If you need to reproduce the diff by hand:
 #
 #   sed -n '/<<<DRC-CORE-BEGIN>>>/,/<<<DRC-CORE-END>>>/p' src/gstdtsdec.c > a
 #   awk '/^cat > \/tmp\/mlpdec-webos25-loudness.patch <<.PATCH_EOF.$/{f=1;next}
@@ -159,7 +167,7 @@ index 7563fb0..744db59 100644
  } MLPDecodeContext;
  
  static const uint64_t thd_channel_order[] = {
-@@ -276,6 +326,857 @@ static inline int read_huff_channels(MLPDecodeContext *m, GetBitContext *gbp,
+@@ -276,6 +326,896 @@ static inline int read_huff_channels(MLPDecodeContext *m, GetBitContext *gbp,
      return 0;
  }
  
@@ -379,13 +387,22 @@ index 7563fb0..744db59 100644
 +  float center_db;              /* -10..+10 dB                            */
 +} DtsDrcConfig;
 +
++/* NaN-safe by construction. The obvious `if (v > hi) ... if (v < lo) ...` form
++ * is NOT: every comparison against NaN is false, so a NaN sailed through both
++ * tests untouched and reached the DSP, where (gint32) NaN is undefined
++ * behaviour and a NaN gain poisons the stateful smoother for the rest of the
++ * stream. Testing `!(v > lo)` first inverts that — the predicate is TRUE for
++ * NaN — so NaN lands on lo. Same reasoning as the detector floor's inverted
++ * comparison; that path was hardened, this one was not. +/-inf are ordered and
++ * clamp to hi/lo as before, and every finite value is unaffected (v == lo
++ * returns lo, which is v). */
 +static float
 +dts_drc_clampf (float v, float lo, float hi)
 +{
++  if (!(v > lo))
++    return lo;
 +  if (v > hi)
 +    return hi;
-+  if (v < lo)
-+    return lo;
 +  return v;
 +}
 +
@@ -576,7 +593,19 @@ index 7563fb0..744db59 100644
 +dts_drc_smooth_step (float smoothed_db, float target_db, float attack_coef,
 +    float release_coef)
 +{
-+  float coef = (target_db < smoothed_db) ? attack_coef : release_coef;
++  float coef;
++
++  /* Self-recovering. This is the only stateful DSP here, so a NaN that ever
++   * reached it would be an ABSORBING state: NaN compares false, takes the
++   * release branch, and `smoothed + coef * (target - NaN)` is NaN again — on
++   * every channel, on every later block, until _start()/flush. The clamp and
++   * config hardening should make that unreachable; this makes it recoverable
++   * regardless, by snapping to the next finite target instead of tracking
++   * towards it. `smoothed_db != smoothed_db` is true for NaN only. */
++  if (smoothed_db != smoothed_db)
++    return target_db;
++
++  coef = (target_db < smoothed_db) ? attack_coef : release_coef;
 +
 +  return smoothed_db + coef * (target_db - smoothed_db);
 +}
@@ -637,7 +666,13 @@ index 7563fb0..744db59 100644
 +  char *end = NULL;
 +  double parsed = DTS_DRC_STRTOD (val, &end);
 +
-+  if (end == val)
++  /* strtod() accepts "nan"/"NaN"/"nan(chars)" — and this is reachable: the
++   * companion app writes the config from JavaScript, where String(NaN) is
++   * exactly "NaN". A NaN is not an out-of-range NUMBER, so the contract's
++   * "out-of-range -> clamp" rule has no meaning for it (clamping needs an
++   * ordering); treat it as unparseable and let the caller keep that key's
++   * default. `parsed != parsed` is true for NaN only, so +/-inf still clamp. */
++  if (end == val || parsed != parsed)
 +    return 0;
 +  *out = dts_drc_clampf ((float) parsed, lo, hi);
 +  return 1;
@@ -760,7 +795,13 @@ index 7563fb0..744db59 100644
 +            continue;
 +
 +        parsed = strtod(p, &endptr);
-+        if (endptr != p) {
++        /* `parsed != parsed` rejects NaN: strtod() accepts the literal "NaN",
++         * the app writes this file from JavaScript where String(NaN) is
++         * exactly that, and a NaN gain would make every output sample
++         * (int32_t) NaN — undefined behaviour. Mirrors the core's
++         * dts_drc_parse_clamped(); an unusable value leaves the default 0 dB.
++         * +/-inf still parse and clamp, per epic amendment B. */
++        if (endptr != p && parsed == parsed) {
 +            gain_db = parsed;
 +            break;
 +        }
@@ -780,10 +821,16 @@ index 7563fb0..744db59 100644
 + * bit of every sample on an already-tuned installation. */
 +static double mlp_makeup_gain_db_to_linear(double gain_db)
 +{
-+    if (gain_db > DTS_MAKEUP_GAIN_DB_MAX)
-+        gain_db = DTS_MAKEUP_GAIN_DB_MAX;
-+    else if (gain_db < DTS_MAKEUP_GAIN_DB_MIN)
++    /* Inverted first test, same reason as dts_drc_clampf(): `!(x > lo)` is
++     * TRUE for NaN, so a non-finite gain lands on the floor instead of
++     * sailing through both comparisons into pow() and then into every sample.
++     * Deliberately open-coded rather than calling dts_drc_clampf(), because
++     * this conversion must stay in DOUBLE — see the comment above. Finite
++     * values clamp to exactly the same result as before. */
++    if (!(gain_db > DTS_MAKEUP_GAIN_DB_MIN))
 +        gain_db = DTS_MAKEUP_GAIN_DB_MIN;
++    else if (gain_db > DTS_MAKEUP_GAIN_DB_MAX)
++        gain_db = DTS_MAKEUP_GAIN_DB_MAX;
 +
 +    return (gain_db == 0.0) ? 1.0 : pow(10.0, gain_db / 20.0);
 +}
@@ -1017,7 +1064,7 @@ index 7563fb0..744db59 100644
  static av_cold int mlp_decode_init(AVCodecContext *avctx)
  {
      static AVOnce init_static_once = AV_ONCE_INIT;
-@@ -289,9 +1190,69 @@ static av_cold int mlp_decode_init(AVCodecContext *avctx)
+@@ -289,9 +1229,69 @@ static av_cold int mlp_decode_init(AVCodecContext *avctx)
  
      ff_thread_once(&init_static_once, init_static);
  
@@ -1087,7 +1134,7 @@ index 7563fb0..744db59 100644
  /** Read a major sync info header - contains high level information about
   *  the stream - sample rate, channel arrangement etc. Most of this
   *  information is not actually necessary for decoding, only for playback.
-@@ -1118,6 +2079,110 @@ static int output_data(MLPDecodeContext *m, unsigned int substr,
+@@ -1118,6 +2118,110 @@ static int output_data(MLPDecodeContext *m, unsigned int substr,
                                                      s->max_matrix_channel,
                                                      is32);
  
@@ -1198,7 +1245,7 @@ index 7563fb0..744db59 100644
      /* Update matrix encoding side data */
      if ((ret = ff_side_data_update_matrix_encoding(frame, s->matrix_encoding)) < 0)
          return ret;
-@@ -1339,6 +2404,8 @@ AVCodec ff_mlp_decoder = {
+@@ -1339,6 +2443,8 @@ AVCodec ff_mlp_decoder = {
      .priv_data_size = sizeof(MLPDecodeContext),
      .init           = mlp_decode_init,
      .decode         = read_access_unit,
@@ -1207,7 +1254,7 @@ index 7563fb0..744db59 100644
      .capabilities   = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_CHANNEL_CONF,
      .caps_internal  = FF_CODEC_CAP_INIT_THREADSAFE,
  };
-@@ -1352,6 +2419,8 @@ AVCodec ff_truehd_decoder = {
+@@ -1352,6 +2458,8 @@ AVCodec ff_truehd_decoder = {
      .priv_data_size = sizeof(MLPDecodeContext),
      .init           = mlp_decode_init,
      .decode         = read_access_unit,

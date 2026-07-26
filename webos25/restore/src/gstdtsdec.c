@@ -375,13 +375,22 @@ typedef struct
   float center_db;              /* -10..+10 dB                            */
 } DtsDrcConfig;
 
+/* NaN-safe by construction. The obvious `if (v > hi) ... if (v < lo) ...` form
+ * is NOT: every comparison against NaN is false, so a NaN sailed through both
+ * tests untouched and reached the DSP, where (gint32) NaN is undefined
+ * behaviour and a NaN gain poisons the stateful smoother for the rest of the
+ * stream. Testing `!(v > lo)` first inverts that — the predicate is TRUE for
+ * NaN — so NaN lands on lo. Same reasoning as the detector floor's inverted
+ * comparison; that path was hardened, this one was not. +/-inf are ordered and
+ * clamp to hi/lo as before, and every finite value is unaffected (v == lo
+ * returns lo, which is v). */
 static float
 dts_drc_clampf (float v, float lo, float hi)
 {
+  if (!(v > lo))
+    return lo;
   if (v > hi)
     return hi;
-  if (v < lo)
-    return lo;
   return v;
 }
 
@@ -572,7 +581,19 @@ static float
 dts_drc_smooth_step (float smoothed_db, float target_db, float attack_coef,
     float release_coef)
 {
-  float coef = (target_db < smoothed_db) ? attack_coef : release_coef;
+  float coef;
+
+  /* Self-recovering. This is the only stateful DSP here, so a NaN that ever
+   * reached it would be an ABSORBING state: NaN compares false, takes the
+   * release branch, and `smoothed + coef * (target - NaN)` is NaN again — on
+   * every channel, on every later block, until _start()/flush. The clamp and
+   * config hardening should make that unreachable; this makes it recoverable
+   * regardless, by snapping to the next finite target instead of tracking
+   * towards it. `smoothed_db != smoothed_db` is true for NaN only. */
+  if (smoothed_db != smoothed_db)
+    return target_db;
+
+  coef = (target_db < smoothed_db) ? attack_coef : release_coef;
 
   return smoothed_db + coef * (target_db - smoothed_db);
 }
@@ -633,7 +654,13 @@ dts_drc_parse_clamped (const char *val, float lo, float hi, float *out)
   char *end = NULL;
   double parsed = DTS_DRC_STRTOD (val, &end);
 
-  if (end == val)
+  /* strtod() accepts "nan"/"NaN"/"nan(chars)" — and this is reachable: the
+   * companion app writes the config from JavaScript, where String(NaN) is
+   * exactly "NaN". A NaN is not an out-of-range NUMBER, so the contract's
+   * "out-of-range -> clamp" rule has no meaning for it (clamping needs an
+   * ordering); treat it as unparseable and let the caller keep that key's
+   * default. `parsed != parsed` is true for NaN only, so +/-inf still clamp. */
+  if (end == val || parsed != parsed)
     return 0;
   *out = dts_drc_clampf ((float) parsed, lo, hi);
   return 1;
@@ -897,10 +924,13 @@ gst_dtsdec_class_init (GstDtsDecClass * klass)
 static void
 gst_dtsdec_apply_makeup_gain_db (GstDtsDec * dts, gfloat gain_db)
 {
-  if (gain_db > DTS_MAKEUP_GAIN_DB_MAX)
-    gain_db = DTS_MAKEUP_GAIN_DB_MAX;
-  else if (gain_db < DTS_MAKEUP_GAIN_DB_MIN)
-    gain_db = DTS_MAKEUP_GAIN_DB_MIN;
+  /* dts_drc_clampf(), not the hand-rolled `>`/`<` pair this used to carry: that
+   * pair had the same NaN hole as the core's clamp did, and it is on the
+   * SHIPPED gain path — a NaN here makes makeup_gain_linear NaN and every
+   * output sample (gint32) NaN, i.e. undefined behaviour. Finite values clamp
+   * to exactly the same result, so the shipped path is behaviour-unchanged. */
+  gain_db = dts_drc_clampf (gain_db, DTS_MAKEUP_GAIN_DB_MIN,
+      DTS_MAKEUP_GAIN_DB_MAX);
 
   dts->makeup_gain_db = gain_db;
   dts->makeup_gain_linear = (gain_db == 0.0f) ? 1.0f :
