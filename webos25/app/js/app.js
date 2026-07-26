@@ -150,6 +150,8 @@
     $("btnPlayMp4").disabled = !canTest;
     $("btnPlayTs").disabled = !canTest;
     $("btnPlayM2ts").disabled = !canTest;
+    // A/B compare renders through the patched dtsdec, so it needs the same profile.
+    $("btnAb").disabled = !canTest;
   }
 
   /* Map a self-test verdict to a status cell. */
@@ -379,6 +381,91 @@
   }
 
   /* ---------------------------------------------------------------------- */
+  /* A/B compare (bundled DTS clip: DRC off vs the saved settings)          */
+  /* ---------------------------------------------------------------------- */
+
+  // Filled by abPreview; each is {url, bytes, rendered, meanDb, peakDb, ...}.
+  var abState = { a: null, b: null };
+  // Bumped on every render so the player never serves a cached previous take.
+  var abStamp = 0;
+
+  function abDb(v) {
+    if (typeof v !== "number") return "n/a";
+    return (v > 0 ? "+" : "") + v.toFixed(1) + " dB";
+  }
+
+  function abVariantText(v) {
+    if (!v) return "—";
+    if (!v.rendered) return "render failed";
+    var s = Math.round(v.bytes / 1024) + " KB";
+    if (typeof v.meanDb === "number") s += " · mean " + abDb(v.meanDb) + ", peak " + abDb(v.peakDb);
+    return s;
+  }
+
+  function abSetPlayEnabled() {
+    $("btnAbA").disabled = !(abState.a && abState.a.rendered);
+    $("btnAbB").disabled = !(abState.b && abState.b.rendered);
+  }
+
+  function doAbRender() {
+    $("btnAb").disabled = true;
+    abState.a = abState.b = null;
+    abSetPlayEnabled();
+    setVal("abA", "rendering…"); setVal("abB", "rendering…");
+    setVal("abDelta", "—"); setVal("abConf", "—");
+    toast("Rendering A/B on the TV (a few seconds)…", "busy");
+
+    callService("abPreview", {}).then(function (res) {
+      abStamp++;
+      abState.a = res.a || null;
+      abState.b = res.b || null;
+      setVal("abA", abVariantText(res.a), res.a && res.a.rendered ? "ok" : "warn");
+      setVal("abB", abVariantText(res.b), res.b && res.b.rendered ? "ok" : "warn");
+
+      if (res.measured && typeof res.deltaMeanDb === "number") {
+        setVal("abDelta", abDb(res.deltaMeanDb) + " mean, " + abDb(res.deltaPeakDb) + " peak",
+               res.deltaMeanDb === 0 ? "warn" : "ok");
+      } else {
+        setVal("abDelta", "not measured — " + (res.measureNote || "no numbers available"), "warn");
+      }
+
+      setVal("abConf", res.configUnchanged ? "unchanged (" + res.configProof + ")"
+                                           : "CHECK: " + (res.configProof || "could not verify"),
+             res.configUnchanged ? "ok" : "warn");
+
+      abSetPlayEnabled();
+      if (abState.a || abState.b) {
+        toast("A/B ready — play A, then B, and listen to the same clip twice.", "ok");
+      } else {
+        toast("A/B render produced nothing playable; see the numbers above.", "err");
+      }
+    }).catch(function (e) {
+      setVal("abA", "—"); setVal("abB", "—");
+      setVal("abDelta", "—"); setVal("abConf", "—");
+      abSetPlayEnabled();
+      toast("A/B failed: " + errText(e), "err");
+    }).then(function () {
+      $("btnAb").disabled = false;
+    });
+  }
+
+  function doAbPlay(which) {
+    var v = abState[which];
+    if (!v || !v.rendered) return;
+    var p = $("abPlayer");
+    p.hidden = false;
+    p.src = v.url + "?r=" + abStamp;
+    toast("Playing " + v.label, "busy");
+    var pr = p.play();
+    if (pr && typeof pr.catch === "function") {
+      pr.catch(function () {
+        toast("The in-app player refused the rendered clip; the measured numbers above still hold.", "err");
+      });
+    }
+    p.scrollIntoView({ block: "nearest" });
+  }
+
+  /* ---------------------------------------------------------------------- */
   /* Spatial (D-pad) navigation                                             */
   /* ---------------------------------------------------------------------- */
 
@@ -476,6 +563,18 @@
     $("btnPlayTs").addEventListener("click", function () { doPlay("ts"); });
     $("btnPlayM2ts").addEventListener("click", function () { doPlay("m2ts"); });
     $("btnSaveGain").addEventListener("click", doSaveGain);
+    $("btnAb").addEventListener("click", doAbRender);
+    $("btnAbA").addEventListener("click", function () { doAbPlay("a"); });
+    $("btnAbB").addEventListener("click", function () { doAbPlay("b"); });
+    // A <video>/<audio> src that the pipeline can't handle fails via `error` on
+    // the element, not via the play() promise, so report that path too.
+    $("abPlayer").addEventListener("error", function () {
+      toast("The in-app player couldn't load the rendered clip; the measured numbers above still hold.", "err");
+    });
+    // Don't leave ~1 MB of rendered wav in the app directory after we're gone.
+    window.addEventListener("pagehide", function () {
+      callService("abCleanup", {}).catch(function () { /* best effort */ });
+    });
 
     // Gain +/- steppers (data-gain = which codec, data-step = delta in dB).
     var stepBtns = document.querySelectorAll("[data-gain][data-step]");

@@ -129,6 +129,36 @@
         <div class="row">
           <button id="btnSaveGain" class="btn btn--primary focusable" data-nav>Save audio settings</button>
         </div>
+
+        <!-- A/B compare: same clip, DRC off vs the saved settings -->
+        <div class="ab" role="group" aria-labelledby="h-ab">
+          <h3 id="h-ab" class="ab__title">A/B compare</h3>
+          <p class="muted">
+            Renders the bundled clip twice on this TV &mdash; <strong>A</strong> with DRC
+            off and 0&nbsp;dB gain/dialogue, <strong>B</strong> with your
+            <strong>saved</strong> settings &mdash; then lets you play each, so you hear the
+            difference on identical content. It drives the decoder directly, so your saved
+            settings are never touched (the hashes below prove it). The bundled samples are
+            <strong>DTS</strong>, so this exercises the DTS path only, not TrueHD.
+          </p>
+          <div class="row">
+            <button id="btnAb"  class="btn btn--primary focusable" data-nav disabled>Render A/B</button>
+            <button id="btnAbA" class="btn focusable" data-nav disabled>Play&nbsp;A (DRC off)</button>
+            <button id="btnAbB" class="btn focusable" data-nav disabled>Play&nbsp;B (saved)</button>
+          </div>
+          <dl class="status">
+            <dt>A &mdash; DRC off, 0 dB</dt><dd id="abA">&mdash;</dd>
+            <dt>B &mdash; saved settings</dt><dd id="abB">&mdash;</dd>
+            <dt>Difference (B &minus; A)</dt><dd id="abDelta">&mdash;</dd>
+            <dt>Your saved config</dt><dd id="abConf">&mdash;</dd>
+          </dl>
+          <audio id="abPlayer" class="testvideo" controls preload="auto" hidden></audio>
+          <p class="muted note-warn">
+            Rendered clips are 16-bit stereo so the in-app player has the best chance with
+            them; both variants use the same downmix, so the difference is unaffected. If the
+            player refuses them, the measured numbers above are still valid.
+          </p>
+        </div>
       </section>
 
       <!-- ===== Test the patch ===== -->

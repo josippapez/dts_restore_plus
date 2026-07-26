@@ -217,6 +217,34 @@ function presetFromConfig(mode, boost, cut) {
   return "off";
 }
 
+/** Any DRC mode string other than "off"/"line"/"rf" (missing key, typo,
+ *  hand-edit) falls back to "off", per the contract's "invalid -> default". */
+function validDrcMode(v) { return (v === "off" || v === "line" || v === "rf") ? v : "off"; }
+
+/** drc_boost / drc_cut percentage read back from disk; unparseable -> the
+ *  contract default of 100. */
+function drcPct(v) { return isFinite(parseFloat(v)) ? Math.round(Number(v)) : 100; }
+
+/** Turn the KEY=VALUE output of w25GetGainScript() into the per-codec
+ *  settings the UI (and the A/B preview) work in: {gain, preset, center}.
+ *  Missing/unparseable values become the contract defaults (0 dB, preset
+ *  Off, 0 dB centre), mirroring the decoders' own fault-tolerant parsing. */
+function parseSavedConfig(kv) {
+  function one(gainKey, drcKey, boostKey, cutKey, centerKey) {
+    var gain = clampGainDb(parseFloat(kv[gainKey]));
+    var center = clampCenterDb(parseFloat(kv[centerKey]));
+    return {
+      gain: gain === null ? 0 : gain,
+      preset: presetFromConfig(validDrcMode(kv[drcKey]), drcPct(kv[boostKey]), drcPct(kv[cutKey])),
+      center: center === null ? 0 : center
+    };
+  }
+  return {
+    dts: one("DTS_GAIN", "DTS_DRC", "DTS_BOOST", "DTS_CUT", "DTS_CENTER"),
+    truehd: one("THD_GAIN", "THD_DRC", "THD_BOOST", "THD_CUT", "THD_CENTER")
+  };
+}
+
 /** Write BOTH gain.conf files (temp file + mv so a decoder never reads a
  *  half-written file). mkdir -p the parent dirs first -- they may not
  *  exist yet if Enable was never run (decoders default to 0.0 dB unity
@@ -705,6 +733,209 @@ function w25SelfTest() {
 }
 
 /* =======================================================================
+ * In-app A/B preview (webOS 25; DTS path only)
+ * ---------------------------------------------------------------------
+ * Renders the bundled DTS sample TWICE through `dtsdec` -- once with the
+ * whole DRC/gain path inert (A: drc-mode=off, gain 0, centre 0) and once
+ * with the user's SAVED gain.conf settings (B) -- so the difference can be
+ * heard on identical content, back to back, without leaving the app.
+ *
+ * WHY PROPERTIES, NOT THE CONFIG FILE: every variant is expressed as
+ * dtsdec GObject properties on the gst-launch command line (drc-mode,
+ * drc-boost, drc-cut, makeup-gain-db, center-boost-db). gain.conf is
+ * therefore never written, moved or even re-read, so the A/B cannot leave
+ * the user's settings altered. The script hashes BOTH gain.conf files
+ * before and after and returns the hashes so that is provable, not
+ * merely asserted.
+ *
+ * WHERE THE RENDERED WAVs GO -- the app's own install dir, next to the
+ * bundled samples ($APPBASE/payload/testfiles). Reason: the shipped
+ * play-by-ear buttons already load `payload/testfiles/DTS-in-mp4.mp4` as
+ * a RELATIVE URL from index.html and that works on the device, so a file
+ * dropped in that same directory is reachable by the same mechanism.
+ * /tmp has no such evidence behind it and is very likely outside the
+ * app's document root, so it is not used. The directory is probed for
+ * writability first and the call fails cleanly (never silently) if it is
+ * read-only.
+ *
+ * NOT VERIFIED ON DEVICE (this build environment has no TV access):
+ * whether webOS's media pipeline will actually PLAY a RIFF/WAV from an
+ * <audio> element. The renders are written as 16-bit stereo PCM -- the
+ * most broadly supported WAV flavour, and ~6x smaller than the native
+ * 5.1/S32 output -- to give that the best chance. Both variants go
+ * through the identical downmix, so the A-vs-B difference is preserved.
+ * If playback does fail, the feature degrades to "numbers only": the
+ * measured dB delta below is computed on-device and stays valid.
+ *
+ * MEASUREMENT: a second pass per variant through GStreamer's `level`
+ * element (there is no ffmpeg on the TV), parsed from `gst-launch-1.0 -m`
+ * bus messages. This pass deliberately does NOT include the stereo
+ * capsfilter, so the numbers describe the decoder's native output. If
+ * `level` is not registered on this TV the numbers are reported as "na"
+ * rather than invented.
+ * ===================================================================== */
+var AB_SAMPLE    = "DTS-in-mp4.mp4";              // bundled clip used for both variants
+var AB_A_NAME    = "dtsenabler_ab_a.wav";
+var AB_B_NAME    = "dtsenabler_ab_b.wav";
+var AB_REL_URL   = "payload/testfiles/";          // relative to index.html (see above)
+var AB_MIN_BYTES = TEST_WAV_MIN;                  // same "real PCM" floor as the self-test
+var AB_TIMEOUT_S = 40;                            // per gst-launch run; a real render is ~seconds
+var AB_LEVEL_NS  = 100000000;                     // `level interval=` -> one report per 100 ms
+
+/* awk program that turns `gst-launch-1.0 -m` level messages into
+ * "<tag>_MEAN=" (arithmetic mean of every per-channel rms dB value) and
+ * "<tag>_PEAK=" (max per-channel peak dB). Tokens that are not numeric
+ * (notably "-inf" for digital silence) are skipped rather than coerced to
+ * 0, which would drag the mean up. Written to the TV via a base64 heredoc
+ * and run with `awk -f`, the same way the install awk programs are, so no
+ * part of it survives the write as shell syntax. */
+var AB_LEVEL_AWK = [
+  '{',
+  '  n = index($0, "rms=(GValueArray)<"); if (n == 0) next;',
+  '  s = substr($0, n + 18); e = index(s, ">"); if (e == 0) next; r = substr(s, 1, e - 1);',
+  '  n = index($0, "peak=(GValueArray)<"); if (n == 0) next;',
+  '  s = substr($0, n + 19); e = index(s, ">"); if (e == 0) next; p = substr(s, 1, e - 1);',
+  '  c = split(r, a, ",");',
+  '  for (i = 1; i <= c; i++) {',
+  '    v = a[i]; sub(/^[^0-9+-]*/, "", v);',
+  '    if (v !~ /^[+-]?[0-9]/) continue;',
+  '    x = v + 0; if (x > -900) { sum += x; cnt++ }',
+  '  }',
+  '  c = split(p, a, ",");',
+  '  for (i = 1; i <= c; i++) {',
+  '    v = a[i]; sub(/^[^0-9+-]*/, "", v);',
+  '    if (v !~ /^[+-]?[0-9]/) continue;',
+  '    x = v + 0; if (!hp || x > pk) { pk = x; hp = 1 }',
+  '  }',
+  '}',
+  'END {',
+  '  if (cnt > 0) printf "%s_MEAN=%.1f\\n", t, sum / cnt; else printf "%s_MEAN=na\\n", t;',
+  '  if (hp) printf "%s_PEAK=%.1f\\n", t, pk; else printf "%s_PEAK=na\\n", t;',
+  '}'
+].join("\n");
+
+/** Build the dtsdec property list for one A/B variant. Every value is one
+ *  of our own server-clamped numbers or a fixed PRESET_MAP mode literal,
+ *  so nothing caller-controlled reaches the shell. */
+function w25AbProps(gainDb, presetName, centerDb) {
+  var p = PRESET_MAP[presetName];
+  return [
+    "drc-mode=" + p.mode,
+    "drc-boost=" + p.boost,
+    "drc-cut=" + p.cut,
+    "makeup-gain-db=" + gainDb.toFixed(1),
+    "center-boost-db=" + centerDb.toFixed(1)
+  ].join(" ");
+}
+
+/**
+ * The A/B render + measure script. `saved` is {gain, preset, center} as
+ * read back from the DTS gain.conf, i.e. variant B.
+ *
+ * Exit codes are captured straight after each `gst-launch` (never after a
+ * pipe, where `$?` would be the parser's status), and every file is size-
+ * checked before it is reported as rendered.
+ */
+function w25AbScript(saved) {
+  var propsA = w25AbProps(0, "off", 0);
+  var propsB = w25AbProps(saved.gain, saved.preset, saved.center);
+  var b64awk = Buffer.from(AB_LEVEL_AWK, "utf8").toString("base64");
+  return [
+    "set -u",
+    APPBASE_PRELUDE,
+    'DIR="' + PAYLOAD_TESTS + '"',
+    'SRC="$DIR/' + AB_SAMPLE + '"',
+    'A="$DIR/' + AB_A_NAME + '"',
+    'B="$DIR/' + AB_B_NAME + '"',
+    'AWKF=/tmp/dtsenabler_ab_level.awk',
+    'MSG=/tmp/dtsenabler_ab_level.txt',
+    // dtsdec is NOT on the default plugin path, and libdca lives with our payload.
+    // GST_REGISTRY_FORK=no keeps the plugin scanner in-process so it cannot hold
+    // the HBC exec pipe open (see CLAUDE.md).
+    'export LD_LIBRARY_PATH=' + W25_LIBS + ':' + W25_THD_LIBS,
+    'export GST_PLUGIN_PATH=' + W25_DEST,
+    'export GST_REGISTRY_FORK=no',
+    // --- config fingerprints BEFORE anything runs -------------------------
+    'conf_hash() { if [ -f "$1" ]; then h=$(md5sum "$1" 2>/dev/null | cut -d" " -f1); [ -n "$h" ] || h=nohash; else h=absent; fi; printf "%s" "$h"; }',
+    'DTS_CONF_BEFORE=$(conf_hash "' + DTS_GAIN_CONF + '")',
+    'THD_CONF_BEFORE=$(conf_hash "' + THD_GAIN_CONF + '")',
+    'echo "DTS_CONF_BEFORE=$DTS_CONF_BEFORE"',
+    'echo "THD_CONF_BEFORE=$THD_CONF_BEFORE"',
+    'bail() { echo "ERR=$1"; echo "DIR=$DIR"; echo "DTS_CONF_AFTER=$DTS_CONF_BEFORE"; echo "THD_CONF_AFTER=$THD_CONF_BEFORE"; exit 0; }',
+    // --- preconditions ----------------------------------------------------
+    '[ -f "$SRC" ] || bail sample-missing',
+    'rm -f "$A" "$B" "$MSG" "$AWKF" 2>/dev/null',
+    'PROBE="$DIR/.dtsenabler_ab_probe"',
+    'if touch "$PROBE" 2>/dev/null; then rm -f "$PROBE" 2>/dev/null; else bail render-dir-readonly; fi',
+    'if gst-inspect-1.0 level >/dev/null 2>&1; then HAVE_LEVEL=1; else HAVE_LEVEL=0; fi',
+    'echo "LEVEL=$HAVE_LEVEL"',
+    'base64 -d > "$AWKF" <<\'B64ABAWK\'',
+    b64awk,
+    "B64ABAWK",
+    // --- render one variant to a 16-bit stereo WAV ------------------------
+    'render() {',
+    '  tag=$1; out=$2; shift 2',
+    '  rm -f "$out" 2>/dev/null',
+    '  timeout ' + AB_TIMEOUT_S + ' gst-launch-1.0 -q filesrc location="$SRC" ! qtdemux ! dtsdec "$@" ! audioconvert ! "audio/x-raw,format=S16LE,channels=2" ! wavenc ! filesink location="$out" >/dev/null 2>&1',
+    '  rc=$?',
+    '  sz=$(stat -c%s "$out" 2>/dev/null || echo 0)',
+    '  echo "${tag}_RC=$rc"',
+    '  echo "${tag}_BYTES=$sz"',
+    '  echo "${tag}_PROPS=$*"',
+    '}',
+    // --- measure one variant with the `level` element ---------------------
+    'measure() {',
+    '  tag=$1; shift',
+    '  if [ "$HAVE_LEVEL" != "1" ]; then echo "${tag}_MEAN=na"; echo "${tag}_PEAK=na"; return; fi',
+    '  rm -f "$MSG" 2>/dev/null',
+    '  timeout ' + AB_TIMEOUT_S + ' gst-launch-1.0 -m filesrc location="$SRC" ! qtdemux ! dtsdec "$@" ! audioconvert ! level interval=' + AB_LEVEL_NS + ' ! fakesink > "$MSG" 2>/dev/null',
+    '  rc=$?',
+    '  if [ "$rc" -eq 0 ] && [ -s "$MSG" ]; then awk -v t="$tag" -f "$AWKF" "$MSG"; else echo "${tag}_MEAN=na"; echo "${tag}_PEAK=na"; fi',
+    '  rm -f "$MSG" 2>/dev/null',
+    '}',
+    'render A "$A" ' + propsA,
+    'render B "$B" ' + propsB,
+    'measure A ' + propsA,
+    'measure B ' + propsB,
+    'rm -f "$AWKF" 2>/dev/null',
+    // --- config fingerprints AFTER ---------------------------------------
+    'DTS_CONF_AFTER=$(conf_hash "' + DTS_GAIN_CONF + '")',
+    'THD_CONF_AFTER=$(conf_hash "' + THD_GAIN_CONF + '")',
+    'echo "DTS_CONF_AFTER=$DTS_CONF_AFTER"',
+    'echo "THD_CONF_AFTER=$THD_CONF_AFTER"',
+    "exit 0"
+  ].join("\n");
+}
+
+/** Delete the rendered A/B wavs (the app calls this when it goes away). */
+function w25AbCleanupScript() {
+  return [
+    "set -u",
+    APPBASE_PRELUDE,
+    'rm -f "' + PAYLOAD_TESTS + '/' + AB_A_NAME + '" "' + PAYLOAD_TESTS + '/' + AB_B_NAME + '" 2>/dev/null',
+    'echo OK',
+    "exit 0"
+  ].join("\n");
+}
+
+/** Parse "<tag>_*" keys out of the A/B script output into a variant object. */
+function abVariant(kv, tag, name, label) {
+  var bytes = parseInt(kv[tag + "_BYTES"], 10);
+  if (!isFinite(bytes)) bytes = 0;
+  function num(v) { var n = parseFloat(v); return isFinite(n) ? n : null; }
+  return {
+    label: label,
+    file: name,
+    url: AB_REL_URL + name,
+    bytes: bytes,
+    rendered: parseInt(kv[tag + "_RC"], 10) === 0 && bytes >= AB_MIN_BYTES,
+    props: kv[tag + "_PROPS"] || "",
+    meanDb: num(kv[tag + "_MEAN"]),
+    peakDb: num(kv[tag + "_PEAK"])
+  };
+}
+
+/* =======================================================================
  * CX mechanism shell builders  (mirror repo-root install.sh / init_dts.sh)
  * ===================================================================== */
 
@@ -1105,31 +1336,113 @@ service.register("getMakeupGain", function (message) {
       return;
     }
     return rootExec(w25GetGainScript()).then(function (r) {
-      var kv = parseKv(r.stdout);
-      var dts = clampGainDb(parseFloat(kv.DTS_GAIN));
-      var thd = clampGainDb(parseFloat(kv.THD_GAIN));
-
-      // Any DRC mode string other than "off"/"line"/"rf" (missing key, typo,
-      // hand-edit) falls back to "off", per the contract's "invalid -> default".
-      function validMode(v) { return (v === "off" || v === "line" || v === "rf") ? v : "off"; }
-      function pct(v) { return isFinite(parseFloat(v)) ? Math.round(Number(v)) : 100; }
-
-      var presetDts = presetFromConfig(validMode(kv.DTS_DRC), pct(kv.DTS_BOOST), pct(kv.DTS_CUT));
-      var centerDts = clampCenterDb(parseFloat(kv.DTS_CENTER));
-
-      var presetThd = presetFromConfig(validMode(kv.THD_DRC), pct(kv.THD_BOOST), pct(kv.THD_CUT));
-      var centerThd = clampCenterDb(parseFloat(kv.THD_CENTER));
-
+      var saved = parseSavedConfig(parseKv(r.stdout));
       message.respond({
         returnValue: true,
         profile: d.profile,
-        dts: dts === null ? 0 : dts,
-        truehd: thd === null ? 0 : thd,
-        presetDts: presetDts,
-        presetThd: presetThd,
-        centerDts: centerDts === null ? 0 : centerDts,
-        centerThd: centerThd === null ? 0 : centerThd
+        dts: saved.dts.gain,
+        truehd: saved.truehd.gain,
+        presetDts: saved.dts.preset,
+        presetThd: saved.truehd.preset,
+        centerDts: saved.dts.center,
+        centerThd: saved.truehd.center
       });
+    });
+  }).catch(function (e) {
+    message.respond({ returnValue: false, errorText: e.errorText || e.message || String(e) });
+  });
+});
+
+/* abPreview: render the bundled DTS sample twice -- A with the DRC/gain
+ * path fully inert, B with the user's SAVED settings -- measure both, and
+ * return the paths the UI can play plus the measured dB delta. Takes no
+ * parameters: B is read from the on-disk config, never from the caller,
+ * so this method cannot be used to push arbitrary values at the decoder.
+ * webOS 25 only (the only profile with a DRC-aware dtsdec). */
+service.register("abPreview", function (message) {
+  detectProfile().then(function (d) {
+    if (d.profile !== PROFILE_W25) {
+      message.respond({
+        returnValue: false, profile: d.profile,
+        errorText: "A/B compare is only available on the webOS 25 profile (found '" + d.profile + "')."
+      });
+      return;
+    }
+    return rootExec(w25GetGainScript()).then(function (g) {
+      var saved = parseSavedConfig(parseKv(g.stdout)).dts;
+      return rootExec(w25AbScript(saved)).then(function (r) {
+        var kv = parseKv(r.stdout);
+        if (kv.ERR === "sample-missing") {
+          message.respond({
+            returnValue: false,
+            errorText: "Bundled DTS sample " + AB_SAMPLE + " not found in " + (kv.DIR || "the app's payload") + "."
+          });
+          return;
+        }
+        if (kv.ERR === "render-dir-readonly") {
+          message.respond({
+            returnValue: false,
+            errorText: "Cannot write the rendered clips to " + (kv.DIR || "the app directory") +
+              " (read-only install). A/B compare needs a writable app directory."
+          });
+          return;
+        }
+        if (kv.ERR) {
+          message.respond({ returnValue: false, errorText: "A/B render failed: " + kv.ERR });
+          return;
+        }
+
+        var a = abVariant(kv, "A", AB_A_NAME, "A - DRC off, 0 dB gain, 0 dB dialogue");
+        var b = abVariant(kv, "B", AB_B_NAME, "B - your saved settings");
+        var measured = a.meanDb !== null && b.meanDb !== null;
+        var confUnchanged =
+          kv.DTS_CONF_BEFORE === kv.DTS_CONF_AFTER && kv.THD_CONF_BEFORE === kv.THD_CONF_AFTER;
+        var hashUsable = kv.DTS_CONF_BEFORE !== "nohash" && kv.THD_CONF_BEFORE !== "nohash";
+
+        function delta(x, y) { return (x === null || y === null) ? null : Math.round((y - x) * 10) / 10; }
+
+        message.respond({
+          returnValue: true,
+          profile: d.profile,
+          codec: "DTS",
+          sample: AB_SAMPLE,
+          saved: saved,
+          a: a,
+          b: b,
+          measured: measured,
+          measureNote: measured ? null
+            : (kv.LEVEL === "1"
+                ? "level ran but reported no usable values"
+                : "GStreamer's `level` element is not registered on this TV, so no dB numbers could be taken"),
+          deltaMeanDb: delta(a.meanDb, b.meanDb),
+          deltaPeakDb: delta(a.peakDb, b.peakDb),
+          // Proof, not a claim: hashes of both gain.conf files taken before the
+          // first render and after the last one. The A/B only ever passes dtsdec
+          // properties, so these must match.
+          configUnchanged: hashUsable && confUnchanged,
+          configProof: hashUsable
+            ? ("dts " + kv.DTS_CONF_BEFORE + " -> " + kv.DTS_CONF_AFTER +
+               ", truehd " + kv.THD_CONF_BEFORE + " -> " + kv.THD_CONF_AFTER)
+            : "no md5sum on this TV, could not fingerprint gain.conf"
+        });
+      });
+    });
+  }).catch(function (e) {
+    message.respond({ returnValue: false, errorText: e.errorText || e.message || String(e) });
+  });
+});
+
+/* abCleanup: remove the rendered A/B wavs. Called by the UI when the app
+ * goes away; abPreview also clears stale renders before it starts, so a
+ * missed cleanup can never leave more than one pair behind. */
+service.register("abCleanup", function (message) {
+  detectProfile().then(function (d) {
+    if (d.profile !== PROFILE_W25) {
+      message.respond({ returnValue: true, profile: d.profile, removed: false });
+      return;
+    }
+    return rootExec(w25AbCleanupScript()).then(function (r) {
+      message.respond({ returnValue: true, profile: d.profile, removed: (r.stdout || "").indexOf("OK") !== -1 });
     });
   }).catch(function (e) {
     message.respond({ returnValue: false, errorText: e.errorText || e.message || String(e) });
