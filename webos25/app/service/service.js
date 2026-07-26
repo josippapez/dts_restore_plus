@@ -261,8 +261,14 @@ function w25ReadGain(path) {
  *  string (the caller applies the contract's default). `key` is always one
  *  of our own literal constants, never caller input. */
 function w25ReadKey(path, key) {
-  return "$(awk -F= '/^[[:space:]]*#/{next} { gsub(/[[:space:]]/,\"\",$1); " +
-         'if ($1 == "' + key + '") { v=$0; sub(/^[^=]*=/,"",v); gsub(/[[:space:]]/,"",v); print v; exit } }\' "' +
+  // NB: copy $1 into a local (k) instead of gsub()-ing $1 directly. Assigning to
+  // a field makes awk REBUILD $0 from the fields joined by OFS (a space), which
+  // destroys the "=" -- so the later sub(/^[^=]*=/) matches nothing and the whole
+  // "drc=rf" line comes back as "drcrf". That is not a BusyBox quirk; every awk
+  // does it. Verified on the TV (BusyBox v1.35.0): buggy form -> "drcrf",
+  // this form -> "rf".
+  return "$(awk -F= '/^[[:space:]]*#/{next} { k=$1; gsub(/[[:space:]]/,\"\",k); " +
+         'if (k == "' + key + '") { v=$0; sub(/^[^=]*=/,"",v); gsub(/[[:space:]]/,"",v); print v; exit } }\' "' +
          path + '" 2>/dev/null)';
 }
 
