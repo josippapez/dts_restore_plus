@@ -113,29 +113,54 @@ Mirrors `../webos25/restore/install.sh` + `init_dts25.sh` exactly. Restores **DT
   objective "is the patch working" check independent of the speaker/output stage.
   The UI also offers **play-by-ear** of the bundled samples (in-app `<video>`).
 
-### Make-up gain control
+### Make-up gain & DRC control
 
-DTS and TrueHD decode quieter than LG's native AAC/AC-3/Atmos (no dialnorm/DRC
-in the custom decoders — see
+DTS and TrueHD decode quieter than LG's native AAC/AC-3/Atmos, and neither
+applies any dynamic range compression by default the way LG's own Dolby/DTS
+decoders do — see
 [`../docs/WEBOS25-DTS.md#loudness--make-up-gain`](../docs/WEBOS25-DTS.md#loudness--make-up-gain)
-for the mechanism). The `webos25-armel-gst124` profile's status panel has a
-**Make-up gain** card (`index.html:64-76`) with two dB fields, **DTS** and
-**TrueHD** (range `[-20, +20]`, step `0.5`, default `0.0`):
+(mechanism) and its "Dynamic range compression (DRC) + dialogue boost"
+subsection (the DRC model + the LG evidence behind it). The
+`webos25-armel-gst124` profile's status panel has a **Make-up gain & dynamic
+range** card (`index.html:64-132`) with three controls per codec (**DTS** and
+**TrueHD**, each writing its own config file):
 
-- **Save gain** calls the service's `setMakeupGain({dts, truehd})`
-  (`js/app.js:255-267`), which clamps both values server-side and rejects
-  non-finite input, then writes both `gain.conf` files via `rootExec`
-  (`service/service.js:929-958`) — `/var/lib/webosbrew/dts25/gain.conf` and
-  `/var/lib/webosbrew/truehd/gain.conf`, each a single ASCII dB float written
-  temp-file-then-`mv` so a decoder never reads a half-written value.
-- On load (and Refresh), the panel calls `getMakeupGain()`
-  (`js/app.js:248-253`, `service/service.js:960-975`) to read the current
-  values back from both files.
-- The new value takes effect on the **next playback** — no re-detect, no
-  reboot, no rebuild. Only available on the `webos25-armel-gst124` profile;
-  refused cleanly elsewhere.
-- For the config-file format, the range clamp, and the by-ear tuning +
-  release runbook, see
+- **Gain** — dB stepper, range `[-20, +20]`, step `0.5`, default `0.0` (the
+  original make-up gain, unchanged).
+- **DRC preset** — cycles **Off → Light → Medium → Night** (`index.html:85-92`,
+  `112-119`; cycling logic `stepPreset()`, `js/app.js:298-304`). Maps to the
+  `drc`/`drc_boost`/`drc_cut` config keys per the epic's preset table; the
+  service does the actual mapping and clamping, the app only displays the
+  name.
+- **Dialogue boost** — centre-channel dB stepper, range `[-10, +10]`, step
+  `0.5`, default `0.0` (`index.html:93-100`, `120-127`; `stepCenter()`,
+  `js/app.js:325-331`).
+
+Both new controls share the existing **stepper** idiom (`[-] value [+]`,
+`data-nav` spatial navigation, no `<input type=number>` so no on-screen
+keyboard) already used for gain.
+
+- **Save audio settings** (`js/app.js:352-370`) calls the service's
+  `setMakeupGain({dts, truehd, presetDts, presetThd, centerDts, centerThd})`
+  (`service/service.js:1032-1084`), which clamps gain/centre and validates the
+  preset against a fixed enum server-side — rejecting anything non-finite or
+  unrecognised **before** it reaches a shell command — then writes both
+  `gain.conf` files via `rootExec` (`w25GainConfWrite`, `service/service.js:231-237`):
+  the bare-float gain line first (preserving the legacy format), then
+  `drc=`/`drc_boost=`/`drc_cut=`/`center=` lines, written temp-file-then-`mv`
+  so a decoder never reads a half-written value.
+- On load (and Refresh), the panel calls `loadGain()` (`js/app.js:335-350`),
+  which calls the service's `getMakeupGain()` (`service/service.js:1092-1131` —
+  reads both files back, deriving the displayed preset name from the raw
+  `(drc, drc_boost, drc_cut)` tuple since the config contract has no separate
+  "preset" key) to populate all three controls per codec.
+- New values take effect on the **next playback** — no re-detect, no reboot,
+  no rebuild. Only available on the `webos25-armel-gst124` profile; refused
+  cleanly elsewhere.
+- For the full config-file format (including the four new keys), the
+  preset table, how DRC interacts with make-up gain, and the by-ear tuning +
+  release runbook (now gated by `src/test/run-tests.sh` before any
+  cross-build), see
   [`../restore/TUNING-RUNBOOK.md`](../restore/TUNING-RUNBOOK.md).
 
 ### `cx-armv7-gst114` — demuxer-override (UNVERIFIED)

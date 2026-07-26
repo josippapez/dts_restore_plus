@@ -51,13 +51,19 @@ Homebrew Channel. (The CLI `restore/install.sh` above remains the SSH-based rout
 - `docs/` — design notes (`MULTI-MODEL.md`), the target-detection probe
   (`detect-target.sh`), background (`WEBOS25-DTS.md`), and `experimental/`.
 
-## Make-up gain (DTS/TrueHD quieter than native)
+## Make-up gain + DRC (DTS/TrueHD quieter and less dynamically managed than native)
 
 Both custom decoders now apply a tunable make-up gain so DTS/TrueHD match LG's
-native AAC/AC-3/Atmos loudness — tunable from the app, no rebuild needed. See
+native AAC/AC-3/Atmos loudness, **plus** a dynamic range compressor (DRC
+presets Off/Light/Medium/Night) and a dialogue (centre-channel) boost that
+mirror LG's own Dolby DRC parameter model — LG's DSP applies Dolby Line-mode
+DRC to native content by default but none to DTS, which is the real reason
+dialogue is harder to follow on DTS/TrueHD than on native Atmos. All of it is
+tunable from the app, no rebuild needed. See
 [`docs/WEBOS25-DTS.md#loudness--make-up-gain`](docs/WEBOS25-DTS.md#loudness--make-up-gain)
-for the mechanism and [`restore/TUNING-RUNBOOK.md`](restore/TUNING-RUNBOOK.md)
-for the by-ear tuning steps and the rebuild/verify/release loop.
+for the mechanism (including the DRC model and the LG evidence behind it) and
+[`restore/TUNING-RUNBOOK.md`](restore/TUNING-RUNBOOK.md) for the by-ear tuning
+steps and the test/rebuild/verify/release loop.
 
 *(To rebuild the binaries instead of using the bundled ones, see
 `restore/build.sh` (DTS) and `restore/build-truehd.sh` (TrueHD) — requires Docker.)*

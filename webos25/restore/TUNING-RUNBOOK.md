@@ -1,29 +1,41 @@
-# Make-up gain: tuning + rebuild/release runbook
+# Make-up gain + DRC: tuning + rebuild/release runbook
 
-Background and mechanism: [`../docs/WEBOS25-DTS.md#loudness--make-up-gain`](../docs/WEBOS25-DTS.md#loudness--make-up-gain).
-This file is the step-by-step procedure for (1) tuning the gain by ear from the
+Background and mechanism: [`../docs/WEBOS25-DTS.md#loudness--make-up-gain`](../docs/WEBOS25-DTS.md#loudness--make-up-gain)
+(make-up gain) and its "Dynamic range compression (DRC) + dialogue boost"
+subsection (the DRC model + the LG evidence behind it). This file is the
+step-by-step procedure for (1) tuning gain/DRC/dialogue-boost by ear from the
 app, (2) hand-editing the config files directly, and (3) the binary rebuild →
-on-device-verify → recommit → tag loop required whenever the gain code itself
-changes.
+test → on-device-verify → recommit → tag loop required whenever the DSP code
+itself changes.
 
 ## 1. Tuning from the app (no SSH, no rebuild)
 
-1. Open **DTS Enabler** → the **Make-up gain** card (see
-   [`../app/README.md#make-up-gain-control`](../app/README.md#make-up-gain-control)).
+1. Open **DTS Enabler** → the **Make-up gain & dynamic range** card (see
+   [`../app/README.md#make-up-gain--drc-control`](../app/README.md#make-up-gain--drc-control)).
 2. Play a DTS or TrueHD clip you know well, and its native-codec equivalent
    (AAC/AC-3/Atmos) at the same source loudness, back to back.
-3. Start at **0 dB** (unity — today's behavior) on the relevant field.
-4. Raise in **~2 dB steps**, replaying the DTS/TrueHD clip after each step,
-   until it sounds roughly as loud as the native reference.
-5. **Back off at the first sign of clipping or distortion.** Both decoders
-   apply the gain in float and then hard-clamp to the S32 range
-   (`gstdtsdec.c:766-777`; the TrueHD patch's `mlp_apply_makeup_gain`,
-   `build-truehd.sh:172-199`) — the clamp is **silent**: there is no
+3. **Gain first, DRC second** — they solve different problems and stack:
+   - **Gain** raises everything equally. Start at **0 dB** (unity), raise in
+     **~2 dB steps**, replaying after each step, until *overall* loudness is
+     roughly in line with the native reference.
+   - **DRC preset** then fixes the *dialogue-vs-effects balance* gain alone
+     cannot: cycle **Off → Light → Medium → Night** and judge whether quiet
+     dialogue got easier to follow without loud passages getting harsher.
+     Night is the heaviest (RF-style) profile — try it for late-night viewing
+     first, Light/Medium for normal viewing.
+   - **Dialogue boost** (the centre-channel stepper, dB) is an independent
+     lift on top of DRC, for material where dialogue specifically still sits
+     under effects/music after picking a preset. It has no effect on layouts
+     without a discrete front-centre channel.
+4. **Back off at the first sign of clipping or distortion.** All three stages
+   (make-up gain, DRC, centre boost) are applied in float and then hard-clamp
+   to the S32 range (`gstdtsdec.c:1520-1538`; the TrueHD patch's equivalent
+   per-sample loop, `build-truehd.sh`) — the clamp is **silent**: there is no
    log/error/dropout, just flattened peaks. If it sounds off, drop back one
-   step (~2 dB) and stay there.
-6. Hit **Save gain**. It applies on the **next** playback of that codec — no
-   reboot, no re-detect.
-7. Tune DTS and TrueHD independently; they're separate fields writing
+   gain step or one DRC preset level and stay there.
+5. Hit **Save audio settings**. It applies on the **next** playback of that
+   codec — no reboot, no re-detect.
+6. Tune DTS and TrueHD independently; they're separate fields writing
    separate files.
 
 ## 2. Hand-editing the config files (SSH, no rebuild)
@@ -35,27 +47,89 @@ For users who prefer editing directly instead of the app:
 | DTS | `/var/lib/webosbrew/dts25/gain.conf` |
 | TrueHD/MLP | `/var/lib/webosbrew/truehd/gain.conf` |
 
-Format: a single ASCII float = gain in dB (e.g. `6.0`). `#` comments and blank
-lines ignored, whitespace tolerated. Missing/empty/unparseable → **0.0 dB
-(unity, no-op)** — never fails decode. Parsed value is clamped to
-**[-20.0, +20.0] dB** before use. Takes effect on the **next playback**
-(read once at decoder init) — no reboot or registry re-init needed.
+**Full format** (both files, same contract): a bare ASCII float on its own
+line is the legacy make-up gain in dB (e.g. `6.0`) — unchanged, so an
+existing single-line config keeps working exactly as before. Optionally,
+additional `key=value` lines add DRC + dialogue boost:
 
 ```sh
 mkdir -p /var/lib/webosbrew/dts25 /var/lib/webosbrew/truehd
-printf '%s\n' '6.0'  > /var/lib/webosbrew/dts25/gain.conf
-printf '%s\n' '4.0'  > /var/lib/webosbrew/truehd/gain.conf
+cat > /var/lib/webosbrew/dts25/gain.conf <<'EOF'
+6.0
+drc=line
+drc_boost=100
+drc_cut=100
+center=2.0
+EOF
+cat > /var/lib/webosbrew/truehd/gain.conf <<'EOF'
+4.0
+drc=rf
+drc_boost=100
+drc_cut=100
+center=0.0
+EOF
 ```
 
-## 3. When you change the gain source itself: rebuild → verify → recommit → tag
+| Key | Meaning | Range | Default |
+|---|---|---|---|
+| *(bare float)* | make-up gain, dB | `-20.0..+20.0` | `0.0` |
+| `drc` | DRC profile | `off` \| `line` \| `rf` | `off` |
+| `drc_boost` | % of the curve's boost applied (mirrors LG's `drc_boost_scl_factor`) | `0..100` | `100` |
+| `drc_cut` | % of the curve's cut applied (mirrors LG's `drc_cut_scl_factor`) | `0..100` | `100` |
+| `center` | dialogue (front-centre channel) boost, dB | `-10.0..+10.0` | `0.0` |
+
+**Preset shortcuts** (what the app's DRC stepper actually writes — same
+result if you hand-edit `drc`/`drc_boost`/`drc_cut` to match):
+
+| Preset | `drc` | `drc_boost` | `drc_cut` |
+|---|---|---|---|
+| Off    | `off`  | — | — |
+| Light  | `line` | `50`  | `50`  |
+| Medium | `line` | `100` | `100` |
+| Night  | `rf`   | `100` | `100` |
+
+`#` comments and blank lines ignored, whitespace tolerated, unknown keys
+ignored (a newer config still reads on an older build). Missing file, empty
+file, or an unparseable value → **that key's own default** — never fails
+decode. Out-of-range *finite* values clamp to the nearest bound instead
+(e.g. `center=-99` → `-10.0`); `nan`/`NaN` counts as unparseable (falls back
+to default), not as an out-of-range number to clamp — see the docs'
+"Config format" subsection for why that distinction matters. Takes effect on
+the **next playback** (read once at decoder init) — no reboot or registry
+re-init needed.
+
+**How DRC interacts with make-up gain:** they are independent stages applied
+in the same per-sample pass — `sample × DRC-gain × centre-gain (centre
+channel only) × make-up-gain → clamp`. Make-up gain is a static level shift;
+DRC dynamically compresses based on the signal; the two compose rather than
+fight, and all three default to unity/off, so an un-tuned install is
+**bit-identical** to a build with none of this code at all.
+
+## 3. When you change the DSP source itself: test → rebuild → verify → recommit → tag
 
 This section only applies if you edit the **code** that implements make-up
-gain — `webos25/restore/src/gstdtsdec.c` or `webos25/restore/build-truehd.sh` —
-not when just changing a `gain.conf` value. Both files are **binary-affecting**
-per [`../../.claude/rules/releasing.md`](../../.claude/rules/releasing.md):
-the committed `.so` in `restore/{out,truehd-out}` are the source of truth and
+gain, DRC, or centre boost — `webos25/restore/src/gstdtsdec.c` or
+`webos25/restore/build-truehd.sh` — not when just changing a `gain.conf`
+value. Both files are **binary-affecting** per
+[`../../.claude/rules/releasing.md`](../../.claude/rules/releasing.md): the
+committed `.so` in `restore/{out,truehd-out}` are the source of truth and
 must be kept in sync, on a real TV, in the same change.
 
+0. **Run the desktop test suite first** (host-buildable, no cross-toolchain
+   needed) — this is the pre-rebuild gate, catching most math/config
+   regressions before you spend a cross-compile:
+   ```sh
+   src/test/run-tests.sh
+   ```
+   Compiles and runs the DRC unit tests against the DTS core extracted
+   straight out of `gstdtsdec.c`, checks structural invariants (no
+   transcendental math in the per-sample loop, no silence gate
+   reintroduced, the NaN-safe clamp is used), and — because chunk 02 ported
+   the DTS core byte-for-byte into the TrueHD patch — **diffs the DTS and
+   TrueHD DRC cores and fails if they have drifted apart**, then separately
+   unit-tests the TrueHD-specific host binding (block-window accumulation,
+   patch-hunk arithmetic). A green run here does not replace on-device
+   verification below, but a red run means don't bother cross-building yet.
 1. **Rebuild both binaries:**
    ```sh
    ./build.sh          # -> out/libgstdtsdec.so, out/libdca.so.0
@@ -65,9 +139,16 @@ must be kept in sync, on a real TV, in the same change.
    `truehd-out/BUILD-REPORT.txt`) — confirms the ELF is armel soft-float
    (`e_flags 0x05000200`) and every GLIBC symbol is `<= 2.35`, matching the C5
    userspace (see [`../README.md#target-abi-the-other-crux`](../README.md#target-abi-the-other-crux)).
-   `build-truehd.sh` also self-verifies the patch applied
-   (`grep -q mlp_apply_makeup_gain libavcodec/mlpdec.c`, `build-truehd.sh:252-257`)
-   before it produces output.
+   `build-truehd.sh` also self-verifies the patch, generated to
+   `/tmp/mlpdec-webos25-loudness.patch` and applied with `git apply`
+   (fallback `patch -p1`): a pre-apply scope assertion that the patch touches
+   only `libavcodec/mlpdec.c` (`build-truehd.sh:1268-1283`), then **8 checks**
+   after applying it (`build-truehd.sh:1294-1321`) — 6 `verify_has` presence
+   checks (make-up gain, the truehd `gain.conf` path, the ported DRC core,
+   the DRC curve, the per-sample apply, the level detector), one asserting
+   the retired silence gate has NOT been reintroduced, and one asserting the
+   detector reads samples before the gain is applied (feed-forward) — before
+   it produces output.
 3. **Deploy + on-device verify on a real webOS-25 TV** (rooted C5 or
    equivalent): copy the rebuilt `restore/` to the TV, `sh install.sh` (or
    re-run it if already installed), then:

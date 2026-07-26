@@ -36,24 +36,54 @@ ffmpeg libs and a `BUILD-REPORT.txt` (per-file `e_flags`, max GLIBC, TrueHD
 decoder presence) to its `/out`. Those artifacts are checked into
 `../truehd-out/` so `install.sh` can deploy them without a rebuild.
 
-## Make-up gain patch (loudness fix — NOT "no source patch" anymore)
+## Make-up gain + DRC patch (loudness fix — NOT "no source patch" anymore)
 
-`build-truehd.sh` now applies one inline source patch before `./configure`:
-a make-up-gain patch to ffmpeg's `libavcodec/mlpdec.c` (`build-truehd.sh:64-257`,
-generated to `/tmp/mlpdec-makeup-gain.patch` and applied with `git apply`,
-falling back to `patch -p1`). It reads a user-tunable gain (dB) once at
-`mlp_decode_init` from `/var/lib/webosbrew/truehd/gain.conf` (missing/invalid
-file -> 0.0 dB unity, clamped to [-20, +20]), caches it as a linear multiplier
-on `MLPDecodeContext`, and applies it to the packed PCM output in
-`output_data()` with a saturating S32/S16 clamp. The patch adds only new,
-uniquely-named static symbols confined to the mlp/truehd translation unit —
-decoder registration, ABI, and the GLIBC ceiling below are unaffected, and
-AAC/AC-3/E-AC-3/ALAC decoding in the same `libgstlibav.so` is untouched
-(build-truehd.sh self-verifies this: `grep mlp_apply_makeup_gain`,
-`build-truehd.sh:252-257`). See
-[`../../docs/WEBOS25-DTS.md#loudness--make-up-gain`](../../docs/WEBOS25-DTS.md#loudness--make-up-gain)
-for the full mechanism and [`../TUNING-RUNBOOK.md`](../TUNING-RUNBOOK.md) for
-tuning + the rebuild/release loop this patch makes binary-affecting.
+`build-truehd.sh` now applies one inline source patch before `./configure` to
+ffmpeg's `libavcodec/mlpdec.c` — and it is no longer "make-up gain" alone:
+the patch also ports a full DRC compressor (mode off/line/rf + boost%/cut%)
+and a separate centre-channel dialogue boost, mirroring the DTS side
+byte-for-byte (see [`../../docs/WEBOS25-DTS.md#loudness--make-up-gain`](../../docs/WEBOS25-DTS.md#loudness--make-up-gain),
+"Dynamic range compression (DRC) + dialogue boost", for the DSP model and the
+LG evidence behind it). The patch is generated to
+`/tmp/mlpdec-webos25-loudness.patch` and applied with `git apply`, falling
+back to `patch -p1`. Before applying, `build-truehd.sh` asserts a **pre-apply
+scope guard** on the patch text itself: every `+++`/`---` header must name
+`libavcodec/mlpdec.c` and nothing else, and there must be exactly 2 such
+headers — so an empty or truncated heredoc cannot silently read as
+"no out-of-scope files" (`build-truehd.sh:1268-1283`). After applying, it
+runs **8 verify checks** against the mutated file (`build-truehd.sh:1294-1321`):
+6 presence checks (`mlp_apply_makeup_gain`, the truehd `gain.conf` path, the
+ported `<<<DRC-CORE-BEGIN>>>` block, the DRC curve function, the per-sample
+DRC apply, the level detector), one asserting the retired silence gate has
+NOT been reintroduced, and one asserting the detector reads samples before
+any gain is applied (feed-forward, required because the DRC curve is
+unimodal — a post-gain detector could limit-cycle on the decay leg).
+
+At runtime: `mlp_decode_init` reads all of gain/DRC/centre-boost once from
+`/var/lib/webosbrew/truehd/gain.conf` (missing/invalid → each key's own
+inert default), caches linear multipliers on `MLPDecodeContext`, and
+`output_data()` applies them to the packed PCM output — DRC gain identical
+across channels, centre boost per-channel, make-up gain last — with the
+existing saturating S32/S16 clamp. The patch adds only new, uniquely-named
+static symbols confined to the mlp/truehd translation unit — decoder
+registration, ABI, and the GLIBC ceiling below are unaffected, and
+AAC/AC-3/E-AC-3/ALAC decoding in the same `libgstlibav.so` is untouched (the
+scope guard above proves this mechanically, before the patch is even
+applied).
+
+**DTS↔TrueHD core-drift invariant:** the DRC math itself — the block
+detector, the curve, the boost/cut scaling, the smoothing — is a
+byte-for-byte copy of the `<<<DRC-CORE-BEGIN>>>`/`<<<DRC-CORE-END>>>` block
+in `../src/gstdtsdec.c`. `src/test/run-tests.sh` enforces this: it extracts
+both cores and diffs them, **failing the build if they have drifted apart**,
+so a change to the DSP math in one decoder cannot silently go unported to
+the other. `run-tests.sh` covers **both** decoders — the shared core via the
+DTS extraction, plus TrueHD-specific host-binding tests (windowed
+accumulation across MLP access units, patch-hunk arithmetic) — and is the
+gate to run **before** any cross-build; see
+[`../TUNING-RUNBOOK.md`](../TUNING-RUNBOOK.md) for the full
+test → rebuild → verify → recommit → tag loop this patch makes
+binary-affecting.
 
 ## Why S32LE matters (shared with DTS)
 
