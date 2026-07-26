@@ -61,19 +61,73 @@
         </p>
       </section>
 
-      <!-- ===== Per-codec make-up gain ===== -->
+      <!-- ===== Per-codec make-up gain + DRC ===== -->
       <section class="card card--wide" aria-labelledby="h-gain">
-        <h2 id="h-gain">Make-up gain</h2>
+        <h2 id="h-gain">Make-up gain &amp; dynamic range</h2>
         <p class="muted">
-          The custom DTS and TrueHD decoders play quieter than LG's native codecs.
-          Tune a per-codec make-up gain (dB) here &mdash; no SSH or rebuild needed.
-          The value is written on-device and takes effect on the <strong>next
-          playback</strong> (decoder init), not the current one.
+          The custom DTS and TrueHD decoders play quieter than LG's native codecs, and
+          neither applies any dynamic range compression by default (unlike LG's own
+          Dolby/DTS decoders). Tune a per-codec make-up gain (dB), a DRC preset
+          (Off/Light/Medium/Night) and a dialogue (center-channel) boost here &mdash; no
+          SSH or rebuild needed. Values are written on-device and take effect on the
+          <strong>next playback</strong> (decoder init), not the current one.
         </p>
+        <div class="codec-group">
+          <span class="codec-group__title">DTS</span>
+          <div class="stepper" role="group" aria-labelledby="lblGainDts">
+            <span class="stepper__label" id="lblGainDts">Gain</span>
+            <button class="btn btn--step focusable" data-nav data-gain="dts" data-step="-0.5"
+                    aria-label="Decrease DTS gain">&minus;</button>
+            <output class="stepper__val" id="gainDts" for="lblGainDts" aria-live="polite">0.0 dB</output>
+            <button class="btn btn--step focusable" data-nav data-gain="dts" data-step="0.5"
+                    aria-label="Increase DTS gain">+</button>
+          </div>
+          <div class="stepper" role="group" aria-labelledby="lblPresetDts">
+            <span class="stepper__label" id="lblPresetDts">DRC preset</span>
+            <button class="btn btn--step focusable" data-nav data-preset="dts" data-pdir="-1"
+                    aria-label="Previous DTS DRC preset">&minus;</button>
+            <output class="stepper__val" id="presetDts" for="lblPresetDts" aria-live="polite">Off</output>
+            <button class="btn btn--step focusable" data-nav data-preset="dts" data-pdir="1"
+                    aria-label="Next DTS DRC preset">+</button>
+          </div>
+          <div class="stepper" role="group" aria-labelledby="lblCenterDts">
+            <span class="stepper__label" id="lblCenterDts">Dialogue boost</span>
+            <button class="btn btn--step focusable" data-nav data-center="dts" data-step="-0.5"
+                    aria-label="Decrease DTS dialogue boost">&minus;</button>
+            <output class="stepper__val" id="centerDts" for="lblCenterDts" aria-live="polite">0.0 dB</output>
+            <button class="btn btn--step focusable" data-nav data-center="dts" data-step="0.5"
+                    aria-label="Increase DTS dialogue boost">+</button>
+          </div>
+        </div>
+        <div class="codec-group">
+          <span class="codec-group__title">TrueHD</span>
+          <div class="stepper" role="group" aria-labelledby="lblGainThd">
+            <span class="stepper__label" id="lblGainThd">Gain</span>
+            <button class="btn btn--step focusable" data-nav data-gain="truehd" data-step="-0.5"
+                    aria-label="Decrease TrueHD gain">&minus;</button>
+            <output class="stepper__val" id="gainTruehd" for="lblGainThd" aria-live="polite">0.0 dB</output>
+            <button class="btn btn--step focusable" data-nav data-gain="truehd" data-step="0.5"
+                    aria-label="Increase TrueHD gain">+</button>
+          </div>
+          <div class="stepper" role="group" aria-labelledby="lblPresetThd">
+            <span class="stepper__label" id="lblPresetThd">DRC preset</span>
+            <button class="btn btn--step focusable" data-nav data-preset="truehd" data-pdir="-1"
+                    aria-label="Previous TrueHD DRC preset">&minus;</button>
+            <output class="stepper__val" id="presetTruehd" for="lblPresetThd" aria-live="polite">Off</output>
+            <button class="btn btn--step focusable" data-nav data-preset="truehd" data-pdir="1"
+                    aria-label="Next TrueHD DRC preset">+</button>
+          </div>
+          <div class="stepper" role="group" aria-labelledby="lblCenterThd">
+            <span class="stepper__label" id="lblCenterThd">Dialogue boost</span>
+            <button class="btn btn--step focusable" data-nav data-center="truehd" data-step="-0.5"
+                    aria-label="Decrease TrueHD dialogue boost">&minus;</button>
+            <output class="stepper__val" id="centerTruehd" for="lblCenterThd" aria-live="polite">0.0 dB</output>
+            <button class="btn btn--step focusable" data-nav data-center="truehd" data-step="0.5"
+                    aria-label="Increase TrueHD dialogue boost">+</button>
+          </div>
+        </div>
         <div class="row">
-          <label for="gainDts">DTS&nbsp;gain&nbsp;(dB)&nbsp;<input type="number" id="gainDts" class="focusable" data-nav min="-20" max="20" step="0.5" value="0.0"></label>
-          <label for="gainTruehd">TrueHD&nbsp;gain&nbsp;(dB)&nbsp;<input type="number" id="gainTruehd" class="focusable" data-nav min="-20" max="20" step="0.5" value="0.0"></label>
-          <button id="btnSaveGain" class="btn btn--primary focusable" data-nav>Save gain</button>
+          <button id="btnSaveGain" class="btn btn--primary focusable" data-nav>Save audio settings</button>
         </div>
       </section>
 

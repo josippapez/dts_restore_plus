@@ -178,3 +178,59 @@ code {
   border: 1px solid rgba(255,255,255,0.12);
   border-radius: 8px;
 }
+
+/* Make-up gain stepper: [-] value [+] — D-pad friendly (no on-screen keyboard,
+   unlike <input type=number>, which is painful with a TV remote). */
+.stepper {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: var(--bg-card-2);
+  border: 2px solid #3a4654;
+  border-radius: 12px;
+  padding: 10px 18px;
+}
+.stepper__label {
+  font-size: 25px;
+  font-weight: 700;
+  color: var(--muted);
+  margin-right: 4px;
+}
+/* Square-ish +/- buttons: override .btn's min-width/padding. */
+.btn--step {
+  min-width: 82px;
+  padding: 10px 0;
+  font-size: 38px;
+  line-height: 1;
+  text-align: center;
+}
+.stepper__val {
+  min-width: 150px;              /* fixed so the row never jumps while stepping */
+  text-align: center;
+  font-size: 30px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+}
+.stepper__val.is-dirty { color: var(--warn); }   /* unsaved change */
+
+/* Groups the gain/DRC-preset/center-boost steppers for one codec so their
+   D-pad geometry reads as a unit. */
+.codec-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 20px;
+  margin-top: 24px;
+  padding: 16px 20px;
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 12px;
+}
+.codec-group__title {
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: 21px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+}

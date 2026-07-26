@@ -171,16 +171,77 @@ function clampGainDb(v) {
   return Math.round(n * 10) / 10;
 }
 
+/**
+ * Clamp a caller-supplied center (dialogue) boost to the contract range
+ * [-10, +10] dB and round to 0.1 dB. Returns null for non-finite input,
+ * mirroring clampGainDb.
+ */
+function clampCenterDb(v) {
+  var n = Number(v);
+  if (!isFinite(n)) return null;
+  if (n < -10) n = -10;
+  else if (n > 10) n = 10;
+  return Math.round(n * 10) / 10;
+}
+
+/* DRC preset -> config mapping (EPIC "Preset mapping", binding). Boost/cut
+ * are irrelevant when mode is "off" (the decoder's inert guarantee bypasses
+ * the whole DRC path), but we still write the contract's documented
+ * defaults (100/100) for those fields rather than leaving them unset. */
+var PRESET_MAP = {
+  off:    { mode: "off",  boost: 100, cut: 100 },
+  light:  { mode: "line", boost: 50,  cut: 50 },
+  medium: { mode: "line", boost: 100, cut: 100 },
+  night:  { mode: "rf",   boost: 100, cut: 100 }
+};
+var PRESET_ORDER = ["off", "light", "medium", "night"];
+
+/** Validate a caller-supplied preset name against the enum. Returns the
+ *  canonical key or null (never a caller-controlled string) so it can only
+ *  ever reach the shell as one of the fixed PRESET_ORDER literals. */
+function normalizePreset(v) {
+  return (typeof v === "string" && PRESET_MAP.hasOwnProperty(v)) ? v : null;
+}
+
+/** Reverse-map a (mode, boost, cut) tuple read back from disk to the
+ *  closest known preset name, for the UI to display. "off" always maps to
+ *  Off regardless of boost/cut (they're inert there, per the decoders'
+ *  inert guarantee). An exact match wins; otherwise fall back to the
+ *  nearest named preset for that mode (Medium for a hand-edited "line",
+ *  Night for a hand-edited "rf") so a config authored outside the app
+ *  still shows a sane preset instead of nothing. */
+function presetFromConfig(mode, boost, cut) {
+  if (mode === "off") return "off";
+  if (mode === "line") return (boost === 50 && cut === 50) ? "light" : "medium";
+  if (mode === "rf") return "night";
+  return "off";
+}
+
 /** Write BOTH gain.conf files (temp file + mv so a decoder never reads a
  *  half-written file). mkdir -p the parent dirs first -- they may not
  *  exist yet if Enable was never run (decoders default to 0.0 dB unity
- *  regardless, per the contract's fault-tolerant default). */
-function w25SetGainScript(dtsDb, thdDb) {
+ *  regardless, per the contract's fault-tolerant default).
+ *
+ *  Each file gets the bare-float gain line FIRST (existing behavior,
+ *  unchanged -- the decoders' first-data-line parse and w25ReadGain()
+ *  below both depend on that), followed by the new `key=value` lines from
+ *  the EPIC config contract. All substituted values are our own
+ *  server-clamped numbers or one of the fixed PRESET_MAP mode strings, so
+ *  nothing caller-controlled ever reaches the shell unescaped. */
+function w25GainConfWrite(path, gainDb, presetName, centerDb) {
+  var p = PRESET_MAP[presetName];
+  return 'printf "%s\\n%s\\n%s\\n%s\\n%s\\n" "' + gainDb.toFixed(1) + '" ' +
+    '"drc=' + p.mode + '" "drc_boost=' + p.boost + '" "drc_cut=' + p.cut + '" ' +
+    '"center=' + centerDb.toFixed(1) + '" > "' + path + '.tmp" && mv -f "' +
+    path + '.tmp" "' + path + '" || echo "FAIL: write ' + path + '"';
+}
+
+function w25SetGainScript(dtsDb, dtsPreset, dtsCenter, thdDb, thdPreset, thdCenter) {
   return [
     "set -u",
     'mkdir -p "' + W25_DEST + '" "' + W25_THD_DEST + '" || { echo "FAIL: mkdir"; exit 0; }',
-    'printf "%s\\n" "' + dtsDb.toFixed(1) + '" > "' + DTS_GAIN_CONF + '.tmp" && mv -f "' + DTS_GAIN_CONF + '.tmp" "' + DTS_GAIN_CONF + '" || echo "FAIL: dts write"',
-    'printf "%s\\n" "' + thdDb.toFixed(1) + '" > "' + THD_GAIN_CONF + '.tmp" && mv -f "' + THD_GAIN_CONF + '.tmp" "' + THD_GAIN_CONF + '" || echo "FAIL: truehd write"',
+    w25GainConfWrite(DTS_GAIN_CONF, dtsDb, dtsPreset, dtsCenter),
+    w25GainConfWrite(THD_GAIN_CONF, thdDb, thdPreset, thdCenter),
     'echo OK',
     "exit 0"
   ].join("\n");
@@ -194,12 +255,39 @@ function w25ReadGain(path) {
   return "$(awk '/^[[:space:]]*#/{next} /^[[:space:]]*$/{next} " +
          "{gsub(/[[:space:]]/,\"\"); print; exit}' \"" + path + "\" 2>/dev/null)";
 }
+
+/** Read a single `key=value` line back out of a gain.conf, tolerating
+ *  comments/blank lines and surrounding whitespace. Missing key -> empty
+ *  string (the caller applies the contract's default). `key` is always one
+ *  of our own literal constants, never caller input. */
+function w25ReadKey(path, key) {
+  return "$(awk -F= '/^[[:space:]]*#/{next} { gsub(/[[:space:]]/,\"\",$1); " +
+         'if ($1 == "' + key + '") { v=$0; sub(/^[^=]*=/,"",v); gsub(/[[:space:]]/,"",v); print v; exit } }\' "' +
+         path + '" 2>/dev/null)';
+}
+
 function w25GetGainScript() {
   return [
-    "DTS=" + w25ReadGain(DTS_GAIN_CONF),
-    "THD=" + w25ReadGain(THD_GAIN_CONF),
-    'echo "DTS_GAIN=$DTS"',
-    'echo "THD_GAIN=$THD"',
+    "DTS_GAIN=" + w25ReadGain(DTS_GAIN_CONF),
+    "DTS_DRC=" + w25ReadKey(DTS_GAIN_CONF, "drc"),
+    "DTS_BOOST=" + w25ReadKey(DTS_GAIN_CONF, "drc_boost"),
+    "DTS_CUT=" + w25ReadKey(DTS_GAIN_CONF, "drc_cut"),
+    "DTS_CENTER=" + w25ReadKey(DTS_GAIN_CONF, "center"),
+    "THD_GAIN=" + w25ReadGain(THD_GAIN_CONF),
+    "THD_DRC=" + w25ReadKey(THD_GAIN_CONF, "drc"),
+    "THD_BOOST=" + w25ReadKey(THD_GAIN_CONF, "drc_boost"),
+    "THD_CUT=" + w25ReadKey(THD_GAIN_CONF, "drc_cut"),
+    "THD_CENTER=" + w25ReadKey(THD_GAIN_CONF, "center"),
+    'echo "DTS_GAIN=$DTS_GAIN"',
+    'echo "DTS_DRC=$DTS_DRC"',
+    'echo "DTS_BOOST=$DTS_BOOST"',
+    'echo "DTS_CUT=$DTS_CUT"',
+    'echo "DTS_CENTER=$DTS_CENTER"',
+    'echo "THD_GAIN=$THD_GAIN"',
+    'echo "THD_DRC=$THD_DRC"',
+    'echo "THD_BOOST=$THD_BOOST"',
+    'echo "THD_CUT=$THD_CUT"',
+    'echo "THD_CENTER=$THD_CENTER"',
     "exit 0"
   ].join("\n");
 }
@@ -928,11 +1016,19 @@ service.register("testfiles", function (message) {
   message.respond({ returnValue: true, dir: PAYLOAD_TESTS, files: files });
 });
 
-/* setMakeupGain: write BOTH gain.conf files (DTS + TrueHD/MLP) via rootExec.
- * Only meaningful on the webOS 25 profile (the only profile with a
- * make-up-gain-aware decoder); refuse cleanly elsewhere. Clamps to
- * [-20,+20] and rejects NaN/non-finite before ever touching rootExec. No
- * registry re-init needed -- applies on the next playback. */
+/* setMakeupGain: write BOTH gain.conf files (DTS + TrueHD/MLP) via rootExec --
+ * now the full per-codec config: the bare-float gain line PLUS the DRC
+ * preset (drc/drc_boost/drc_cut) and center-boost, per the EPIC config
+ * contract. Only meaningful on the webOS 25 profile (the only profile with
+ * a make-up-gain-aware decoder); refuse cleanly elsewhere. Clamps gain and
+ * center to their contract ranges and validates the preset against the
+ * fixed enum before ANY of it touches rootExec -- so only our own
+ * server-clamped numbers and one of the fixed PRESET_MAP mode strings ever
+ * reach the shell. presetDts/presetThd/centerDts/centerThd default to
+ * "off"/0 when omitted (older callers sending only {dts,truehd} still
+ * work); when present they must be valid or the whole call is rejected,
+ * same as the existing gain check. No registry re-init needed -- applies
+ * on the next playback. */
 service.register("setMakeupGain", function (message) {
   var p = message.payload || {};
   var dts = clampGainDb(p.dts);
@@ -944,6 +1040,24 @@ service.register("setMakeupGain", function (message) {
     });
     return;
   }
+  var presetDts = (p.presetDts === undefined) ? "off" : normalizePreset(p.presetDts);
+  var presetThd = (p.presetThd === undefined) ? "off" : normalizePreset(p.presetThd);
+  if (presetDts === null || presetThd === null) {
+    message.respond({
+      returnValue: false,
+      errorText: "DRC preset must be one of " + PRESET_ORDER.join("/") + " (got presetDts=" + p.presetDts + ", presetThd=" + p.presetThd + ")."
+    });
+    return;
+  }
+  var centerDts = (p.centerDts === undefined) ? 0 : clampCenterDb(p.centerDts);
+  var centerThd = (p.centerThd === undefined) ? 0 : clampCenterDb(p.centerThd);
+  if (centerDts === null || centerThd === null) {
+    message.respond({
+      returnValue: false,
+      errorText: "Center boost must be a finite number in [-10, 10] dB (got centerDts=" + p.centerDts + ", centerThd=" + p.centerThd + ")."
+    });
+    return;
+  }
   detectProfile().then(function (d) {
     if (d.profile !== PROFILE_W25) {
       message.respond({
@@ -952,12 +1066,17 @@ service.register("setMakeupGain", function (message) {
       });
       return;
     }
-    return rootExec(w25SetGainScript(dts, thd)).then(function (r) {
+    return rootExec(w25SetGainScript(dts, presetDts, centerDts, thd, presetThd, centerThd)).then(function (r) {
       if ((r.stdout || "").indexOf("OK") === -1) {
         message.respond({ returnValue: false, errorText: "Failed to write gain config: " + (r.stdout || r.stderr || "unknown error") });
         return;
       }
-      message.respond({ returnValue: true, dts: dts, truehd: thd });
+      message.respond({
+        returnValue: true,
+        dts: dts, truehd: thd,
+        presetDts: presetDts, presetThd: presetThd,
+        centerDts: centerDts, centerThd: centerThd
+      });
     });
   }).catch(function (e) {
     message.respond({ returnValue: false, errorText: e.errorText || e.message || String(e) });
@@ -965,23 +1084,45 @@ service.register("setMakeupGain", function (message) {
 });
 
 /* getMakeupGain: read both gain.conf files back so the UI can reflect the
- * current values. Missing/empty/unparseable -> 0.0, mirroring the
- * decoders' own fault-tolerant default; never fails on a bad/missing file. */
+ * current gain, DRC preset and center boost. Missing/empty/unparseable ->
+ * the contract defaults (drc=off, boost/cut=100, center=0), mirroring the
+ * decoders' own fault-tolerant parsing; never fails on a bad/missing file.
+ * The preset is derived from (drc, drc_boost, drc_cut) via presetFromConfig
+ * since the config contract has no separate "preset" key. */
 service.register("getMakeupGain", function (message) {
   detectProfile().then(function (d) {
     if (d.profile !== PROFILE_W25) {
-      message.respond({ returnValue: true, profile: d.profile, dts: 0, truehd: 0 });
+      message.respond({
+        returnValue: true, profile: d.profile,
+        dts: 0, truehd: 0, presetDts: "off", presetThd: "off", centerDts: 0, centerThd: 0
+      });
       return;
     }
     return rootExec(w25GetGainScript()).then(function (r) {
       var kv = parseKv(r.stdout);
       var dts = clampGainDb(parseFloat(kv.DTS_GAIN));
       var thd = clampGainDb(parseFloat(kv.THD_GAIN));
+
+      // Any DRC mode string other than "off"/"line"/"rf" (missing key, typo,
+      // hand-edit) falls back to "off", per the contract's "invalid -> default".
+      function validMode(v) { return (v === "off" || v === "line" || v === "rf") ? v : "off"; }
+      function pct(v) { return isFinite(parseFloat(v)) ? Math.round(Number(v)) : 100; }
+
+      var presetDts = presetFromConfig(validMode(kv.DTS_DRC), pct(kv.DTS_BOOST), pct(kv.DTS_CUT));
+      var centerDts = clampCenterDb(parseFloat(kv.DTS_CENTER));
+
+      var presetThd = presetFromConfig(validMode(kv.THD_DRC), pct(kv.THD_BOOST), pct(kv.THD_CUT));
+      var centerThd = clampCenterDb(parseFloat(kv.THD_CENTER));
+
       message.respond({
         returnValue: true,
         profile: d.profile,
         dts: dts === null ? 0 : dts,
-        truehd: thd === null ? 0 : thd
+        truehd: thd === null ? 0 : thd,
+        presetDts: presetDts,
+        presetThd: presetThd,
+        centerDts: centerDts === null ? 0 : centerDts,
+        centerThd: centerThd === null ? 0 : centerThd
       });
     });
   }).catch(function (e) {
