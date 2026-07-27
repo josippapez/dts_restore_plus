@@ -1,10 +1,13 @@
 ===================================================================
  TrueHD gst-libav bundle for LG C5 / webOS 25 — BUILD REPORT
 ===================================================================
-Generated:  Thu Jul 23 10:27:21 UTC 2026
+Generated:  Sun Jul 26 18:41:12 UTC 2026
 Build host: debian:11-slim (bullseye, glibc 2.31), --platform linux/arm64
 Toolchain:  arm-linux-gnueabi-gcc (Debian 10.2.1-6) 10.2.1 20210110 (soft-float EABI5)
-ffmpeg:     n4.4.4 — minimal: only truehd+mlp decoders, mlp parser, truehd+mlp demuxers
+ffmpeg:     n4.4.4 — full stock LG decoder set (aac/ac3/eac3/alac/amrnb/amrwb/flac/mp3/
+            h264/mjpeg/vp8/vp9/wma*) PLUS truehd+mlp. Must be a SUPERSET of stock libav:
+            this .so bind-mounts over LG's, so a truehd-only build strips system codecs
+            (broke Spotify's avdec_aac when enabled — regression fixed 2026-07-23).
 gst-libav:  d9b1bb5 (meson cross-build)
 Target ABI: 32-bit ARM EABI5 soft-float (gnueabi/armel), e_flags 0x05000200
             runtime loader on target: /lib/ld-linux.so.3 (.so carry no PT_INTERP — normal)
@@ -97,10 +100,18 @@ static string — so we verify the decoder in libavcodec + the decode API in the
   libgstlibav libav decode API: NO
   => TrueHD MISSING
 
+===================== webOS 25 LOUDNESS PATCH CHECK =====================
+  Confirms the make-up gain / DRC / centre boost really reached the shipped
+  libavcodec. Codec-locality itself is guaranteed EARLIER, by the pre-apply
+  assertion that the patch names no file but libavcodec/mlpdec.c — that is
+  the load-bearing check, and it does fail on an out-of-scope file.
+  config path present:  NO — patch did not reach the binary
+  exported symbols:     none [smoke test OK]
+
 ===================== BUNDLE CONTENTS + SIZE =====================
         24  /out/libavcodec.so
         24  /out/libavcodec.so.58
-   3235896  /out/libavcodec.so.58.134.100
+   3244116  /out/libavcodec.so.58.134.100
         24  /out/libavfilter.so
         24  /out/libavfilter.so.7
     103944  /out/libavfilter.so.7.110.100
@@ -117,11 +128,3 @@ static string — so we verify the decoder in libavcodec + the decode API in the
   TOTAL: 4.4M
 
 OVERALL: CHECK FAILURES ABOVE
-
--------------------------------------------------------------------
-NOTE (2026-07-23): the automated "TrueHD/MLP DECODER CHECK" above has
-known false-negatives (it greps a stripped .so for symbols/strings that
-don't survive stripping). The binaries were verified the authoritative
-way -- on a real LG C5 via `gst-inspect-1.0` -- and register 18 avdec_*
-elements INCLUDING avdec_aac (regression fix) and avdec_truehd/avdec_mlp.
-Enable→Spotify+DTS+TrueHD and uninstall→reboot→Spotify all confirmed OK.

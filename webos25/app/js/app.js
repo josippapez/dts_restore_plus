@@ -2,9 +2,13 @@
  *
  * Talks to our own JS service (io.github.josippapez.dtsenabler.service), which detects
  * the TV generation and shells the matching mechanism out as root through the
- * Homebrew Channel exec service. The frontend never touches root directly and
- * sends NO free-form parameters (the methods take none) -- it only invokes
- * detect/status/enable/disable/uninstall.
+ * Homebrew Channel exec service. The frontend never touches root directly.
+ * Most calls (detect/status/enable/disable/uninstall/test) take no parameters;
+ * setMakeupGain is the one exception, sending {dts, truehd} gain dB values plus
+ * {presetDts, presetThd} DRC presets (off/light/medium/night) and {centerDts,
+ * centerThd} dialogue-boost dB values. The service clamps/validates all of it
+ * (gain to [-20,+20], center to [-10,+10], preset against a fixed enum) before
+ * any of it ever reaches a shell command.
  *
  * callService() uses webOS.service.request when the platform bridge is present,
  * and falls back to a raw PalmServiceBridge so the UI is testable in a plain
@@ -146,6 +150,8 @@
     $("btnPlayMp4").disabled = !canTest;
     $("btnPlayTs").disabled = !canTest;
     $("btnPlayM2ts").disabled = !canTest;
+    // A/B compare renders through the patched dtsdec, so it needs the same profile.
+    $("btnAb").disabled = !canTest;
   }
 
   /* Map a self-test verdict to a status cell. */
@@ -236,6 +242,227 @@
       });
     }
     v.scrollIntoView({ block: "nearest" });
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Per-codec make-up gain                                                  */
+  /* ---------------------------------------------------------------------- */
+
+  // Stepper state. The service clamps authoritatively; these bounds just keep
+  // the on-screen value sane while stepping. Mirrors the config contract.
+  var GAIN_MIN = -20, GAIN_MAX = 20, GAIN_STEP_DECIMALS = 1;
+  var gainVal   = { dts: 0, truehd: 0 };   // what's on screen
+  var gainSaved = { dts: 0, truehd: 0 };   // what's on disk (for the dirty marker)
+
+  var GAIN_EL = { dts: "gainDts", truehd: "gainTruehd" };
+
+  function renderGain(which) {
+    var el = $(GAIN_EL[which]);
+    if (!el) return;
+    var v = gainVal[which];
+    el.textContent = (v > 0 ? "+" : "") + v.toFixed(GAIN_STEP_DECIMALS) + " dB";
+    // Highlight while the on-screen value differs from what's saved on disk.
+    if (v === gainSaved[which]) el.classList.remove("is-dirty");
+    else el.classList.add("is-dirty");
+  }
+
+  function stepGain(which, delta) {
+    var v = gainVal[which] + delta;
+    if (v < GAIN_MIN) v = GAIN_MIN;
+    if (v > GAIN_MAX) v = GAIN_MAX;
+    // Avoid float drift accumulating over many 0.5 steps.
+    gainVal[which] = Math.round(v * 10) / 10;
+    renderGain(which);
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Per-codec DRC preset (Off/Light/Medium/Night)                          */
+  /* ---------------------------------------------------------------------- */
+
+  // Mirrors the EPIC "Preset mapping" table; the service does the actual
+  // drc/drc_boost/drc_cut mapping and clamping, this is display-only.
+  var PRESET_ORDER = ["off", "light", "medium", "night"];
+  var PRESET_LABEL = { off: "Off", light: "Light", medium: "Medium", night: "Night" };
+  var presetVal   = { dts: "off", truehd: "off" };  // what's on screen
+  var presetSaved = { dts: "off", truehd: "off" };  // what's on disk
+
+  var PRESET_EL = { dts: "presetDts", truehd: "presetTruehd" };
+
+  function renderPreset(which) {
+    var el = $(PRESET_EL[which]);
+    if (!el) return;
+    var v = presetVal[which];
+    el.textContent = PRESET_LABEL[v] || "Off";
+    if (v === presetSaved[which]) el.classList.remove("is-dirty");
+    else el.classList.add("is-dirty");
+  }
+
+  function stepPreset(which, dir) {
+    var idx = PRESET_ORDER.indexOf(presetVal[which]);
+    if (idx < 0) idx = 0;
+    idx = (idx + dir + PRESET_ORDER.length) % PRESET_ORDER.length;
+    presetVal[which] = PRESET_ORDER[idx];
+    renderPreset(which);
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* Per-codec dialogue (center-channel) boost                              */
+  /* ---------------------------------------------------------------------- */
+
+  var CENTER_MIN = -10, CENTER_MAX = 10, CENTER_STEP_DECIMALS = 1;
+  var centerVal   = { dts: 0, truehd: 0 };   // what's on screen
+  var centerSaved = { dts: 0, truehd: 0 };   // what's on disk
+
+  var CENTER_EL = { dts: "centerDts", truehd: "centerTruehd" };
+
+  function renderCenter(which) {
+    var el = $(CENTER_EL[which]);
+    if (!el) return;
+    var v = centerVal[which];
+    el.textContent = (v > 0 ? "+" : "") + v.toFixed(CENTER_STEP_DECIMALS) + " dB";
+    if (v === centerSaved[which]) el.classList.remove("is-dirty");
+    else el.classList.add("is-dirty");
+  }
+
+  function stepCenter(which, delta) {
+    var v = centerVal[which] + delta;
+    if (v < CENTER_MIN) v = CENTER_MIN;
+    if (v > CENTER_MAX) v = CENTER_MAX;
+    centerVal[which] = Math.round(v * 10) / 10;
+    renderCenter(which);
+  }
+
+  // Read the current on-device values back, if the service exposes them
+  // (nice-to-have; on failure the controls just keep their Off/0.0 defaults).
+  function loadGain() {
+    return callService("getMakeupGain", {}).then(function (res) {
+      if (!res) return;
+      if (typeof res.dts === "number") gainVal.dts = gainSaved.dts = res.dts;
+      if (typeof res.truehd === "number") gainVal.truehd = gainSaved.truehd = res.truehd;
+      if (PRESET_LABEL.hasOwnProperty(res.presetDts)) presetVal.dts = presetSaved.dts = res.presetDts;
+      if (PRESET_LABEL.hasOwnProperty(res.presetThd)) presetVal.truehd = presetSaved.truehd = res.presetThd;
+      if (typeof res.centerDts === "number") centerVal.dts = centerSaved.dts = res.centerDts;
+      if (typeof res.centerThd === "number") centerVal.truehd = centerSaved.truehd = res.centerThd;
+    }).catch(function () { /* leave the Off/0.0 defaults in place */ })
+      .then(function () {
+        renderGain("dts"); renderGain("truehd");
+        renderPreset("dts"); renderPreset("truehd");
+        renderCenter("dts"); renderCenter("truehd");
+      });
+  }
+
+  function doSaveGain() {
+    toast("Saving audio settings…", "busy");
+    callService("setMakeupGain", {
+      dts: gainVal.dts, truehd: gainVal.truehd,
+      presetDts: presetVal.dts, presetThd: presetVal.truehd,
+      centerDts: centerVal.dts, centerThd: centerVal.truehd
+    }).then(function (r) {
+      // Reflect the server-clamped/validated values back into the controls.
+      if (typeof r.dts === "number") gainVal.dts = r.dts;
+      if (typeof r.truehd === "number") gainVal.truehd = r.truehd;
+      if (PRESET_LABEL.hasOwnProperty(r.presetDts)) presetVal.dts = r.presetDts;
+      if (PRESET_LABEL.hasOwnProperty(r.presetThd)) presetVal.truehd = r.presetThd;
+      if (typeof r.centerDts === "number") centerVal.dts = r.centerDts;
+      if (typeof r.centerThd === "number") centerVal.truehd = r.centerThd;
+
+      gainSaved.dts = gainVal.dts; gainSaved.truehd = gainVal.truehd;
+      presetSaved.dts = presetVal.dts; presetSaved.truehd = presetVal.truehd;
+      centerSaved.dts = centerVal.dts; centerSaved.truehd = centerVal.truehd;
+
+      renderGain("dts"); renderGain("truehd");
+      renderPreset("dts"); renderPreset("truehd");
+      renderCenter("dts"); renderCenter("truehd");
+
+      toast("Saved: DTS " + gainVal.dts + " dB / " + PRESET_LABEL[presetVal.dts] + " / centre " +
+            centerVal.dts + " dB, TrueHD " + gainVal.truehd + " dB / " + PRESET_LABEL[presetVal.truehd] +
+            " / centre " + centerVal.truehd + " dB (applies next playback)", "ok");
+    }).catch(function (e) { toast("Save failed: " + errText(e), "err"); });
+  }
+
+  /* ---------------------------------------------------------------------- */
+  /* A/B compare (bundled DTS clip: DRC off vs the saved settings)          */
+  /* ---------------------------------------------------------------------- */
+
+  // Filled by abPreview; each is {url, bytes, rendered, meanDb, peakDb, ...}.
+  var abState = { a: null, b: null };
+  // Bumped on every render so the player never serves a cached previous take.
+  var abStamp = 0;
+
+  function abDb(v) {
+    if (typeof v !== "number") return "n/a";
+    return (v > 0 ? "+" : "") + v.toFixed(1) + " dB";
+  }
+
+  function abVariantText(v) {
+    if (!v) return "—";
+    if (!v.rendered) return "render failed";
+    var s = Math.round(v.bytes / 1024) + " KB";
+    if (typeof v.meanDb === "number") s += " · mean " + abDb(v.meanDb) + ", peak " + abDb(v.peakDb);
+    return s;
+  }
+
+  function abSetPlayEnabled() {
+    $("btnAbA").disabled = !(abState.a && abState.a.rendered);
+    $("btnAbB").disabled = !(abState.b && abState.b.rendered);
+  }
+
+  function doAbRender() {
+    $("btnAb").disabled = true;
+    abState.a = abState.b = null;
+    abSetPlayEnabled();
+    setVal("abA", "rendering…"); setVal("abB", "rendering…");
+    setVal("abDelta", "—"); setVal("abConf", "—");
+    toast("Rendering A/B on the TV (a few seconds)…", "busy");
+
+    callService("abPreview", {}).then(function (res) {
+      abStamp++;
+      abState.a = res.a || null;
+      abState.b = res.b || null;
+      setVal("abA", abVariantText(res.a), res.a && res.a.rendered ? "ok" : "warn");
+      setVal("abB", abVariantText(res.b), res.b && res.b.rendered ? "ok" : "warn");
+
+      if (res.measured && typeof res.deltaMeanDb === "number") {
+        setVal("abDelta", abDb(res.deltaMeanDb) + " mean, " + abDb(res.deltaPeakDb) + " peak",
+               res.deltaMeanDb === 0 ? "warn" : "ok");
+      } else {
+        setVal("abDelta", "not measured — " + (res.measureNote || "no numbers available"), "warn");
+      }
+
+      setVal("abConf", res.configUnchanged ? "unchanged (" + res.configProof + ")"
+                                           : "CHECK: " + (res.configProof || "could not verify"),
+             res.configUnchanged ? "ok" : "warn");
+
+      abSetPlayEnabled();
+      if (abState.a || abState.b) {
+        toast("A/B ready — play A, then B, and listen to the same clip twice.", "ok");
+      } else {
+        toast("A/B render produced nothing playable; see the numbers above.", "err");
+      }
+    }).catch(function (e) {
+      setVal("abA", "—"); setVal("abB", "—");
+      setVal("abDelta", "—"); setVal("abConf", "—");
+      abSetPlayEnabled();
+      toast("A/B failed: " + errText(e), "err");
+    }).then(function () {
+      $("btnAb").disabled = false;
+    });
+  }
+
+  function doAbPlay(which) {
+    var v = abState[which];
+    if (!v || !v.rendered) return;
+    var p = $("abPlayer");
+    p.hidden = false;
+    p.src = v.url + "?r=" + abStamp;
+    toast("Playing " + v.label, "busy");
+    var pr = p.play();
+    if (pr && typeof pr.catch === "function") {
+      pr.catch(function () {
+        toast("The in-app player refused the rendered clip; the measured numbers above still hold.", "err");
+      });
+    }
+    p.scrollIntoView({ block: "nearest" });
   }
 
   /* ---------------------------------------------------------------------- */
@@ -335,12 +562,50 @@
     $("btnPlayMp4").addEventListener("click", function () { doPlay("mp4"); });
     $("btnPlayTs").addEventListener("click", function () { doPlay("ts"); });
     $("btnPlayM2ts").addEventListener("click", function () { doPlay("m2ts"); });
+    $("btnSaveGain").addEventListener("click", doSaveGain);
+    $("btnAb").addEventListener("click", doAbRender);
+    $("btnAbA").addEventListener("click", function () { doAbPlay("a"); });
+    $("btnAbB").addEventListener("click", function () { doAbPlay("b"); });
+    // A <video>/<audio> src that the pipeline can't handle fails via `error` on
+    // the element, not via the play() promise, so report that path too.
+    $("abPlayer").addEventListener("error", function () {
+      toast("The in-app player couldn't load the rendered clip; the measured numbers above still hold.", "err");
+    });
+    // Don't leave ~1 MB of rendered wav in the app directory after we're gone.
+    window.addEventListener("pagehide", function () {
+      callService("abCleanup", {}).catch(function () { /* best effort */ });
+    });
+
+    // Gain +/- steppers (data-gain = which codec, data-step = delta in dB).
+    var stepBtns = document.querySelectorAll("[data-gain][data-step]");
+    for (var i = 0; i < stepBtns.length; i++) {
+      stepBtns[i].addEventListener("click", function () {
+        stepGain(this.getAttribute("data-gain"), parseFloat(this.getAttribute("data-step")));
+      });
+    }
+
+    // DRC preset cycling buttons (data-preset = which codec, data-pdir = +1/-1).
+    var presetBtns = document.querySelectorAll("[data-preset][data-pdir]");
+    for (var j = 0; j < presetBtns.length; j++) {
+      presetBtns[j].addEventListener("click", function () {
+        stepPreset(this.getAttribute("data-preset"), parseInt(this.getAttribute("data-pdir"), 10));
+      });
+    }
+
+    // Dialogue (center) boost +/- steppers (data-center = which codec, data-step = delta in dB).
+    var centerBtns = document.querySelectorAll("[data-center][data-step]");
+    for (var k = 0; k < centerBtns.length; k++) {
+      centerBtns[k].addEventListener("click", function () {
+        stepCenter(this.getAttribute("data-center"), parseFloat(this.getAttribute("data-step")));
+      });
+    }
 
     wirePointerFocus();
     document.addEventListener("keydown", onKey);
     setFocus($("btnRefresh"));
 
     refreshStatus();
+    loadGain();
   }
 
   if (document.readyState === "loading") {

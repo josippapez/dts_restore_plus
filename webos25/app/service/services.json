@@ -12,7 +12,11 @@
         { "name": "disable",   "description": "Remove the boot hook + best-effort unmount for the detected profile" },
         { "name": "uninstall", "description": "Disable + remove all on-device state for the detected profile" },
         { "name": "test",      "description": "Decode each bundled DTS sample (mp4/ts/m2ts) through the media registry; report PASS/FAIL per container" },
-        { "name": "testfiles", "description": "Return on-device paths of the bundled DTS samples for in-app play-by-ear" }
+        { "name": "testfiles", "description": "Return on-device paths of the bundled DTS samples for in-app play-by-ear" },
+        { "name": "setMakeupGain", "description": "Write both gain.conf files: per-codec make-up gain, DRC preset and dialogue boost" },
+        { "name": "getMakeupGain", "description": "Read both gain.conf files back so the UI can show the saved settings" },
+        { "name": "abPreview",     "description": "Render the bundled DTS sample twice (DRC off vs the saved settings), measure both, and return playable paths" },
+        { "name": "abCleanup",     "description": "Delete the rendered A/B clips from the app directory" }
       ]
     }
   ]

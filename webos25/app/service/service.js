@@ -146,6 +146,187 @@ var W25_GC_AWK = [
 ].join("\n");
 
 /* =======================================================================
+ * Make-up gain config files (per the EPIC config-file contract): a single
+ * ASCII dB float, read by each decoder at init (dts25/gain.conf ->
+ * gstdtsdec, truehd/gain.conf -> the ffmpeg mlpdec.c patch). Written from
+ * the app via rootExec, mirroring the existing config-write pattern above
+ * (mkdir -p the parent, write, no live-file editing needed here since
+ * these are OUR files, not a bind-mount override of an LG /etc file).
+ * No gstreamer registry re-init needed -- the decoder reads its config at
+ * the NEXT playback init, so the value just needs to be on disk.
+ * ===================================================================== */
+var DTS_GAIN_CONF = W25_DEST + "/gain.conf";
+var THD_GAIN_CONF = W25_THD_DEST + "/gain.conf";
+
+/**
+ * Clamp a caller-supplied gain to the contract range [-20, +20] dB and
+ * round to 0.1 dB. Returns null (never NaN) for anything non-finite so
+ * callers can reject bad input instead of silently writing garbage.
+ */
+function clampGainDb(v) {
+  var n = Number(v);
+  if (!isFinite(n)) return null;
+  if (n < -20) n = -20;
+  else if (n > 20) n = 20;
+  return Math.round(n * 10) / 10;
+}
+
+/**
+ * Clamp a caller-supplied center (dialogue) boost to the contract range
+ * [-10, +10] dB and round to 0.1 dB. Returns null for non-finite input,
+ * mirroring clampGainDb.
+ */
+function clampCenterDb(v) {
+  var n = Number(v);
+  if (!isFinite(n)) return null;
+  if (n < -10) n = -10;
+  else if (n > 10) n = 10;
+  return Math.round(n * 10) / 10;
+}
+
+/* DRC preset -> config mapping (EPIC "Preset mapping", binding). Boost/cut
+ * are irrelevant when mode is "off" (the decoder's inert guarantee bypasses
+ * the whole DRC path), but we still write the contract's documented
+ * defaults (100/100) for those fields rather than leaving them unset. */
+var PRESET_MAP = {
+  off:    { mode: "off",  boost: 100, cut: 100 },
+  light:  { mode: "line", boost: 50,  cut: 50 },
+  medium: { mode: "line", boost: 100, cut: 100 },
+  night:  { mode: "rf",   boost: 100, cut: 100 }
+};
+var PRESET_ORDER = ["off", "light", "medium", "night"];
+
+/** Validate a caller-supplied preset name against the enum. Returns the
+ *  canonical key or null (never a caller-controlled string) so it can only
+ *  ever reach the shell as one of the fixed PRESET_ORDER literals. */
+function normalizePreset(v) {
+  return (typeof v === "string" && PRESET_MAP.hasOwnProperty(v)) ? v : null;
+}
+
+/** Reverse-map a (mode, boost, cut) tuple read back from disk to the
+ *  closest known preset name, for the UI to display. "off" always maps to
+ *  Off regardless of boost/cut (they're inert there, per the decoders'
+ *  inert guarantee). An exact match wins; otherwise fall back to the
+ *  nearest named preset for that mode (Medium for a hand-edited "line",
+ *  Night for a hand-edited "rf") so a config authored outside the app
+ *  still shows a sane preset instead of nothing. */
+function presetFromConfig(mode, boost, cut) {
+  if (mode === "off") return "off";
+  if (mode === "line") return (boost === 50 && cut === 50) ? "light" : "medium";
+  if (mode === "rf") return "night";
+  return "off";
+}
+
+/** Any DRC mode string other than "off"/"line"/"rf" (missing key, typo,
+ *  hand-edit) falls back to "off", per the contract's "invalid -> default". */
+function validDrcMode(v) { return (v === "off" || v === "line" || v === "rf") ? v : "off"; }
+
+/** drc_boost / drc_cut percentage read back from disk; unparseable -> the
+ *  contract default of 100. */
+function drcPct(v) { return isFinite(parseFloat(v)) ? Math.round(Number(v)) : 100; }
+
+/** Turn the KEY=VALUE output of w25GetGainScript() into the per-codec
+ *  settings the UI (and the A/B preview) work in: {gain, preset, center}.
+ *  Missing/unparseable values become the contract defaults (0 dB, preset
+ *  Off, 0 dB centre), mirroring the decoders' own fault-tolerant parsing. */
+function parseSavedConfig(kv) {
+  function one(gainKey, drcKey, boostKey, cutKey, centerKey) {
+    var gain = clampGainDb(parseFloat(kv[gainKey]));
+    var center = clampCenterDb(parseFloat(kv[centerKey]));
+    return {
+      gain: gain === null ? 0 : gain,
+      preset: presetFromConfig(validDrcMode(kv[drcKey]), drcPct(kv[boostKey]), drcPct(kv[cutKey])),
+      center: center === null ? 0 : center
+    };
+  }
+  return {
+    dts: one("DTS_GAIN", "DTS_DRC", "DTS_BOOST", "DTS_CUT", "DTS_CENTER"),
+    truehd: one("THD_GAIN", "THD_DRC", "THD_BOOST", "THD_CUT", "THD_CENTER")
+  };
+}
+
+/** Write BOTH gain.conf files (temp file + mv so a decoder never reads a
+ *  half-written file). mkdir -p the parent dirs first -- they may not
+ *  exist yet if Enable was never run (decoders default to 0.0 dB unity
+ *  regardless, per the contract's fault-tolerant default).
+ *
+ *  Each file gets the bare-float gain line FIRST (existing behavior,
+ *  unchanged -- the decoders' first-data-line parse and w25ReadGain()
+ *  below both depend on that), followed by the new `key=value` lines from
+ *  the EPIC config contract. All substituted values are our own
+ *  server-clamped numbers or one of the fixed PRESET_MAP mode strings, so
+ *  nothing caller-controlled ever reaches the shell unescaped. */
+function w25GainConfWrite(path, gainDb, presetName, centerDb) {
+  var p = PRESET_MAP[presetName];
+  return 'printf "%s\\n%s\\n%s\\n%s\\n%s\\n" "' + gainDb.toFixed(1) + '" ' +
+    '"drc=' + p.mode + '" "drc_boost=' + p.boost + '" "drc_cut=' + p.cut + '" ' +
+    '"center=' + centerDb.toFixed(1) + '" > "' + path + '.tmp" && mv -f "' +
+    path + '.tmp" "' + path + '" || echo "FAIL: write ' + path + '"';
+}
+
+function w25SetGainScript(dtsDb, dtsPreset, dtsCenter, thdDb, thdPreset, thdCenter) {
+  return [
+    "set -u",
+    'mkdir -p "' + W25_DEST + '" "' + W25_THD_DEST + '" || { echo "FAIL: mkdir"; exit 0; }',
+    w25GainConfWrite(DTS_GAIN_CONF, dtsDb, dtsPreset, dtsCenter),
+    w25GainConfWrite(THD_GAIN_CONF, thdDb, thdPreset, thdCenter),
+    'echo OK',
+    "exit 0"
+  ].join("\n");
+}
+
+/** Read both gain.conf files back (for the UI to show the current value).
+ *  Parses the same way the decoders do (see EPIC config-file contract): skip
+ *  `#` comment lines and blank lines, take the first data line, strip its
+ *  whitespace. So a hand-edited config with a comment reads back correctly. */
+function w25ReadGain(path) {
+  return "$(awk '/^[[:space:]]*#/{next} /^[[:space:]]*$/{next} " +
+         "{gsub(/[[:space:]]/,\"\"); print; exit}' \"" + path + "\" 2>/dev/null)";
+}
+
+/** Read a single `key=value` line back out of a gain.conf, tolerating
+ *  comments/blank lines and surrounding whitespace. Missing key -> empty
+ *  string (the caller applies the contract's default). `key` is always one
+ *  of our own literal constants, never caller input. */
+function w25ReadKey(path, key) {
+  // NB: copy $1 into a local (k) instead of gsub()-ing $1 directly. Assigning to
+  // a field makes awk REBUILD $0 from the fields joined by OFS (a space), which
+  // destroys the "=" -- so the later sub(/^[^=]*=/) matches nothing and the whole
+  // "drc=rf" line comes back as "drcrf". That is not a BusyBox quirk; every awk
+  // does it. Verified on the TV (BusyBox v1.35.0): buggy form -> "drcrf",
+  // this form -> "rf".
+  return "$(awk -F= '/^[[:space:]]*#/{next} { k=$1; gsub(/[[:space:]]/,\"\",k); " +
+         'if (k == "' + key + '") { v=$0; sub(/^[^=]*=/,"",v); gsub(/[[:space:]]/,"",v); print v; exit } }\' "' +
+         path + '" 2>/dev/null)';
+}
+
+function w25GetGainScript() {
+  return [
+    "DTS_GAIN=" + w25ReadGain(DTS_GAIN_CONF),
+    "DTS_DRC=" + w25ReadKey(DTS_GAIN_CONF, "drc"),
+    "DTS_BOOST=" + w25ReadKey(DTS_GAIN_CONF, "drc_boost"),
+    "DTS_CUT=" + w25ReadKey(DTS_GAIN_CONF, "drc_cut"),
+    "DTS_CENTER=" + w25ReadKey(DTS_GAIN_CONF, "center"),
+    "THD_GAIN=" + w25ReadGain(THD_GAIN_CONF),
+    "THD_DRC=" + w25ReadKey(THD_GAIN_CONF, "drc"),
+    "THD_BOOST=" + w25ReadKey(THD_GAIN_CONF, "drc_boost"),
+    "THD_CUT=" + w25ReadKey(THD_GAIN_CONF, "drc_cut"),
+    "THD_CENTER=" + w25ReadKey(THD_GAIN_CONF, "center"),
+    'echo "DTS_GAIN=$DTS_GAIN"',
+    'echo "DTS_DRC=$DTS_DRC"',
+    'echo "DTS_BOOST=$DTS_BOOST"',
+    'echo "DTS_CUT=$DTS_CUT"',
+    'echo "DTS_CENTER=$DTS_CENTER"',
+    'echo "THD_GAIN=$THD_GAIN"',
+    'echo "THD_DRC=$THD_DRC"',
+    'echo "THD_BOOST=$THD_BOOST"',
+    'echo "THD_CUT=$THD_CUT"',
+    'echo "THD_CENTER=$THD_CENTER"',
+    "exit 0"
+  ].join("\n");
+}
+
+/* =======================================================================
  * CX mechanism constants  (mirror repo-root install.sh / init_dts.sh)
  * ===================================================================== */
 var CX_STATE       = "/var/lib/webosbrew/dtsenabler/cx";
@@ -552,6 +733,209 @@ function w25SelfTest() {
 }
 
 /* =======================================================================
+ * In-app A/B preview (webOS 25; DTS path only)
+ * ---------------------------------------------------------------------
+ * Renders the bundled DTS sample TWICE through `dtsdec` -- once with the
+ * whole DRC/gain path inert (A: drc-mode=off, gain 0, centre 0) and once
+ * with the user's SAVED gain.conf settings (B) -- so the difference can be
+ * heard on identical content, back to back, without leaving the app.
+ *
+ * WHY PROPERTIES, NOT THE CONFIG FILE: every variant is expressed as
+ * dtsdec GObject properties on the gst-launch command line (drc-mode,
+ * drc-boost, drc-cut, makeup-gain-db, center-boost-db). gain.conf is
+ * therefore never written, moved or even re-read, so the A/B cannot leave
+ * the user's settings altered. The script hashes BOTH gain.conf files
+ * before and after and returns the hashes so that is provable, not
+ * merely asserted.
+ *
+ * WHERE THE RENDERED WAVs GO -- the app's own install dir, next to the
+ * bundled samples ($APPBASE/payload/testfiles). Reason: the shipped
+ * play-by-ear buttons already load `payload/testfiles/DTS-in-mp4.mp4` as
+ * a RELATIVE URL from index.html and that works on the device, so a file
+ * dropped in that same directory is reachable by the same mechanism.
+ * /tmp has no such evidence behind it and is very likely outside the
+ * app's document root, so it is not used. The directory is probed for
+ * writability first and the call fails cleanly (never silently) if it is
+ * read-only.
+ *
+ * NOT VERIFIED ON DEVICE (this build environment has no TV access):
+ * whether webOS's media pipeline will actually PLAY a RIFF/WAV from an
+ * <audio> element. The renders are written as 16-bit stereo PCM -- the
+ * most broadly supported WAV flavour, and ~6x smaller than the native
+ * 5.1/S32 output -- to give that the best chance. Both variants go
+ * through the identical downmix, so the A-vs-B difference is preserved.
+ * If playback does fail, the feature degrades to "numbers only": the
+ * measured dB delta below is computed on-device and stays valid.
+ *
+ * MEASUREMENT: a second pass per variant through GStreamer's `level`
+ * element (there is no ffmpeg on the TV), parsed from `gst-launch-1.0 -m`
+ * bus messages. This pass deliberately does NOT include the stereo
+ * capsfilter, so the numbers describe the decoder's native output. If
+ * `level` is not registered on this TV the numbers are reported as "na"
+ * rather than invented.
+ * ===================================================================== */
+var AB_SAMPLE    = "DTS-in-mp4.mp4";              // bundled clip used for both variants
+var AB_A_NAME    = "dtsenabler_ab_a.wav";
+var AB_B_NAME    = "dtsenabler_ab_b.wav";
+var AB_REL_URL   = "payload/testfiles/";          // relative to index.html (see above)
+var AB_MIN_BYTES = TEST_WAV_MIN;                  // same "real PCM" floor as the self-test
+var AB_TIMEOUT_S = 40;                            // per gst-launch run; a real render is ~seconds
+var AB_LEVEL_NS  = 100000000;                     // `level interval=` -> one report per 100 ms
+
+/* awk program that turns `gst-launch-1.0 -m` level messages into
+ * "<tag>_MEAN=" (arithmetic mean of every per-channel rms dB value) and
+ * "<tag>_PEAK=" (max per-channel peak dB). Tokens that are not numeric
+ * (notably "-inf" for digital silence) are skipped rather than coerced to
+ * 0, which would drag the mean up. Written to the TV via a base64 heredoc
+ * and run with `awk -f`, the same way the install awk programs are, so no
+ * part of it survives the write as shell syntax. */
+var AB_LEVEL_AWK = [
+  '{',
+  '  n = index($0, "rms=(GValueArray)<"); if (n == 0) next;',
+  '  s = substr($0, n + 18); e = index(s, ">"); if (e == 0) next; r = substr(s, 1, e - 1);',
+  '  n = index($0, "peak=(GValueArray)<"); if (n == 0) next;',
+  '  s = substr($0, n + 19); e = index(s, ">"); if (e == 0) next; p = substr(s, 1, e - 1);',
+  '  c = split(r, a, ",");',
+  '  for (i = 1; i <= c; i++) {',
+  '    v = a[i]; sub(/^[^0-9+-]*/, "", v);',
+  '    if (v !~ /^[+-]?[0-9]/) continue;',
+  '    x = v + 0; if (x > -900) { sum += x; cnt++ }',
+  '  }',
+  '  c = split(p, a, ",");',
+  '  for (i = 1; i <= c; i++) {',
+  '    v = a[i]; sub(/^[^0-9+-]*/, "", v);',
+  '    if (v !~ /^[+-]?[0-9]/) continue;',
+  '    x = v + 0; if (!hp || x > pk) { pk = x; hp = 1 }',
+  '  }',
+  '}',
+  'END {',
+  '  if (cnt > 0) printf "%s_MEAN=%.1f\\n", t, sum / cnt; else printf "%s_MEAN=na\\n", t;',
+  '  if (hp) printf "%s_PEAK=%.1f\\n", t, pk; else printf "%s_PEAK=na\\n", t;',
+  '}'
+].join("\n");
+
+/** Build the dtsdec property list for one A/B variant. Every value is one
+ *  of our own server-clamped numbers or a fixed PRESET_MAP mode literal,
+ *  so nothing caller-controlled reaches the shell. */
+function w25AbProps(gainDb, presetName, centerDb) {
+  var p = PRESET_MAP[presetName];
+  return [
+    "drc-mode=" + p.mode,
+    "drc-boost=" + p.boost,
+    "drc-cut=" + p.cut,
+    "makeup-gain-db=" + gainDb.toFixed(1),
+    "center-boost-db=" + centerDb.toFixed(1)
+  ].join(" ");
+}
+
+/**
+ * The A/B render + measure script. `saved` is {gain, preset, center} as
+ * read back from the DTS gain.conf, i.e. variant B.
+ *
+ * Exit codes are captured straight after each `gst-launch` (never after a
+ * pipe, where `$?` would be the parser's status), and every file is size-
+ * checked before it is reported as rendered.
+ */
+function w25AbScript(saved) {
+  var propsA = w25AbProps(0, "off", 0);
+  var propsB = w25AbProps(saved.gain, saved.preset, saved.center);
+  var b64awk = Buffer.from(AB_LEVEL_AWK, "utf8").toString("base64");
+  return [
+    "set -u",
+    APPBASE_PRELUDE,
+    'DIR="' + PAYLOAD_TESTS + '"',
+    'SRC="$DIR/' + AB_SAMPLE + '"',
+    'A="$DIR/' + AB_A_NAME + '"',
+    'B="$DIR/' + AB_B_NAME + '"',
+    'AWKF=/tmp/dtsenabler_ab_level.awk',
+    'MSG=/tmp/dtsenabler_ab_level.txt',
+    // dtsdec is NOT on the default plugin path, and libdca lives with our payload.
+    // GST_REGISTRY_FORK=no keeps the plugin scanner in-process so it cannot hold
+    // the HBC exec pipe open (see CLAUDE.md).
+    'export LD_LIBRARY_PATH=' + W25_LIBS + ':' + W25_THD_LIBS,
+    'export GST_PLUGIN_PATH=' + W25_DEST,
+    'export GST_REGISTRY_FORK=no',
+    // --- config fingerprints BEFORE anything runs -------------------------
+    'conf_hash() { if [ -f "$1" ]; then h=$(md5sum "$1" 2>/dev/null | cut -d" " -f1); [ -n "$h" ] || h=nohash; else h=absent; fi; printf "%s" "$h"; }',
+    'DTS_CONF_BEFORE=$(conf_hash "' + DTS_GAIN_CONF + '")',
+    'THD_CONF_BEFORE=$(conf_hash "' + THD_GAIN_CONF + '")',
+    'echo "DTS_CONF_BEFORE=$DTS_CONF_BEFORE"',
+    'echo "THD_CONF_BEFORE=$THD_CONF_BEFORE"',
+    'bail() { echo "ERR=$1"; echo "DIR=$DIR"; echo "DTS_CONF_AFTER=$DTS_CONF_BEFORE"; echo "THD_CONF_AFTER=$THD_CONF_BEFORE"; exit 0; }',
+    // --- preconditions ----------------------------------------------------
+    '[ -f "$SRC" ] || bail sample-missing',
+    'rm -f "$A" "$B" "$MSG" "$AWKF" 2>/dev/null',
+    'PROBE="$DIR/.dtsenabler_ab_probe"',
+    'if touch "$PROBE" 2>/dev/null; then rm -f "$PROBE" 2>/dev/null; else bail render-dir-readonly; fi',
+    'if gst-inspect-1.0 level >/dev/null 2>&1; then HAVE_LEVEL=1; else HAVE_LEVEL=0; fi',
+    'echo "LEVEL=$HAVE_LEVEL"',
+    'base64 -d > "$AWKF" <<\'B64ABAWK\'',
+    b64awk,
+    "B64ABAWK",
+    // --- render one variant to a 16-bit stereo WAV ------------------------
+    'render() {',
+    '  tag=$1; out=$2; shift 2',
+    '  rm -f "$out" 2>/dev/null',
+    '  timeout ' + AB_TIMEOUT_S + ' gst-launch-1.0 -q filesrc location="$SRC" ! qtdemux ! dtsdec "$@" ! audioconvert ! "audio/x-raw,format=S16LE,channels=2" ! wavenc ! filesink location="$out" >/dev/null 2>&1',
+    '  rc=$?',
+    '  sz=$(stat -c%s "$out" 2>/dev/null || echo 0)',
+    '  echo "${tag}_RC=$rc"',
+    '  echo "${tag}_BYTES=$sz"',
+    '  echo "${tag}_PROPS=$*"',
+    '}',
+    // --- measure one variant with the `level` element ---------------------
+    'measure() {',
+    '  tag=$1; shift',
+    '  if [ "$HAVE_LEVEL" != "1" ]; then echo "${tag}_MEAN=na"; echo "${tag}_PEAK=na"; return; fi',
+    '  rm -f "$MSG" 2>/dev/null',
+    '  timeout ' + AB_TIMEOUT_S + ' gst-launch-1.0 -m filesrc location="$SRC" ! qtdemux ! dtsdec "$@" ! audioconvert ! level interval=' + AB_LEVEL_NS + ' ! fakesink > "$MSG" 2>/dev/null',
+    '  rc=$?',
+    '  if [ "$rc" -eq 0 ] && [ -s "$MSG" ]; then awk -v t="$tag" -f "$AWKF" "$MSG"; else echo "${tag}_MEAN=na"; echo "${tag}_PEAK=na"; fi',
+    '  rm -f "$MSG" 2>/dev/null',
+    '}',
+    'render A "$A" ' + propsA,
+    'render B "$B" ' + propsB,
+    'measure A ' + propsA,
+    'measure B ' + propsB,
+    'rm -f "$AWKF" 2>/dev/null',
+    // --- config fingerprints AFTER ---------------------------------------
+    'DTS_CONF_AFTER=$(conf_hash "' + DTS_GAIN_CONF + '")',
+    'THD_CONF_AFTER=$(conf_hash "' + THD_GAIN_CONF + '")',
+    'echo "DTS_CONF_AFTER=$DTS_CONF_AFTER"',
+    'echo "THD_CONF_AFTER=$THD_CONF_AFTER"',
+    "exit 0"
+  ].join("\n");
+}
+
+/** Delete the rendered A/B wavs (the app calls this when it goes away). */
+function w25AbCleanupScript() {
+  return [
+    "set -u",
+    APPBASE_PRELUDE,
+    'rm -f "' + PAYLOAD_TESTS + '/' + AB_A_NAME + '" "' + PAYLOAD_TESTS + '/' + AB_B_NAME + '" 2>/dev/null',
+    'echo OK',
+    "exit 0"
+  ].join("\n");
+}
+
+/** Parse "<tag>_*" keys out of the A/B script output into a variant object. */
+function abVariant(kv, tag, name, label) {
+  var bytes = parseInt(kv[tag + "_BYTES"], 10);
+  if (!isFinite(bytes)) bytes = 0;
+  function num(v) { var n = parseFloat(v); return isFinite(n) ? n : null; }
+  return {
+    label: label,
+    file: name,
+    url: AB_REL_URL + name,
+    bytes: bytes,
+    rendered: parseInt(kv[tag + "_RC"], 10) === 0 && bytes >= AB_MIN_BYTES,
+    props: kv[tag + "_PROPS"] || "",
+    meanDb: num(kv[tag + "_MEAN"]),
+    peakDb: num(kv[tag + "_PEAK"])
+  };
+}
+
+/* =======================================================================
  * CX mechanism shell builders  (mirror repo-root install.sh / init_dts.sh)
  * ===================================================================== */
 
@@ -867,6 +1251,202 @@ service.register("testfiles", function (message) {
     return { key: t.key, file: t.file, path: PAYLOAD_TESTS + "/" + t.file };
   });
   message.respond({ returnValue: true, dir: PAYLOAD_TESTS, files: files });
+});
+
+/* setMakeupGain: write BOTH gain.conf files (DTS + TrueHD/MLP) via rootExec --
+ * now the full per-codec config: the bare-float gain line PLUS the DRC
+ * preset (drc/drc_boost/drc_cut) and center-boost, per the EPIC config
+ * contract. Only meaningful on the webOS 25 profile (the only profile with
+ * a make-up-gain-aware decoder); refuse cleanly elsewhere. Clamps gain and
+ * center to their contract ranges and validates the preset against the
+ * fixed enum before ANY of it touches rootExec -- so only our own
+ * server-clamped numbers and one of the fixed PRESET_MAP mode strings ever
+ * reach the shell. presetDts/presetThd/centerDts/centerThd default to
+ * "off"/0 when omitted (older callers sending only {dts,truehd} still
+ * work); when present they must be valid or the whole call is rejected,
+ * same as the existing gain check. No registry re-init needed -- applies
+ * on the next playback. */
+service.register("setMakeupGain", function (message) {
+  var p = message.payload || {};
+  var dts = clampGainDb(p.dts);
+  var thd = clampGainDb(p.truehd);
+  if (dts === null || thd === null) {
+    message.respond({
+      returnValue: false,
+      errorText: "Gain must be a finite number in [-20, 20] dB (got dts=" + p.dts + ", truehd=" + p.truehd + ")."
+    });
+    return;
+  }
+  var presetDts = (p.presetDts === undefined) ? "off" : normalizePreset(p.presetDts);
+  var presetThd = (p.presetThd === undefined) ? "off" : normalizePreset(p.presetThd);
+  if (presetDts === null || presetThd === null) {
+    message.respond({
+      returnValue: false,
+      errorText: "DRC preset must be one of " + PRESET_ORDER.join("/") + " (got presetDts=" + p.presetDts + ", presetThd=" + p.presetThd + ")."
+    });
+    return;
+  }
+  var centerDts = (p.centerDts === undefined) ? 0 : clampCenterDb(p.centerDts);
+  var centerThd = (p.centerThd === undefined) ? 0 : clampCenterDb(p.centerThd);
+  if (centerDts === null || centerThd === null) {
+    message.respond({
+      returnValue: false,
+      errorText: "Center boost must be a finite number in [-10, 10] dB (got centerDts=" + p.centerDts + ", centerThd=" + p.centerThd + ")."
+    });
+    return;
+  }
+  detectProfile().then(function (d) {
+    if (d.profile !== PROFILE_W25) {
+      message.respond({
+        returnValue: false, profile: d.profile,
+        errorText: "Make-up gain is only available on the webOS 25 profile (found '" + d.profile + "')."
+      });
+      return;
+    }
+    return rootExec(w25SetGainScript(dts, presetDts, centerDts, thd, presetThd, centerThd)).then(function (r) {
+      if ((r.stdout || "").indexOf("OK") === -1) {
+        message.respond({ returnValue: false, errorText: "Failed to write gain config: " + (r.stdout || r.stderr || "unknown error") });
+        return;
+      }
+      message.respond({
+        returnValue: true,
+        dts: dts, truehd: thd,
+        presetDts: presetDts, presetThd: presetThd,
+        centerDts: centerDts, centerThd: centerThd
+      });
+    });
+  }).catch(function (e) {
+    message.respond({ returnValue: false, errorText: e.errorText || e.message || String(e) });
+  });
+});
+
+/* getMakeupGain: read both gain.conf files back so the UI can reflect the
+ * current gain, DRC preset and center boost. Missing/empty/unparseable ->
+ * the contract defaults (drc=off, boost/cut=100, center=0), mirroring the
+ * decoders' own fault-tolerant parsing; never fails on a bad/missing file.
+ * The preset is derived from (drc, drc_boost, drc_cut) via presetFromConfig
+ * since the config contract has no separate "preset" key. */
+service.register("getMakeupGain", function (message) {
+  detectProfile().then(function (d) {
+    if (d.profile !== PROFILE_W25) {
+      message.respond({
+        returnValue: true, profile: d.profile,
+        dts: 0, truehd: 0, presetDts: "off", presetThd: "off", centerDts: 0, centerThd: 0
+      });
+      return;
+    }
+    return rootExec(w25GetGainScript()).then(function (r) {
+      var saved = parseSavedConfig(parseKv(r.stdout));
+      message.respond({
+        returnValue: true,
+        profile: d.profile,
+        dts: saved.dts.gain,
+        truehd: saved.truehd.gain,
+        presetDts: saved.dts.preset,
+        presetThd: saved.truehd.preset,
+        centerDts: saved.dts.center,
+        centerThd: saved.truehd.center
+      });
+    });
+  }).catch(function (e) {
+    message.respond({ returnValue: false, errorText: e.errorText || e.message || String(e) });
+  });
+});
+
+/* abPreview: render the bundled DTS sample twice -- A with the DRC/gain
+ * path fully inert, B with the user's SAVED settings -- measure both, and
+ * return the paths the UI can play plus the measured dB delta. Takes no
+ * parameters: B is read from the on-disk config, never from the caller,
+ * so this method cannot be used to push arbitrary values at the decoder.
+ * webOS 25 only (the only profile with a DRC-aware dtsdec). */
+service.register("abPreview", function (message) {
+  detectProfile().then(function (d) {
+    if (d.profile !== PROFILE_W25) {
+      message.respond({
+        returnValue: false, profile: d.profile,
+        errorText: "A/B compare is only available on the webOS 25 profile (found '" + d.profile + "')."
+      });
+      return;
+    }
+    return rootExec(w25GetGainScript()).then(function (g) {
+      var saved = parseSavedConfig(parseKv(g.stdout)).dts;
+      return rootExec(w25AbScript(saved)).then(function (r) {
+        var kv = parseKv(r.stdout);
+        if (kv.ERR === "sample-missing") {
+          message.respond({
+            returnValue: false,
+            errorText: "Bundled DTS sample " + AB_SAMPLE + " not found in " + (kv.DIR || "the app's payload") + "."
+          });
+          return;
+        }
+        if (kv.ERR === "render-dir-readonly") {
+          message.respond({
+            returnValue: false,
+            errorText: "Cannot write the rendered clips to " + (kv.DIR || "the app directory") +
+              " (read-only install). A/B compare needs a writable app directory."
+          });
+          return;
+        }
+        if (kv.ERR) {
+          message.respond({ returnValue: false, errorText: "A/B render failed: " + kv.ERR });
+          return;
+        }
+
+        var a = abVariant(kv, "A", AB_A_NAME, "A - DRC off, 0 dB gain, 0 dB dialogue");
+        var b = abVariant(kv, "B", AB_B_NAME, "B - your saved settings");
+        var measured = a.meanDb !== null && b.meanDb !== null;
+        var confUnchanged =
+          kv.DTS_CONF_BEFORE === kv.DTS_CONF_AFTER && kv.THD_CONF_BEFORE === kv.THD_CONF_AFTER;
+        var hashUsable = kv.DTS_CONF_BEFORE !== "nohash" && kv.THD_CONF_BEFORE !== "nohash";
+
+        function delta(x, y) { return (x === null || y === null) ? null : Math.round((y - x) * 10) / 10; }
+
+        message.respond({
+          returnValue: true,
+          profile: d.profile,
+          codec: "DTS",
+          sample: AB_SAMPLE,
+          saved: saved,
+          a: a,
+          b: b,
+          measured: measured,
+          measureNote: measured ? null
+            : (kv.LEVEL === "1"
+                ? "level ran but reported no usable values"
+                : "GStreamer's `level` element is not registered on this TV, so no dB numbers could be taken"),
+          deltaMeanDb: delta(a.meanDb, b.meanDb),
+          deltaPeakDb: delta(a.peakDb, b.peakDb),
+          // Proof, not a claim: hashes of both gain.conf files taken before the
+          // first render and after the last one. The A/B only ever passes dtsdec
+          // properties, so these must match.
+          configUnchanged: hashUsable && confUnchanged,
+          configProof: hashUsable
+            ? ("dts " + kv.DTS_CONF_BEFORE + " -> " + kv.DTS_CONF_AFTER +
+               ", truehd " + kv.THD_CONF_BEFORE + " -> " + kv.THD_CONF_AFTER)
+            : "no md5sum on this TV, could not fingerprint gain.conf"
+        });
+      });
+    });
+  }).catch(function (e) {
+    message.respond({ returnValue: false, errorText: e.errorText || e.message || String(e) });
+  });
+});
+
+/* abCleanup: remove the rendered A/B wavs. Called by the UI when the app
+ * goes away; abPreview also clears stale renders before it starts, so a
+ * missed cleanup can never leave more than one pair behind. */
+service.register("abCleanup", function (message) {
+  detectProfile().then(function (d) {
+    if (d.profile !== PROFILE_W25) {
+      message.respond({ returnValue: true, profile: d.profile, removed: false });
+      return;
+    }
+    return rootExec(w25AbCleanupScript()).then(function (r) {
+      message.respond({ returnValue: true, profile: d.profile, removed: (r.stdout || "").indexOf("OK") !== -1 });
+    });
+  }).catch(function (e) {
+    message.respond({ returnValue: false, errorText: e.errorText || e.message || String(e) });
+  });
 });
 
 /**

@@ -113,6 +113,107 @@ Mirrors `../webos25/restore/install.sh` + `init_dts25.sh` exactly. Restores **DT
   objective "is the patch working" check independent of the speaker/output stage.
   The UI also offers **play-by-ear** of the bundled samples (in-app `<video>`).
 
+### Make-up gain & DRC control
+
+DTS and TrueHD decode quieter than LG's native AAC/AC-3/Atmos, and neither
+applies any dynamic range compression by default the way LG's own Dolby/DTS
+decoders do — see
+[`../docs/WEBOS25-DTS.md#loudness--make-up-gain`](../docs/WEBOS25-DTS.md#loudness--make-up-gain)
+(mechanism) and its "Dynamic range compression (DRC) + dialogue boost"
+subsection (the DRC model + the LG evidence behind it). The
+`webos25-armel-gst124` profile's status panel has a **Make-up gain & dynamic
+range** card (`index.html:65-161`) with three controls per codec (**DTS** and
+**TrueHD**, each writing its own config file):
+
+- **Gain** — dB stepper, range `[-20, +20]`, step `0.5`, default `0.0` (the
+  original make-up gain, unchanged).
+- **DRC preset** — cycles **Off → Light → Medium → Night** (`index.html:85-92`,
+  `112-119`; cycling logic `stepPreset()`, `js/app.js:300-306`). Maps to the
+  `drc`/`drc_boost`/`drc_cut` config keys per the epic's preset table; the
+  service does the actual mapping and clamping, the app only displays the
+  name.
+- **Dialogue boost** — centre-channel dB stepper, range `[-10, +10]`, step
+  `0.5`, default `0.0` (`index.html:93-100`, `120-127`; `stepCenter()`,
+  `js/app.js:327-333`).
+
+Both new controls share the existing **stepper** idiom (`[-] value [+]`,
+`data-nav` spatial navigation, no `<input type=number>` so no on-screen
+keyboard) already used for gain.
+
+- **Save audio settings** (`js/app.js:354-381`) calls the service's
+  `setMakeupGain({dts, truehd, presetDts, presetThd, centerDts, centerThd})`
+  (`service/service.js:1269-1321`), which clamps gain/centre and validates the
+  preset against a fixed enum server-side — rejecting anything non-finite or
+  unrecognised **before** it reaches a shell command — then writes both
+  `gain.conf` files via `rootExec` (`w25GainConfWrite`, `service/service.js:259-265`):
+  the bare-float gain line first (preserving the legacy format), then
+  `drc=`/`drc_boost=`/`drc_cut=`/`center=` lines, written temp-file-then-`mv`
+  so a decoder never reads a half-written value.
+- On load (and Refresh), the panel calls `loadGain()` (`js/app.js:337-352`),
+  which calls the service's `getMakeupGain()` (`service/service.js:1329-1354` —
+  reads both files back, deriving the displayed preset name from the raw
+  `(drc, drc_boost, drc_cut)` tuple since the config contract has no separate
+  "preset" key) to populate all three controls per codec.
+- New values take effect on the **next playback** — no re-detect, no reboot,
+  no rebuild. Only available on the `webos25-armel-gst124` profile; refused
+  cleanly elsewhere.
+- For the full config-file format (including the four new keys), the
+  preset table, how DRC interacts with make-up gain, and the by-ear tuning +
+  release runbook (now gated by `src/test/run-tests.sh` before any
+  cross-build), see
+  [`../restore/TUNING-RUNBOOK.md`](../restore/TUNING-RUNBOOK.md).
+
+#### A/B compare (hear the DRC on the same clip)
+
+"I can't hear any difference between presets" is the failure mode this card is
+built against — and it has already bitten once (the 2.4.0 read-back bug wrote
+`drc=off` back over the user's selection, so the presets really were inert).
+The **A/B compare** block at the bottom of the same card (`index.html:133-161`)
+removes that class of doubt: one press renders the bundled DTS clip **twice**
+on-device and reports a measured number, not an impression.
+
+- **Render A/B** (`doAbRender()`, `js/app.js:410-450`) calls the service's
+  `abPreview()` (`service/service.js:1362-1433`). It takes **no parameters** —
+  variant **B** is read from the on-disk `gain.conf`, never from the caller —
+  and produces:
+  - **A** — `drc-mode=off drc-boost=100 drc-cut=100 makeup-gain-db=0.0
+    center-boost-db=0.0` (the fully inert path);
+  - **B** — the same clip with the user's **saved** gain / preset / dialogue
+    boost.
+- **`gain.conf` is never touched.** Both variants are expressed as `dtsdec`
+  **GObject properties** on the `gst-launch` command line (`w25AbProps()`,
+  `service/service.js:820-830`), which override the config file for that one
+  process. The script md5s **both** `gain.conf` files before the first render
+  and after the last one and returns the hashes, so "unchanged" is proof rather
+  than a claim — the UI shows them.
+- **Measured delta.** There is no ffmpeg on the TV, so a second pass per variant
+  runs GStreamer's `level` element and the RMS/peak values are parsed out of the
+  `gst-launch-1.0 -m` bus messages (`AB_LEVEL_AWK`). On the C5 with
+  `DTS-in-mp4.mp4` the ground truth is `drc=off` → mean −44.6 dB / peak −14.9 dB
+  vs `drc-mode=rf` → −40.9 / −14.5, i.e. **+3.7 dB mean, +0.4 dB peak**. If
+  `level` is not registered on the TV the numbers are reported as *not measured*
+  with the reason — never invented.
+- **Where the renders go, and why.** `$APPBASE/payload/testfiles/` — the app's
+  own install directory, beside the bundled samples. The existing play-by-ear
+  buttons already load `payload/testfiles/DTS-in-mp4.mp4` as a **relative URL**
+  from `index.html` and that works on the device, so a file written into the
+  same directory is reachable by the same mechanism; `/tmp` has no such evidence
+  behind it and is very likely outside the app's document root. The directory is
+  probed for writability first and the call fails with a clear message (never
+  silently) if the install is read-only.
+- **Not verified on hardware:** whether webOS's media pipeline will play a
+  RIFF/WAV from an `<audio>` element. The renders are written as **16-bit stereo
+  PCM** (the most broadly supported WAV flavour, and ~6× smaller than the native
+  5.1/S32 output) to give that the best chance; both variants share the identical
+  downmix so the A-vs-B difference is unaffected. If playback is refused the card
+  degrades to **numbers only** — the measured delta is computed on-device and
+  stays valid.
+- The renders are cleared at the start of every A/B and by `abCleanup()`
+  (`service/service.js:1438-1450`) when the app goes away, so at most one pair
+  (~1.5 MB) is ever left on disk.
+- **DTS only.** The bundled samples are DTS, so this exercises the DTS decoder
+  path; it says so on the card and does not imply TrueHD coverage.
+
 ### `cx-armv7-gst114` — demuxer-override (UNVERIFIED)
 
 Mirrors the repo-root `install.sh` / `init_dts.sh`. CX-era firmware strips the
