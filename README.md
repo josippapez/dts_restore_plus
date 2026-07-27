@@ -47,6 +47,12 @@ and TrueHD/MLP** there:
 - `webos25/app/` — a "DTS Enabler" webOS homebrew app (GUI). **Install via the Homebrew Channel**
   by adding the repository `https://josippapez.github.io/dts_restore_plus/api/apps.json` (Settings → Add
   repository), then pick "DTS Enabler". `webos25/docs/` — design notes + the target-detection probe.
+- **Loudness tuning:** DTS/TrueHD now also get a per-codec make-up gain, Dolby-style
+  DRC presets (Off/Light/Medium/Night), and a dialogue (centre-channel) boost — all
+  tunable from the app, with an in-app A/B compare that measures the difference on the
+  bundled clip. Defaults are inert (bit-identical to the previous build). See
+  [`webos25/docs/WEBOS25-DTS.md#loudness--make-up-gain`](webos25/docs/WEBOS25-DTS.md#loudness--make-up-gain)
+  and [`webos25/restore/TUNING-RUNBOOK.md`](webos25/restore/TUNING-RUNBOOK.md).
 
 **Modified — CX tool hardening (root files, on top of upstream):**
 - `install.sh` / `uninstall.sh` — fixed the `#!/usr/bin/env sh` vs bash shebang, the off-by-one
@@ -109,7 +115,7 @@ list below can still install (the installer just warns first), using the same bi
 | OLED C2 / G2 | 6.x / "22" | 1.14-class | Community-confirmed |
 | NanoCell / LCD (UN7xxx, NANO7xx, 2020–2022) | 5.x / 6.x | 1.14-class | Community-confirmed |
 | webOS 22 / 23 / 24 | — | — | Not covered (no source drop; no durable root path) |
-| webOS 25 (C5/G5) | "10" | **1.24** | Not these binaries — needs an aarch64/1.24 decoder ([WEBOS25-DTS.md](WEBOS25-DTS.md)) |
+| webOS 25 (C5/G5) | "10" | **1.24** | Not these binaries — needs an aarch64/1.24 decoder ([webos25/docs/WEBOS25-DTS.md](webos25/docs/WEBOS25-DTS.md)) |
 
 ## Persistence — what survives a reboot
 

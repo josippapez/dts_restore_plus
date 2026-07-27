@@ -163,6 +163,21 @@ card with a DTS group and a TrueHD group, each with a gain field (dB, range
 [`../app/README.md#make-up-gain--drc-control`](../app/README.md#make-up-gain--drc-control).
 No SSH or rebuild is needed to change any of it.
 
+The same card has an **in-app A/B compare**: one press renders the bundled DTS
+sample **twice** — once fully inert (DRC off, 0 dB gain/dialogue-boost) and
+once with the saved settings — and reports the measured dB delta between
+them, instead of relying on ear alone. Both variants are expressed as `dtsdec`
+GObject properties on the render command (`drc-mode`, `drc-boost`, `drc-cut`,
+`makeup-gain-db`, `center-boost-db`), so `gain.conf` is never written for the
+comparison. Measurement is a second GStreamer `level`-element pass over each
+render, parsed from `gst-launch-1.0 -m` — there is no ffmpeg on the TV, so
+`level` is the only on-device measurement route available. Whether webOS will
+actually play the rendered WAV back through an `<audio>` element is not
+verified; if playback is refused the card falls back to numbers-only, and the
+measured delta is still valid either way. Full mechanism, code pointers, and
+the measured ground truth (mean/peak dB for `drc=off` vs `drc-mode=rf`) are in
+[`../app/README.md#ab-compare-hear-the-drc-on-the-same-clip`](../app/README.md#ab-compare-hear-the-drc-on-the-same-clip).
+
 ### Dynamic range compression (DRC) + dialogue boost
 
 The make-up gain above raises everything equally, so it cannot fix a

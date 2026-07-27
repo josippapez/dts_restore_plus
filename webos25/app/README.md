@@ -328,7 +328,7 @@ rsvg-convert -w 80 -h 80 icon.svg > icon.png
 
 # 3. Package app + service into one .ipk (-s bundles the JS service dir)
 ares-package . service
-# -> io.github.josippapez.dtsenabler_2.0.0_all.ipk
+# -> io.github.josippapez.dtsenabler_<version>_all.ipk  (<version> = appinfo.json "version")
 ```
 
 You can ship an `.ipk` with only one payload populated (e.g. webOS-25 only): the
@@ -355,7 +355,7 @@ Updates flow automatically as new releases are tagged (the repo is regenerated b
 
 ```sh
 ares-setup-device
-ares-install ./io.github.josippapez.dtsenabler_2.0.0_all.ipk
+ares-install ./io.github.josippapez.dtsenabler_*_all.ipk   # glob matches whatever version was packaged
 ares-launch io.github.josippapez.dtsenabler
 ```
 

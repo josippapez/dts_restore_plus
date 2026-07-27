@@ -14,7 +14,12 @@ itself changes.
    [`../app/README.md#make-up-gain--drc-control`](../app/README.md#make-up-gain--drc-control)).
 2. Play a DTS or TrueHD clip you know well, and its native-codec equivalent
    (AAC/AC-3/Atmos) at the same source loudness, back to back.
-3. **Gain first, DRC second** — they solve different problems and stack:
+3. **Gain first, DRC second — they solve different problems, and they stack.**
+   Because DRC also lifts quiet passages toward the null band, **the more DRC
+   is doing (Medium/Night vs. Light/Off), the less static make-up gain you
+   typically need** to reach the same overall loudness — retune gain downward
+   a step or two after raising the DRC preset, rather than leaving whatever
+   gain you picked before turning DRC on:
    - **Gain** raises everything equally. Start at **0 dB** (unity), raise in
      **~2 dB steps**, replaying after each step, until *overall* loudness is
      roughly in line with the native reference.
@@ -22,20 +27,32 @@ itself changes.
      cannot: cycle **Off → Light → Medium → Night** and judge whether quiet
      dialogue got easier to follow without loud passages getting harsher.
      Night is the heaviest (RF-style) profile — try it for late-night viewing
-     first, Light/Medium for normal viewing.
+     first, Light/Medium for normal viewing. After picking a preset, re-check
+     whether the gain you set in the previous step is still needed, or is now
+     over-driving the loud passages.
    - **Dialogue boost** (the centre-channel stepper, dB) is an independent
      lift on top of DRC, for material where dialogue specifically still sits
      under effects/music after picking a preset. It has no effect on layouts
      without a discrete front-centre channel.
-4. **Back off at the first sign of clipping or distortion.** All three stages
+4. **Quick objective check — in-app A/B compare.** Before or after the by-ear
+   pass above, press **Render A/B** on the same card: it renders the bundled
+   DTS sample twice (DRC off/0 dB vs. your currently-saved settings, via
+   `dtsdec` properties — `gain.conf` is never touched) and reports the
+   measured dB delta between them, so you have a number confirming the
+   preset is doing something even before — or in addition to — trusting
+   your ears. It exercises the DTS decoder path only (the bundled sample is
+   DTS) and does not replace the by-ear pass, which is still how you judge
+   the *dialogue-vs-effects balance* rather than raw level. See
+   [`../app/README.md#ab-compare-hear-the-drc-on-the-same-clip`](../app/README.md#ab-compare-hear-the-drc-on-the-same-clip).
+5. **Back off at the first sign of clipping or distortion.** All three stages
    (make-up gain, DRC, centre boost) are applied in float and then hard-clamp
    to the S32 range (`gstdtsdec.c:1520-1538`; the TrueHD patch's equivalent
    per-sample loop, `build-truehd.sh`) — the clamp is **silent**: there is no
    log/error/dropout, just flattened peaks. If it sounds off, drop back one
    gain step or one DRC preset level and stay there.
-5. Hit **Save audio settings**. It applies on the **next** playback of that
+6. Hit **Save audio settings**. It applies on the **next** playback of that
    codec — no reboot, no re-detect.
-6. Tune DTS and TrueHD independently; they're separate fields writing
+7. Tune DTS and TrueHD independently; they're separate fields writing
    separate files.
 
 ## 2. Hand-editing the config files (SSH, no rebuild)

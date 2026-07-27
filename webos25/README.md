@@ -59,7 +59,10 @@ presets Off/Light/Medium/Night) and a dialogue (centre-channel) boost that
 mirror LG's own Dolby DRC parameter model — LG's DSP applies Dolby Line-mode
 DRC to native content by default but none to DTS, which is the real reason
 dialogue is harder to follow on DTS/TrueHD than on native Atmos. All of it is
-tunable from the app, no rebuild needed. See
+tunable from the app, no rebuild needed — including an **in-app A/B compare**
+that renders the bundled DTS sample twice (DRC off vs. your saved settings)
+and reports a measured dB delta, so you don't have to trust your ears alone.
+See
 [`docs/WEBOS25-DTS.md#loudness--make-up-gain`](docs/WEBOS25-DTS.md#loudness--make-up-gain)
 for the mechanism (including the DRC model and the LG evidence behind it) and
 [`restore/TUNING-RUNBOOK.md`](restore/TUNING-RUNBOOK.md) for the by-ear tuning
