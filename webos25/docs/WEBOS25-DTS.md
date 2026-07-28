@@ -109,6 +109,73 @@ DTS MKV should play in stereo.
 1.24 decoder cross-build — it cannot be done with the CX binaries in this repo,
 and it cannot be produced without the webOS-25 toolchain.
 
+## TS container coverage — which `.ts`/`.m2ts` files actually work
+
+`build-demux.sh` flips one default: `demux->dts_support` FALSE → TRUE
+(`tsdemux.c:1180`). That gate wraps **five** DTS recognition sites, and which one a
+file lands in is decided entirely by its PMT:
+
+| site | condition | result |
+|---|---|---|
+| `tsdemux.c:3058` | **HDMV programs only** (`program->registration_id == DRF_ID_HDMV`), stream_type 0x82/0x85/0x86 | `audio/x-dts`, **sets `target_pes_substream = 0x71`** |
+| `tsdemux.c:3174` | DVB extension descriptor, DTS-UHD, decoder profile 0 | `audio/x-dtsx` |
+| `tsdemux.c:3195` | `GST_MTS_DESC_DVB_DTS` descriptor (0x7B) | `audio/x-dts` |
+| `tsdemux.c:3248` | per-stream registration id `DTS1`/`DTS2`/`DTS3`/`DTSH` | `set_caps_for_private_dts()` |
+| `tsdemux.c:3818` | `case ST_PS_AUDIO_DTS` — stream_type **0x8A** | `audio/x-dts` |
+
+Note there is **no bare stream_type path for 0x82 outside an HDMV program**, by
+design (see the SCTE warning below). Upstream GStreamer 1.24 has no `dts_support`
+field at all — the gate is LG's; the recognition matrix is upstream's, plus LG's
+additions (0x82 in the HDMV branch, `DTSH`, and the DVB-DTS/DTS-UHD descriptor
+paths). Flipping the gate therefore yields **upstream coverage or better**, never
+less.
+
+Measured on a rooted C5 with the self-test pipeline
+(`filesrc ! tsdemux name=d d. ! queue ! dtsdec ! audioconvert ! wavenc`):
+
+| how the file was muxed | PMT | result |
+|---|---|---|
+| BluRay disc / tsMuxeR (`restore/testfiles/*.ts`) | HDMV + 0x86 + real 0x71 substream | ✅ 4,230,548 B |
+| `ffmpeg -f mpegts` (default) | 0x82, no HDMV registration | ❌ no audio pad, `not-linked` |
+| ffmpeg, PMT hand-retyped 0x82 → 0x86 | 0x86, no HDMV registration | ❌ still `not-linked` |
+| `ffmpeg -f mpegts -mpegts_m2ts_mode 1` | **HDMV** + 0x82, no substream header | ⚠️ recognised, **44-byte WAV — silent** |
+| ffmpeg, PMT hand-retyped 0x82 → **0x8A** | 0x8A | ✅ 4,228,268 B |
+| DVB broadcast carrying descriptor 0x7B | 0x06 + DVB DTS descriptor | ✅ per code; untested (no source) |
+
+Two failure modes, two distinct causes:
+
+1. **Default ffmpeg TS gets no audio pad at all.** 0x82/0x85/0x86 are consulted
+   *only* inside the HDMV branch, so without the program's HDMV registration
+   descriptor nothing claims the stream. This is why retyping to 0x86 does not
+   help — the stream_type is irrelevant until the program is HDMV.
+2. **`-mpegts_m2ts_mode 1` is recognised but silent.** It *does* enter the HDMV
+   branch, which then sets `target_pes_substream = 0x71`; ffmpeg writes no BluRay
+   PES substream header, so every payload is filtered out and you get a bare WAV
+   header. This is the worst case — it looks supported and plays nothing.
+
+**Do NOT "fix" this by adding a non-HDMV 0x82 case.** In LG's own tree,
+`gst-plugins-bad/gst-libs/gst/mpegts/gst-scte-section.h:56,59`:
+
+```c
+GST_MPEGTS_STREAM_TYPE_SCTE_SUBTITLING = 0x82,   /* Subtitling data */
+GST_MPEGTS_STREAM_TYPE_SCTE_SIT        = 0x86,   /* Splice Information Table */
+```
+
+Outside HDMV those values are SCTE-27 subtitling and SCTE-35 splice information
+(ad-insertion signalling, ubiquitous in cable/OTT). Claiming them globally would
+route subtitle and splice PIDs into `dtsdec` on live TV — which is exactly why
+upstream confines them to HDMV programs. If bare-0x82 DTS files ever show up in
+real user reports, the defensible fix is **content-based**: peek the PES payload
+for the DTS sync word (`0x7FFE8001` and its variants) before typing an otherwise
+unclaimed private stream as DTS. That is real demuxer logic, not a default flip,
+and like any demuxer change it is **binary-affecting** — rebuild, verify on a real
+webOS-25 TV, re-commit the `.so` in the same change (see
+[`.claude/rules/releasing.md`](../../.claude/rules/releasing.md)).
+
+**User-facing guidance:** MKV and MP4 work. For `.ts`/`.m2ts` use tsMuxeR or a
+straight disc copy. Avoid `ffmpeg -mpegts_m2ts_mode 1` for DTS (silent), and if
+you only have an ffmpeg-muxed `.ts`, remux to MKV with `-c copy`.
+
 ## Loudness / make-up gain
 
 Once DTS and TrueHD decode at all, they play **noticeably quieter** than LG's
