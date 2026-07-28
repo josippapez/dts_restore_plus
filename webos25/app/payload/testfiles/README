@@ -3,5 +3,20 @@ play-by-ear. Each decodes to real DTS PCM when the patch is active:
   DTS-in-mp4.mp4      H.264 video + DTS 5.1 (dtsc)   -> qtdemux
   DTS-HD-MA-5.1.ts    real DTS-HD MA (core) 5.1      -> tsdemux
   DTS-HD-MA-5.1.m2ts  same stream, .m2ts extension   -> tsdemux
-(Trimmed to a few seconds to keep the .ipk small; full-length copies are in
-../../restore/testfiles/.)
+All three are the FULL-LENGTH sources, identical to ../../restore/testfiles/:
+  DTS-in-mp4.mp4      3.837s   2.7 MB
+  DTS-HD-MA-5.1.ts    3.877s  10.2 MB
+  DTS-HD-MA-5.1.m2ts  3.877s  10.2 MB
+
+Do NOT size-trim the ts/m2ts to shrink the .ipk. They used to be byte-truncated
+to 2,444,000 B, which is only 0.874s -- it cut off before the dialogue starts, so
+the play-by-ear check played background music and stopped (reported 2026-07-22).
+
+Do NOT re-mux them with ffmpeg either, however tempting the size saving is
+(video re-encode + `-c:a copy` gives 3.88s in 1.7 MB with a bit-identical DTS ES,
+md5 241ba06f...). Measured on the C5: the patched tsdemux exposes NO audio stream
+at all from an ffmpeg-muxed TS -- `gst-discoverer-1.0` finds "audio #2: DTS" in
+this BluRay-style original but nothing in the ffmpeg one, and the decode fails
+with `not-linked`. Retyping the PMT from 0x82 (DTS core) to 0x86 (DTS-HD MA) does
+NOT fix it, so it is not just the stream_type: LG's demuxer needs something else
+about the BluRay/HDMV layout. Keep these files byte-identical to restore/.
