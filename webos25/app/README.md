@@ -201,16 +201,23 @@ on-device and reports a measured number, not an impression.
   behind it and is very likely outside the app's document root. The directory is
   probed for writability first and the call fails with a clear message (never
   silently) if the install is read-only.
-- **Not verified on hardware:** whether webOS's media pipeline will play a
-  RIFF/WAV from an `<audio>` element. The renders are written as **16-bit stereo
-  PCM** (the most broadly supported WAV flavour, and ~6× smaller than the native
-  5.1/S32 output) to give that the best chance; both variants share the identical
-  downmix so the A-vs-B difference is unaffected. If playback is refused the card
-  degrades to **numbers only** — the measured delta is computed on-device and
-  stays valid.
-- The renders are cleared at the start of every A/B and by `abCleanup()`
-  (`service/service.js:1438-1450`) when the app goes away, so at most one pair
-  (~1.5 MB) is ever left on disk.
+- **Verified on hardware (C5, webOS 25):** the in-app player *does* play the
+  renders. They are written as **16-bit stereo PCM** (the most broadly supported
+  WAV flavour, and ~6× smaller than the native 5.1/S32 output); both variants
+  share the identical downmix so the A-vs-B difference is unaffected. If playback
+  is ever refused the card degrades to **numbers only** — the measured delta is
+  computed on-device and stays valid.
+- **No `?r=` cache-buster on the player URL — ever.** webOS hands the `<audio>`
+  `src` to `starfish-media-pipeline`, whose `filesrc` URI handler does **not**
+  strip the query, so it opens a file literally named `…_a.wav?r=1` and errors
+  with *Resource not found* (that was the "the in-app player refused the rendered
+  clip" bug; reproduced directly with `gst-launch-1.0 playbin3 uri=…wav?r=1`).
+  Freshness comes from the **filename** instead: every render gets a stamped
+  basename (`AB_PREFIX + "a_" + <base36 stamp> + ".wav"`), so each take has a
+  genuinely distinct, query-free URL.
+- The renders are cleared by prefix (`dtsenabler_ab_*.wav`) at the start of every
+  A/B and by `abCleanup()` when the app goes away, so at most one pair (~1.5 MB)
+  is ever left on disk.
 - **DTS only.** The bundled samples are DTS, so this exercises the DTS decoder
   path; it says so on the card and does not imply TrueHD coverage.
 

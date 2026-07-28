@@ -758,14 +758,22 @@ function w25SelfTest() {
  * writability first and the call fails cleanly (never silently) if it is
  * read-only.
  *
- * NOT VERIFIED ON DEVICE (this build environment has no TV access):
- * whether webOS's media pipeline will actually PLAY a RIFF/WAV from an
- * <audio> element. The renders are written as 16-bit stereo PCM -- the
- * most broadly supported WAV flavour, and ~6x smaller than the native
- * 5.1/S32 output -- to give that the best chance. Both variants go
- * through the identical downmix, so the A-vs-B difference is preserved.
- * If playback does fail, the feature degrades to "numbers only": the
- * measured dB delta below is computed on-device and stays valid.
+ * VERIFIED ON DEVICE (C5, webOS 25): a 16-bit stereo RIFF/WAV from that
+ * directory DOES play through the platform pipeline --
+ *   gst-launch-1.0 playbin3 uri=file://<app>/payload/testfiles/..._a.wav
+ * reaches EOS cleanly. The renders stay 16-bit stereo PCM (most broadly
+ * supported WAV flavour, ~6x smaller than the native 5.1/S32 output);
+ * both variants go through the identical downmix, so the A-vs-B
+ * difference is preserved.
+ *
+ * WHY THE FILENAMES CARRY A STAMP: the player must never serve the
+ * PREVIOUS render, but a `?r=<n>` cache-buster on the URL is fatal here.
+ * webOS hands the <audio> src to starfish-media-pipeline, whose filesrc
+ * URI handler does NOT strip the query, so it opens the literal path
+ * "..._a.wav?r=1" and fails with "Resource not found" (reproduced with
+ * playbin3 on the TV; that is the "player refused the clip" report).
+ * A fresh basename per render gives a genuinely distinct URL with no
+ * query string at all.
  *
  * MEASUREMENT: a second pass per variant through GStreamer's `level`
  * element (there is no ffmpeg on the TV), parsed from `gst-launch-1.0 -m`
@@ -775,8 +783,7 @@ function w25SelfTest() {
  * rather than invented.
  * ===================================================================== */
 var AB_SAMPLE    = "DTS-in-mp4.mp4";              // bundled clip used for both variants
-var AB_A_NAME    = "dtsenabler_ab_a.wav";
-var AB_B_NAME    = "dtsenabler_ab_b.wav";
+var AB_PREFIX    = "dtsenabler_ab_";              // every render matches AB_PREFIX + "*.wav"
 var AB_REL_URL   = "payload/testfiles/";          // relative to index.html (see above)
 var AB_MIN_BYTES = TEST_WAV_MIN;                  // same "real PCM" floor as the self-test
 var AB_TIMEOUT_S = 40;                            // per gst-launch run; a real render is ~seconds
@@ -830,13 +837,14 @@ function w25AbProps(gainDb, presetName, centerDb) {
 
 /**
  * The A/B render + measure script. `saved` is {gain, preset, center} as
- * read back from the DTS gain.conf, i.e. variant B.
+ * read back from the DTS gain.conf, i.e. variant B. `nameA`/`nameB` are the
+ * stamped basenames for this render (see AB_PREFIX above).
  *
  * Exit codes are captured straight after each `gst-launch` (never after a
  * pipe, where `$?` would be the parser's status), and every file is size-
  * checked before it is reported as rendered.
  */
-function w25AbScript(saved) {
+function w25AbScript(saved, nameA, nameB) {
   var propsA = w25AbProps(0, "off", 0);
   var propsB = w25AbProps(saved.gain, saved.preset, saved.center);
   var b64awk = Buffer.from(AB_LEVEL_AWK, "utf8").toString("base64");
@@ -845,8 +853,8 @@ function w25AbScript(saved) {
     APPBASE_PRELUDE,
     'DIR="' + PAYLOAD_TESTS + '"',
     'SRC="$DIR/' + AB_SAMPLE + '"',
-    'A="$DIR/' + AB_A_NAME + '"',
-    'B="$DIR/' + AB_B_NAME + '"',
+    'A="$DIR/' + nameA + '"',
+    'B="$DIR/' + nameB + '"',
     'AWKF=/tmp/dtsenabler_ab_level.awk',
     'MSG=/tmp/dtsenabler_ab_level.txt',
     // dtsdec is NOT on the default plugin path, and libdca lives with our payload.
@@ -864,7 +872,9 @@ function w25AbScript(saved) {
     'bail() { echo "ERR=$1"; echo "DIR=$DIR"; echo "DTS_CONF_AFTER=$DTS_CONF_BEFORE"; echo "THD_CONF_AFTER=$THD_CONF_BEFORE"; exit 0; }',
     // --- preconditions ----------------------------------------------------
     '[ -f "$SRC" ] || bail sample-missing',
-    'rm -f "$A" "$B" "$MSG" "$AWKF" 2>/dev/null',
+    // Purge by prefix, not just this render's two names: earlier stamped takes
+    // would otherwise pile up in the app dir.
+    'rm -f "$DIR"/' + AB_PREFIX + '*.wav "$MSG" "$AWKF" 2>/dev/null',
     'PROBE="$DIR/.dtsenabler_ab_probe"',
     'if touch "$PROBE" 2>/dev/null; then rm -f "$PROBE" 2>/dev/null; else bail render-dir-readonly; fi',
     'if gst-inspect-1.0 level >/dev/null 2>&1; then HAVE_LEVEL=1; else HAVE_LEVEL=0; fi',
@@ -912,7 +922,7 @@ function w25AbCleanupScript() {
   return [
     "set -u",
     APPBASE_PRELUDE,
-    'rm -f "' + PAYLOAD_TESTS + '/' + AB_A_NAME + '" "' + PAYLOAD_TESTS + '/' + AB_B_NAME + '" 2>/dev/null',
+    'rm -f "' + PAYLOAD_TESTS + '"/' + AB_PREFIX + '*.wav 2>/dev/null',
     'echo OK',
     "exit 0"
   ].join("\n");
@@ -1370,7 +1380,13 @@ service.register("abPreview", function (message) {
     }
     return rootExec(w25GetGainScript()).then(function (g) {
       var saved = parseSavedConfig(parseKv(g.stdout)).dts;
-      return rootExec(w25AbScript(saved)).then(function (r) {
+      // Fresh basenames per render: the UI can then point the player at a
+      // distinct URL without a query string (which the platform pipeline
+      // would treat as part of the filename -- see AB_PREFIX above).
+      var stamp = Date.now().toString(36);
+      var nameA = AB_PREFIX + "a_" + stamp + ".wav";
+      var nameB = AB_PREFIX + "b_" + stamp + ".wav";
+      return rootExec(w25AbScript(saved, nameA, nameB)).then(function (r) {
         var kv = parseKv(r.stdout);
         if (kv.ERR === "sample-missing") {
           message.respond({
@@ -1392,8 +1408,8 @@ service.register("abPreview", function (message) {
           return;
         }
 
-        var a = abVariant(kv, "A", AB_A_NAME, "A - DRC off, 0 dB gain, 0 dB dialogue");
-        var b = abVariant(kv, "B", AB_B_NAME, "B - your saved settings");
+        var a = abVariant(kv, "A", nameA, "A - DRC off, 0 dB gain, 0 dB dialogue");
+        var b = abVariant(kv, "B", nameB, "B - your saved settings");
         var measured = a.meanDb !== null && b.meanDb !== null;
         var confUnchanged =
           kv.DTS_CONF_BEFORE === kv.DTS_CONF_AFTER && kv.THD_CONF_BEFORE === kv.THD_CONF_AFTER;

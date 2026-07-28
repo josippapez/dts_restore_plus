@@ -385,9 +385,11 @@
   /* ---------------------------------------------------------------------- */
 
   // Filled by abPreview; each is {url, bytes, rendered, meanDb, peakDb, ...}.
+  // The service stamps a fresh basename into `url` on every render, so the
+  // player can never serve a previous take -- and the URL must stay free of a
+  // "?r=" cache-buster: webOS's starfish pipeline does not strip the query, so
+  // it looks for a file literally named "..._a.wav?r=1" and refuses the clip.
   var abState = { a: null, b: null };
-  // Bumped on every render so the player never serves a cached previous take.
-  var abStamp = 0;
 
   function abDb(v) {
     if (typeof v !== "number") return "n/a";
@@ -416,7 +418,6 @@
     toast("Rendering A/B on the TV (a few seconds)…", "busy");
 
     callService("abPreview", {}).then(function (res) {
-      abStamp++;
       abState.a = res.a || null;
       abState.b = res.b || null;
       setVal("abA", abVariantText(res.a), res.a && res.a.rendered ? "ok" : "warn");
@@ -454,7 +455,7 @@
     if (!v || !v.rendered) return;
     var p = $("abPlayer");
     p.hidden = false;
-    p.src = v.url + "?r=" + abStamp;
+    p.src = v.url;
     toast("Playing " + v.label, "busy");
     var pr = p.play();
     if (pr && typeof pr.catch === "function") {
