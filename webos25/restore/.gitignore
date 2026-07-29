@@ -5,18 +5,20 @@ build/
 # OS cruft
 .DS_Store
 
-# dts2lpcm/ — archived investigation record. Path A (demuxer retag + in-pipeline
-# converter) was REFUTED on hardware 2026-07-24 and nothing here ever shipped.
-# Its docs and sources may be committed as a record if desired; its build
-# artifacts must not — the binaries are on-device-refuted, so committing them
-# would violate .claude/rules/releasing.md. Working copies live out-of-repo at
-# dts_restore_work/dts2lpcm-archive/.
+# dts2lpcm/ — local-only investigation area, never part of the shipped tool.
+# Path A (demuxer retag + in-pipeline converter) was REFUTED on hardware
+# 2026-07-24: umediaserver validates the LPCM stream at pipeline SETUP, so DTS
+# bytes relabelled audio/x-private-ts-lpcm fail with errorCode 100 before the
+# converter ever runs. Nothing here shipped and nothing here should be committed
+# — the binaries are on-device-refuted, so .claude/rules/releasing.md bars them
+# outright. The full 15 MB (binaries + regenerable desktop-validation fixtures)
+# is archived out-of-repo at dts_restore_work/dts2lpcm-archive/; the working
+# copy of the design/runbook record stays here, untracked.
+# The multichannel route that DOES work needs no plugin at all:
+#   ffmpeg -c:v copy -c:a pcm_bluray -ar 48000 -ac 6 -f mpegts
 #
-# DELIBERATELY SCOPED to dts2lpcm/. Do NOT generalise these to a bare `*.so`
-# here: the shipped out/, truehd-out/ and demux-out/ binaries are tracked ON
-# PURPOSE, and rule #1 requires re-committing them after any rebuild. A blanket
-# ignore would make `git add` silently skip a rebuilt decoder.
-dts2lpcm/**/*.so
-dts2lpcm/out/
-dts2lpcm/test/work/t/
-dts2lpcm/test/work/native/
+# NOTE for future edits: keep ignores scoped like this. Do NOT add a bare `*.so`
+# to this file — the shipped out/, truehd-out/ and demux-out/ binaries are
+# tracked ON PURPOSE and rule #1 requires re-committing them after a rebuild, so
+# a blanket ignore would make `git add` silently skip a rebuilt decoder.
+dts2lpcm/
