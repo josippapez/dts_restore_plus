@@ -64,6 +64,14 @@ For users who prefer editing directly instead of the app:
 | DTS | `/var/lib/webosbrew/dts25/gain.conf` |
 | TrueHD/MLP | `/var/lib/webosbrew/truehd/gain.conf` |
 
+Both files are **pre-seeded on first install** (`install.sh`'s
+`seed_gain_conf`, mirrored by the app's Enable) with `5.0` + `drc=line`
+100/100 + `center=0.0` — so you are normally *editing* a config, not creating
+one. That `5.0` is the figure the maintainer arrived at by ear on a real C5
+with the same DRC preset active, so it is a sensible place to start rather than
+an arbitrary one. Seeding only ever happens when the file is absent, so nothing
+below can be clobbered by re-running the installer.
+
 **Full format** (both files, same contract): a bare ASCII float on its own
 line is the legacy make-up gain in dB (e.g. `6.0`) — unchanged, so an
 existing single-line config keeps working exactly as before. Optionally,

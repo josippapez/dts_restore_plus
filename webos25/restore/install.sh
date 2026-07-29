@@ -113,6 +113,35 @@ for so in libgstisomp4.so libgstmpegtsdemux.so; do
   fi
 done
 
+# --- 2d. Seed first-run audio defaults (make-up gain + DRC) -----------------
+# Gain and DRC shipped OPT-IN while the DSP was still unproven: no config file
+# meant fully inert (0.0 dB, DRC off), so an install could not change anyone's
+# sound. Now that the curve is validated on-device, that caution costs more
+# than it buys - an untouched install leaves DTS/TrueHD quieter and
+# un-managed next to native AAC/AC-3, which is what the feature exists to fix.
+# So seed a starting point and let users tune down instead of discovering they
+# have to tune up.
+# Written ONLY when absent: after the first install the file belongs to the
+# user (the app's Save owns it), and re-running install.sh must never
+# clobber their settings. Retune from the app or per TUNING-RUNBOOK.md.
+# NOTE: keep in sync with the app's w25GainConfSeedScript() (CLAUDE.md rule 3).
+# The +5.0 dB is not a guess: it is the value the maintainer arrived at BY EAR
+# on a real C5, with this same DRC line 100/100 preset active, and has been
+# running as a hand-set config. Prefer that over a theoretical figure.
+seed_gain_conf() {
+  if [ -f "$1" ]; then
+    log "note: $1 exists; keeping saved audio settings"
+  elif printf '%s\n%s\n%s\n%s\n%s\n' \
+      "5.0" "drc=line" "drc_boost=100" "drc_cut=100" "center=0.0" \
+      > "$1.tmp" && mv -f "$1.tmp" "$1"; then
+    log "seeded first-run audio defaults -> $1 (+5.0 dB, DRC line 100/100)"
+  else
+    log "WARN: could not seed $1"
+  fi
+}
+seed_gain_conf "$DTS_DEST/gain.conf"
+seed_gain_conf "$THD_DEST/gain.conf"
+
 # --- 3. Unmount any existing binds so we regenerate from PRISTINE originals -
 for T in "$CFG_LIVE" "$GC_LIVE" "$LGLIBAV" "$DMX_ISO" "$DMX_TSD" "$REG_TARGET"; do
   if grep -q " $T " /proc/mounts 2>/dev/null; then

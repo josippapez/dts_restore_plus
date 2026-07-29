@@ -224,6 +224,22 @@ behavior** (never fails decode). Parsed value is clamped to **[-20.0,
 Takes effect on the **next playback** (decoder init reads the file fresh) —
 no registry re-init needed.
 
+**First-run seeding.** Gain and DRC were deliberately **opt-in** at first: with
+no config file the decoders stay fully inert, so installing could not alter
+anyone's sound while the DSP curve was still unproven. Now that the curve is
+validated on-device, that default is the wrong one — an untouched install
+leaves DTS/TrueHD quieter and un-managed next to native AAC/AC-3, which is
+exactly what the feature exists to fix. So `restore/install.sh`
+(`seed_gain_conf`) and the app's Enable (`w25GainConfSeedScript`) now write a
+starting config of **+5.0 dB, `drc=line` 100/100, `center=0.0`** (preset
+*Medium*) for both codecs — the value the maintainer settled on **by ear** on a
+real C5 with this same preset active, not a theoretical figure — but
+**only when the file does not already exist**,
+so re-running install or Enable never overwrites saved settings. The inert
+0.0 dB / DRC-off path above therefore applies only if the config is deleted
+(e.g. by Uninstall) or was never seeded. Retune from the app or per
+[`../restore/TUNING-RUNBOOK.md`](../restore/TUNING-RUNBOOK.md).
+
 **App control:** the "DTS Enabler" app has a **Make-up gain & dynamic range**
 card with a DTS group and a TrueHD group, each with a gain field (dB, range
 [-20, +20], step 0.5), a DRC preset stepper, and a dialogue-boost field — see

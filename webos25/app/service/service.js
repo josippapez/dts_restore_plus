@@ -256,12 +256,50 @@ function parseSavedConfig(kv) {
  *  the EPIC config contract. All substituted values are our own
  *  server-clamped numbers or one of the fixed PRESET_MAP mode strings, so
  *  nothing caller-controlled ever reaches the shell unescaped. */
-function w25GainConfWrite(path, gainDb, presetName, centerDb) {
+function w25GainConfPrintf(path, gainDb, presetName, centerDb) {
   var p = PRESET_MAP[presetName];
   return 'printf "%s\\n%s\\n%s\\n%s\\n%s\\n" "' + gainDb.toFixed(1) + '" ' +
     '"drc=' + p.mode + '" "drc_boost=' + p.boost + '" "drc_cut=' + p.cut + '" ' +
     '"center=' + centerDb.toFixed(1) + '" > "' + path + '.tmp" && mv -f "' +
-    path + '.tmp" "' + path + '" || echo "FAIL: write ' + path + '"';
+    path + '.tmp" "' + path + '"';
+}
+
+function w25GainConfWrite(path, gainDb, presetName, centerDb) {
+  return w25GainConfPrintf(path, gainDb, presetName, centerDb) +
+    ' || echo "FAIL: write ' + path + '"';
+}
+
+/* First-run audio defaults, seeded by Enable (and by restore/install.sh's
+ * seed_gain_conf -- keep the two in sync, CLAUDE.md rule 3) when no
+ * gain.conf exists yet.
+ *
+ * Gain and DRC shipped OPT-IN while the DSP was still unproven: no config
+ * file meant fully inert (0.0 dB, DRC off), so enabling could not change
+ * anyone's sound. Now that the curve is validated on-device, opt-in costs
+ * more than it buys -- an untouched install leaves DTS/TrueHD quieter and
+ * un-managed next to native AAC/AC-3, the very thing the feature fixes.
+ * Users tune down from here rather than having to discover they must tune up.
+ *
+ * The values are EMPIRICAL, not theoretical: +5.0 dB with DRC line 100/100
+ * is what the maintainer settled on by ear on a real C5 and ran as a hand-set
+ * config (verified on-device 2026-07-29). It is also peak-safe by
+ * construction -- line mode cuts 2:1 above -20 dBFS and limits 20:1 above
+ * -10 dBFS -- and DRC-on mirrors LG's own native default for Dolby. */
+var SEED_GAIN_DB = 5.0;
+var SEED_PRESET = "medium";
+var SEED_CENTER_DB = 0.0;
+
+/** Seed one gain.conf, but ONLY when it does not exist yet -- Enable must
+ *  never overwrite settings the user saved (re-running Enable is a normal
+ *  recovery step). Logs rather than echoing, so Enable's stdout stays the
+ *  bare "OK" its caller expects. */
+function w25GainConfSeedScript(path) {
+  return 'if [ -f "' + path + '" ]; then log "note: ' + path + ' exists; keeping saved audio settings"; ' +
+    'elif ' + w25GainConfPrintf(path, SEED_GAIN_DB, SEED_PRESET, SEED_CENTER_DB) + '; then ' +
+    'log "seeded first-run audio defaults -> ' + path + ' (+' + SEED_GAIN_DB.toFixed(1) +
+    ' dB, DRC ' + PRESET_MAP[SEED_PRESET].mode + ' ' + PRESET_MAP[SEED_PRESET].boost +
+    '/' + PRESET_MAP[SEED_PRESET].cut + ')"; ' +
+    'else log "WARN: could not seed ' + path + '"; fi';
 }
 
 function w25SetGainScript(dtsDb, dtsPreset, dtsCenter, thdDb, thdPreset, thdCenter) {
@@ -611,6 +649,9 @@ function w25Enable() {
     'for so in libgstisomp4.so libgstmpegtsdemux.so; do',
     '  if [ -f "' + PAYLOAD_W25_DMX + '/$so" ]; then cp -f "' + PAYLOAD_W25_DMX + '/$so" "' + W25_DMX_DEST + '/$so" && log "installed $so"; else log "note: ' + PAYLOAD_W25_DMX + '/$so absent; container DTS skipped"; fi',
     'done',
+    // 2d. Seed first-run audio defaults (only when no config exists yet).
+    w25GainConfSeedScript(DTS_GAIN_CONF),
+    w25GainConfSeedScript(THD_GAIN_CONF),
     // 3. Unmount any stale binds so overrides are generated from PRISTINE /etc.
     'for T in "' + W25_CFG_LIVE + '" "' + W25_GC_LIVE + '" "' + W25_LGLIBAV + '" "' + W25_ISO_LIVE + '" "' + W25_TSD_LIVE + '" "' + W25_REG_TARGET + '"; do',
     '  if grep -q " $T " /proc/mounts 2>/dev/null; then umount "$T" 2>>"$LOG" && log "unmounted stale bind $T" || log "WARN: could not umount $T"; fi',
