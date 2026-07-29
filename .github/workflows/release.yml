@@ -66,7 +66,13 @@ jobs:
           REL_NAME: ${{ steps.rel.outputs.name }}
         run: |
           cd webos25
-          tar czf "../dts_restore_plus-restore-${REL_NAME}.tar.gz" restore
+          # Excludes are defensive: dts2lpcm/ is the archived Path-A investigation
+          # record (refuted on hardware, never shipped) and has no place in an
+          # end-user CLI tarball, so it stays out even if its docs get committed.
+          tar czf "../dts_restore_plus-restore-${REL_NAME}.tar.gz" \
+            --exclude='restore/dts2lpcm' \
+            --exclude='.DS_Store' \
+            restore
 
       - name: Install ares-cli
         run: npm install -g @webosose/ares-cli
