@@ -45,8 +45,10 @@
         <p class="muted">
           <strong>Enable</strong> stages the payload and installs the boot hook for the
           detected profile (applied now, no reboot). <strong>Disable</strong> removes the
-          boot hook and unmounts (LG's own files are never modified &mdash; fully reversible).
-          <strong>Uninstall</strong> also removes all on-device state.
+          boot hook and unmounts the overrides; no stock file is modified in place, and the
+          one persistent write &mdash; the GStreamer plugin registry &mdash; is reverted by
+          regenerating a clean stock one. A bind that is busy is detached lazily and clears
+          fully on reboot. <strong>Uninstall</strong> also removes all on-device state.
         </p>
         <div class="row">
           <button id="btnEnable"    class="btn btn--primary focusable" data-nav disabled>Enable</button>
@@ -54,11 +56,27 @@
           <button id="btnUninstall" class="btn btn--danger  focusable" data-nav disabled>Uninstall</button>
           <button id="btnRefresh"   class="btn             focusable" data-nav>Refresh / re-detect</button>
         </div>
-        <p id="unsupportedNote" class="muted note-warn" hidden>
-          This TV does not match a supported profile, so Enable is refused. Only
-          <code>webos25-armel-gst124</code> (verified) and <code>cx-armv7-gst114</code>
-          (unverified) mechanisms are implemented.
+        <p id="hookStaleNote" class="muted note-warn" hidden>
+          The boot script installed on this TV is older than the one this app version ships,
+          so a reboot would still apply the older compatibility gate.
+          Press <strong>Enable</strong> to refresh it. Nothing is rewritten until you do.
         </p>
+        <div id="verdictBlock" class="muted note-warn" hidden>
+          <p id="verdictReason">&mdash;</p>
+          <pre><code id="verdictReport">&mdash;</code></pre>
+          <p>
+            Report this at
+            <code>https://github.com/josippapez/dts_restore_plus/issues</code>
+            to get your set added.
+          </p>
+          <p id="forceWarning" hidden>
+            &ldquo;Try anyway&rdquo; replaces system-wide media plugins (DTS/TrueHD decode,
+            mp4/ts/m2ts demux) on a TV this payload has never been verified against. If
+            playback misbehaves afterward, use <strong>Disable</strong>; a reboot also
+            fully clears it.
+          </p>
+          <button id="btnForce" class="btn btn--danger focusable" data-nav hidden disabled>Try anyway (experimental)</button>
+        </div>
       </section>
 
       <!-- ===== Per-codec make-up gain + DRC ===== -->

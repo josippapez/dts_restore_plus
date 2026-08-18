@@ -86,6 +86,17 @@
 
   var lastSupported = false;
 
+  // Two-step "Try anyway (experimental)" force-enable arming state. Reset on
+  // every status render (re-detect) and on focus leaving the button, so a
+  // remote misclick can never apply it.
+  var forcePending = false;
+
+  function forceButtonReset() {
+    forcePending = false;
+    var btn = $("btnForce");
+    if (btn) { btn.textContent = "Try anyway (experimental)"; }
+  }
+
   function mechLabel(profile, mech) {
     if (profile === "webos25-armel-gst124") return "decoder-inject (patched dtsdec)";
     if (profile === "cx-armv7-gst114") return "demuxer-override (rebuilt LG libs)";
@@ -125,16 +136,24 @@
       setVal("stVerified", "NO - unverified on hardware", "warn");
     }
 
+    // Verdict: drives pill wording/class and the report/opt-in block.
+    // Falls back to the pre-verdict boolean so the UI still degrades sanely
+    // if an older service build ever omits the field.
+    var verdict = s.verdict || (supported ? "verified" : "unverified");
+
     // Master pill.
     var pill = $("masterState");
-    if (!supported) {
+    if (verdict === "drift") {
+      pill.textContent = "paused: firmware changed";
+      pill.className = "pill pill--unknown";
+    } else if (verdict === "unverified" || verdict === "refused" || !supported) {
       pill.textContent = "unsupported TV";
       pill.className = "pill pill--unknown";
     } else if (active) {
-      pill.textContent = "DTS enabled";
+      pill.textContent = "DTS enabled" + (verdict === "forced" ? " (unverified TV)" : "");
       pill.className = "pill pill--on";
     } else {
-      pill.textContent = "DTS disabled";
+      pill.textContent = "DTS disabled" + (verdict === "forced" ? " (unverified TV)" : "");
       pill.className = "pill pill--off";
     }
 
@@ -142,7 +161,8 @@
     $("btnEnable").disabled = !supported;
     $("btnDisable").disabled = !supported;
     $("btnUninstall").disabled = !supported;
-    $("unsupportedNote").hidden = supported;
+    renderVerdict(s, verdict);
+    renderHookStale(s);
 
     // Test features: only the webOS 25 profile has a self-test + bundled samples.
     var canTest = profile === "webos25-armel-gst124";
@@ -152,6 +172,67 @@
     $("btnPlayM2ts").disabled = !canTest;
     // A/B compare renders through the patched dtsdec, so it needs the same profile.
     $("btnAb").disabled = !canTest;
+  }
+
+  /* Installed-boot-script staleness.
+   *
+   * The boot script on the TV is only rewritten by Enable (or the CLI installer),
+   * so a TV enabled under an older app keeps that script -- and its verified-sets
+   * table -- until Enable is pressed again. The service compares the installed
+   * stamp against the one this build ships and reports hookStale; we surface it as
+   * a note rather than silently rewriting a privileged script on detect. Applies
+   * even on a verified TV, which is why it lives outside the verdict block.
+   */
+  function renderHookStale(s) {
+    var note = $("hookStaleNote");
+    if (!note) return;
+    var stale = !!s.hookStale;
+    note.hidden = !stale;
+    if (stale && s.hookGateVersion && s.appGateVersion) {
+      note.setAttribute("data-versions", "installed " + s.hookGateVersion + ", app " + s.appGateVersion);
+    }
+  }
+
+  /* Verdict report block + "Try anyway (experimental)" opt-in.
+   *
+   * Shown whenever the verdict isn't verified/forced: the human reason, the
+   * six values a maintainer needs to add the set to the verified table
+   * (PRODUCT_ID, WEBOS_RELEASE, GST_VERSION, and the three measured stock
+   * plugin md5s), and the report-issue line. The force button only appears
+   * when the service says this TV's dynamic dependencies actually resolve
+   * (canForce) and the verdict is exactly "unverified" -- drift/refused never
+   * get an opt-in.
+   */
+  function md5OrNote(v) {
+    return v ? v : "n/a (unmeasurable — our binds are already active)";
+  }
+
+  function renderVerdict(s, verdict) {
+    var showBlock = verdict !== "verified" && verdict !== "forced";
+    $("verdictBlock").hidden = !showBlock;
+
+    if (showBlock) {
+      setVal("verdictReason", s.verdictReason ||
+        "This TV does not match a supported profile, so Enable is refused.");
+      var measured = s.measured || {};
+      $("verdictReport").textContent =
+        "PRODUCT_ID=" + (s.model || "unknown") + "\n" +
+        "WEBOS_RELEASE=" + (s.webosVersion || "unknown") + "\n" +
+        "GST_VERSION=" + (s.gstVersion || "unknown") + "\n" +
+        "libgstlibav.so=" + md5OrNote(measured.libgstlibav) + "\n" +
+        "libgstisomp4.so=" + md5OrNote(measured.libgstisomp4) + "\n" +
+        "libgstmpegtsdemux.so=" + md5OrNote(measured.libgstmpegtsdemux);
+    }
+
+    // The opt-in only ever applies to "unverified" (never drift/refused), and
+    // only when the service confirms our dynamic deps resolve on this TV.
+    var canForceNow = verdict === "unverified" && !!s.canForce;
+    var btn = $("btnForce");
+    btn.hidden = !canForceNow;
+    btn.disabled = !canForceNow;
+    $("forceWarning").hidden = !canForceNow;
+    // Any re-detect (this function runs on every status render) drops the arm.
+    forceButtonReset();
   }
 
   /* Map a self-test verdict to a status cell. */
@@ -193,10 +274,49 @@
     }).catch(function (e) { toast("Enable failed: " + errText(e), "err"); });
   }
 
+  // Two-step "Try anyway (experimental)" force-enable: a remote misclick must
+  // not apply it. First press only arms the button (label changes); the
+  // second press actually calls enable with {force:true}. Arming is reset by
+  // renderVerdict() on any re-detect, and by a blur listener below on focus
+  // moving elsewhere (navigation away without a re-detect).
+  function doForceEnable() {
+    if (!forcePending) {
+      forcePending = true;
+      $("btnForce").textContent = "Press again to apply on an unverified TV";
+      return;
+    }
+    forcePending = false;
+    $("btnForce").textContent = "Try anyway (experimental)";
+    toast("Force-enabling on an unverified TV…", "busy");
+    callService("enable", { force: true }).then(function (r) {
+      toast("DTS force-enabled (unverified TV) — " + (r.profile || "?"), "ok");
+      return refreshStatus();
+    }).catch(function (e) { toast("Force-enable failed: " + errText(e), "err"); });
+  }
+
+  /* Disable/Uninstall can now succeed PARTIALLY, and saying so is the point.
+   *
+   * The service reports registryReverted:false when LG's plugin registry could not
+   * be rebuilt, uninstallDeferred:true when the staged files were kept on purpose
+   * because of that, and unmountWarning when an override could not be detached even
+   * lazily. Printing "registry restored to stock" over any of those would be exactly
+   * the silent-partial-success this whole change exists to remove -- so the happy
+   * text is only used when nothing was flagged, and r.warning carries the detail.
+   */
+  function completionToast(r, okText, deferredText) {
+    if (r && r.warning) {
+      toast((r.uninstallDeferred ? deferredText : okText) + " — " + r.warning, "err");
+    } else {
+      toast(okText, "ok");
+    }
+  }
+
   function doDisable() {
     toast("Disabling DTS…", "busy");
     callService("disable", {}).then(function (r) {
-      toast("DTS disabled (registry restored to stock; no reboot needed)", "ok");
+      completionToast(r,
+        "DTS disabled (registry restored to stock; no reboot needed)",
+        "DTS disable incomplete");
       return refreshStatus();
     }).catch(function (e) { toast("Disable failed: " + errText(e), "err"); });
   }
@@ -204,7 +324,9 @@
   function doUninstall() {
     toast("Uninstalling…", "busy");
     callService("uninstall", {}).then(function (r) {
-      toast("Uninstalled (registry restored to stock; no reboot needed)", "ok");
+      completionToast(r,
+        "Uninstalled (registry restored to stock; no reboot needed)",
+        "Uninstall deferred — files kept on purpose; reboot and try again");
       return refreshStatus();
     }).catch(function (e) { toast("Uninstall failed: " + errText(e), "err"); });
   }
@@ -559,6 +681,10 @@
     $("btnDisable").addEventListener("click", doDisable);
     $("btnUninstall").addEventListener("click", doUninstall);
     $("btnRefresh").addEventListener("click", refreshStatus);
+    $("btnForce").addEventListener("click", doForceEnable);
+    // Navigation away from the armed button (without a re-detect) also
+    // disarms it -- a misclick elsewhere must never leave it primed.
+    $("btnForce").addEventListener("blur", forceButtonReset);
     $("btnTest").addEventListener("click", doTest);
     $("btnPlayMp4").addEventListener("click", function () { doPlay("mp4"); });
     $("btnPlayTs").addEventListener("click", function () { doPlay("ts"); });
