@@ -5,8 +5,11 @@ TVs, where LG deliberately removed DTS decoding in firmware.
 
 It works by bind-mounting recompiled GStreamer libraries — built from **LG's own released
 sources**, with DTS demux/decode re-enabled — over the "nerfed" ones, and raising the DTS
-decoder's priority. Nothing in the original firmware is modified; everything is applied as
-temporary overlays that a full power-off reverts.
+decoder's priority. No stock firmware file is modified in place: on the original **CX** tool
+everything is a bind-mount that a full power-off reverts; the **webOS 25** build reverts the
+same way except for the GStreamer plugin registry, which is a persistent copy undone by
+Disable/Uninstall regenerating a clean stock one — see
+[webOS 25: compatibility gate, reversibility, and self-heal](webos25/README.md#compatibility-gate-reversibility-and-self-heal).
 
 > Background and the full development history are in
 > [RootMyTV issue #72](https://github.com/RootMyTV/RootMyTV.github.io/issues/72).
@@ -229,5 +232,20 @@ This fork adds two work-in-progress components alongside the core tool:
 
 ## License
 
-GNU LGPL v2.1 or later (same as GStreamer and its plugins). **NOT endorsed by LG.** Provided
-"AS IS" without warranty of any kind; the entire risk as to quality and performance is with you.
+This project's own code (installer scripts, the app, the service) is **GNU LGPL v2.1 or later**,
+same as GStreamer and its plugins. The shipped binary payload is **mixed**, because one component
+links a GPL library:
+
+| Shipped artifact | License | Why |
+|---|---|---|
+| App, service, `install.sh`/`init_dts25.sh`/`uninstall.sh` | LGPL-2.1-or-later | this repo's own code |
+| `libgstisomp4.so`, `libgstmpegtsdemux.so` | LGPL-2.1-or-later | built from gst-plugins-good / -bad |
+| `libgstlibav.so`, `libav*.so*`, `libsw*.so*` | LGPL-2.1-or-later | ffmpeg 4.4 configured **without** `--enable-gpl` / `--enable-version3` (see `webos25/restore/build-truehd.sh`) |
+| `libgstdtsdec.so`, `libdca.so.0` | **GPL-2.0-or-later** | the plugin source is LGPL, but it links **libdca**, which is GPL-2.0-or-later — the resulting binary is a combined work |
+
+Each component keeps its own license; because the DTS decoder pair is GPL-2.0-or-later, any
+distributed `.ipk` or tarball contains GPL-2.0-or-later code, and the corresponding-source offer
+must cover it. The build scripts and patched sources in `webos25/restore/` are that source.
+
+**NOT endorsed by LG.** Provided "AS IS" without warranty of any kind; the entire risk as to
+quality and performance is with you.

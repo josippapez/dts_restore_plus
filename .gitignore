@@ -1,2 +1,7 @@
 .gitattributes
 LICENSE
+
+# License texts live once in webos25/app/licenses/ (committed). The release
+# workflow copies them into webos25/restore/ so the CLI tarball ships them too --
+# that copy is build output, never a second committed source.
+webos25/restore/licenses/

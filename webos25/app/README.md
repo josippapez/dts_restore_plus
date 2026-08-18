@@ -95,23 +95,56 @@ string sent to the Homebrew Channel (HBC) exec service via the hardened
 Mirrors `../webos25/restore/install.sh` + `init_dts25.sh` exactly. Restores **DTS
 (incl. mp4/ts/m2ts containers) and TrueHD/MLP**.
 
-- **Enable:** stage three payloads — DTS (`libgstdtsdec.so` + `libdca.so.0` →
-  `/var/lib/webosbrew/dts25/`), TrueHD (`libgstlibav.so` + ffmpeg libs →
-  `/var/lib/webosbrew/truehd/`), and the container demuxers (patched
-  `libgstisomp4.so` + `libgstmpegtsdemux.so`, `dts_support` default TRUE →
-  `/var/lib/webosbrew/demux25/`). Generate the two `/etc` overrides
+- **Enable:** re-detect, then run the same **compatibility gate** the CLI boot hook
+  runs (see below) — refuse unless the TV's stock plugins match a verified set, or
+  the caller opted into `force`. If the gate passes, stage three payloads — DTS
+  (`libgstdtsdec.so` + `libdca.so.0` → `/var/lib/webosbrew/dts25/`), TrueHD
+  (`libgstlibav.so` + ffmpeg libs → `/var/lib/webosbrew/truehd/`), and the container
+  demuxers (patched `libgstisomp4.so` + `libgstmpegtsdemux.so`, `dts_support` default
+  TRUE → `/var/lib/webosbrew/demux25/`). Generate the two `/etc` overrides
   (codec-capability TRUEHD/MLP; gstcool `avdec_truehd/mlp=310`). Write the
   canonical `init_dts25.sh`, which bind-mounts our libav, the demuxers, and the
-  overrides, then regenerates the media GStreamer registry and writes it to
-  `/mnt/flash/data/gst_1_0_registry.arm.bin`. Symlink the boot hook, apply now,
-  restart `starfish-media-pipeline`.
-- **Disable:** remove the boot hook, unmount every bind (libav, demuxers, both
-  `/etc` overrides, registry) → LG originals restored. Staged libs kept.
+  overrides, then regenerates the media GStreamer registry and — only if `dtsdec`,
+  `avdec_truehd`, `qtdemux`, `tsdemux`, **and** `matroskademux` all survive the scan
+  — writes it to `/mnt/flash/data/gst_1_0_registry.arm.bin`. Symlink the boot hook,
+  apply now, restart `starfish-media-pipeline`.
+- **Disable:** remove the boot hook, drop every bind (libav, demuxers, both `/etc`
+  overrides — with a lazy-detach (`umount -l`) fallback if a target is busy, e.g. the
+  live C5's `WebAppMgr` holding `libgstlibav.so` mapped), then regenerate a clean
+  **stock** registry and `cp -f` it over the media one (the registry is a persistent
+  copy, not a bind, so it is reverted this way rather than unmounted) → LG originals
+  restored. Staged libs kept.
 - **Uninstall:** disable + `rm -rf /var/lib/webosbrew/{dts25,truehd,demux25}`.
 - **Test (self-check):** the `test` method decodes a bundled DTS sample per
   container (mp4/ts/m2ts) through the media registry and returns PASS/FAIL — an
   objective "is the patch working" check independent of the speaker/output stage.
   The UI also offers **play-by-ear** of the bundled samples (in-app `<video>`).
+
+#### Compatibility gate, drift stand-down, and self-heal
+
+`detect`/`status` report a compatibility **verdict** — `verified`, `forced`,
+`unverified`, or `drift` — alongside `verdictReason`, `verifiedLabel`, `canForce`, and
+the three measured plugin md5s, derived from the same verified-sets table, `stock.fp`
+drift check, and self-heal routine documented in full (with the concrete measured
+values) in
+[`../README.md#compatibility-gate-reversibility-and-self-heal`](../README.md#compatibility-gate-reversibility-and-self-heal).
+`enable` accepts `{force: true}` as a strict boolean — honoured only when the last
+`detect` reported `canForce: true` — to drive the UI's explicit **"Try anyway
+(experimental)"** opt-in; it is never interpolated into a shell command. Because the
+gate, `stock.fp` drift stand-down, and the self-heal-on-removal boot behaviour all live
+in the one canonical `init_dts25.sh` this app mirrors, they apply identically whether
+the mechanism was installed via this app or via the CLI `restore/install.sh`.
+
+With one timing caveat worth knowing: the script *installed on the TV* is only rewritten
+by Enable (or the CLI installer), so a set enabled under an older app keeps that script —
+and its verified-sets table — until Enable is pressed again. Rather than silently
+rewriting a privileged script during a read-only detect, the service compares the
+installed gate-version stamp against the one this build ships and reports `hookStale`,
+`hookStaleReason`, `hookGateVersion`, `appGateVersion` and `hookScriptInstalled`; the UI
+shows a note asking the user to press Enable. It also md5-compares what Enable would
+write against what is installed, so an un-bumped stamp is still caught. On the CX profile
+no compatibility verdict is reported at all, and the display is unchanged from before the
+gate existed.
 
 ### Make-up gain & DRC control
 
@@ -389,6 +422,10 @@ independently measured). Bitstream **passthrough** to an AVR is out of scope
 
 ## License
 
-App code: LGPL-2.1-or-later. The vendored `.so` payloads are LGPL-2.1+ release
-artifacts (not committed here) — ship the corresponding source offer with any
-distributed `.ipk`.
+App code: LGPL-2.1-or-later. The vendored `.so` payloads (not committed here) are
+**not uniformly LGPL** — `libgstisomp4.so`, `libgstmpegtsdemux.so`, `libgstlibav.so`
+and the bundled `libav*`/`libsw*` are LGPL-2.1-or-later (ffmpeg is configured without
+`--enable-gpl`), but `libgstdtsdec.so` links **libdca** and is therefore
+**GPL-2.0-or-later**, as is the bundled `libdca.so.0`. So a distributed `.ipk`
+contains GPL-2.0-or-later code; ship the corresponding-source offer covering it.
+Full table in the [root README](../../README.md#license).

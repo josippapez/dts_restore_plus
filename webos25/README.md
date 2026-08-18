@@ -2,9 +2,14 @@
 
 Restores **DTS** *and* **Dolby TrueHD / MLP** audio playback on a rooted LG C5 /
 webOS 25 TV. Both codecs are **verified working on a real LG C5**, persistent
-across reboot (a boot hook re-applies everything). No stock LG library or config
-file is modified in place — every change is a **bind-mount** over an original,
-so uninstall is a clean revert.
+across reboot (a boot hook re-applies everything). Reversibility: most changes
+are **bind-mounts** over a stock file, undone by Disable/Uninstall or a reboot —
+the one exception is the GStreamer plugin registry, a persistent `cp -f`
+reverted by regenerating a clean stock registry — and it only applies to a TV
+whose stock plugins match a **verified set**, refusing (with an explicit
+experimental opt-in) otherwise. See
+[Compatibility gate, reversibility, and self-heal](#compatibility-gate-reversibility-and-self-heal)
+below.
 
 ## Quick install (prebuilt — no build needed)
 
@@ -132,21 +137,152 @@ verbatim and symlinked from `/var/lib/webosbrew/init.d/restore_dts25`):
 
 5. **Registry** — the media GStreamer registry is regenerated (with
    `LD_LIBRARY_PATH=/var/lib/webosbrew/truehd/libs` and a plugin path that
-   includes `/var/lib/webosbrew/dts25`) so it contains both `dtsdec` and
-   `avdec_truehd`, then written to `/mnt/flash/data/gst_1_0_registry.arm.bin`.
-   The registry is only overwritten if the regen contains **both** `dtsdec` **and**
-   `avdec_truehd`.
+   includes `/var/lib/webosbrew/dts25`) so it contains `dtsdec` and
+   `avdec_truehd` alongside the container demuxers, then written to
+   `/mnt/flash/data/gst_1_0_registry.arm.bin`. See "Compatibility gate,
+   reversibility, and self-heal" below for exactly what gates that write.
 
-**Boot-hook resilience (v2.1.1).** The hook is written to survive an unattended
-reboot and a firmware update:
-- **Firmware-update / ABI guard** — before touching anything it checks the core
-  GStreamer version (`gst-inspect-1.0 --version`). If it is no longer `1.24` (a
-  webOS OTA bumped it), the hook skips **all** overrides and exits, so binding an
-  ABI-mismatched armel library can never break stock mp4/ts/mkv playback. DTS/TrueHD
-  simply pause (a toast asks you to re-open DTS Enabler); normal playback is safe.
-- **Bounded regen** — the registry regen runs in-process under `timeout` so a hung
-  scan cannot trip the Homebrew Channel failsafe.
-- **Fail-safe toasts** on abort or an incomplete regen.
+## Compatibility gate, reversibility, and self-heal
+
+**Verified TV sets.** Before binding anything, both the boot hook and Enable check the
+live md5 of the three stock plugins we shadow (`libgstlibav.so`, `libgstisomp4.so`,
+`libgstmpegtsdemux.so`) against a table of verified sets keyed on those hashes plus the
+GStreamer major.minor version:
+
+| Set | GStreamer | stock `libgstlibav.so` md5 | stock `libgstisomp4.so` md5 | stock `libgstmpegtsdemux.so` md5 |
+|---|---|---|---|---|
+| LG C5 OLED77C51LA (webOS 10.3.1) | 1.24.0 | `0fd6d65ac9e3a78b393a615eaff8ac0b` | `57fe57060774f248c05af5a411fc9a8f` | `9b84a95cf29bc025553c7dee829b7cc1` |
+
+A TV whose stock hashes are **not** in the table is refused by default — Enable/the boot
+hook show the probed values so they can be reported for a future entry — with an explicit
+two-step **"Try anyway (experimental)"** opt-in that applies the override only if the
+payload's own dynamic dependencies actually resolve on that TV. This is deliberately **not**
+a soname-equality check against stock: the verified C5's **stock** `libgstlibav.so` links
+**ffmpeg 5.x** (`libavcodec.so.59`, `libavformat.so.59`, `libavutil.so.57`,
+`libavfilter.so.8`, 145352 B, md5 `0fd6d65ac9e3a78b393a615eaff8ac0b`), while **ours** links
+**ffmpeg 4.4** (`.58`/`.58`/`.56`/`.7`) resolved through
+`RUNPATH=/var/lib/webosbrew/truehd/libs` — a check that demanded matching stock sonames
+would reject the very TV the payload is verified on. Enabling therefore moves gst-libav's
+software decoders from LG's ffmpeg 5 build to our ffmpeg 4.4 build.
+
+**Firmware-drift stand-down.** `/var/lib/webosbrew/dts25/stock.fp` records, from the last time the
+gate passed, the pristine hashes of the three plugins we shadow **and** of the two live `/etc` files we
+bind snapshots of (`device_codec_capability_config.json`, `gstcool.conf`). If a firmware update changes
+any of the five, the boot hook stands itself down — toast, nothing bound — instead of applying a payload
+verified against a stock file the TV no longer has. The `/etc` pair is in there because those snapshots
+are derived at install time and only change via OTA: without them, an update that rewrote only
+`gstcool.conf` would keep the verdict `verified` while the hook quietly reverted LG's own config change,
+system-wide, indefinitely. Drift is therefore evaluated **before** the verified-sets table match — the
+table keys on the plugin hashes and cannot express `/etc` state, so "has this TV changed since we
+recorded it" outranks "does this TV look like a known-good one". Protection engages from the first apply
+under a build that records those keys; an older `stock.fp` that never had them does not read as drift.
+
+One residual, stated rather than engineered around: `libgstmatroska.so` is neither shadowed nor
+fingerprinted, so an OTA changing its `A_DTS` retag would silently lose MKV DTS. That fails in the
+acceptable direction — it costs our codec and harms nothing else — and the registry commit gate still
+passes, because it checks that `matroskademux` registers, not what caps it emits.
+
+**Registry commit gate.** After binding, the regenerated registry is only copied over
+`/mnt/flash/data/gst_1_0_registry.arm.bin` if `dtsdec`, `avdec_truehd`, `qtdemux`,
+`tsdemux`, **and** `matroskademux` all survive the scan; if any is missing, the binds are
+dropped instead and the TV is left on its stock registry.
+
+**Self-heal on removal.** Removing the payload (app or CLI) while still enabled no longer
+leaves a dangling override: at the next boot, finding neither the app's install directory
+nor `/var/lib/webosbrew/dts25/.cli-install`, the hook drops every bind, regenerates the
+clean stock registry (the same routine `uninstall.sh` step 2b uses), removes the state
+directories, and unlinks itself. `.cli-install` is written by `install.sh` so an SSH/CLI
+install is never healed away by mistake; the app's Enable removes it, so whichever surface you last
+used to manage the install is the one that owns it.
+
+**A refused install reverts, it does not stop half-way.** Both installers drop existing binds before
+they measure (so the fingerprints they read are pristine), which means a refusal on a TV that *was*
+enabled would otherwise leave it with the binds gone but our registry still live. Every refusal branch
+therefore stands the TV down properly — binds dropped, stock registry regenerated if one of ours was
+live — and the message says what happened rather than claiming nothing changed.
+
+**Disable and Uninstall can report a deferral.** Both are gated on the stock-registry rebuild
+succeeding. If it fails, the app answers with `registryReverted: false` (and `uninstallDeferred: true`
+where files were kept), the staged files stay put, and the UI says so instead of printing "registry
+restored to stock" — because in that state our decoder may keep working until the registry is rebuilt.
+`uninstall.sh` prints the same thing as `INCOMPLETE` and asks for a re-run. A revert that did not happen
+is never reported as a clean one; the same applies to an override that could not be detached even
+lazily, which surfaces as `unmountWarning`.
+
+**Cleanup is deferred rather than half-done.** The heal regenerates LG's registry *first* and deletes
+our files only if that succeeded. That regen is a cold-cache full plugin scan under `timeout`, running at
+boot — the busiest moment on the box — and if it times out, deleting the plugins anyway would leave the
+live registry pointing at files that no longer exist, which is exactly what broke other apps' audio on a
+real C5 on 2026-07-23. So on failure the hook keeps the binds dropped, keeps the state, keeps itself
+installed, toasts that cleanup was deferred, and retries at the next boot. `uninstall.sh` follows the
+same rule: if it cannot rebuild a stock registry it says so loudly and leaves the files in place for a
+re-run, rather than reporting a clean uninstall it did not achieve.
+
+**An incomplete install is refused, not deleted.** Self-heal only fires when nothing owns the
+install any more (no app directory *and* no `.cli-install`). A payload that is merely incomplete —
+`libgstdtsdec.so` or `libgstlibav.so` missing — is a different case: the hook binds nothing, deletes
+nothing and keeps the boot hook, so re-opening the app or re-running `install.sh` repairs it. It does
+repair one thing: if a registry *we* wrote is still live while our plugins are gone (the `cp -f`
+registry outlives our files, which is what broke other apps' audio on a real C5 on 2026-07-23), it
+regenerates the stock registry. The two container demuxers stay **optional** — a build without
+`demux-out/` is a normal MKV-only install, not a fault.
+
+**Forcing from the CLI.** The app's two-step "Try anyway (experimental)" only ever offers itself for
+an `unverified` verdict. The CLI equivalent is explicit:
+
+```sh
+FORCE=1 sh install.sh     # apply on an unverified set, recording forced=1 in stock.fp
+```
+
+Like the app, `FORCE=1` only ever applies to an `unverified` verdict — it can never override a
+**drift** verdict (stock plugins changed since the last successful apply) or a GStreamer major.minor
+change: both stand the install down unconditionally regardless of `FORCE`, which is the fail-safe
+against a firmware update the payload was never checked against. That is not a dead end: Uninstall
+removes `stock.fp`, so **Uninstall then Enable** puts the TV back into the `unverified` flow, where the
+ordinary two-step opt-in applies — the same explicit consent, without a special case for drift. Reporting
+the new fingerprints so the set can be added to the table is the durable fix.
+
+**Read-only preflight.** `W25_CHECK=1 sh /var/lib/webosbrew/dts25/init_dts25.sh` runs the whole gate
+and prints `VERDICT=`, `REASON=`, `LABEL=`, `CANFORCE=`, `LOADER=`, `LOADER_STAGED=`, `GST_MM=`,
+`PRODUCT_ID=`, `WEBOS_RELEASE=` and the measured `MD5_*` values, without mounting, copying or writing
+anything. (`REFUSED=`/`REASON=` are what the *apply* path prints when it stands down — don't parse for
+`REFUSED=` in check mode.) `install.sh` and the app's Enable both use it rather than duplicating the
+gate; the boot hook runs the same gate inline, from the same shared block. One caveat worth knowing:
+the *installed* script is only rewritten by Enable or `install.sh`, so a TV enabled under an older app
+keeps that script — and its verified-sets table — until Enable is pressed again. The app reports
+`hookStale` when its embedded copy is newer than the installed one; pressing Enable refreshes it. The
+installed script carries a gate-version stamp, and `detect`/`status` expose `hookStale`,
+`hookStaleReason`, `hookGateVersion`, `appGateVersion`, `hookScriptInstalled` and `hookNewer`. The
+comparison is numeric and directional: an installed script *newer* than the app (a CLI tarball ahead of
+the Homebrew Channel, which is normal — the two tracks are independent) reports `hookNewer` and advises
+updating the app, never "press Enable", because pressing Enable there would overwrite the newer gate
+with the older one. A deliberately Disabled TV is not nagged either. The gate stamp shipped with this
+release is `2`. The stamp is versioned
+independently of the app version on purpose: a cosmetic app release must not invalidate a current hook,
+and a gate change must not hide behind an unchanged app version. The app additionally md5-compares what
+Enable *would* write against what is installed, so an un-bumped stamp is still caught.
+
+**Reversibility, precisely.** Most of the mechanism above is a **bind-mount** over a stock
+file, undone by Disable/Uninstall or by a reboot. The one exception is the GStreamer
+plugin registry: it is written with a persistent `cp -f`, not a bind, so Disable/Uninstall
+explicitly regenerate a clean stock registry from the pristine on-disk plugins to revert
+it (`uninstall.sh` step 2b). A bind can also be **busy** at Disable time — on the C5,
+`umount /usr/lib/gstreamer-1.0/libgstlibav.so` returns `target is busy` because
+`WebAppMgr` (pid 3492) has it mapped live; the fallback is a lazy detach (`umount -l`), and
+existing mappings finish out against our lib until a reboot clears them fully.
+
+**System-wide reach is the point, not an accident.** The overrides sit at the rootfs
+GStreamer plugin paths, so every app jail that maps them sees ours too — measured on the
+C5: 27 jail-side binds per shadowed library (28 counting the rootfs one), and both
+Netflix's and the browser's jail views hash to our libraries. That is DTS/TrueHD working
+anywhere the media pipeline is used, which is the point of the app — not a leak.
+Jail-side binds are deliberately left alone by Disable/Uninstall (detaching them would
+break that jail's own view); a jail picks up stock again on its own next restart, or on a
+TV reboot.
+
+**Also:** the registry regen still runs in-process under `timeout` so a hung scan cannot
+trip the Homebrew Channel failsafe, and every refusal/abort path posts a fail-safe toast
+and `exit 0`s.
 
 **Config overrides are generated on the TV at install time** by editing the TV's
 own live `/etc` files (see below) — this package **ships no LG config file**.
@@ -179,9 +315,11 @@ separately tested.)
   PCM is delivered end-to-end to LG's audio HAL — there is **no stereo downmix anywhere in the
   GStreamer path** (unlike the CX/upstream tool, which force-downmixes to 2.0). A BD-LPCM re-frame is
   therefore **not needed** to reach a multichannel sink. **The only remaining variable is the TV's
-  own output stage:** internal speakers fold 5.1 into the built-in array, while **HDMI eARC/optical to
-  an AVR** carries the multichannel PCM subject to the "Digital Sound Output" setting. Confirm 5.1 on
-  an AVR's input display.
+  own output stage:** internal speakers fold 5.1 into the built-in array, while **HDMI eARC to an AVR**
+  carries the multichannel PCM subject to the "Digital Sound Output" setting. Optical/S-PDIF is a
+  two-channel PCM link, so it cannot carry 5.1 from a decode-to-PCM path at all — eARC is the only
+  multichannel route out. Confirm 5.1 on an AVR's input display; this half is the TV's routing, not
+  something this project measures.
 - **DTS-HD:** `avdec_dca` decodes the DTS **core**, not the DTS-HD MA lossless (XLL) extension.
   **TrueHD:** decoded as base channels (Atmos objects fold in).
 - **No bitstream passthrough** to an AVR (decode-to-PCM only) — out of scope.
@@ -232,7 +370,8 @@ Remove everything with:
 
 ```sh
 sh uninstall.sh     # unmounts all binds (capability, gstcool, libav, isomp4,
-                    # mpegtsdemux, registry), removes the state dirs + hook
+                    # mpegtsdemux — with a lazy-detach fallback if one is busy),
+                    # regenerates a clean stock registry, removes the state dirs + hook
 ```
 
 A reboot after uninstall guarantees a fully clean state.

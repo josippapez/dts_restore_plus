@@ -4,13 +4,17 @@ manifestUrl: https://github.com/josippapez/dts_restore_plus/releases/latest/down
 category: multimedia
 pool: main
 requirements:
-  webosRelease: '>=10'
+  webosRelease: '>=10.0'
 description: |
   # DTS Enabler
   Restores **DTS** and **Dolby TrueHD/MLP** audio on rooted LG **webOS 25** TVs —
   including DTS in `.mkv`, `.mp4`, `.ts` and `.m2ts`. Decodes native discrete 5.1
   (no stereo downmix). Enable / disable / uninstall from the app, plus a self-test
-  and play-by-ear. No firmware is modified — everything is reversible bind-mounts.
+  and play-by-ear. No stock firmware file is modified in place: the overrides are
+  bind-mounts reverted by Disable/Uninstall or a reboot, and the one persistent
+  write — the GStreamer plugin registry — is reverted by regenerating a clean stock
+  registry. Applies only to TVs whose stock plugins match a verified set; anything
+  else is refused unless you take the explicit experimental opt-in.
 
   Requires the [Homebrew Channel](https://github.com/webosbrew/webos-homebrew-channel)
   with **root**. Not endorsed by LG.
