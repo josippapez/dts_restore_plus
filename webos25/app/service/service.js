@@ -32,7 +32,12 @@
  *         (4) regenerate the media GStreamer registry (dtsdec + avdec_truehd,
  *             LD_LIBRARY_PATH=truehd/libs) and write it to
  *             /mnt/flash/data/gst_1_0_registry.arm.bin.
- *       All bind-mounts, fully reversible. Both codecs proven on a real LG C5.
+ *       Overrides (1)-(3) are bind-mounts. (4) is NOT: the plugin registry is a
+ *       persistent `cp -f` over the media registry, which no unmount can revert,
+ *       so Disable/Uninstall revert it by regenerating a clean STOCK registry
+ *       from LG's own plugins. A bind whose target is busy (a live mapping such
+ *       as WebAppMgr holding the .so) is detached lazily rather than left
+ *       applied. Both codecs proven on a real LG C5.
  *       Mirrors webos25/install.sh + webos25/init_dts25.sh exactly.
  *
  *   cx-armv7-gst114       (OLED CX class) -- UNVERIFIED (no CX hardware).
@@ -59,11 +64,58 @@
  *     interpolated.
  *   - Generated init scripts are written via `base64 -d` heredocs so no
  *     content survives the write as shell syntax.
+ *   - ONE method takes a caller-settable value: `enable {force: true}`, the
+ *     explicit opt-in for a TV that is not in the verified-fingerprint table.
+ *     It is validated as `payload.force === true` (the literal boolean only --
+ *     no truthy strings, no numbers) and is NEVER interpolated into a command
+ *     string. It selects between two author-constant script texts, `FORCE=1`
+ *     and `FORCE=0`, and is honoured only when the read-only probe already
+ *     reported COMPAT_CANFORCE=1 with the loader gate passing. So the statement
+ *     above still holds literally: no caller-supplied value reaches the shell.
+ *
+ * COMPATIBILITY GATE (webOS 25)
+ *   Our .so are bind-mounted over LG's system-wide -- the overrides propagate
+ *   into every app jail (27 jail-side binds per library, measured on a C5) --
+ *   so "probably compatible" is not good enough. Enable and the boot hook both
+ *   refuse unless:
+ *     (1) the GStreamer major.minor still matches the build (ABI guard, never
+ *         overridable);
+ *     (2) the md5s of the three stock plugins we shadow are in init_dts25.sh's
+ *         verified-sets table -- or the user opted in and they have not changed
+ *         since (stock.fp). A change UNDER an existing install is "drift" and is
+ *         refused unconditionally: FORCE cannot override it, because uninstall
+ *         clears the baseline and puts the TV back in the unverified flow, which
+ *         already has a consented opt-in;
+ *     (3) every payload object's dynamic dependencies resolve on THIS TV. The
+ *         check asserts OUR deps resolve, NOT that our sonames match LG's:
+ *         stock libav on the verified C5 is ffmpeg 5.x while ours is 4.4, so
+ *         soname equality would refuse a TV where the payload demonstrably
+ *         works;
+ *     (4) after binding, the regenerated registry still carries dtsdec,
+ *         avdec_truehd, qtdemux, tsdemux and matroskademux -- otherwise the
+ *         binds are dropped and the registry is not committed.
+ *   Every refusal path binds nothing, exits 0, AND repairs the media registry if
+ *   one of ours is still live (it is `cp -f`'d, not bind-mounted, so it survives
+ *   any unmount and would keep our dtsdec registered by absolute path). The gate
+ *   is authored once, in W25_COMPAT_SH, and spliced into the probe, Enable,
+ *   Disable and the boot script alike.
  * ===================================================================== */
 
 "use strict";
 
 var Service = require("webos-service");
+
+/* md5 of a string, used only to cross-check the installed boot script against the
+ * one this build would write (see hookStaleness). Guarded because the gate-stamp
+ * comparison is the primary signal and must not be taken down by an unavailable
+ * core module: without this, staleness is judged on the stamp alone. */
+var md5hex = null;
+try {
+  var _crypto = require("crypto");
+  md5hex = function (str) { return _crypto.createHash("md5").update(str, "utf8").digest("hex"); };
+} catch (e) {
+  md5hex = null;
+}
 
 var PKG_ID = "io.github.josippapez.dtsenabler.service";
 var service = new Service(PKG_ID);
@@ -103,6 +155,13 @@ var PROFILE_CX  = "cx-armv7-gst114";
 var W25_DEST        = "/var/lib/webosbrew/dts25";
 var W25_LIBS        = W25_DEST + "/libs";
 var W25_INIT_SCRIPT = W25_DEST + "/init_dts25.sh";
+/* State files the boot script owns. Spelled out here rather than reached for
+ * through the shell variables W25_COMPAT_SH happens to define ($FP,
+ * $CLI_MARKER): a builder that splices that block is doing so for its helper
+ * FUNCTIONS, and depending on its variables would mean an unrelated rename over
+ * there silently turns these two lines into no-ops. */
+var W25_STOCK_FP    = W25_DEST + "/stock.fp";
+var W25_CLI_MARKER  = W25_DEST + "/.cli-install";
 var W25_HOOK        = "/var/lib/webosbrew/init.d/restore_dts25";
 var W25_REG_TARGET  = "/mnt/flash/data/gst_1_0_registry.arm.bin";
 var W25_REG_TMP     = "/tmp/gst_dts_reg.bin";
@@ -144,6 +203,686 @@ var W25_GC_AWK = [
   '{ print }',
   '/^\\[sw_decoder\\]/ { print "avdec_truehd=310"; print "avdec_mlp=310" }'
 ].join("\n");
+
+/* =======================================================================
+ * The canonical boot/apply script, split into three MACHINE-GENERATED line
+ * arrays taken verbatim from webos25/restore/init_dts25.sh (CLAUDE.md rule 3:
+ * this file, that file and install.sh's INIT_B64 blob must render byte-for-byte
+ * identical text -- `restore/check-init-sync.sh` proves it).
+ *
+ * W25_COMPAT_SH is the middle slice: the compatibility gate and the
+ * reversibility helpers. DETECT_PROBE, w25Enable() and w25DisableSteps() all
+ * splice that same slice in, so the verdict the UI shows, the gate Enable
+ * enforces and the gate the boot hook enforces are one authored copy of the
+ * logic rather than three that drift.
+ *
+ * Do not hand-edit these arrays: edit webos25/restore/init_dts25.sh and
+ * regenerate them.
+ * ===================================================================== */
+var W25_INIT_HEAD = [
+  "#!/bin/sh",
+  "# webOS25 DTS + TrueHD restore. Runs at boot via /var/lib/webosbrew/init.d/restore_dts25.",
+  "#",
+  "# THREE BYTE-IDENTICAL COPIES (CLAUDE.md rule 3): this file, the base64 INIT_B64",
+  "# blob in restore/install.sh, and w25InitScriptBody() in app/service/service.js.",
+  "# The block between the W25-COMPAT markers is additionally shared verbatim with",
+  "# the app's read-only DETECT_PROBE, so the verdict the UI shows is the verdict",
+  "# this script enforces. Change one copy -> change all three.",
+  "#",
+  "# MODES",
+  "#   (default)     apply: self-heal check (unowned -> revert+unlink; owned but the",
+  "#                 core payload is incomplete -> refuse, delete nothing) -> version",
+  "#                 guard -> identity gate -> loader gate -> binds -> post-bind",
+  "#                 proof -> registry commit.",
+  "#   W25_CHECK=1   read-only preflight for install.sh / the app's Enable: prints",
+  "#                 VERDICT/REASON/LABEL/CANFORCE/LOADER and exits. Binds nothing,",
+  "#                 writes nothing, toasts nothing.",
+  "#   W25_STAND_DOWN=1",
+  "#                 put this TV back on stock and exit: drop our binds and rebuild",
+  "#                 LG's registry if one of ours is live. No gate, no binds, no",
+  "#                 toast, and it can never apply anything. This is what the two",
+  "#                 installers call when their preflight refuses AFTER they have",
+  "#                 already detached the binds, so \"nothing is applied\" is true",
+  "#                 rather than merely intended.",
+  "#   FORCE=1       explicit opt-in on a TV that is not in the verified table.",
+  "#",
+  "# Always exits 0: a non-zero webosbrew init script trips the failsafe that",
+  "# disables ALL root customisations on the next boot. Every refusal path binds",
+  "# nothing -- the overrides are system-wide (they propagate into every app jail),",
+  "# so \"not sure\" must mean \"do not touch this TV\". The two container demuxers are",
+  "# OPTIONAL: without them DTS still works in MKV, which is how this shipped before",
+  "# the gate existed, so each is bound only when staged.",
+  "#",
+  "# A refusal also REPAIRS: it drops the binds and, if a media registry we wrote is",
+  "# still live, regenerates LG's. That second half is not optional -- the registry",
+  "# is committed with `cp -f` rather than bind-mounted, so an unrepaired one keeps",
+  "# our dtsdec registered by absolute path even with every bind gone.",
+  "#",
+  "# STAGED FILES ARE LEFT IN PLACE ON A REFUSAL, DELIBERATELY. A refused install",
+  "# links no boot hook, so nothing of ours ever runs again on that TV; the files",
+  "# under /var/lib/webosbrew are inert without the binds. They are kept because",
+  "# stock.fp is among them, and that recorded baseline is the only way a later boot",
+  "# can tell \"the firmware changed\" from \"this TV was never verified\" -- deleting it",
+  "# would downgrade every future drift into a bare \"unverified\". The app's Uninstall",
+  "# removes them on demand.",
+  "set -u",
+  "LOG=/tmp/dts25.log",
+  "W25_LOG=$LOG",
+  "toast() { luna-send -n 1 luna://com.webos.notification/createToast \"{\\\"sourceId\\\":\\\"io.github.josippapez.dtsenabler\\\",\\\"message\\\":\\\"$1\\\"}\" >/dev/null 2>&1; }",
+  "echo \"--- dts25+truehd $(date) ---\" >> $LOG 2>&1"
+];
+
+var W25_COMPAT_SH = [
+  "# >>> W25-COMPAT-BEGIN",
+  "# Compatibility gate + reversibility helpers -- the SINGLE AUTHORED COPY.",
+  "# Everything here is either a pure measurement or an explicitly-called action;",
+  "# merely sourcing this block mounts, deletes and writes nothing, which is what",
+  "# lets the app's read-only probe reuse it as-is.",
+  "EXPECT_GST=1.24",
+  "# Stamp identifying the GATE this script enforces. The installed copy on a TV is",
+  "# only rewritten by Enable / install.sh, so a TV enabled under an older app keeps",
+  "# running that older script -- while the app's own probe judges with the compat",
+  "# block embedded in the NEW build. The app compares this value (which it reads",
+  "# from its own embedded copy of this block) against the one it finds in the",
+  "# installed script, and reports the hook as stale instead of silently rewriting a",
+  "# privileged file behind the user's back.",
+  "#",
+  "# BUMP THIS whenever the behaviour of this script changes. It is deliberately",
+  "# independent of the app version: a cosmetic app release must not invalidate a",
+  "# perfectly current hook, and a gate change must not hide behind an unchanged app",
+  "# version. check-init-sync.sh proves the three IN-REPO copies match; this proves",
+  "# the ON-TV copy matches the app that is asking, and sync-init.sh refuses to",
+  "# regenerate the derived copies if the body moved while this did not.",
+  "#   1  first gate: verified-sets table, loader gate, post-bind proof, self-heal,",
+  "#      stand-down on every refusal, /etc fingerprints, hook stamp.",
+  "#   2  w25_stock_registry refuses while a plugin bind of ours survives; the two",
+  "#      installers stand the TV down on a refusal instead of leaving it half-way.",
+  "W25_GATE_VERSION=2",
+  "FP=/var/lib/webosbrew/dts25/stock.fp",
+  "# Where the installed copy of THIS script lives, and the boot hook that symlinks",
+  "# to it. Named here, in the shared block, so the read-only probe can fingerprint",
+  "# the script and see whether the hook is linked without duplicating either path.",
+  "INIT_SELF=/var/lib/webosbrew/dts25/init_dts25.sh",
+  "HOOK=/var/lib/webosbrew/init.d/restore_dts25",
+  "REG=/mnt/flash/data/gst_1_0_registry.arm.bin",
+  "CFG=/etc/umediaserver/device_codec_capability_config.json",
+  "GC=/etc/gst/gstcool.conf",
+  "LGLIBAV=/usr/lib/gstreamer-1.0/libgstlibav.so",
+  "LGISO=/usr/lib/gstreamer-1.0/libgstisomp4.so",
+  "LGTSD=/usr/lib/gstreamer-1.0/libgstmpegtsdemux.so",
+  "# CORE payload -- without either of these there is no DTS and no TrueHD, so a",
+  "# missing one means \"do not bind anything\".",
+  "MYDTS=/var/lib/webosbrew/dts25/libgstdtsdec.so",
+  "MYLIBAV=/var/lib/webosbrew/truehd/libgstlibav.so",
+  "# OPTIONAL payload: the patched container demuxers. Absent, DTS still works in",
+  "# MKV -- which is exactly how this shipped before the gate existed -- so each is",
+  "# bound only when staged and is never a reason to refuse or to delete anything.",
+  "MYISO=/var/lib/webosbrew/demux25/libgstisomp4.so",
+  "MYTSD=/var/lib/webosbrew/demux25/libgstmpegtsdemux.so",
+  "MYCFG=/var/lib/webosbrew/truehd/codec_capability.json",
+  "MYGC=/var/lib/webosbrew/truehd/gstcool.conf",
+  "MYLIBS=/var/lib/webosbrew/truehd/libs:/var/lib/webosbrew/dts25/libs",
+  "w25_log() { [ -n \"${W25_LOG:-}\" ] || return 0; echo \"[dts25-gate $(date '+%Y-%m-%d %H:%M:%S')] $*\" >> \"${W25_LOG:-}\" 2>&1; }",
+  "# Unmount ONE bind target, falling back to a LAZY detach when it is busy.",
+  "# Measured on a real C5: umount of /usr/lib/gstreamer-1.0/libgstlibav.so fails",
+  "# with \"target is busy\" because WebAppMgr has the .so mapped, while `umount -l`",
+  "# succeeds. Without this fallback Disable only logs a WARN and silently leaves",
+  "# the override applied.",
+  "w25_umount() {",
+  "  grep -q \" $1 \" /proc/mounts 2>/dev/null || { w25_log \"no bind over $1\"; return 0; }",
+  "  if umount \"$1\" 2>/dev/null; then w25_log \"unmounted bind over $1\"; return 0; fi",
+  "  if umount -l \"$1\" 2>/dev/null; then w25_log \"lazy-detached busy bind over $1 (a live mapping held it)\"; return 0; fi",
+  "  w25_log \"WARN could not unmount $1, even lazily\"",
+  "  return 1",
+  "}",
+  "# Drop every override WE applied -- rootfs paths only. The same binds propagate",
+  "# into each app jail (27 jail-side copies per library on a real C5); those are",
+  "# left alone deliberately, because detaching a jail's own view would break that",
+  "# jail. $REG is included because older builds bind-mounted it.",
+  "#",
+  "# A target that survives even a lazy detach is REPORTED, not swallowed: it means",
+  "# the revert did not actually happen, and silently claiming success is precisely",
+  "# the class of failure this whole change exists to remove. Returns 1 and prints",
+  "# WARN_UNMOUNT=<targets> so every caller -- boot script and app alike -- carries",
+  "# the warning up.",
+  "w25_drop_binds() {",
+  "  UNMOUNT_FAILED=",
+  "  for t in \"$CFG\" \"$GC\" \"$LGLIBAV\" \"$LGISO\" \"$LGTSD\" \"$REG\"; do",
+  "    w25_umount \"$t\" || UNMOUNT_FAILED=\"${UNMOUNT_FAILED:+$UNMOUNT_FAILED }$t\"",
+  "  done",
+  "  [ -z \"$UNMOUNT_FAILED\" ] && return 0",
+  "  w25_log \"WARN revert incomplete -- still mounted: $UNMOUNT_FAILED\"",
+  "  echo \"WARN_UNMOUNT=$UNMOUNT_FAILED\"",
+  "  return 1",
+  "}",
+  "# THE refusal action. Standing down is not \"skip the binds\" -- it is \"leave this",
+  "# TV stock\". The binds can be undone, but the media registry cannot: it is",
+  "# committed with `cp -f`, and any registry WE generated was scanned with",
+  "# /var/lib/webosbrew/dts25 on the plugin path, so it registers OUR dtsdec by",
+  "# absolute path and keeps doing so system-wide (every one of the 27 jail views)",
+  "# long after the binds are gone. Dropping binds while leaving that registry live",
+  "# is exactly the state the gate exists to prevent -- and it is the state an OTA",
+  "# that changes the stock plugins while GStreamer stays 1.24 would leave behind.",
+  "#",
+  "# Idempotent and self-limiting: w25_stock_registry scans LG's plugin directories",
+  "# ONLY, so the registry it writes does not name /var/lib/webosbrew and the next",
+  "# w25_reg_is_ours is false -- no repeated 60s regen on every boot. It also works",
+  "# when our libraries are already gone, for the same reason.",
+  "w25_stand_down() {",
+  "  w25_drop_binds",
+  "  if w25_reg_is_ours; then",
+  "    w25_log \"a registry of ours is still live; regenerating the stock registry so nothing of ours stays registered\"",
+  "    w25_stock_registry",
+  "  fi",
+  "  return 0",
+  "}",
+  "w25_md5() { [ -f \"$1\" ] || return 0; md5sum \"$1\" 2>/dev/null | cut -d\" \" -f1; }",
+  "w25_bound() { if grep -q \" $1 \" /proc/mounts 2>/dev/null; then echo 1; else echo 0; fi; }",
+  "w25_fp_get() { [ -f \"$FP\" ] || return 0; sed -n \"s/^$1=//p\" \"$FP\" 2>/dev/null | head -n1; }",
+  "w25_gst_mm() { /usr/bin/gst-inspect-1.0 --version 2>/dev/null | sed -n 's/^GStreamer \\([0-9]*\\.[0-9]*\\).*/\\1/p' | head -n1; }",
+  "w25_product_id() { command -v nyx-cmd >/dev/null 2>&1 || { echo unknown; return 0; }; v=$(nyx-cmd DeviceInfo query product_id 2>/dev/null | head -n1); [ -n \"$v\" ] || v=unknown; echo \"$v\"; }",
+  "w25_webos_release() { command -v nyx-cmd >/dev/null 2>&1 || { echo unknown; return 0; }; v=$(nyx-cmd OSInfo query webos_release 2>/dev/null | head -n1); [ -n \"$v\" ] || v=unknown; echo \"$v\"; }",
+  "# Measure the STOCK fingerprints of everything we shadow, plus the live GStreamer",
+  "# version. While we are ENABLED a bind of ours shadows the target, so its live",
+  "# hash is OURS and the stock hash is unmeasurable -- fall back to what stock.fp",
+  "# recorded when it still was pristine. S_* = measured live (empty when bound),",
+  "# M_* = effective stock fingerprint, B_* = 1 when our bind is present.",
+  "#",
+  "# The two /etc files matter as much as the plugins. $MYCFG and $MYGC are",
+  "# SNAPSHOTS, awk-derived at install time from the TV's own live",
+  "# device_codec_capability_config.json and gstcool.conf, and we bind them over the",
+  "# originals indefinitely. Those originals only ever change via an OTA -- exactly",
+  "# the event this gate exists to catch -- so an update that rewrites either one",
+  "# while leaving the three plugins alone must not read as \"verified\": the hook",
+  "# would silently revert LG's own config change, system-wide, forever.",
+  "#",
+  "# Residual we are NOT engineering around: libgstmatroska.so is neither shadowed",
+  "# nor fingerprinted, so an OTA that changes its A_DTS retag would silently lose",
+  "# MKV DTS. That fails in the acceptable direction -- it costs our codec and harms",
+  "# nothing else -- and the five-element proof still passes, because it checks that",
+  "# matroskademux REGISTERS, not what caps it emits.",
+  "w25_measure() {",
+  "  B_LIBAV=$(w25_bound \"$LGLIBAV\")",
+  "  B_ISOMP4=$(w25_bound \"$LGISO\")",
+  "  B_MPEGTS=$(w25_bound \"$LGTSD\")",
+  "  B_CFG=$(w25_bound \"$CFG\")",
+  "  B_GC=$(w25_bound \"$GC\")",
+  "  S_LIBAV=",
+  "  S_ISOMP4=",
+  "  S_MPEGTS=",
+  "  S_CFG=",
+  "  S_GC=",
+  "  [ \"$B_LIBAV\" = 0 ] && S_LIBAV=$(w25_md5 \"$LGLIBAV\")",
+  "  [ \"$B_ISOMP4\" = 0 ] && S_ISOMP4=$(w25_md5 \"$LGISO\")",
+  "  [ \"$B_MPEGTS\" = 0 ] && S_MPEGTS=$(w25_md5 \"$LGTSD\")",
+  "  [ \"$B_CFG\" = 0 ] && S_CFG=$(w25_md5 \"$CFG\")",
+  "  [ \"$B_GC\" = 0 ] && S_GC=$(w25_md5 \"$GC\")",
+  "  M_LIBAV=$S_LIBAV",
+  "  M_ISOMP4=$S_ISOMP4",
+  "  M_MPEGTS=$S_MPEGTS",
+  "  M_CFG=$S_CFG",
+  "  M_GC=$S_GC",
+  "  [ -n \"$M_LIBAV\" ] || M_LIBAV=$(w25_fp_get libgstlibav)",
+  "  [ -n \"$M_ISOMP4\" ] || M_ISOMP4=$(w25_fp_get libgstisomp4)",
+  "  [ -n \"$M_MPEGTS\" ] || M_MPEGTS=$(w25_fp_get libgstmpegtsdemux)",
+  "  [ -n \"$M_CFG\" ] || M_CFG=$(w25_fp_get device_codec_capability_config)",
+  "  [ -n \"$M_GC\" ] || M_GC=$(w25_fp_get gstcool)",
+  "  GST_MM_NOW=$(w25_gst_mm)",
+  "  [ -n \"$GST_MM_NOW\" ] || GST_MM_NOW=unknown",
+  "  return 0",
+  "}",
+  "# Recorded-vs-measured comparison that treats \"we have no recorded value\" as",
+  "# absence of evidence rather than as drift. Needed for the two /etc keys, which a",
+  "# stock.fp written by an earlier build simply does not contain -- comparing an",
+  "# empty recording against a real hash would report drift on every upgrade.",
+  "w25_fp_differs() { [ -n \"$1\" ] && [ -n \"$2\" ] && [ \"$1\" != \"$2\" ]; }",
+  "# Guard layer 0: our bind-over libs are armel GStreamer-1.24 builds. Binding",
+  "# them over a different-ABI LG lib after an OTA would break ALL mp4/ts/mkv",
+  "# playback, and no opt-in may override that.",
+  "w25_gst_ok() { [ \"$GST_MM_NOW\" = \"$EXPECT_GST\" ]; }",
+  "# Gate layer 1 -- identity. Sets VERDICT REASON LABEL CANFORCE from the measured",
+  "# stock fingerprints:",
+  "#   verified   the md5s are in the verified-sets table below",
+  "#   forced     no table match, but the user opted in and nothing changed since",
+  "#   drift      stock.fp recorded DIFFERENT md5s -> firmware update, stand down",
+  "#              UNCONDITIONALLY (FORCE cannot override it, and neither can the",
+  "#              ABI-change drift w25_gate reports)",
+  "#   unverified no match and no opt-in -> bind nothing",
+  "# The md5 of the stock libs is the key, not the model name: identical hashes",
+  "# mean these are literally the libraries the payload was verified against.",
+  "w25_verdict() {",
+  "  VERDICT=unverified",
+  "  REASON=",
+  "  LABEL=",
+  "  CANFORCE=0",
+  "  if [ -z \"$M_LIBAV\" ] || [ -z \"$M_ISOMP4\" ] || [ -z \"$M_MPEGTS\" ]; then",
+  "    REASON=\"the stock GStreamer plugin fingerprints could not be read on this TV\"",
+  "    return 0",
+  "  fi",
+  "  # DRIFT IS CHECKED BEFORE THE TABLE, and that ordering is load-bearing. The",
+  "  # table can only key on gst_mm + the three plugin md5s, so it cannot express the",
+  "  # state of the two /etc files -- which means a table match would return",
+  "  # `verified` and mask an OTA that rewrote only gstcool.conf or the codec",
+  "  # capability JSON. \"Has this TV changed since we recorded it\" therefore outranks",
+  "  # \"does this TV look like a known-good one\".",
+  "  FP_AV=$(w25_fp_get libgstlibav)",
+  "  FP_ISO=$(w25_fp_get libgstisomp4)",
+  "  FP_TSD=$(w25_fp_get libgstmpegtsdemux)",
+  "  FP_CFG=$(w25_fp_get device_codec_capability_config)",
+  "  FP_GC=$(w25_fp_get gstcool)",
+  "  # The three plugin hashes compare strictly (they have always been recorded).",
+  "  # The two /etc hashes go through w25_fp_differs so an older stock.fp that never",
+  "  # recorded them does not read as drift.",
+  "  DRIFT_WHAT=",
+  "  DRIFT_PLUGINS=0",
+  "  DRIFT_CONFIG=0",
+  "  [ \"$FP_AV\" != \"$M_LIBAV\" ] && { DRIFT_WHAT=\"${DRIFT_WHAT:+$DRIFT_WHAT }libgstlibav.so\"; DRIFT_PLUGINS=1; }",
+  "  [ \"$FP_ISO\" != \"$M_ISOMP4\" ] && { DRIFT_WHAT=\"${DRIFT_WHAT:+$DRIFT_WHAT }libgstisomp4.so\"; DRIFT_PLUGINS=1; }",
+  "  [ \"$FP_TSD\" != \"$M_MPEGTS\" ] && { DRIFT_WHAT=\"${DRIFT_WHAT:+$DRIFT_WHAT }libgstmpegtsdemux.so\"; DRIFT_PLUGINS=1; }",
+  "  w25_fp_differs \"$FP_CFG\" \"$M_CFG\" && { DRIFT_WHAT=\"${DRIFT_WHAT:+$DRIFT_WHAT }device_codec_capability_config.json\"; DRIFT_CONFIG=1; }",
+  "  w25_fp_differs \"$FP_GC\" \"$M_GC\" && { DRIFT_WHAT=\"${DRIFT_WHAT:+$DRIFT_WHAT }gstcool.conf\"; DRIFT_CONFIG=1; }",
+  "  if [ -n \"$FP_AV$FP_ISO$FP_TSD\" ] && [ -n \"$DRIFT_WHAT\" ]; then",
+  "    # UNCONDITIONAL refusal -- FORCE is deliberately not consulted here, and",
+  "    # CANFORCE=0 so nothing advertises an escape hatch that does not exist.",
+  "    # A drift-specific override would be redundant: uninstall removes stock.fp,",
+  "    # so uninstall-then-enable puts this TV back into the \"unverified\" flow, which",
+  "    # already has an explicit, consented opt-in. Refusing outright keeps the state",
+  "    # machine smaller and the rule absolute: a firmware change that touches the",
+  "    # plugins we shadow stands us down, full stop.",
+  "    VERDICT=drift",
+  "    CANFORCE=0",
+  "    # The remedy depends on WHAT drifted. A plugin change is something a verified",
+  "    # set can describe, so the fingerprints are worth reporting. A change to the",
+  "    # two /etc files is NOT: no table row can ever clear it, because the table",
+  "    # keys on plugins only -- the snapshots simply have to be retaken from the",
+  "    # TV's new config, which is what Enable does.",
+  "    if [ \"$DRIFT_PLUGINS\" = 1 ] && [ \"$DRIFT_CONFIG\" = 1 ]; then",
+  "      DRIFT_FIX=\"uninstall then enable again to re-snapshot this TV's configuration, and report the new plugin fingerprints so this TV can be added to the verified table\"",
+  "    elif [ \"$DRIFT_PLUGINS\" = 1 ]; then",
+  "      DRIFT_FIX=\"report the new fingerprints so this TV can be added to the verified table, or uninstall then enable again to opt in explicitly\"",
+  "    else",
+  "      DRIFT_FIX=\"uninstall then enable again to re-snapshot this TV's configuration (no verified-set entry can cover a config change)\"",
+  "    fi",
+  "    REASON=\"this TV changed since it was last verified ($DRIFT_WHAT), so nothing was applied; $DRIFT_FIX\"",
+  "    return 0",
+  "  fi",
+  "  while IFS='|' read -r t_mm t_av t_iso t_tsd t_label; do",
+  "    case \"$t_mm\" in ''|\\#*) continue ;; esac",
+  "    if [ \"$t_mm\" = \"$GST_MM_NOW\" ] && [ \"$t_av\" = \"$M_LIBAV\" ] && [ \"$t_iso\" = \"$M_ISOMP4\" ] && [ \"$t_tsd\" = \"$M_MPEGTS\" ]; then",
+  "      VERDICT=verified",
+  "      LABEL=$t_label",
+  "      REASON=\"stock plugin fingerprints match a TV this payload was verified on\"",
+  "      break",
+  "    fi",
+  "  done <<'W25_SETS'",
+  "# gst_mm|libgstlibav|libgstisomp4|libgstmpegtsdemux|label",
+  "1.24|0fd6d65ac9e3a78b393a615eaff8ac0b|57fe57060774f248c05af5a411fc9a8f|9b84a95cf29bc025553c7dee829b7cc1|LG C5 OLED77C51LA (webOS 10.3.1, GStreamer 1.24.0)",
+  "W25_SETS",
+  "  [ \"$VERDICT\" = verified ] && return 0",
+  "  if [ \"$(w25_fp_get forced)\" = 1 ] && [ -n \"$FP_AV\" ]; then",
+  "    VERDICT=forced",
+  "    CANFORCE=1",
+  "    REASON=\"not a verified TV, but you opted in and nothing has changed since\"",
+  "    return 0",
+  "  fi",
+  "  if [ \"${FORCE:-0}\" = 1 ]; then",
+  "    VERDICT=forced",
+  "    CANFORCE=1",
+  "    REASON=\"not a verified TV; applying because you explicitly opted in\"",
+  "    return 0",
+  "  fi",
+  "  CANFORCE=1",
+  "  REASON=\"this TV's stock GStreamer plugins match no TV this payload was verified on\"",
+  "  return 0",
+  "}",
+  "# Version guard + identity gate as one call, for the read-only callers (the",
+  "# app's probe and W25_CHECK=1). The apply path below runs the two as separate",
+  "# ordered steps so each gets its own log line and toast.",
+  "w25_gate() {",
+  "  w25_gst_ok && { w25_verdict; return 0; }",
+  "  VERDICT=drift",
+  "  CANFORCE=0",
+  "  LABEL=",
+  "  REASON=\"GStreamer $GST_MM_NOW is not the $EXPECT_GST this payload was built for; a firmware update changed the plugin ABI\"",
+  "  return 0",
+  "}",
+  "w25_loader() {",
+  "  for f in /lib/ld-linux.so.3 /lib/ld-linux-armhf.so.3 /lib/ld-linux.so.2 /lib/ld-linux*.so.* /lib/ld-*.so.*; do",
+  "    [ -x \"$f\" ] && { printf '%s\\n' \"$f\"; return 0; }",
+  "  done",
+  "  return 1",
+  "}",
+  "# Gate layer 2a -- loader resolution. Every payload object we are about to bind",
+  "# or register must have ALL its dynamic dependencies resolvable on THIS TV.",
+  "# The assertion is that OUR deps resolve, NOT that our sonames match LG's:",
+  "# stock libav on the verified C5 is ffmpeg 5.x (libavcodec.so.59,",
+  "# libavformat.so.59, libavutil.so.57, libavfilter.so.8) while ours is ffmpeg 4.4",
+  "# (.58/.58/.56/.7), so a soname-equality check against stock would refuse a TV",
+  "# where the payload demonstrably works. Our objects carry",
+  "# RUNPATH=/var/lib/webosbrew/truehd/libs; $MYLIBS is kept for the dts25/libs case.",
+  "# LOADER_STAGED distinguishes \"these libraries cannot load on this TV\" (a real",
+  "# refusal, and forcing would not help) from \"the core payload is not staged\" (the",
+  "# state before the first Enable, where the answer is simply not known). The app",
+  "# uses that to decide whether offering \"Try anyway\" would be honest.",
+  "#",
+  "# Only the CORE objects are required. The optional demuxers are checked when they",
+  "# are staged and skipped when they are not, so a core-only install is a first",
+  "# class configuration rather than a failure.",
+  "w25_core_staged() { [ -f \"$MYDTS\" ] && [ -f \"$MYLIBAV\" ]; }",
+  "w25_loader_ok() {",
+  "  LOADER_MISS=",
+  "  LOADER_STAGED=1",
+  "  LD_SO=$(w25_loader)",
+  "  if [ -z \"${LD_SO:-}\" ]; then LOADER_MISS=\"no dynamic loader found on this TV\"; return 1; fi",
+  "  if ! w25_core_staged; then",
+  "    LOADER_STAGED=0",
+  "    LOADER_MISS=\"the core payload is not staged ($MYDTS / $MYLIBAV)\"",
+  "    return 1",
+  "  fi",
+  "  for so in \"$MYDTS\" \"$MYLIBAV\" \"$MYISO\" \"$MYTSD\"; do",
+  "    [ -f \"$so\" ] || continue",
+  "    n=$(LD_LIBRARY_PATH=\"$MYLIBS\" LD_TRACE_LOADED_OBJECTS=1 \"$LD_SO\" \"$so\" 2>&1 | grep -c \"not found\")",
+  "    if [ \"$n\" != 0 ]; then LOADER_MISS=\"$so has $n unresolved dependencies on this TV\"; return 1; fi",
+  "  done",
+  "  return 0",
+  "}",
+  "# Is the live media registry one WE wrote? It is committed with `cp -f`, not",
+  "# bind-mounted, so there is no mount to look for -- but a registry we generated",
+  "# names our plugin directories, and a stock one never does. This is the signal",
+  "# for \"a registry of ours is live\", which matters when our libraries have gone",
+  "# missing underneath it.",
+  "w25_reg_is_ours() { [ -f \"$REG\" ] && grep -q \"/var/lib/webosbrew\" \"$REG\" 2>/dev/null; }",
+  "# Gate layer 2b -- post-bind pipeline proof. The regenerated registry must carry",
+  "# ALL FIVE elements the DTS/TrueHD path needs: our two decoders AND the three",
+  "# demuxers we shadow (all three are present in the media registry today).",
+  "# A missing demuxer means our override produced a plugin the registry cannot",
+  "# use, i.e. a broken mp4/ts/mkv pipeline -- so the caller refuses the commit and",
+  "# drops the binds, which turns \"the override didn't match\" into a plain no-op.",
+  "w25_reg_has_all() {",
+  "  REG_MISS=",
+  "  for e in dtsdec avdec_truehd qtdemux tsdemux matroskademux; do",
+  "    GST_REGISTRY_1_0=\"$1\" GST_REGISTRY_UPDATE=no GST_REGISTRY_FORK=no /usr/bin/gst-inspect-1.0 \"$e\" >/dev/null 2>&1 || { REG_MISS=$e; return 1; }",
+  "  done",
+  "  return 0",
+  "}",
+  "# Regenerate a clean STOCK registry from the pristine on-disk plugins and write",
+  "# it over the media registry. The registry is committed with `cp -f` (a",
+  "# PERSISTENT overwrite), not a bind-mount, so no umount can revert it; left",
+  "# alone it keeps referencing removed /var/lib/webosbrew plugins and breaks",
+  "# media-pipeline app audio (root-caused on a real C5, 2026-07-23). Call only",
+  "# AFTER the binds are dropped. Same routine as uninstall.sh step 2b.",
+  "#",
+  "# RETURNS 0 ONLY IF LG'S REGISTRY IS ACTUALLY BACK IN PLACE. This is a cold-cache",
+  "# full plugin scan under `timeout`, and at boot it runs at the busiest moment on",
+  "# the box, so it genuinely can fail -- callers that go on to DELETE our plugins",
+  "# must branch on this, never assume it worked. The scan's own exit status is not",
+  "# sufficient evidence either: a truncated registry would be worse than none, so",
+  "# the file has to be non-empty before it is committed.",
+  "# Are any of the plugin binds we manage still mounted? w25_stock_registry has to",
+  "# refuse while one is. The scan would then load OUR libgstlibav.so from the stock",
+  "# path (its RUNPATH resolves fine), produce a syntactically valid registry that",
+  "# happens to name no /var/lib/webosbrew path at all -- which CLEARS",
+  "# w25_reg_is_ours, the very signal callers use to decide a repair is needed -- and",
+  "# report success. A caller would take that as proof the TV is back on stock and",
+  "# delete the payload out from under the surviving bind. Refusing here makes this",
+  "# function's postcondition (\"$REG is a stock registry\") true by construction, and",
+  "# every caller already handles a return of 1 by deferring instead of deleting.",
+  "w25_plugin_binds_present() {",
+  "  grep -q \" $LGLIBAV \" /proc/mounts 2>/dev/null && return 0",
+  "  grep -q \" $LGISO \" /proc/mounts 2>/dev/null && return 0",
+  "  grep -q \" $LGTSD \" /proc/mounts 2>/dev/null && return 0",
+  "  return 1",
+  "}",
+  "w25_stock_registry() {",
+  "  if w25_plugin_binds_present; then",
+  "    w25_log \"WARN refusing to rebuild the stock registry: a plugin bind of ours is still mounted, so the scan would not be reading stock plugins\"",
+  "    return 1",
+  "  fi",
+  "  CLEAN_REG=/tmp/gst_clean_reg.bin",
+  "  rm -f \"$CLEAN_REG\" 2>/dev/null",
+  "  if GST_REGISTRY_1_0=\"$CLEAN_REG\" GST_PLUGIN_PATH_1_0=/usr/lib/gstreamer-1.0:/mnt/lg/res/lglib/gstreamer-1.0 GST_REGISTRY_FORK=no GST_REGISTRY_UPDATE=yes timeout 60 /usr/bin/gst-inspect-1.0 >/dev/null 2>&1 && [ -s \"$CLEAN_REG\" ]; then",
+  "    if cp -f \"$CLEAN_REG\" \"$REG\" 2>/dev/null; then",
+  "      w25_log \"regenerated clean stock registry over $REG\"",
+  "      rm -f \"$CLEAN_REG\" 2>/dev/null",
+  "      return 0",
+  "    fi",
+  "    w25_log \"WARN could not write the clean stock registry to $REG\"",
+  "  else",
+  "    w25_log \"WARN clean stock registry regen failed (scan timed out, errored, or produced nothing); leaving $REG untouched\"",
+  "  fi",
+  "  rm -f \"$CLEAN_REG\" 2>/dev/null",
+  "  return 1",
+  "}",
+  "# Record the PRISTINE stock fingerprints + TV identity. $1=verified, $2=forced.",
+  "# Written only when the gate allows applying, and only from hashes taken while",
+  "# no bind of ours shadowed the plugins -- that is what later lets a boot tell",
+  "# \"the firmware changed\" apart from \"we are simply enabled\".",
+  "w25_fp_write() {",
+  "  mkdir -p /var/lib/webosbrew/dts25 2>/dev/null",
+  "  { echo \"gst_mm=$GST_MM_NOW\"",
+  "    echo \"product_id=$(w25_product_id)\"",
+  "    echo \"webos_release=$(w25_webos_release)\"",
+  "    echo \"libgstlibav=$M_LIBAV\"",
+  "    echo \"libgstisomp4=$M_ISOMP4\"",
+  "    echo \"libgstmpegtsdemux=$M_MPEGTS\"",
+  "    echo \"device_codec_capability_config=$M_CFG\"",
+  "    echo \"gstcool=$M_GC\"",
+  "    echo \"verified=$1\"",
+  "    echo \"forced=$2\"",
+  "    echo \"written=$(date -u +%Y-%m-%dT%H:%M:%SZ)\"",
+  "  } > \"$FP.tmp\" 2>/dev/null && mv -f \"$FP.tmp\" \"$FP\" 2>/dev/null \\",
+  "    && w25_log \"wrote $FP (verified=$1 forced=$2)\" || w25_log \"WARN could not write $FP\"",
+  "  return 0",
+  "}",
+  "# <<< W25-COMPAT-END"
+];
+
+var W25_INIT_MAIN = [
+  "# W25_CHECK=1: read-only preflight used by install.sh and the app's Enable to",
+  "# refuse with a readable reason BEFORE they link the boot hook. Prints only.",
+  "if [ \"${W25_CHECK:-0}\" = 1 ]; then",
+  "  w25_measure",
+  "  w25_gate",
+  "  echo \"GST_MM=$GST_MM_NOW\"",
+  "  echo \"VERDICT=$VERDICT\"",
+  "  echo \"REASON=$REASON\"",
+  "  echo \"LABEL=$LABEL\"",
+  "  echo \"CANFORCE=$CANFORCE\"",
+  "  if w25_loader_ok; then echo \"LOADER=ok\"; else echo \"LOADER=$LOADER_MISS\"; fi",
+  "  echo \"LOADER_STAGED=${LOADER_STAGED:-1}\"",
+  "  # The six values a maintainer needs to add this TV to the verified-sets table.",
+  "  # Empty md5s mean the plugin is currently shadowed by one of our binds, so the",
+  "  # STOCK hash is unmeasurable right now -- run this with the overrides dropped.",
+  "  echo \"PRODUCT_ID=$(w25_product_id)\"",
+  "  echo \"WEBOS_RELEASE=$(w25_webos_release)\"",
+  "  echo \"MD5_LIBGSTLIBAV=$S_LIBAV\"",
+  "  echo \"MD5_LIBGSTISOMP4=$S_ISOMP4\"",
+  "  echo \"MD5_LIBGSTMPEGTSDEMUX=$S_MPEGTS\"",
+  "  echo \"MD5_DEVICE_CODEC_CAPABILITY_CONFIG=$S_CFG\"",
+  "  echo \"MD5_GSTCOOL=$S_GC\"",
+  "  # Which gate this script enforces, and its own fingerprint. \"$0\" is the",
+  "  # installed path, so a caller can tell whether the script it just wrote is the",
+  "  # one that ran.",
+  "  SELF_MD5=$(w25_md5 \"$0\")",
+  "  echo \"GATE_VERSION=$W25_GATE_VERSION\"",
+  "  echo \"SCRIPT_MD5=$SELF_MD5\"",
+  "  exit 0",
+  "fi",
+  "# W25_STAND_DOWN=1: revert to stock and exit. Deliberately a mode of its own",
+  "# rather than \"just run the script and let it refuse\": a mode cannot accidentally",
+  "# APPLY if the gate's inputs changed between the caller's preflight and this call.",
+  "if [ \"${W25_STAND_DOWN:-0}\" = 1 ]; then",
+  "  if w25_reg_is_ours; then WAS_OURS=1; else WAS_OURS=0; fi",
+  "  w25_stand_down",
+  "  w25_log \"stand-down requested by the installer (a registry of ours was live: $WAS_OURS)\"",
+  "  echo \"STOOD_DOWN=$WAS_OURS\"",
+  "  exit 0",
+  "fi",
+  "# --- G) self-heal / self-unlink, evaluated FIRST -----------------------------",
+  "# TWO DIFFERENT FAULTS, TWO DIFFERENT ANSWERS. Deleting is only ever right when",
+  "# nobody owns this install any more; a merely incomplete install is recoverable,",
+  "# and destroying it would be worse than the hazard the guard exists for.",
+  "#",
+  "#   UNOWNED  the app dir is gone from BOTH install trees AND there is no CLI",
+  "#            marker -> nobody can manage these system-wide overrides any more.",
+  "#            Full heal: drop the binds, put a clean stock registry back, remove",
+  "#            our state, unlink ourselves.",
+  "#   INCOMPLETE (handled in the next block, not here) the install is still owned",
+  "#            but a CORE object is missing -> bind nothing, delete nothing, keep",
+  "#            the hook, and repair the registry if a stale one of ours is live.",
+  "#",
+  "# The hook stays a symlink to THIS file under /var/lib/webosbrew/dts25 rather",
+  "# than into the app dir: a symlink into a removed app dir is dangling and",
+  "# executes nothing, so it could never heal anything.",
+  "APPDIR_DEV=/media/developer/apps/usr/palm/applications/io.github.josippapez.dtsenabler",
+  "APPDIR_SYS=/usr/palm/applications/io.github.josippapez.dtsenabler",
+  "CLI_MARKER=/var/lib/webosbrew/dts25/.cli-install",
+  "w25_unowned() {",
+  "  HEAL_WHY=",
+  "  if [ ! -d \"$APPDIR_DEV\" ] && [ ! -d \"$APPDIR_SYS\" ] && [ ! -f \"$CLI_MARKER\" ]; then",
+  "    HEAL_WHY=\"the DTS Enabler app is gone and this was not a CLI install\"",
+  "    return 0",
+  "  fi",
+  "  return 1",
+  "}",
+  "# ORDER IS THE WHOLE POINT HERE: regenerate LG's registry FIRST and delete our",
+  "# plugins only once that has actually succeeded.",
+  "#",
+  "# Deleting first would mean that a regen which times out -- a cold-cache full",
+  "# plugin scan, at boot, on the busiest moment the box has -- leaves the live",
+  "# registry naming plugins that no longer exist AND removes the hook that could",
+  "# retry. That is the stale-registry state that broke other apps' audio on a real",
+  "# C5 (2026-07-23), and LG's stack does not recover from it by itself.",
+  "#",
+  "# So on failure: keep the binds dropped, keep the state dirs, keep the hook, and",
+  "# let the next boot try again. A heal that retries forever is strictly better",
+  "# than one that breaks audio once. Unconditional regen (not w25_stand_down's",
+  "# conditional one) because this path removes our plugins outright, so any",
+  "# registry naming them must be replaced whether or not it looks like ours.",
+  "w25_self_heal() {",
+  "  w25_log \"SELF-HEAL: $HEAL_WHY -- reverting every override\"",
+  "  w25_drop_binds",
+  "  if ! w25_stock_registry; then",
+  "    w25_log \"SELF-HEAL DEFERRED: LG's registry could not be rebuilt, so our plugins and the boot hook are KEPT (deleting them now would leave the live registry pointing at missing plugins). Retrying at the next boot.\"",
+  "    toast \"DTS Enabler cleanup deferred: the TV was too busy to rebuild its plugin list. It will finish at the next restart.\"",
+  "    return 1",
+  "  fi",
+  "  for d in /var/lib/webosbrew/dts25 /var/lib/webosbrew/truehd /var/lib/webosbrew/demux25; do",
+  "    [ -d \"$d\" ] && rm -rf \"$d\"",
+  "  done",
+  "  rm -f \"$HOOK\"",
+  "  toast \"DTS Enabler is gone: DTS/TrueHD overrides reverted and the boot hook removed.\"",
+  "  return 0",
+  "}",
+  "# One compound command on purpose: the shell has finished parsing the whole",
+  "# `if` (and both function bodies) before w25_self_heal deletes the directory",
+  "# this very script is running from, so there is nothing left to read afterwards.",
+  "if w25_unowned; then",
+  "  if w25_self_heal; then echo \"HEALED=$HEAL_WHY\"; else echo \"HEAL_DEFERRED=$HEAL_WHY\"; fi",
+  "  exit 0",
+  "fi",
+  "# --- G2) owned, but the CORE payload is incomplete ---------------------------",
+  "# Recoverable, so nothing is deleted and the hook stays: re-opening the app or",
+  "# re-running install.sh restages the payload and the next boot applies normally.",
+  "# What DOES need repairing is the media registry -- it is committed with `cp -f`,",
+  "# so a registry we wrote earlier survives independently of our files, and if it",
+  "# is still live while our libraries are gone it names plugins that no longer",
+  "# exist (that is the failure that broke media-pipeline app audio on a real C5,",
+  "# 2026-07-23). Only the demuxers are optional; missing those is a normal",
+  "# MKV-only install, not a fault.",
+  "if ! w25_core_staged; then",
+  "  w25_log \"REFUSED: core payload incomplete (dtsdec present=$([ -f \"$MYDTS\" ] && echo 1 || echo 0), libav present=$([ -f \"$MYLIBAV\" ] && echo 1 || echo 0)); binding nothing, install left intact\"",
+  "  w25_stand_down",
+  "  toast \"DTS Enabler: the installed files are incomplete, so nothing was applied. Re-open DTS Enabler (or re-run install.sh) to repair.\"",
+  "  echo \"REFUSED=payload\"",
+  "  echo \"REASON=the staged DTS/TrueHD core payload is incomplete; nothing was bound and nothing was removed\"",
+  "  exit 0",
+  "fi",
+  "# --- measure the pristine stock fingerprints (read-only) --------------------",
+  "w25_measure",
+  "# --- GATE 0) firmware-update / ABI guard ------------------------------------",
+  "if ! w25_gst_ok; then",
+  "  w25_log \"ABORT: GStreamer '$GST_MM_NOW' != expected $EXPECT_GST (firmware update?); standing down\"",
+  "  # The likeliest refusal in the wild, and the one where leaving a registry of",
+  "  # ours live would be worst: our plugins may not even exist any more after a",
+  "  # major firmware change. w25_stand_down handles that -- it rebuilds from LG's",
+  "  # plugin directories only.",
+  "  w25_stand_down",
+  "  toast \"DTS/TrueHD paused: TV firmware changed (GStreamer $GST_MM_NOW). Re-open DTS Enabler to update.\"",
+  "  echo \"REFUSED=drift\"",
+  "  echo \"REASON=GStreamer $GST_MM_NOW is not the $EXPECT_GST this payload was built for; a firmware update changed the plugin ABI\"",
+  "  exit 0",
+  "fi",
+  "# --- GATE 1) identity -------------------------------------------------------",
+  "w25_verdict",
+  "case \"$VERDICT\" in",
+  "  verified|forced) w25_log \"gate: $VERDICT -- $REASON${LABEL:+ [$LABEL]}\" ;;",
+  "  drift)",
+  "    w25_log \"REFUSED: drift -- $REASON\"",
+  "    w25_stand_down",
+  "    toast \"DTS/TrueHD stopped: this TV changed since it was last verified, so nothing was applied. Uninstall then Enable in DTS Enabler to opt in again.\"",
+  "    echo \"REFUSED=drift\"",
+  "    echo \"REASON=$REASON\"",
+  "    exit 0 ;;",
+  "  *)",
+  "    w25_log \"REFUSED: $VERDICT -- $REASON\"",
+  "    w25_stand_down",
+  "    toast \"DTS Enabler: this TV is not on the verified list, so nothing was changed. Open DTS Enabler to try anyway.\"",
+  "    echo \"REFUSED=$VERDICT\"",
+  "    echo \"REASON=$REASON\"",
+  "    exit 0 ;;",
+  "esac",
+  "# --- GATE 2a) loader resolution ---------------------------------------------",
+  "if ! w25_loader_ok; then",
+  "  w25_log \"REFUSED: loader -- $LOADER_MISS\"",
+  "  w25_stand_down",
+  "  toast \"DTS Enabler: the payload cannot load on this TV ($LOADER_MISS); nothing was changed.\"",
+  "  echo \"REFUSED=loader\"",
+  "  echo \"REASON=$LOADER_MISS\"",
+  "  exit 0",
+  "fi",
+  "# --- record the pristine fingerprints before anything of ours is bound ------",
+  "case \"$VERDICT\" in",
+  "  verified) FP_FORCED=$(w25_fp_get forced); [ -n \"$FP_FORCED\" ] || FP_FORCED=0; w25_fp_write 1 \"$FP_FORCED\" ;;",
+  "  *)        w25_fp_write 0 1 ;;",
+  "esac",
+  "# --- APPLY 1) codec-capability override (adds TRUEHD/MLP so umediaserver allocates a decoder resource)",
+  "[ -f \"$MYCFG\" ] && ! grep -q \" $CFG \" /proc/mounts 2>/dev/null && mount -n --bind \"$MYCFG\" \"$CFG\" 2>>$LOG",
+  "# --- APPLY 2) replace LG.s truehd-less libav with ours (has avdec_truehd/avdec_mlp)",
+  "[ -f \"$MYLIBAV\" ] && ! grep -q \" $LGLIBAV \" /proc/mounts 2>/dev/null && mount -n --bind -o ro \"$MYLIBAV\" \"$LGLIBAV\" 2>>$LOG",
+  "# --- APPLY 2b) gstcool.conf: give avdec_truehd a high SW rank so LG autoplugs it (not the HW path)",
+  "[ -f \"$MYGC\" ] && ! grep -q \" $GC \" /proc/mounts 2>/dev/null && mount -n --bind \"$MYGC\" \"$GC\" 2>>$LOG",
+  "# --- APPLY 2c) container demuxers with DTS re-enabled (mp4/ts/m2ts DTS -> audio/x-dts).",
+  "#         Patched isomp4/mpegtsdemux default dts_support=TRUE. Bound BEFORE the",
+  "#         regen below so the registry picks them up at their normal path.",
+  "[ -f \"$MYISO\" ] && ! grep -q \" $LGISO \" /proc/mounts 2>/dev/null && mount -n --bind -o ro \"$MYISO\" \"$LGISO\" 2>>$LOG",
+  "[ -f \"$MYTSD\" ] && ! grep -q \" $LGTSD \" /proc/mounts 2>/dev/null && mount -n --bind -o ro \"$MYTSD\" \"$LGTSD\" 2>>$LOG",
+  "# --- APPLY 3) regenerate the media registry (fresh) with dtsdec + our libav, then write it to the media path.",
+  "#    Bounded by `timeout` and scanned in-process (GST_REGISTRY_FORK=no) so a hang can't trip HBC",
+  "#    failsafe and no gst-plugin-scanner child lingers past the timeout.",
+  "REG_TMP=/tmp/gst_dts_reg.bin",
+  "rm -f \"$REG_TMP\"",
+  "LD_LIBRARY_PATH=/var/lib/webosbrew/truehd/libs \\",
+  "GST_REGISTRY_1_0=\"$REG_TMP\" \\",
+  "GST_PLUGIN_PATH_1_0=/usr/lib/gstreamer-1.0:/mnt/lg/res/lglib/gstreamer-1.0:/var/lib/webosbrew/dts25 \\",
+  "GST_REGISTRY_FORK=no GST_REGISTRY_UPDATE=yes timeout 30 /usr/bin/gst-inspect-1.0 >/dev/null 2>>$LOG",
+  "# --- GATE 2b) post-bind pipeline proof, then commit: overwrite the media",
+  "#         registry only if the regen survived the binds with all five elements",
+  "#         intact. Otherwise drop our own binds -- that is what turns \"the",
+  "#         override did not match\" from a broken media pipeline into a no-op.",
+  "if w25_reg_has_all \"$REG_TMP\"; then",
+  "  cp -f \"$REG_TMP\" \"$REG\" 2>>$LOG && echo \"registry updated (dtsdec+avdec_truehd+qtdemux+tsdemux+matroskademux)\" >>$LOG",
+  "  echo \"APPLIED=$VERDICT\"",
+  "else",
+  "  w25_log \"REFUSED: regen is missing $REG_MISS; not committing it, and standing down\"",
+  "  w25_stand_down",
+  "  toast \"DTS Enabler: the plugin registry did not survive the override ($REG_MISS missing), so nothing was changed.\"",
+  "  echo \"REFUSED=pipeline\"",
+  "  echo \"REASON=the regenerated plugin registry is missing $REG_MISS\"",
+  "fi",
+  "exit 0"
+];
+
 
 /* =======================================================================
  * Make-up gain config files (per the EPIC config-file contract): a single
@@ -522,7 +1261,68 @@ var DETECT_PROBE = [
   '    PROFILE="unknown-gst${GST_MM}-${arch_tag}" ;;',
   'esac',
   'echo "PROFILE=$PROFILE"'
-].join("\n");
+].concat(W25_COMPAT_SH, [
+  "",
+  "# --- PROBE 6: webOS 25 compatibility gate (read-only) ---",
+  "# The W25-COMPAT block above is the boot script's gate verbatim. Only its",
+  "# measurement + verdict functions are called here, so this stays read-only:",
+  "# nothing is mounted, written or toasted.",
+  "# While an override of OURS is bound, the plugin's live hash is ours and the",
+  "# STOCK hash is unmeasurable -- hence <NAME>_BOUND alongside a <NAME>_MD5 that",
+  "# is empty in that case, and a verdict derived from stock.fp rather than from a",
+  "# live measurement.",
+  "w25_measure",
+  "echo \"LIBAV_BOUND=$B_LIBAV\"",
+  "echo \"LIBAV_MD5=$S_LIBAV\"",
+  "echo \"ISOMP4_BOUND=$B_ISOMP4\"",
+  "echo \"ISOMP4_MD5=$S_ISOMP4\"",
+  "echo \"MPEGTS_BOUND=$B_MPEGTS\"",
+  "echo \"MPEGTS_MD5=$S_MPEGTS\"",
+  "if [ -f \"$FP\" ]; then echo \"FP_PRESENT=1\"; else echo \"FP_PRESENT=0\"; fi",
+  "echo \"FP_GST_MM=$(w25_fp_get gst_mm)\"",
+  "echo \"FP_PRODUCT_ID=$(w25_fp_get product_id)\"",
+  "echo \"FP_WEBOS_RELEASE=$(w25_fp_get webos_release)\"",
+  "echo \"FP_LIBAV=$(w25_fp_get libgstlibav)\"",
+  "echo \"FP_ISOMP4=$(w25_fp_get libgstisomp4)\"",
+  "echo \"FP_MPEGTS=$(w25_fp_get libgstmpegtsdemux)\"",
+  "echo \"FP_VERIFIED=$(w25_fp_get verified)\"",
+  "echo \"FP_FORCED=$(w25_fp_get forced)\"",
+  "echo \"FP_WRITTEN=$(w25_fp_get written)\"",
+  "w25_gate",
+  "echo \"COMPAT_VERDICT=$VERDICT\"",
+  "echo \"COMPAT_REASON=$REASON\"",
+  "echo \"COMPAT_LABEL=$LABEL\"",
+  "echo \"COMPAT_CANFORCE=$CANFORCE\"",
+  "if w25_loader_ok; then echo \"COMPAT_LOADER=ok\"; else echo \"COMPAT_LOADER=$LOADER_MISS\"; fi",
+  "echo \"COMPAT_LOADER_STAGED=${LOADER_STAGED:-1}\"",
+  "",
+  "# --- PROBE 7: does the INSTALLED boot script enforce THIS app build's gate? ---",
+  "# The on-TV script is only ever rewritten by Enable / install.sh, so a TV enabled",
+  "# under an older app keeps running that older gate while this probe judges with",
+  "# the freshly-embedded one. Report the mismatch; never silently rewrite a",
+  "# privileged file just because someone opened the app.",
+  "# $W25_GATE_VERSION here comes from the compat block spliced in above, i.e. it IS",
+  "# this app build's value -- no second constant to keep in sync.",
+  "HOOK_VER=",
+  "HOOK_MD5=",
+  "HOOK_PRESENT=0",
+  "if [ -f \"$INIT_SELF\" ]; then",
+  "  HOOK_PRESENT=1",
+  "  HOOK_VER=$(sed -n \"s/^W25_GATE_VERSION=//p\" \"$INIT_SELF\" | head -n1)",
+  "  HOOK_MD5=$(w25_md5 \"$INIT_SELF\")",
+  "fi",
+  "echo \"APP_GATE_VERSION=$W25_GATE_VERSION\"",
+  "echo \"HOOK_SCRIPT_PRESENT=$HOOK_PRESENT\"",
+  "echo \"HOOK_GATE_VERSION=$HOOK_VER\"",
+  "echo \"HOOK_SCRIPT_MD5=$HOOK_MD5\"",
+  "if [ -e \"$HOOK\" ]; then echo \"HOOK_LINKED=1\"; else echo \"HOOK_LINKED=0\"; fi",
+  "echo \"CFG_BOUND=$B_CFG\"",
+  "echo \"CFG_MD5=$S_CFG\"",
+  "echo \"GC_BOUND=$B_GC\"",
+  "echo \"GC_MD5=$S_GC\"",
+  "echo \"FP_CFG=$(w25_fp_get device_codec_capability_config)\"",
+  "echo \"FP_GC=$(w25_fp_get gstcool)\""
+]).join("\n");
 
 /**
  * Run the read-only detection probe and parse its KEY=VALUE output.
@@ -544,81 +1344,239 @@ function isKnownProfile(profile) {
   return profile === PROFILE_W25 || profile === PROFILE_CX;
 }
 
+/**
+ * Copy a compatVerdict() result onto a response, or leave the response untouched
+ * when the gate does not apply (null). Keeping the keys ABSENT rather than null
+ * is the point -- see the note in compatVerdict().
+ */
+function addCompatFields(res, c) {
+  if (!c) return res;
+  res.verdict = c.verdict;
+  res.verdictReason = c.verdictReason;
+  res.verifiedLabel = c.verifiedLabel;
+  res.canForce = c.canForce;
+  res.loaderResolves = c.loaderResolves;
+  res.loaderDetail = c.loaderDetail;
+  res.measured = c.measured;
+  return res;
+}
+
+/**
+ * Is the boot script installed on this TV the one THIS app build would write?
+ *
+ * It is only rewritten by Enable / install.sh, so after an app update a TV that
+ * is already enabled keeps enforcing the OLD gate -- including its old
+ * verified-sets table -- while the app's embedded probe judges with the new one.
+ * In that window the two genuinely disagree, so it is reported rather than
+ * papered over. Refreshing it is a privileged write and stays behind the user's
+ * explicit Enable; opening the app is not consent.
+ *
+ * The stamp is the primary signal. The md5 is a cross-check that catches the case
+ * the stamp cannot: a script whose behaviour changed without the stamp being
+ * bumped. Both degrade to "not stale" rather than erroring when unavailable (no
+ * crypto module, or no md5sum on the TV).
+ *
+ * A script that is not installed at all is NOT stale -- there is no older gate
+ * running to disagree with. Neither is one whose hook symlink is gone (Disable
+ * leaves the file behind, and Enable rewrites it anyway). A script present with NO
+ * stamp is stale: that is exactly what an older build wrote. A script NEWER than
+ * this app is reported as `hookNewer`, never as stale, because the remedy there is
+ * to update the app -- advising Enable would downgrade the gate.
+ *
+ * Returns null for profiles without this mechanism (CX), so the caller omits the
+ * fields entirely, the same way it does for the compatibility verdict.
+ */
+function hookStaleness(profile, kv, expectedMd5) {
+  if (profile !== PROFILE_W25) return null;
+  var appVer = kv.APP_GATE_VERSION || "";
+  var hookVer = kv.HOOK_GATE_VERSION || "";
+  var out = {
+    appGateVersion: appVer || "unknown",
+    hookGateVersion: hookVer || null,
+    hookScriptInstalled: kv.HOOK_SCRIPT_PRESENT === "1",
+    hookLinked: kv.HOOK_LINKED === "1",
+    hookStale: false,
+    hookNewer: false,
+    hookStaleReason: ""
+  };
+  if (!out.hookScriptInstalled) {
+    out.hookStaleReason = "No boot script is installed on this TV, so nothing is enforcing an older gate.";
+    return out;
+  }
+  // Disabled on purpose: the script FILE survives Disable (only the hook symlink
+  // goes), so nothing of it runs at boot and its version cannot matter yet. Enable
+  // rewrites it anyway, so nagging here would offer a remedy whose real effect is
+  // to re-enable a TV the user deliberately turned off.
+  if (!out.hookLinked) {
+    out.hookStaleReason = "DTS is disabled on this TV, so the installed boot script does not run. Enable will refresh it.";
+    return out;
+  }
+  if (!hookVer) {
+    out.hookStale = true;
+    out.hookStaleReason = "The installed boot script carries no gate stamp, so an older build of this app wrote it. Enable to refresh it.";
+    return out;
+  }
+  // NUMERIC, not string, and direction matters. The CLI tarball and the app ship
+  // on independent tracks (HBC lag is normal), so a TV installed from a newer
+  // tarball legitimately runs a gate AHEAD of this app. Calling that "stale" and
+  // advising Enable would rewrite the newer script with this build's older gate --
+  // a silent downgrade of the very guard being reported on.
+  var hookN = /^[0-9]+$/.test(hookVer) ? parseInt(hookVer, 10) : null;
+  var appN = /^[0-9]+$/.test(appVer) ? parseInt(appVer, 10) : null;
+  if (hookN !== null && appN !== null && hookN > appN) {
+    out.hookNewer = true;
+    out.hookStaleReason = "The installed boot script enforces gate version " + hookVer +
+      ", which is NEWER than this app build's gate version " + appVer +
+      ". Update the app; do not re-Enable, which would replace it with the older gate.";
+    return out;
+  }
+  if (hookN !== null && appN !== null ? hookN < appN : hookVer !== appVer) {
+    out.hookStale = true;
+    out.hookStaleReason = "The installed boot script enforces gate version " + hookVer +
+      ", but this app build ships gate version " + appVer + ". Enable to refresh it.";
+    return out;
+  }
+  if (expectedMd5 && kv.HOOK_SCRIPT_MD5 && kv.HOOK_SCRIPT_MD5 !== expectedMd5) {
+    out.hookStale = true;
+    out.hookStaleReason = "The installed boot script reports gate version " + appVer +
+      " but its contents differ from what this app build would write. Enable to refresh it.";
+    return out;
+  }
+  out.hookStaleReason = "The installed boot script matches this app build.";
+  return out;
+}
+
+/** Copy a hookStaleness() result onto a response; no-op when it does not apply. */
+function addHookFields(res, h) {
+  if (!h) return res;
+  res.hookStale = h.hookStale;
+  res.hookNewer = h.hookNewer;
+  res.hookStaleReason = h.hookStaleReason;
+  res.hookGateVersion = h.hookGateVersion;
+  res.appGateVersion = h.appGateVersion;
+  res.hookScriptInstalled = h.hookScriptInstalled;
+  res.hookLinked = h.hookLinked;
+  return res;
+}
+
+/**
+ * Map the probe's COMPAT_ and FP_ output onto the detect/status contract.
+ *
+ * `supported` (elsewhere) still means only "a mechanism exists for this
+ * profile", so app.js keeps working; `verdict` is the separate question of
+ * whether we are willing to apply that mechanism to THIS TV:
+ *
+ *   verified   stock plugin fingerprints are in the verified-sets table
+ *   forced     no table match, but the user opted in and nothing changed since
+ *   drift      the stock plugins changed since the install (firmware update);
+ *              refused unconditionally, canForce is 0
+ *   unverified no table match and no opt-in -- the one forceable verdict
+ *   refused    no mechanism matches this TV's profile at all
+ *
+ * Returns NULL for the CX profile, meaning "this gate does not apply here", and
+ * the caller then omits the verdict fields entirely. That is deliberate: the
+ * fingerprint table, the md5s and the loader check are all webOS-25 artefacts, so
+ * any verdict word borrowed for CX would be a false statement about a profile
+ * that has a working mechanism -- and "unverified" in particular is what the UI
+ * renders as "unsupported TV" beside a report block full of webOS-25 md5s. With
+ * the fields absent, app.js's own fallback resolves CX to "verified" and the CX
+ * display is unchanged. The genuine "never proven on CX hardware" caveat is
+ * carried where it always was, by `status.verified` -> "NO - unverified on
+ * hardware".
+ *
+ * `canForce` deliberately folds in the loader gate: offering "Try anyway" when
+ * the payload's own dependencies cannot resolve on this TV would just produce a
+ * second refusal. The gate shell keeps the two layers separate; only the
+ * user-facing affordance combines them.
+ *
+ * The exception is the state before the first Enable, where the core payload is
+ * not staged and the loader question is not answerable (COMPAT_LOADER_STAGED=0).
+ * Treating that as "cannot load" would hide the opt-in behind an Enable the
+ * verdict has already refused -- so it does not veto canForce. Enable stages the
+ * payload and only then runs the real loader gate, before binding anything, so a
+ * TV that genuinely cannot load the payload is still refused, with the reason.
+ */
+function compatVerdict(profile, kv) {
+  var measured = {
+    libgstlibav: kv.LIBAV_MD5 || null,
+    libgstisomp4: kv.ISOMP4_MD5 || null,
+    libgstmpegtsdemux: kv.MPEGTS_MD5 || null
+  };
+  if (profile === PROFILE_W25) {
+    var loaderOk = kv.COMPAT_LOADER === "ok";
+    var notStagedYet = !loaderOk && kv.COMPAT_LOADER_STAGED === "0";
+    return {
+      verdict: kv.COMPAT_VERDICT || "unverified",
+      verdictReason: kv.COMPAT_REASON || "the compatibility probe returned no verdict",
+      verifiedLabel: kv.COMPAT_LABEL || "",
+      canForce: kv.COMPAT_CANFORCE === "1" && (loaderOk || notStagedYet),
+      loaderResolves: loaderOk ? true : (notStagedYet ? null : false),
+      loaderDetail: loaderOk ? "" : (kv.COMPAT_LOADER || "unknown"),
+      measured: measured
+    };
+  }
+  if (profile === PROFILE_CX) return null;
+  return {
+    verdict: "refused",
+    verdictReason: "no verified DTS-restore mechanism matches this TV's profile '" + profile + "'.",
+    verifiedLabel: "",
+    canForce: false,
+    loaderResolves: null,
+    loaderDetail: "",
+    measured: measured
+  };
+}
+
 /* =======================================================================
  * webOS 25 mechanism shell builders  (mirror webos25/install.sh)
  * ===================================================================== */
 
 /**
- * The canonical boot/apply script (verbatim from webos25/init_dts25.sh, proven
- * on a real LG C5). It (1) binds our TRUEHD/MLP-enabled codec capability config,
- * (2) binds our libgstlibav (avdec_truehd/avdec_mlp) over LG's, (3) binds our
- * gstcool.conf (avdec_truehd/mlp=310 SW-rank lever), (4) regenerates the media
- * GStreamer registry (with dtsdec + avdec_truehd) and writes it to the media
- * registry path -- only if the regen actually contains the decoders. Idempotent.
+ * The canonical boot/apply script, rendered from the three generated arrays
+ * above. Trailing newline included on purpose: webos25/restore/init_dts25.sh
+ * ends with one, and "byte-identical" has to mean byte-identical.
+ *
+ * What it does at boot: full-heal if nobody owns the install any more, refuse
+ * (without deleting anything) if the core payload is incomplete, refuse unless
+ * this TV's stock plugin fingerprints are in the verified-sets table or the user
+ * opted in, refuse unless every staged payload object's dynamic dependencies
+ * resolve here, bind the overrides, and commit the regenerated registry only if
+ * dtsdec, avdec_truehd, qtdemux, tsdemux and matroskademux all survived the
+ * binds. Every refusal binds nothing, repairs the registry if one of ours is
+ * live, and exits 0.
  */
 function w25InitScriptBody() {
-  return [
-    "#!/bin/sh",
-    "# webOS25 DTS + TrueHD restore. Runs at boot via /var/lib/webosbrew/init.d/restore_dts25.",
-    "# Generated by DTS Enabler (io.github.josippapez.dtsenabler) -- verbatim copy of the",
-    "# proven webos25/init_dts25.sh. Do not edit by hand.",
-    "set -u",
-    "REG=/mnt/flash/data/gst_1_0_registry.arm.bin",
-    "CFG=/etc/umediaserver/device_codec_capability_config.json",
-    "LGLIBAV=/usr/lib/gstreamer-1.0/libgstlibav.so",
-    "MYLIBAV=/var/lib/webosbrew/truehd/libgstlibav.so",
-    "LOG=/tmp/dts25.log",
-    "EXPECT_GST=1.24",
-    'toast() { luna-send -n 1 luna://com.webos.notification/createToast "{\\"sourceId\\":\\"io.github.josippapez.dtsenabler\\",\\"message\\":\\"$1\\"}" >/dev/null 2>&1; }',
-    'echo "--- dts25+truehd $(date) ---" >> $LOG 2>&1',
-    "# 0) firmware-update / ABI guard. Our bind-over libs (libav/isomp4/mpegtsdemux) are armel",
-    "#    GStreamer-1.24 builds; binding them over a different-ABI LG lib after an OTA would break",
-    "#    ALL mp4/ts/mkv playback. Detect via the untouched core version; if it changed, do NOTHING",
-    "#    and let stock firmware play (losing only DTS/TrueHD) -- fail safe, never break playback.",
-    'GST_VER=$(/usr/bin/gst-inspect-1.0 --version 2>/dev/null | sed -n \'s/^GStreamer \\([0-9]*\\.[0-9]*\\).*/\\1/p\' | head -n1)',
-    'if [ "$GST_VER" != "$EXPECT_GST" ]; then',
-    '  echo "ABORT: GStreamer \'$GST_VER\' != expected $EXPECT_GST (firmware update?); overrides skipped" >> $LOG',
-    '  toast "DTS/TrueHD paused: TV firmware changed (GStreamer $GST_VER). Re-open DTS Enabler to update."',
-    "  exit 0",
-    "fi",
-    "# 1) codec-capability override (adds TRUEHD/MLP so umediaserver allocates a decoder resource)",
-    '[ -f /var/lib/webosbrew/truehd/codec_capability.json ] && ! grep -q " $CFG " /proc/mounts 2>/dev/null && mount -n --bind /var/lib/webosbrew/truehd/codec_capability.json "$CFG" 2>>$LOG',
-    "# 2) replace LG.s truehd-less libav with ours (has avdec_truehd/avdec_mlp)",
-    '[ -f "$MYLIBAV" ] && ! grep -q " $LGLIBAV " /proc/mounts 2>/dev/null && mount -n --bind -o ro "$MYLIBAV" "$LGLIBAV" 2>>$LOG',
-    "# 2b) gstcool.conf: give avdec_truehd a high SW rank so LG autoplugs it (not the HW path)",
-    "GC=/etc/gst/gstcool.conf",
-    '[ -f /var/lib/webosbrew/truehd/gstcool.conf ] && ! grep -q " $GC " /proc/mounts 2>/dev/null && mount -n --bind /var/lib/webosbrew/truehd/gstcool.conf "$GC" 2>>$LOG',
-    "# 2c) container demuxers with DTS re-enabled (mp4/ts/m2ts DTS -> audio/x-dts).",
-    "#     Patched isomp4/mpegtsdemux default dts_support=TRUE. Bound BEFORE the regen",
-    "#     below so the registry picks them up at their normal path.",
-    "ISO=/usr/lib/gstreamer-1.0/libgstisomp4.so",
-    "TSD=/usr/lib/gstreamer-1.0/libgstmpegtsdemux.so",
-    '[ -f /var/lib/webosbrew/demux25/libgstisomp4.so ] && ! grep -q " $ISO " /proc/mounts 2>/dev/null && mount -n --bind -o ro /var/lib/webosbrew/demux25/libgstisomp4.so "$ISO" 2>>$LOG',
-    '[ -f /var/lib/webosbrew/demux25/libgstmpegtsdemux.so ] && ! grep -q " $TSD " /proc/mounts 2>/dev/null && mount -n --bind -o ro /var/lib/webosbrew/demux25/libgstmpegtsdemux.so "$TSD" 2>>$LOG',
-    "# 3) regenerate the media registry (fresh) with dtsdec + our libav, then write it to the media path.",
-    "#    Bounded by `timeout` and scanned in-process (GST_REGISTRY_FORK=no) so a hang can't trip HBC",
-    "#    failsafe and no gst-plugin-scanner child lingers past the timeout.",
-    "rm -f /tmp/gst_dts_reg.bin",
-    "LD_LIBRARY_PATH=/var/lib/webosbrew/truehd/libs \\",
-    "GST_REGISTRY_1_0=/tmp/gst_dts_reg.bin \\",
-    "GST_PLUGIN_PATH_1_0=/usr/lib/gstreamer-1.0:/mnt/lg/res/lglib/gstreamer-1.0:/var/lib/webosbrew/dts25 \\",
-    "GST_REGISTRY_FORK=no GST_REGISTRY_UPDATE=yes timeout 30 /usr/bin/gst-inspect-1.0 >/dev/null 2>>$LOG",
-    "# only overwrite the media registry if our regen actually contains BOTH decoders",
-    "if GST_REGISTRY_1_0=/tmp/gst_dts_reg.bin GST_REGISTRY_UPDATE=no GST_REGISTRY_FORK=no /usr/bin/gst-inspect-1.0 dtsdec >/dev/null 2>&1 \\",
-    "   && GST_REGISTRY_1_0=/tmp/gst_dts_reg.bin GST_REGISTRY_UPDATE=no GST_REGISTRY_FORK=no /usr/bin/gst-inspect-1.0 avdec_truehd >/dev/null 2>&1; then",
-    '  cp -f /tmp/gst_dts_reg.bin "$REG" 2>>$LOG && echo "registry updated (dtsdec+truehd)" >>$LOG',
-    "else",
-    '  echo "WARN: regen missing dtsdec or avdec_truehd, left registry untouched" >>$LOG',
-    '  toast "DTS Enabler: decoder registry incomplete after boot; DTS/TrueHD may not work."',
-    "fi",
-    "exit 0"
-  ].join("\n");
+  return W25_INIT_HEAD.concat(W25_COMPAT_SH, W25_INIT_MAIN).join("\n") + "\n";
+}
+
+/** md5 of exactly the bytes Enable would write to the TV, for the hook-staleness
+ *  cross-check. Computed once; null when no crypto module is available. */
+var _expectedInitMd5;
+function w25ExpectedInitMd5() {
+  if (_expectedInitMd5 === undefined) {
+    _expectedInitMd5 = md5hex ? md5hex(w25InitScriptBody()) : null;
+  }
+  return _expectedInitMd5;
 }
 
 /** enable (webOS 25): stage BOTH payloads, generate BOTH /etc overrides by
- *  editing the TV's own live files, install the canonical init script + hook,
- *  apply now, restart. Mirrors webos25/install.sh. */
-function w25Enable() {
+ *  editing the TV's own live files, install the canonical init script, run its
+ *  read-only compatibility preflight, and only then link the boot hook, apply
+ *  and restart. Mirrors webos25/install.sh.
+ *
+ *  `force` is a JS boolean the caller can only set via `enable {force: true}`
+ *  (checked with `=== true` in runMechanism). It never reaches the shell: it
+ *  picks one of exactly two author-constant lines, FORCE=1 or FORCE=0. Nothing
+ *  is bound and the boot hook is not linked until the gate passes, so a refusal
+ *  never APPLIES anything -- the staged files under /var/lib/webosbrew are inert
+ *  without the bind-mounts, and are kept on purpose so stock.fp stays available
+ *  as the drift baseline (Uninstall removes them).
+ *
+ *  It is not a no-op on a TV that was already enabled, though: step 3 has already
+ *  detached the binds and our `cp -f` registry would still be live. Both refusal
+ *  branches therefore stand the TV down and report STOOD_DOWN, so the outcome is
+ *  "reverted to stock", not "half-way". */
+function w25Enable(force) {
   var b64init = Buffer.from(w25InitScriptBody(), "utf8").toString("base64");
   var b64cap  = Buffer.from(W25_CAP_AWK, "utf8").toString("base64");
   var b64gc   = Buffer.from(W25_GC_AWK, "utf8").toString("base64");
@@ -626,11 +1584,32 @@ function w25Enable() {
     "set -u",
     APPBASE_PRELUDE,
     'LOG=' + LOG,
+    'W25_LOG=' + LOG,
     'log() { echo "[dts25-install $(date \'+%Y-%m-%d %H:%M:%S\')] $*" >> "$LOG" 2>&1; }',
+    // Author constant either way -- see the note on `force` above.
+    (force ? "FORCE=1" : "FORCE=0"),
     'log "=== enable (webos25 DTS+TrueHD) start ==="',
     'log "app base: $APPBASE"',
+    'log "force: $FORCE"'
+  ].concat(W25_COMPAT_SH, [
+    // Refusing after step 3 already detached the binds leaves the `cp -f` registry
+    // as the only thing still applied, so put the TV fully back on stock and say
+    // which of the two happened.
+    'w25_refuse_stand_down() {',
+    '  if w25_reg_is_ours; then WAS_OURS=1; else WAS_OURS=0; fi',
+    '  w25_stand_down',
+    '  log "refusal stand-down (a registry of ours was live: $WAS_OURS)"',
+    '  echo "STOOD_DOWN=$WAS_OURS"',
+    '}',
     // 1. Stage the DTS payload.
     'mkdir -p "' + W25_LIBS + '" || { log "FATAL: cannot create ' + W25_LIBS + '"; exit 0; }',
+    // Claim ownership: the app is managing this install from now on. A leftover
+    // .cli-install from an earlier SSH install would otherwise disable self-heal
+    // forever for a user who has since switched to the app -- removing the app
+    // would leave the system-wide overrides in place with nothing to manage them,
+    // which is the exact hazard the self-heal exists for. install.sh writes the
+    // marker back if the user returns to the CLI.
+    'if [ -f "' + W25_CLI_MARKER + '" ]; then rm -f "' + W25_CLI_MARKER + '" && log "took ownership from a previous CLI install (removed ' + W25_CLI_MARKER + ')"; fi',
     'if [ -f "' + PAYLOAD_W25 + '/libgstdtsdec.so" ]; then',
     '  cp -f "' + PAYLOAD_W25 + '/libgstdtsdec.so" "' + W25_DEST + '/libgstdtsdec.so" && log "installed libgstdtsdec.so" || log "WARN: copy libgstdtsdec.so failed"',
     'else log "WARN: ' + PAYLOAD_W25 + '/libgstdtsdec.so not found (populate payload before packaging)"; fi',
@@ -652,10 +1631,12 @@ function w25Enable() {
     // 2d. Seed first-run audio defaults (only when no config exists yet).
     w25GainConfSeedScript(DTS_GAIN_CONF),
     w25GainConfSeedScript(THD_GAIN_CONF),
-    // 3. Unmount any stale binds so overrides are generated from PRISTINE /etc.
-    'for T in "' + W25_CFG_LIVE + '" "' + W25_GC_LIVE + '" "' + W25_LGLIBAV + '" "' + W25_ISO_LIVE + '" "' + W25_TSD_LIVE + '" "' + W25_REG_TARGET + '"; do',
-    '  if grep -q " $T " /proc/mounts 2>/dev/null; then umount "$T" 2>>"$LOG" && log "unmounted stale bind $T" || log "WARN: could not umount $T"; fi',
-    'done',
+    // 3. Unmount any stale binds so overrides are generated from PRISTINE /etc
+    //    -- and so the preflight below fingerprints the PRISTINE stock plugins.
+    //    w25_drop_binds falls back to a lazy detach (plain umount of
+    //    libgstlibav.so fails with "target is busy" while WebAppMgr has it
+    //    mapped) and prints WARN_UNMOUNT= for anything that survives even that.
+    "w25_drop_binds",
     // 3a. Generate the codec-capability override (insert TRUEHD+MLP after DTSE).
     'base64 -d > /tmp/dts25_cap.awk <<\'B64CAP\'',
     b64cap,
@@ -678,58 +1659,147 @@ function w25Enable() {
     b64init,
     "B64EOF",
     'chmod 0755 "' + W25_INIT_SCRIPT + '" && log "wrote ' + W25_INIT_SCRIPT + '"',
+    // 4b. Compatibility preflight, READ-ONLY. Ask the script we just installed to
+    //     run its own gate (W25_CHECK=1): fingerprint the three stock plugins we
+    //     shadow, match them against the verified-sets table, and confirm every
+    //     staged payload object's dynamic dependencies resolve on THIS TV. Asking
+    //     the installed script keeps one authored copy of the gate instead of a
+    //     second one here that could drift from it.
+    'CHECK=$(W25_CHECK=1 FORCE="$FORCE" sh "' + W25_INIT_SCRIPT + '" 2>/dev/null)',
+    'GATE_VERDICT=$(printf "%s\\n" "$CHECK" | sed -n "s/^VERDICT=//p" | head -n1)',
+    'GATE_REASON=$(printf "%s\\n" "$CHECK" | sed -n "s/^REASON=//p" | head -n1)',
+    'GATE_LABEL=$(printf "%s\\n" "$CHECK" | sed -n "s/^LABEL=//p" | head -n1)',
+    'GATE_CANFORCE=$(printf "%s\\n" "$CHECK" | sed -n "s/^CANFORCE=//p" | head -n1)',
+    'GATE_LOADER=$(printf "%s\\n" "$CHECK" | sed -n "s/^LOADER=//p" | head -n1)',
+    'GATE_STAGED=$(printf "%s\\n" "$CHECK" | sed -n "s/^LOADER_STAGED=//p" | head -n1)',
+    'log "preflight: verdict=$GATE_VERDICT canforce=$GATE_CANFORCE loader=$GATE_LOADER staged=$GATE_STAGED reason=$GATE_REASON"',
+    // Refuse BEFORE the boot hook exists, so a refused TV is left with nothing
+    // that runs at boot -- not even a hook that would re-refuse and re-toast.
+    // LOADER_STAGED=0 means a CORE object never made it out of the app payload --
+    // a packaging fault, reported as REFUSED=payload so it reads differently from
+    // "this TV cannot load our libraries". A demux-less payload is NOT this case:
+    // the demuxers are optional and the gate skips them when absent.
+    'if [ "$GATE_LOADER" != "ok" ]; then',
+    '  if [ "$GATE_STAGED" = 0 ]; then',
+    '    log "REFUSED: core payload incomplete -- $GATE_LOADER"',
+    '    echo "REFUSED=payload"',
+    '  else',
+    '    log "REFUSED: loader gate -- $GATE_LOADER"',
+    '    echo "REFUSED=loader"',
+    '  fi',
+    '  echo "REASON=$GATE_LOADER"',
+    '  w25_refuse_stand_down',
+    '  exit 0',
+    'fi',
+    'case "$GATE_VERDICT" in',
+    '  verified|forced) log "gate: $GATE_VERDICT -- $GATE_REASON${GATE_LABEL:+ [$GATE_LABEL]}" ;;',
+    '  *)',
+    '    log "REFUSED: $GATE_VERDICT -- $GATE_REASON"',
+    '    echo "REFUSED=$GATE_VERDICT"',
+    '    echo "REASON=$GATE_REASON"',
+    '    echo "CANFORCE=$GATE_CANFORCE"',
+    '    w25_refuse_stand_down',
+    '    exit 0 ;;',
+    'esac',
+    // 4c. Link the boot hook (only now that the gate has passed).
     'mkdir -p "$(dirname "' + W25_HOOK + '")"',
     'if [ -L "' + W25_HOOK + '" ] || [ -e "' + W25_HOOK + '" ]; then rm -f "' + W25_HOOK + '"; fi',
     'ln -s "' + W25_INIT_SCRIPT + '" "' + W25_HOOK + '" && log "linked boot hook ' + W25_HOOK + '"',
-    // 5. Apply now + restart the media pipeline.
-    'sh "' + W25_INIT_SCRIPT + '"',
+    // 5. Apply now + restart the media pipeline. The init script re-runs the same
+    //    gate, records the pristine fingerprints in stock.fp, binds, and commits
+    //    the registry only if all five elements survive -- so it can still refuse
+    //    here, on the post-bind pipeline proof, after standing itself down.
+    'APPLY=$(FORCE="$FORCE" sh "' + W25_INIT_SCRIPT + '" 2>/dev/null)',
+    'log "apply: $(printf "%s" "$APPLY" | tr "\\n" " ")"',
+    'case "$APPLY" in',
+    '  *REFUSED=*)',
+    '    printf "%s\\n" "$APPLY" | grep -e "^REFUSED=" -e "^REASON=" -e "^WARN_UNMOUNT="',
+    '    log "=== enable (webos25 DTS+TrueHD) refused on apply ==="',
+    '    exit 0 ;;',
+    'esac',
     'if killall starfish-media-pipeline 2>>"$LOG"; then log "restarted starfish-media-pipeline"; else log "note: media pipeline not running"; fi',
     'log "=== enable (webos25 DTS+TrueHD) done ==="',
+    'echo "VERDICT=$GATE_VERDICT"',
+    'echo "LABEL=$GATE_LABEL"',
     'echo OK',
     "exit 0"
-  ].join("\n");
+  ]).join("\n");
 }
 
-/** disable (webOS 25): remove boot hook, unmount all four binds. Keep staged libs. */
-function w25Disable() {
+/** The shared disable body, WITHOUT the terminating `echo OK` / `exit 0`, so
+ *  uninstall can extend it by appending steps. It used to be built by regexing
+ *  those two lines back off the finished disable script, which would have
+ *  silently become a no-op the day that tail changed -- and a no-op there means
+ *  uninstall quietly stops removing state.
+ *
+ *  Drops the boot hook, then every bind (lazily when a live mapping holds one
+ *  busy), then puts a clean STOCK registry back. Both routines come from
+ *  W25_COMPAT_SH, i.e. the same authored text the boot script uses. */
+function w25DisableSteps() {
   return [
     "set -u",
     'LOG=' + LOG,
+    'W25_LOG=' + LOG,
     'log() { echo "[dts25-disable $(date \'+%Y-%m-%d %H:%M:%S\')] $*" >> "$LOG" 2>&1; }',
-    'log "=== disable (webos25) start ==="',
+    'log "=== disable (webos25) start ==="'
+  ].concat(W25_COMPAT_SH, [
     'if [ -L "' + W25_HOOK + '" ] || [ -e "' + W25_HOOK + '" ]; then rm -f "' + W25_HOOK + '" && log "removed boot hook"; else log "boot hook not present"; fi',
-    'for T in "' + W25_CFG_LIVE + '" "' + W25_GC_LIVE + '" "' + W25_LGLIBAV + '" "' + W25_ISO_LIVE + '" "' + W25_TSD_LIVE + '" "' + W25_REG_TARGET + '"; do',
-    '  if grep -q " $T " /proc/mounts 2>/dev/null; then umount "$T" 2>>"$LOG" && log "unmounted bind over $T (reverted)" || log "WARN could not umount $T"; else log "no bind over $T"; fi',
-    'done',
+    // Prints WARN_UNMOUNT=<targets> and returns non-zero if a target survived even
+    // a lazy detach, i.e. the revert did not actually happen. Surfaced to the
+    // caller below rather than swallowed.
+    'w25_drop_binds',
     // The registry is written with `cp -f` (persistent), NOT bind-mounted -- so a
     // umount can never revert it (that was the bug: disable/uninstall left a stale
     // registry referencing our removed /var/lib/webosbrew libs, which breaks
     // media-pipeline app audio like Spotify until a valid registry is regenerated;
-    // root-caused on a real C5, 2026-07-23). The binds above are already removed, so
-    // regenerate a clean STOCK catalog from the pristine on-disk plugins.
-    'CLEAN_REG=/tmp/gst_clean_reg.bin; rm -f "$CLEAN_REG" 2>/dev/null',
-    'if GST_REGISTRY_1_0="$CLEAN_REG" GST_PLUGIN_PATH_1_0=/usr/lib/gstreamer-1.0:/mnt/lg/res/lglib/gstreamer-1.0 GST_REGISTRY_FORK=no GST_REGISTRY_UPDATE=yes timeout 60 /usr/bin/gst-inspect-1.0 >/dev/null 2>>"$LOG"; then',
-    '  cp -f "$CLEAN_REG" "' + W25_REG_TARGET + '" 2>>"$LOG" && log "regenerated clean stock registry (reverted cp-based override)" || log "WARN: could not write clean registry"',
-    'else',
-    '  log "WARN: clean registry regen failed; leaving existing registry untouched (may still be stale)"',
-    'fi',
-    'rm -f "$CLEAN_REG" 2>/dev/null',
+    // root-caused on a real C5, 2026-07-23). The binds are gone by now, so this
+    // regenerates a clean STOCK catalog from the pristine on-disk plugins.
+    //
+    // Its RESULT is captured, not discarded: uninstall must not delete the plugins
+    // the live registry still names if this failed, and a Disable whose regen
+    // failed must not report clean either -- our dtsdec would stay registered AND
+    // loadable, so DTS would keep working after a "successful" Disable.
+    'if w25_stock_registry; then REG_REVERTED=1; else REG_REVERTED=0; fi',
+    'echo "REG_REVERTED=$REG_REVERTED"',
     'rm -f "' + W25_REG_TMP + '" 2>/dev/null',
     'if killall starfish-media-pipeline 2>>"$LOG"; then log "restarted media pipeline"; else log "note: media pipeline not running"; fi',
-    'log "=== disable (webos25) done ==="',
-    'echo OK',
-    "exit 0"
-  ].join("\n");
+    'log "=== disable (webos25) done ==="'
+  ]);
 }
 
-/** uninstall (webOS 25): disable + remove both state dirs (dts25 + truehd). */
-function w25Uninstall() {
-  return [
-    w25Disable().replace(/\necho OK\nexit 0$/, ""),
-    'rm -rf "' + W25_DEST + '" "' + W25_THD_DEST + '" "' + W25_DMX_DEST + '" && echo "[dts25-uninstall] removed ' + W25_DEST + ' + ' + W25_THD_DEST + ' + ' + W25_DMX_DEST + '" >> "' + LOG + '" 2>&1',
+/** disable (webOS 25). Keeps the staged libs AND stock.fp: Disable is meant to be
+ *  reversed by Enable, and dropping stock.fp would also discard a recorded
+ *  `forced=1` opt-in and the baseline that lets a later boot tell a firmware
+ *  change apart from an unverified TV. */
+function w25Disable() {
+  return w25DisableSteps().concat([
     'echo OK',
     "exit 0"
-  ].join("\n");
+  ]).join("\n");
+}
+
+/** uninstall (webOS 25): disable + remove all three state dirs and the recorded
+ *  stock fingerprints. stock.fp lives inside dts25 so the rm -rf already covers
+ *  it; removing it explicitly keeps the intent visible and still holds if that
+ *  directory removal fails. Addressed by its own JS constant, never through the
+ *  shell's $FP. */
+function w25Uninstall() {
+  return w25DisableSteps().concat([
+    // DELETION IS GATED ON THE REGEN, exactly as uninstall.sh gates step 3 on
+    // REG_OK. Deleting the plugins while the live registry still names them is the
+    // failure that broke other apps' audio on a real C5 (2026-07-23) and that LG's
+    // stack does not recover from -- so on failure keep everything and report a
+    // deferral instead of "OK".
+    'if [ "$REG_REVERTED" = 1 ]; then',
+    '  rm -f "' + W25_STOCK_FP + '" 2>/dev/null',
+    '  rm -rf "' + W25_DEST + '" "' + W25_THD_DEST + '" "' + W25_DMX_DEST + '" && echo "[dts25-uninstall] removed ' + W25_DEST + ' + ' + W25_THD_DEST + ' + ' + W25_DMX_DEST + '" >> "' + LOG + '" 2>&1',
+    'else',
+    '  log "DEFERRED: kept ' + W25_DEST + ', ' + W25_THD_DEST + ' and ' + W25_DMX_DEST + ' because LG registry rebuild failed"',
+    '  echo "UNINSTALL_DEFERRED=1"',
+    'fi',
+    'echo OK',
+    "exit 0"
+  ]).join("\n");
 }
 
 /* =======================================================================
@@ -755,7 +1825,15 @@ function w25SelfTest() {
     'REG=' + W25_REG_TARGET,
     'OUT=/tmp/dtsenabler_selftest.wav',
     'export LD_LIBRARY_PATH=' + W25_LIBS + ':' + W25_THD_LIBS,
-    'export GST_REGISTRY_1_0="$REG" GST_REGISTRY_UPDATE=no',
+    '# GST_REGISTRY_FORK=no per CLAUDE.md rule 4: without it a plugin-scanner fork can hold the'
+    + '' ,
+    '# HBC exec pipe open past gst-launch itself. timeout 60 (was 25): the FIRST case pays the'
+    ,
+    '# whole cold-start cost (registry + dtsdec + libdca load); 25s was measured too tight under'
+    ,
+    '# post-boot load on the real C5 (2026-08-18) while the decode itself was fine.'
+    ,
+    'export GST_REGISTRY_1_0="$REG" GST_REGISTRY_UPDATE=no GST_REGISTRY_FORK=no',
     'echo "DTSDEC=$(gst-inspect-1.0 dtsdec >/dev/null 2>&1 && echo 1 || echo 0)"'
   ];
   TEST_CASES.forEach(function (t) {
@@ -763,7 +1841,7 @@ function w25SelfTest() {
     lines.push('F="' + f + '"');
     lines.push('rm -f "$OUT"');
     lines.push('if [ -f "$F" ]; then');
-    lines.push('  timeout 25 gst-launch-1.0 -q filesrc location="$F" ! ' + t.demux + ' name=d d. ! queue ! dtsdec ! audioconvert ! wavenc ! filesink location="$OUT" >/dev/null 2>&1');
+    lines.push('  timeout 60 gst-launch-1.0 -q filesrc location="$F" ! ' + t.demux + ' name=d d. ! queue ! dtsdec ! audioconvert ! wavenc ! filesink location="$OUT" >/dev/null 2>&1');
     lines.push('  SZ=$(stat -c%s "$OUT" 2>/dev/null || echo 0)');
     lines.push('  if [ "$SZ" -ge ' + TEST_WAV_MIN + ' ]; then echo "' + t.key + '=PASS:$SZ"; else echo "' + t.key + '=FAIL:$SZ"; fi');
     lines.push('else echo "' + t.key + '=MISSING:0"; fi');
@@ -1088,17 +2166,29 @@ function cxDisable() {
     "set +e",
     'LOG=' + LOG,
     'log() { echo "[dts_restore-cx-disable $(date \'+%Y-%m-%d %H:%M:%S\')] $*" >> "$LOG" 2>&1; }',
+    // Same umount -> umount -l fallback the webOS 25 path uses. The "target is
+    // busy because WebAppMgr has the .so mapped" evidence was measured on a C5,
+    // not on CX hardware, so this is consistency rather than a proven CX bug --
+    // but a plain umount that fails here would leave the override applied while
+    // Disable reported success, which is the hazard either way.
+    'cx_umount() {',
+    '  grep -q " $1 " /proc/mounts 2>/dev/null || return 0',
+    '  if umount "$1" 2>/dev/null; then log "unmounted $1"; return 0; fi',
+    '  if umount -l "$1" 2>/dev/null; then log "lazy-detached busy bind $1 (a live mapping held it)"; return 0; fi',
+    '  log "WARN could not unmount $1, even lazily"',
+    '  return 1',
+    '}',
     'log "=== disable (cx) start ==="',
     'if [ -e "' + CX_HOOK + '" ] || [ -L "' + CX_HOOK + '" ]; then rm -f "' + CX_HOOK + '" && log "removed boot hook"; else log "boot hook not present"; fi'
   ];
   CX_GST_LIBS.forEach(function (lib) {
     var dst = CX_GST_TARGET + "/" + lib;
-    lines.push('grep -q " ' + dst + ' " /proc/mounts 2>/dev/null && umount "' + dst + '" 2>/dev/null && log "unmounted ' + lib + '"');
+    lines.push('cx_umount "' + dst + '"');
   });
-  lines.push('grep -q " ' + GSTCOOL + ' " /proc/mounts 2>/dev/null && umount "' + GSTCOOL + '" 2>/dev/null && log "unmounted gstcool.conf"');
+  lines.push('cx_umount "' + GSTCOOL + '"');
   lines.push('rm -f "' + GSTCOOL_TMP + '" 2>/dev/null');
   // Unmount registry bind using the baked path, if any.
-  lines.push('if [ -f "' + CX_ENV_CONF + '" ]; then . "' + CX_ENV_CONF + '"; if [ -n "${BAKED_GST_REGISTRY:-}" ] && grep -q " $BAKED_GST_REGISTRY " /proc/mounts 2>/dev/null; then umount "$BAKED_GST_REGISTRY" 2>/dev/null && log "unmounted registry override"; fi; fi');
+  lines.push('if [ -f "' + CX_ENV_CONF + '" ]; then . "' + CX_ENV_CONF + '"; if [ -n "${BAKED_GST_REGISTRY:-}" ]; then cx_umount "$BAKED_GST_REGISTRY"; fi; fi');
   lines.push('log "=== disable (cx) done ==="');
   lines.push('echo OK');
   return lines.join("\n");
@@ -1145,15 +2235,23 @@ function cxStatusProbe() {
  * Luna methods
  * ===================================================================== */
 
-/* detect: run the read-only probe, return profile + raw probes. */
+/* detect: run the read-only probe, return profile + compatibility verdict + raw
+ * probes. `supported` keeps its old meaning ("a mechanism exists for this
+ * profile"); `verdict` is the new, separate answer to "may we apply it HERE?". */
 service.register("detect", function (message) {
   detectProfile().then(function (d) {
-    message.respond({
+    var res = {
       returnValue: true,
       profile: d.profile,
       supported: isKnownProfile(d.profile),
       probes: d.probes
-    });
+    };
+    // Absent, not null: compatVerdict() returns null where the gate does not
+    // apply (CX), and a present-but-null `verdict` would still defeat app.js's
+    // `s.verdict || ...` fallback.
+    addCompatFields(res, compatVerdict(d.profile, d.probes || {}));
+    addHookFields(res, hookStaleness(d.profile, d.probes || {}, w25ExpectedInitMd5()));
+    message.respond(res);
   }).catch(function (e) {
     message.respond({ returnValue: false, errorText: e.errorText || e.message || String(e) });
   });
@@ -1164,6 +2262,7 @@ service.register("status", function (message) {
   detectProfile().then(function (d) {
     var profile = d.profile;
     var p = d.probes || {};
+    var c = compatVerdict(profile, p);
     var base = {
       returnValue: true,
       profile: profile,
@@ -1176,6 +2275,8 @@ service.register("status", function (message) {
       disableMechanism: p.DTS_DISABLE_MECHANISM_GUESS || "unknown",
       probes: p
     };
+    addCompatFields(base, c);
+    addHookFields(base, hookStaleness(profile, p, w25ExpectedInitMd5()));
 
     if (profile === PROFILE_W25) {
       return rootExec(w25StatusProbe()).then(function (r) {
@@ -1209,7 +2310,11 @@ service.register("status", function (message) {
         base.dtsActive = hook && dtsdec;
         base.truehdActive = hook && libavbind && cfgbind && gcbind && truehd;
         base.active = base.dtsActive && base.truehdActive;
-        base.verified = true;   // both codecs verified on a real C5 (decode + autoplug)
+        // "verified" now means THIS TV, not the mechanism: both codecs are proven
+        // on a real C5 (decode + autoplug), but that only transfers to a TV whose
+        // stock plugin fingerprints match the verified-sets table. Saying "yes"
+        // on a forced/unverified TV would contradict the verdict beside it.
+        base.verified = c.verdict === "verified";
         message.respond(base);
       });
     }
@@ -1510,14 +2615,29 @@ service.register("abCleanup", function (message) {
  * Shared enable/disable/uninstall dispatcher. Detects the profile fresh
  * (never trusts the caller), maps profile+action to a hardcoded command
  * builder, and refuses cleanly on an unknown/unsupported profile.
+ *
+ * The only caller-settable input is `enable {force: true}`. It is compared with
+ * `=== true`, is honoured only when the read-only probe already reported
+ * COMPAT_CANFORCE=1 (and the loader gate passed), and never reaches the shell --
+ * it selects between two author-constant script texts inside w25Enable. So the
+ * "no caller-controlled shell input" property in the header still holds exactly.
  */
 function runMechanism(message, action) {
+  var forceRequested = (message.payload || {}).force === true;
   detectProfile().then(function (d) {
     var profile = d.profile;
+    var compat = compatVerdict(profile, d.probes || {});
     var builder = null;
 
     if (profile === PROFILE_W25) {
-      builder = { enable: w25Enable, disable: w25Disable, uninstall: w25Uninstall }[action];
+      if (action === "enable") {
+        // compat is never null on this profile -- compatVerdict() only returns
+        // null for CX, which is handled in the branch below.
+        var forced = forceRequested && compat.canForce;
+        builder = function () { return w25Enable(forced); };
+      } else {
+        builder = { disable: w25Disable, uninstall: w25Uninstall }[action];
+      }
     } else if (profile === PROFILE_CX) {
       builder = { enable: cxEnable, disable: cxDisable, uninstall: cxUninstall }[action];
     }
@@ -1535,13 +2655,76 @@ function runMechanism(message, action) {
     }
 
     return rootExec(builder()).then(function (r) {
-      message.respond({
+      var kv = parseKv(r.stdout);
+      // The webOS 25 builders print REFUSED=<verdict> + REASON=<text> instead of
+      // OK when the compatibility gate stood them down. Nothing was bound in that
+      // case, so report it as a failed call with the gate's own reason rather
+      // than a success whose stdout happens to say otherwise.
+      if (kv.REFUSED) {
+        var why = kv.REASON || (compat ? compat.verdictReason : "the mechanism refused to apply on this TV");
+        var refusal = {
+          returnValue: false,
+          profile: profile,
+          supported: true,
+          action: action,
+          verdict: kv.REFUSED,
+          verdictReason: why,
+          canForce: kv.CANFORCE === "1",
+          errorText: "Refusing to " + action + " on this TV: " + why,
+          stdout: r.stdout,
+          stderr: r.stderr
+        };
+        // Nothing was applied, but on a TV that WAS enabled the refusal also
+        // reverted it (binds detached before the preflight, registry rebuilt), and
+        // saying "nothing changed" there would be false.
+        if (kv.STOOD_DOWN !== undefined) {
+          refusal.stoodDown = kv.STOOD_DOWN === "1";
+          // The gate's reasons are sentence fragments without trailing punctuation.
+          if (!/[.!?]$/.test(refusal.errorText)) refusal.errorText += ".";
+          refusal.errorText += refusal.stoodDown
+            ? " This TV was previously enabled, so the overrides have been reverted to stock."
+            : " Nothing of ours was applied on this TV, and nothing was changed.";
+        }
+        message.respond(refusal);
+        return;
+      }
+      // The success shape stays exactly what it was for any profile without a
+      // compatibility gate (CX), so that path is untouched by this feature.
+      var res = {
         returnValue: true,
         profile: profile,
         action: action,
         stdout: r.stdout,
         stderr: r.stderr
-      });
+      };
+      // Anything that did not actually happen has to show up here. None of these
+      // is fatal on its own -- the call did run -- but reporting a clean result
+      // when the revert is incomplete is the exact silence this change removes.
+      var warnings = [];
+      if (kv.WARN_UNMOUNT) {
+        res.unmountWarning = kv.WARN_UNMOUNT;
+        warnings.push("Some overrides could not be detached and are still active: " +
+          kv.WARN_UNMOUNT + ". Reboot the TV to clear them.");
+      }
+      if (kv.REG_REVERTED !== undefined) {
+        res.registryReverted = kv.REG_REVERTED === "1";
+        if (!res.registryReverted) {
+          warnings.push("LG's plugin registry could NOT be rebuilt, so our decoder may still be " +
+            "registered and DTS may keep decoding until it is. Try again, or reboot the TV.");
+        }
+      }
+      if (kv.UNINSTALL_DEFERRED === "1") {
+        res.uninstallDeferred = true;
+        warnings.push("The staged files were kept on purpose: deleting them while the live " +
+          "registry still references them would break audio in other apps. Run Uninstall again.");
+      }
+      if (warnings.length) res.warning = warnings.join(" ");
+      if (compat) {
+        res.forced = (action === "enable") ? (forceRequested && compat.canForce) : false;
+        res.verdict = kv.VERDICT || compat.verdict;
+        res.verifiedLabel = kv.LABEL || compat.verifiedLabel;
+      }
+      message.respond(res);
     });
   }).catch(function (e) {
     message.respond({ returnValue: false, errorText: e.errorText || e.message || String(e) });
