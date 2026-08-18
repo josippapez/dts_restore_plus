@@ -31,6 +31,71 @@ The app's `webos25/app/payload/**` `.so` are **git-ignored** and are copied from
 Editing `install.sh` / `init_dts25.sh` / the app JS/HTML does **not** require a
 rebuild — but still cut a new release so the tarball/`.ipk` carry the change.
 
+## The boot script's three copies must match
+
+The DTS+TrueHD boot script exists in three places:
+
+1. `webos25/restore/init_dts25.sh` — canonical, and the **only** one a human edits.
+2. The base64 `INIT_B64` heredoc payload in `webos25/restore/install.sh` — generated.
+3. The `W25_INIT_HEAD`/`W25_COMPAT_SH`/`W25_INIT_MAIN` arrays that
+   `w25InitScriptBody()` renders in `webos25/app/service/service.js` — generated.
+
+If they drift, the CLI installer, an already-installed TV and the Homebrew app end up
+running **different** boot scripts. See `CLAUDE.md` rule 3.
+
+**Changing the boot script — including adding a verified TV to the gate's table — is a
+two-step edit:**
+
+```sh
+# 1. edit webos25/restore/init_dts25.sh only, then:
+sh webos25/restore/sync-init.sh          # regenerate copies 2 and 3 from it
+sh webos25/restore/check-init-sync.sh    # verify, the same way CI does
+```
+
+`sync-init.sh` rewrites the `install.sh` blob and the three `service.js` arrays from the
+canonical file. It refuses to write anything unless it can locate every target precisely
+— it computes both files in memory first, so a failure on either blocks writes to both
+rather than half-writing one — and it is idempotent (a second run reports "already in
+sync" and changes nothing). Hand-editing a 30 KB base64 blob is not a reviewable change;
+don't.
+
+It also refuses, writing nothing, if the canonical script's body changed since the last
+sync while its hand-maintained `W25_GATE_VERSION` stamp did not. That stamp is how the app
+notices an installed boot script is older than the one it ships (`hookStale`), so an
+un-bumped stamp would make that detection go quiet on exactly the TVs that need it. **Bump
+`W25_GATE_VERSION` whenever you change the script's behaviour, then run `sync-init.sh`.**
+The app also md5-compares what Enable would write against what is installed, so a stale
+stamp is caught at runtime too — but the generator is where it should be caught.
+
+If `check-revert-sync.sh` exits **2** rather than 1, that is a setup error, not a violated
+invariant: its extractor stopped matching one of the three scripts, almost always because
+the unmount loop was reformatted. Fix the extractor (or the formatting) — an exit 2 means
+the guard has stopped guarding, which is worse than a failure.
+
+`check-init-sync.sh` decodes copy 2, evaluates copy 3 without loading `webos-service`,
+and diffs both against copy 1, printing a unified diff and naming whichever drifted. It
+also calls `webos25/restore/check-revert-sync.sh`, which covers a *different* duplication
+the three copies don't include: the set of bind targets `install.sh`/`uninstall.sh`
+unmount, and the `GST_PLUGIN_PATH_1_0` used to regenerate a clean **stock** registry. It
+compares extracted sets and values rather than whole lines, so formatting or variable
+renames never false-fail — only a genuinely missing bind target or a diverged registry
+path does. A missing bind target in `uninstall.sh` is exactly the "not fully reversible"
+defect the compatibility work fixed, which is why it is guarded rather than trusted.
+
+The release workflow runs `check-init-sync.sh` before packaging, so a drifted release
+fails instead of shipping mismatched boot scripts. Both scripts need only POSIX `sh`,
+`node`, `base64` and `diff` — all present on macOS, Linux and the CI image.
+
+## License texts ship inside both artifacts
+
+`webos25/app/licenses/` (`GPL-2.0.txt`, `LGPL-2.1.txt`, `NOTICE.md`) is committed and is
+picked up automatically by `ares-package`, so a local `.ipk` build carries it too. The
+release workflow copies it into `restore/` before tarring so the CLI tarball ships the
+same texts; that copy is gitignored build output, never a second source. GPL-2.0 and
+LGPL-2.1 both require handing recipients a copy of the license, and the DTS decoder
+(`libgstdtsdec.so` + `libdca.so.0`) is GPL-2.0-or-later — see the per-artifact table in
+the root `README.md`.
+
 ## Rebuild + verify (only when the binaries are affected)
 
 ```sh
@@ -82,6 +147,7 @@ ares-package . service -o dist        # -> dist/io.github.josippapez.dtsenabler_
 
 - [ ] Binaries in `webos25/restore/**` current (rebuilt + on-device-verified if affected)
 - [ ] `webos25/restore/demux-out/BUILD-REPORT.txt` reflects the current build
+- [ ] `sh webos25/restore/check-init-sync.sh` passes (the release workflow also runs it)
 - [ ] App version bumped (if the app changed)
 - [ ] Docs updated (`webos25/README.md`, this file)
 - [ ] Tag pushed → release workflow green → assets present on the release

@@ -61,11 +61,20 @@ jobs:
           done
           echo "all prebuilt binaries present"
 
+      - name: Verify the boot script's three copies are in sync
+        run: sh webos25/restore/check-init-sync.sh
+
       - name: Package the CLI restore tarball
         env:
           REL_NAME: ${{ steps.rel.outputs.name }}
         run: |
           cd webos25
+          # License texts + the per-artifact NOTICE live once, in app/licenses/, so a
+          # local `ares-package` build carries them too. Copy them into restore/ so the
+          # CLI tarball ships the same texts: GPL-2.0 and LGPL-2.1 both require handing
+          # recipients a copy of the license along with the program, and the DTS decoder
+          # (libgstdtsdec.so + libdca.so.0) is GPL-2.0-or-later.
+          cp -r app/licenses restore/licenses
           # Excludes are defensive: dts2lpcm/ is the archived Path-A investigation
           # record (refuted on hardware, never shipped) and has no place in an
           # end-user CLI tarball, so it stays out even if its docs get committed.
