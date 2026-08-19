@@ -303,8 +303,23 @@ and `.ts` DTS didn't route. The fix rebuilds those two demuxers from LG's webOS-
 (`qtdemux.c` / `tsdemux.c`), staged in `restore/demux-out/` and bind-mounted by the boot hook.
 Verified on the C5 against **real Blu-ray DTS-HD MA content**: a 5.1 `.ts` sample decodes to
 `audio/x-raw, S32LE, 6 channels (FL FR FC LFE RL RR), 48000 Hz`, an `.mp4` (dtsc) decodes to PCM,
-and normal AAC mp4 playback is unaffected. (TrueHD is verified in MKV; `.mp4`/`.ts` TrueHD is not
-separately tested.)
+and normal AAC mp4 playback is unaffected.
+
+**TrueHD containers:** **MKV and `.ts`/`.m2ts` are supported; `.mp4` is not.** TrueHD in
+MPEG-TS needed its own fix: separately from DTS, LG wraps the BluRay TrueHD stream-type case
+in `tsdemux.c` in `#if 0` and falls through to `goto done`, so stream_type `0x83`
+(`ST_BD_AUDIO_AC3_TRUE_HD`) was silently dropped and the pad never exposed. What actually
+decoded was the **AC-3 compatibility substream carried on the same BD PID** — which is why
+TrueHD in `.ts`/`.m2ts` "played fine" while not being TrueHD at all. LG's own comment gates it
+on *"until we have ability to decode this codec"*, and this payload ships `avdec_truehd`, so
+`build-demux.sh` un-`#if-0`s the case (the `target_pes_substream = 0x72` inside it is what
+selects the TrueHD substream over the AC-3 core). Verified on the C5: a real BD m2ts carrying
+TrueHD 5.1 + AC-3 previously exposed only the AC-3 tracks, and now reports
+`audio: Dolby TrueHD, Channels: 6 (FL FR FC LFE SL SR)` decoding to
+`audio/x-raw, S32LE, 6 channels, 48000 Hz` — the side-pair channel mask (`0x0c0f`) rather than
+AC-3's rear-pair (`0x003f`) proving it is the TrueHD substream. DTS in `.ts`/`.m2ts` re-checked
+unchanged. **`.mp4` TrueHD remains unsupported** — `qtdemux.c` has no TrueHD/MLP codepath at all
+(no `mlpa` fourcc handling), so it needs new code rather than a gate flip.
 
 **Caveats (honest):**
 - **Discrete 5.1 reaches LG's sink — confirmed in real playback, no downmix in the pipeline.**

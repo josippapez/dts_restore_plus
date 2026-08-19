@@ -93,7 +93,8 @@ string sent to the Homebrew Channel (HBC) exec service via the hardened
 ### `webos25-armel-gst124` — decoder-inject + demux-enable (VERIFIED)
 
 Mirrors `../webos25/restore/install.sh` + `init_dts25.sh` exactly. Restores **DTS
-(incl. mp4/ts/m2ts containers) and TrueHD/MLP**.
+(incl. mp4/ts/m2ts containers) and TrueHD/MLP (MKV + ts/m2ts; `.mp4` TrueHD is
+not supported — `qtdemux` has no TrueHD codepath)**.
 
 - **Enable:** re-detect, then run the same **compatibility gate** the CLI boot hook
   runs (see below) — refuse unless the TV's stock plugins match a verified set, or
@@ -101,7 +102,8 @@ Mirrors `../webos25/restore/install.sh` + `init_dts25.sh` exactly. Restores **DT
   (`libgstdtsdec.so` + `libdca.so.0` → `/var/lib/webosbrew/dts25/`), TrueHD
   (`libgstlibav.so` + ffmpeg libs → `/var/lib/webosbrew/truehd/`), and the container
   demuxers (patched `libgstisomp4.so` + `libgstmpegtsdemux.so`, `dts_support` default
-  TRUE → `/var/lib/webosbrew/demux25/`). Generate the two `/etc` overrides
+  TRUE plus the BD TrueHD stream-type case un-`#if-0`d → `/var/lib/webosbrew/demux25/`).
+  Generate the two `/etc` overrides
   (codec-capability TRUEHD/MLP; gstcool `avdec_truehd/mlp=310`). Write the
   canonical `init_dts25.sh`, which bind-mounts our libav, the demuxers, and the
   overrides, then regenerates the media GStreamer registry and — only if `dtsdec`,

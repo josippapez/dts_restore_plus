@@ -176,6 +176,41 @@ webOS-25 TV, re-commit the `.so` in the same change (see
 straight disc copy. Avoid `ffmpeg -mpegts_m2ts_mode 1` for DTS (silent), and if
 you only have an ffmpeg-muxed `.ts`, remux to MKV with `-c copy`.
 
+## TrueHD in `.ts`/`.m2ts` — a separate gate, and a silent AC-3 substitution
+
+DTS was not the only codec LG switched off in `tsdemux.c`. The BluRay TrueHD
+stream-type case is wrapped in `#if 0` and falls through to `goto done`:
+
+| site | condition | what LG does |
+|------|-----------|--------------|
+| `tsdemux.c:3035` | HDMV programs, stream_type **0x83** (`ST_BD_AUDIO_AC3_TRUE_HD`) | `#if 0` → `goto done` — pad **never exposed** |
+
+The failure mode is worse than silence, and it is why this went unnoticed: a BD
+TrueHD track carries an **AC-3 compatibility substream on the same PID**, so with
+the TrueHD pad suppressed the AC-3 core is what decodes. Playback sounds
+completely normal while not being TrueHD at all — the "TrueHD plays fine" trap.
+Measured on a real C5 before the fix, a BD m2ts with TrueHD 5.1 + 4× AC-3 exposed
+**only** `audio #2/#3/#4: AC-3`; `tsdemux` advertised no TrueHD/MLP caps at all
+and `strings` on the shipped `libgstmpegtsdemux.so` contained no `audio/x-true-hd`.
+
+LG's own comment gates the case on *"until we have ability to decode this
+codec"* — a precondition this project satisfies, since it ships `avdec_truehd`
+(ranked 310 by `install.sh`). So `build-demux.sh` un-`#if-0`s it. The
+`stream->target_pes_substream = 0x72` inside the case is load-bearing: it selects
+the TrueHD PES substream rather than the embedded AC-3 core (compare DTS's `0x71`
+at `tsdemux.c:3058`).
+
+After the fix, the same file reports `audio #2: Dolby TrueHD, Channels: 6
+(FL FR FC LFE SL SR)` and decodes to `audio/x-raw, S32LE, 48000, channels=6,
+channel-mask=0x0c0f`. **The channel mask is the proof:** TrueHD decodes with the
+**side** pair (`0x0c0f`), AC-3 on this content with the **rear** pair (`0x003f`),
+so `0x0c0f` means the TrueHD substream genuinely reached the decoder. DTS in both
+`.ts` (188-byte) and `.m2ts` (192-byte BDAV) re-verified unchanged.
+
+**`.mp4` TrueHD is still unsupported** — and unlike the TS case this is not a gate
+to flip: `qtdemux.c` has no TrueHD/MLP codepath at all (no `mlpa` fourcc
+handling), so it needs new demuxer logic. Use MKV or `.m2ts` for TrueHD.
+
 ## Loudness / make-up gain
 
 Once DTS and TrueHD decode at all, they play **noticeably quieter** than LG's

@@ -44,6 +44,59 @@ for f in "$QTDEMUX" "$TSDEMUX"; do
 done
 echo "=== DTS patch OK (both files: dts_support = TRUE, no remaining FALSE) ==="
 
+# ---------------------------------------------------------------------------
+# TRUEHD-IN-MPEG-TS PATCH: LG wraps the BD TrueHD stream-type case in tsdemux.c
+# in `#if 0` and falls through to `goto done`, so stream_type 0x83
+# (ST_BD_AUDIO_AC3_TRUE_HD) is silently DROPPED -- the pad is never exposed and
+# what actually decodes is the AC-3 compatibility substream carried on the same
+# BD PID. That is why TrueHD in .ts/.m2ts "plays fine" but is not TrueHD.
+#
+# LG's own comment gates it on "until we have ability to decode this codec";
+# this payload ships avdec_truehd (ranked 310 by install.sh), so that
+# precondition now holds. Un-#if-0 the case so the pad is exposed. The
+# `stream->target_pes_substream = 0x72` inside it is load-bearing: it selects
+# the TrueHD PES substream rather than the embedded AC-3 core.
+#
+# Applied to the copied source, then verified (build fails if it did not land).
+# ---------------------------------------------------------------------------
+perl - "$TSDEMUX" <<'TRUEHD_PL'
+use strict; use warnings;
+local $/; my $f = shift; open my $fh, '<', $f or die "$f: $!"; my $s = <$fh>; close $fh;
+my $before = $s;
+$s =~ s{
+      \ {6}case\ ST_BD_AUDIO_AC3_TRUE_HD:\n
+      \ {8}/\*\ FIXME\ :\ Do\ not\ expose\ pad\ of\ trueHD\ codec\ until\ we\ have\n
+      \ {9}\*\ ability\ to\ decode\ this\ codec\.\ \*/\n
+      \#if\ 0\n
+      (.*?)
+      \ {8}break;\n
+      \#endif\n
+      \ {8}goto\ done;\n
+}{      case ST_BD_AUDIO_AC3_TRUE_HD:\n        /* dts_restore_plus: LG gated this behind #if 0 with "do not expose pad\n         * of trueHD codec until we have ability to decode this codec" -- this\n         * payload ships avdec_truehd, so the pad IS exposed here. The\n         * target_pes_substream = 0x72 selects the TrueHD PES substream instead\n         * of the AC-3 core embedded on the same BD PID. */\n$1        break;\n}xs;
+die "TRUEHD PATCH FAILED: anchor block not matched in $f\n" if $s eq $before;
+open my $out, '>', $f or die "$f: $!"; print $out $s; close $out;
+TRUEHD_PL
+
+echo "=== TrueHD patch verification ==="
+grep -n 'audio/x-true-hd' "$TSDEMUX" \
+  || { echo "PATCH FAILED: no audio/x-true-hd caps in $TSDEMUX"; exit 1; }
+grep -n 'target_pes_substream = 0x72' "$TSDEMUX" \
+  || { echo "PATCH FAILED: TrueHD PES substream 0x72 not set in $TSDEMUX"; exit 1; }
+if grep -n 'FIXME : Do not expose pad of trueHD' "$TSDEMUX"; then
+  echo "PATCH FAILED: TrueHD case still gated in $TSDEMUX"; exit 1
+fi
+# The removed block took exactly one #if/#endif pair with it; assert balance so a
+# future source change cannot silently leave the preprocessor lopsided.
+TH_IF=$(grep -c '^[[:space:]]*#if ' "$TSDEMUX" || true)
+TH_IFDEF=$(grep -c '^[[:space:]]*#ifdef' "$TSDEMUX" || true)
+TH_IFNDEF=$(grep -c '^[[:space:]]*#ifndef' "$TSDEMUX" || true)
+TH_ENDIF=$(grep -c '^[[:space:]]*#endif' "$TSDEMUX" || true)
+if [ $((TH_IF + TH_IFDEF + TH_IFNDEF)) -ne "$TH_ENDIF" ]; then
+  echo "PATCH FAILED: preprocessor unbalanced in $TSDEMUX" \
+       "(#if=$TH_IF #ifdef=$TH_IFDEF #ifndef=$TH_IFNDEF vs #endif=$TH_ENDIF)"; exit 1
+fi
+echo "=== TrueHD patch OK (audio/x-true-hd exposed, substream 0x72, balanced) ==="
+
 # Minimal patch for an LG meson bug: gst-libs/gst/mpdclient/meson.build uses
 # gstmpdclient/pkg_name outside the "if xml2_dep.found()" guard, which breaks
 # configuration when dash is disabled. Move the endif to end of file.
