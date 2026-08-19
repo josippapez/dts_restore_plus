@@ -148,6 +148,27 @@ write against what is installed, so an un-bumped stamp is still caught. On the C
 no compatibility verdict is reported at all, and the display is unchanged from before the
 gate existed.
 
+The **payload** has the same timing caveat, and needed its own check. An app update
+replaces the bundled `payload/**` `.so` but never re-runs Enable, so the TV keeps decoding
+with whatever it was last enabled with — and unlike the boot script the binaries carry no
+version stamp to compare, so a stale decoder was previously invisible. Both copies live on
+the TV (the bundle under the app directory, the staged copy under `/var/lib/webosbrew/`),
+so the detect probe md5s them against each other — no hash has to be embedded in the app.
+It reports `payloadStale`, `payloadStaleReason` and `payloadStaleFiles`, naming the files
+that differ, and the UI shows a note asking the user to press Enable.
+
+Six files are compared: `libgstdtsdec.so` and `libdca.so.0` (DTS), `libgstlibav.so` plus
+`libavcodec.so.58` as the representative of the ffmpeg set — those libs move together, so
+one is enough to catch a TrueHD payload swap without hashing a dozen files — and
+`libgstisomp4.so` + `libgstmpegtsdemux.so` (container demuxers). A file this build ships
+that is absent from the staged set is reported as missing rather than drifted (a partial
+stage, e.g. a TV enabled under a build that shipped no demuxers), and a TV with nothing
+staged at all is reported as neither — it was simply never enabled.
+
+Like the hook-version check this **only reports**. It deliberately does not re-stage on
+detect: doing so would re-apply a mechanism the user may have chosen to Disable, which is
+the same reason the gate-version nag never rewrites the script by itself.
+
 ### Make-up gain & DRC control
 
 DTS and TrueHD decode quieter than LG's native AAC/AC-3/Atmos, and neither

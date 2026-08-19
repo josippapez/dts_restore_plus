@@ -163,6 +163,7 @@
     $("btnUninstall").disabled = !supported;
     renderVerdict(s, verdict);
     renderHookStale(s);
+    renderPayloadStale(s);
 
     // Test features: only the webOS 25 profile has a self-test + bundled samples.
     var canTest = profile === "webos25-armel-gst124";
@@ -190,6 +191,31 @@
     note.hidden = !stale;
     if (stale && s.hookGateVersion && s.appGateVersion) {
       note.setAttribute("data-versions", "installed " + s.hookGateVersion + ", app " + s.appGateVersion);
+    }
+  }
+
+  /* "The staged decoders are older than the ones this app version ships."
+   *
+   * The sibling of renderHookStale, for the payload rather than the boot script.
+   * An app update replaces the bundled .so but never re-runs Enable, so the TV
+   * keeps decoding with whatever it was last enabled with -- and unlike the boot
+   * script the binaries carry no version stamp, so the service compares md5s
+   * instead. Same policy: surface it, never silently re-stage on detect, since
+   * that would re-apply a mechanism the user may have chosen to Disable.
+   *
+   * The reason text is rendered from the service (it names the files that differ)
+   * rather than hard-coded, so the note says which decoder is behind.
+   */
+  function renderPayloadStale(s) {
+    var note = $("payloadStaleNote");
+    if (!note) return;
+    var stale = !!s.payloadStale;
+    note.hidden = !stale;
+    if (!stale) return;
+    var reason = $("payloadStaleReason");
+    if (reason) reason.textContent = s.payloadStaleReason || "The staged decoders differ from the ones this app version ships.";
+    if (s.payloadStaleFiles && s.payloadStaleFiles.length) {
+      note.setAttribute("data-files", s.payloadStaleFiles.join(" "));
     }
   }
 

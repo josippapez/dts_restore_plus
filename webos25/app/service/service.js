@@ -1321,7 +1321,47 @@ var DETECT_PROBE = [
   "echo \"GC_BOUND=$B_GC\"",
   "echo \"GC_MD5=$S_GC\"",
   "echo \"FP_CFG=$(w25_fp_get device_codec_capability_config)\"",
-  "echo \"FP_GC=$(w25_fp_get gstcool)\""
+  "echo \"FP_GC=$(w25_fp_get gstcool)\"",
+  "",
+  "# --- PROBE 8: does the STAGED payload match the one THIS app build ships? ---",
+  "# App updates replace the bundled payload/** but never re-run Enable, so a TV",
+  "# keeps running the .so it was last enabled with. PROBE 7 catches that for the",
+  "# boot SCRIPT (via its version stamp); this catches it for the BINARIES, which",
+  "# carry no version stamp at all -- hence md5. Both sides are on this TV (the",
+  "# bundle under the app dir, the staged copy under /var/lib/webosbrew), so the",
+  "# comparison is a local md5 of two files: no hash has to be embedded in the app.",
+  "#",
+  "# Read-only by construction: it measures and reports. It deliberately does NOT",
+  "# re-stage -- that is Enable's job, and silently re-staging because someone",
+  "# opened the app would re-apply a mechanism a user may have chosen to Disable",
+  "# (the same reason PROBE 7 only reports).",
+  "PD_DRIFT=",
+  "PD_MISSING=",
+  "PD_PRESENT=0",
+  "PD_HASHABLE=1",
+  "[ -n \"$(command -v md5sum 2>/dev/null)\" ] || PD_HASHABLE=0",
+  "w25_pd_cmp() {",
+  "  # $1=bundled file, $2=staged file, $3=short label",
+  "  [ -f \"$1\" ] || return 0            # this build ships no such file -> nothing to compare",
+  "  if [ ! -f \"$2\" ]; then PD_MISSING=\"$PD_MISSING $3\"; return 0; fi",
+  "  PD_PRESENT=1",
+  "  [ \"$PD_HASHABLE\" = \"1\" ] || return 0",
+  "  pd_a=$(w25_md5 \"$1\"); pd_b=$(w25_md5 \"$2\")",
+  "  [ -n \"$pd_a\" ] && [ -n \"$pd_b\" ] || return 0",
+  "  [ \"$pd_a\" = \"$pd_b\" ] || PD_DRIFT=\"$PD_DRIFT $3\"",
+  "}",
+  "w25_pd_cmp \"" + PAYLOAD_W25 + "/libgstdtsdec.so\" \"" + W25_DEST + "/libgstdtsdec.so\" libgstdtsdec.so",
+  "w25_pd_cmp \"" + PAYLOAD_W25 + "/libdca.so.0\" \"" + W25_LIBS + "/libdca.so.0\" libdca.so.0",
+  "w25_pd_cmp \"" + PAYLOAD_W25_THD + "/libgstlibav.so\" \"" + W25_THD_DEST + "/libgstlibav.so\" libgstlibav.so",
+  "w25_pd_cmp \"" + PAYLOAD_W25_DMX + "/libgstisomp4.so\" \"" + W25_DMX_DEST + "/libgstisomp4.so\" libgstisomp4.so",
+  "w25_pd_cmp \"" + PAYLOAD_W25_DMX + "/libgstmpegtsdemux.so\" \"" + W25_DMX_DEST + "/libgstmpegtsdemux.so\" libgstmpegtsdemux.so",
+  "# The ffmpeg libs move as a set with libgstlibav.so, so one representative is",
+  "# enough to detect a TrueHD payload swap without hashing a dozen files.",
+  "w25_pd_cmp \"" + PAYLOAD_W25_THD + "/libavcodec.so.58\" \"" + W25_THD_LIBS + "/libavcodec.so.58\" libavcodec.so.58",
+  "echo \"PAYLOAD_STAGED_PRESENT=$PD_PRESENT\"",
+  "echo \"PAYLOAD_HASHABLE=$PD_HASHABLE\"",
+  "echo \"PAYLOAD_DRIFT_FILES=$(echo $PD_DRIFT)\"",
+  "echo \"PAYLOAD_MISSING_FILES=$(echo $PD_MISSING)\""
 ]).join("\n");
 
 /**
@@ -1456,6 +1496,78 @@ function addHookFields(res, h) {
   res.appGateVersion = h.appGateVersion;
   res.hookScriptInstalled = h.hookScriptInstalled;
   res.hookLinked = h.hookLinked;
+  return res;
+}
+
+/**
+ * Is the payload STAGED on this TV the one this app build ships? (webOS 25 only)
+ *
+ * The companion to hookStaleness(). An app update replaces the bundled
+ * payload/** but never re-runs Enable, so the TV keeps decoding with the .so it
+ * was last enabled with -- silently, because unlike the boot script the binaries
+ * carry no version stamp to compare. PROBE 8 md5s the bundled and staged copies
+ * (both are on the TV) and reports which differ; this maps that onto the
+ * detect/status contract.
+ *
+ * Reports only. Re-staging is Enable's job: doing it here would re-apply a
+ * mechanism the user may have deliberately Disabled, the same trap hookStaleness()
+ * documents for the hook-version nag.
+ *
+ * Returns null for profiles without this mechanism (CX), so the caller omits the
+ * fields entirely, exactly as it does for the compatibility verdict.
+ */
+function payloadStaleness(profile, kv) {
+  if (profile !== PROFILE_W25) return null;
+  var drift = (kv.PAYLOAD_DRIFT_FILES || "").split(/\s+/).filter(Boolean);
+  var missing = (kv.PAYLOAD_MISSING_FILES || "").split(/\s+/).filter(Boolean);
+  var out = {
+    payloadStale: false,
+    payloadStaleFiles: drift,
+    payloadStaleReason: ""
+  };
+  // Nothing staged at all => this TV was never enabled (or was uninstalled).
+  // That is not drift, and telling someone their payload is stale when they have
+  // not installed one would be nonsense. Enable is already the obvious next step.
+  if (kv.PAYLOAD_STAGED_PRESENT !== "1") {
+    out.payloadStaleReason = "No payload is staged on this TV yet, so there is nothing to compare.";
+    return out;
+  }
+  if (kv.PAYLOAD_HASHABLE === "0") {
+    out.payloadStaleReason = "No md5sum on this TV, so the staged payload could not be compared.";
+    return out;
+  }
+  // A file this build ships that is absent from the staged set is a partial stage
+  // (e.g. enabled by an older build that shipped no demuxers), which Enable fixes
+  // the same way drift does -- so report it, but name it accurately.
+  if (drift.length && missing.length) {
+    out.payloadStale = true;
+    out.payloadStaleReason = "The staged payload differs from this app build (" + drift.join(", ") +
+      ") and is missing " + missing.join(", ") + ". Press Enable to re-stage it.";
+    return out;
+  }
+  if (drift.length) {
+    out.payloadStale = true;
+    out.payloadStaleReason = "This app build ships newer " + drift.join(", ") +
+      " than the copy staged on this TV. Press Enable to re-stage it.";
+    return out;
+  }
+  if (missing.length) {
+    out.payloadStale = true;
+    out.payloadStaleReason = "This app build ships " + missing.join(", ") +
+      (missing.length > 1 ? ", which are not staged on this TV. Press Enable to stage them."
+                          : ", which is not staged on this TV. Press Enable to stage it.");
+    return out;
+  }
+  out.payloadStaleReason = "The staged payload matches this app build.";
+  return out;
+}
+
+/** Copy a payloadStaleness() result onto a response; no-op when it does not apply. */
+function addPayloadFields(res, p) {
+  if (!p) return res;
+  res.payloadStale = p.payloadStale;
+  res.payloadStaleReason = p.payloadStaleReason;
+  res.payloadStaleFiles = p.payloadStaleFiles;
   return res;
 }
 
@@ -2251,6 +2363,7 @@ service.register("detect", function (message) {
     // `s.verdict || ...` fallback.
     addCompatFields(res, compatVerdict(d.profile, d.probes || {}));
     addHookFields(res, hookStaleness(d.profile, d.probes || {}, w25ExpectedInitMd5()));
+    addPayloadFields(res, payloadStaleness(d.profile, d.probes || {}));
     message.respond(res);
   }).catch(function (e) {
     message.respond({ returnValue: false, errorText: e.errorText || e.message || String(e) });
@@ -2277,6 +2390,7 @@ service.register("status", function (message) {
     };
     addCompatFields(base, c);
     addHookFields(base, hookStaleness(profile, p, w25ExpectedInitMd5()));
+    addPayloadFields(base, payloadStaleness(profile, p));
 
     if (profile === PROFILE_W25) {
       return rootExec(w25StatusProbe()).then(function (r) {
