@@ -108,7 +108,17 @@ cd webos25/restore
 Each build prints an ABI report — **confirm ARM EABI5 soft-float
 (`e_flags 0x05000200`), interpreter `ld-linux.so.3`, max GLIBC ≤ 2.35** before
 trusting the output. Then **verify on a real webOS-25 TV** (install, play a DTS
-MKV + an mp4/ts/m2ts DTS file; TrueHD MKV). Only then commit the new `.so`.
+MKV + an mp4/ts/m2ts DTS file; a TrueHD MKV **and** a TrueHD `.ts`/`.m2ts`).
+Only then commit the new `.so`.
+
+The TrueHD `.ts`/`.m2ts` case is easy to skip and easy to be fooled by: BD TrueHD
+carries an AC-3 compatibility substream on the **same PID**, so if the TrueHD pad is
+not exposed the AC-3 core decodes and playback sounds perfectly normal. Confirm the
+audio-track list actually offers a TrueHD track, or that the decoder negotiates the
+**side**-pair channel mask (`0x0c0f`) rather than AC-3's **rear** pair (`0x003f`).
+An **ffmpeg-muxed** TS cannot verify this — ffmpeg does not write BD PES substream
+framing, so TrueHD comes out as 2 channels and decodes to nothing. Use tsMuxeR or a
+straight disc copy.
 
 ## Cut a release
 

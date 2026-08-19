@@ -50,3 +50,10 @@ Verified on the dev host after generation:
 file with ffmpeg — see the warning in
 [`../../app/payload/testfiles/README`](../../app/payload/testfiles/README): on the
 C5, LG's demuxer exposes no audio stream at all from an ffmpeg-muxed TS.
+
+The same holds for **TrueHD**, with a symptom that is easier to mistake for success:
+an ffmpeg-muxed BDAV m2ts carrying TrueHD Atmos 7.1 *is* recognised (LG's demuxer
+reports `audio: Dolby TrueHD`) but as **2 channels**, and it decodes to nothing —
+ffmpeg does not write the BD PES substream framing the HDMV TrueHD path selects with
+`target_pes_substream = 0x72`. A TrueHD `.ts`/`.m2ts` test vector therefore has to be
+a genuine disc rip or tsMuxeR output; an ffmpeg mux will produce a false negative.

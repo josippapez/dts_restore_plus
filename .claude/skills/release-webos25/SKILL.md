@@ -34,8 +34,16 @@ rebuild — but still cut a release so the assets carry the change.
    `./build.sh`, `./build-truehd.sh`, `./build-demux.sh`. Confirm each ABI report
    shows **ARM EABI5 soft-float `0x05000200`, `ld-linux.so.3`, GLIBC ≤ 2.35**.
 2. **If binaries affected:** verify on a **real webOS-25 TV** — install and play a
-   DTS MKV, an mp4/ts/m2ts DTS file, and a TrueHD MKV. Commit the new `.so` only
-   after it plays.
+   DTS MKV, an mp4/ts/m2ts DTS file, a TrueHD MKV, **and a TrueHD `.ts`/`.m2ts`**.
+   Commit the new `.so` only after it plays.
+
+   The TrueHD `.ts`/`.m2ts` case can fool you: BD TrueHD carries an AC-3
+   compatibility substream on the **same PID**, so if the TrueHD pad is not exposed
+   the AC-3 core decodes and it sounds perfectly normal. Confirm a TrueHD track is
+   actually offered, or that the decoder negotiates the **side**-pair channel mask
+   (`0x0c0f`) not AC-3's **rear** pair (`0x003f`). Do not test this with an
+   ffmpeg-muxed TS — no BD PES substream framing, so TrueHD reports 2 channels and
+   decodes to nothing.
 3. Bump the app version in `webos25/app/appinfo.json` and
    `webos25/app/service/package.json` if the app changed. Update
    `webos25/README.md` / `RELEASING.md` as needed.

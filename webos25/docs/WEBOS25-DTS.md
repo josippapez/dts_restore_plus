@@ -176,6 +176,13 @@ webOS-25 TV, re-commit the `.so` in the same change (see
 straight disc copy. Avoid `ffmpeg -mpegts_m2ts_mode 1` for DTS (silent), and if
 you only have an ffmpeg-muxed `.ts`, remux to MKV with `-c copy`.
 
+**The ffmpeg-mux warning applies to TrueHD too, with a different symptom.** Measured
+2026-08-19: an ffmpeg-muxed BDAV m2ts carrying TrueHD Atmos 7.1 *is* recognised —
+LG's demuxer exposes `audio: Dolby TrueHD` — but it reports **2 channels** instead of
+8 and decodes to **nothing**. ffmpeg does not write the BD PES substream framing that
+the HDMV TrueHD path's `target_pes_substream = 0x72` selects, so the substream never
+resolves. Same conclusion as DTS: use tsMuxeR or a disc copy, never an ffmpeg mux.
+
 ## TrueHD in `.ts`/`.m2ts` — a separate gate, and a silent AC-3 substitution
 
 DTS was not the only codec LG switched off in `tsdemux.c`. The BluRay TrueHD

@@ -335,8 +335,19 @@ unchanged. **`.mp4` TrueHD remains unsupported** — `qtdemux.c` has no TrueHD/M
   two-channel PCM link, so it cannot carry 5.1 from a decode-to-PCM path at all — eARC is the only
   multichannel route out. Confirm 5.1 on an AVR's input display; this half is the TV's routing, not
   something this project measures.
-- **DTS-HD:** `avdec_dca` decodes the DTS **core**, not the DTS-HD MA lossless (XLL) extension.
-  **TrueHD:** decoded as base channels (Atmos objects fold in).
+- **DTS-HD:** the shipped `dtsdec`/`libdca` decodes the DTS **core** only — not the DTS-HD MA
+  lossless (XLL) extension, and not the DTS:X extension substream. (ffmpeg's XLL-capable `dca`
+  decoder is deliberately not built; see `build-demux.sh`/`build-truehd.sh`.) So a DTS:X or
+  DTS-HD MA 7.1 title decodes as its 5.1 core.
+- **TrueHD Atmos:** the **full base bed decodes** — measured on a C5, a real
+  `Dolby TrueHD + Dolby Atmos` 7.1 MKV yields `audio/x-raw, S32LE, 48000, channels=8`
+  (`channel-mask=0x0c3f`) with no substream or downmix warnings. Only the **object layer** is
+  dropped, which no open decoder renders.
+- **No object audio, and no "Dolby Atmos"/"DTS:X" badge** for DTS or TrueHD — and this is not an
+  AVR or eARC limitation: the badge appears on TV speakers alone for AC-3, because LG's
+  `libgstlgaudiodec.so` is the only element with an Atmos codepath and its sink caps accept
+  neither `audio/x-dts` nor `audio/x-true-hd`. Structural, not configurable. See
+  [`docs/PASSTHROUGH.md`](docs/PASSTHROUGH.md).
 - **No bitstream passthrough** to an AVR (decode-to-PCM only) — out of scope.
 
 ## Build
