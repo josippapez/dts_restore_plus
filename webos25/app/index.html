@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=1920, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>DTS Enabler</title>
   <link rel="stylesheet" href="css/style.css">
 </head>
@@ -29,12 +29,14 @@
           <dt>Profile</dt><dd id="stProfile">&mdash;</dd>
           <dt>Mechanism</dt><dd id="stMech">&mdash;</dd>
           <dt>Model</dt><dd id="stModel">&mdash;</dd>
+          <dt>OTA / hardware ID</dt><dd id="stOta">&mdash;</dd>
+          <dt>Firmware</dt><dd id="stFirmware">&mdash;</dd>
           <dt>webOS</dt><dd id="stWebos">&mdash;</dd>
           <dt>GStreamer</dt><dd id="stGst">&mdash;</dd>
           <dt>Float ABI</dt><dd id="stAbi">&mdash;</dd>
           <dt>DTS disabled by</dt><dd id="stDisable">&mdash;</dd>
           <dt>Patch active</dt><dd id="stActive">&mdash;</dd>
-          <dt>Containers (mp4/ts/m2ts)</dt><dd id="stContainers">&mdash;</dd>
+          <dt>Extra containers</dt><dd id="stContainers">&mdash;</dd>
           <dt>Verified on hardware</dt><dd id="stVerified">&mdash;</dd>
         </dl>
       </section>
@@ -74,8 +76,9 @@
             to get your set added.
           </p>
           <p id="forceWarning" hidden>
-            &ldquo;Try anyway&rdquo; replaces system-wide media plugins (DTS/TrueHD decode,
-            mp4/ts/m2ts demux) on a TV this payload has never been verified against. If
+            &ldquo;Try anyway&rdquo; replaces system-wide media plugins on a TV this payload
+            has never been verified against. The experimental C2/G2 profile supplies
+            DTS in MP4 only (not TS/M2TS or webOS-25 TrueHD/gain controls). If
             playback misbehaves afterward, use <strong>Disable</strong>; a reboot also
             fully clears it.
           </p>
@@ -187,8 +190,9 @@
       <section class="card card--wide" aria-labelledby="h-test">
         <h2 id="h-test">Test the patch</h2>
         <p class="muted">
-          <strong>Run self-test</strong> decodes a bundled DTS sample in each container
-          (mp4, ts, m2ts) through the TV's media pipeline and reports PASS/FAIL &mdash; an
+          <strong>Run self-test</strong> decodes bundled DTS samples through the TV's
+          media pipeline and reports PASS/FAIL. C2/G2 tests MP4 through
+          <code>avdec_dca</code> only; webOS 25 additionally tests TS/M2TS &mdash; an
           objective check that the patch works, no speakers needed. <strong>Play</strong>
           plays a sample so you can confirm by ear.
         </p>

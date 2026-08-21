@@ -1,38 +1,50 @@
-payload/cx/  --  OLED CX-class demuxer-override payload
-=======================================================
+payload/cx/  --  shared immutable legacy LG GStreamer payload
+================================================================
 
-Profile: cx-armv7-gst114   (UNVERIFIED -- carried over from the shipping
-dts_restore tool; no CX hardware was available to this project. See
-../../README.md STATUS matrix.)
+Profiles:
 
-Drop the rebuilt LG GStreamer .so set HERE before packaging the .ipk:
+    cx-armv7-gst114       inherited CX mechanism (not verified by this project)
+    webos22-o22-gst118    exact-firmware C2/G2 opt-in (hardware verification NO)
 
+The release workflow generates this directory from exactly four tracked files
+in the repository root's gst/ directory:
+
+    payload/cx/libgstlibav.so
     payload/cx/libgstisomp4.so
     payload/cx/libgstisomp4_1_8.so
     payload/cx/libgstmatroska.so
-    payload/cx/libgstlibav.so
-    payload/cx/libgstmpegtsdemux.so     (optional -- m2ts/BD; skipped if absent)
 
-Where they come from
---------------------
-These are the .so files from the repo root's gst/ directory (the shipping
-dts_restore CX payload, built from LG's 1.14.4 GStreamer source with DTS demux
-re-enabled + forced stereo-integer downmix):
+From the repository root, the equivalent local packaging step is:
 
-    cp ../../../gst/*.so  ../dts-enabler-universal/payload/cx/
+    cp -f gst/*.so webos25/app/payload/cx/
 
-At enable time the JS service copies these to /var/lib/webosbrew/dtsenabler/cx/gst/
-and bind-mounts them (read-only) over /usr/lib/gstreamer-1.0/, refreshes the
-GStreamer registry, and bumps avdec_dca 0 -> 290 (+ [downmix]) in gstcool.conf.
+These are the shipping dts_restore binaries built from LG's GStreamer 1.14.4
+sources: gst-plugins-good for Matroska/isomp4 and gst-libav for dca decode with
+the forced stereo-integer downmix. The payload itself is measured ELF32 ARM
+EABI5 soft-float. This project has not captured a stock CX loader/e_flags pair
+on hardware, and no rooted C2/G2 was available for this implementation.
 
-WARNING: applying this mechanism on a NON-CX (e.g. webOS 25 / 1.24) TV would
-bind-mount 1.14/armv7 libraries over 1.24 ones and break MKV/MP4 playback. The
-service only ever selects this payload when the detector reports the
-cx-armv7-gst114 profile (GStreamer 1.14.x); it refuses on any other profile.
+The profiles share only these immutable package files:
 
-Float-ABI caveat: MULTI-MODEL.md flags the CX "armv7 hard-float" claim as repo
-lore, never measured on-device. The detector captures the loader + e_flags so
-the real ABI can be confirmed before trusting this build.
+* CX copies them under /var/lib/webosbrew/dtsenabler/cx/gst/, uses the inherited
+  /var/lib/webosbrew/init.d/restore_dts hook, refreshes the registry, and raises
+  avdec_dca from 0 to 290.
+* C2 uses dedicated /var/lib/webosbrew/dtsenabler/c2 state and the authenticated
+  regular hook /var/lib/webosbrew/init.d/restore_dts_c2. It is offered only for
+  the exact global W22O 04.40.93/04.40.93.01 identity, ABI, GStreamer 1.18.2,
+  and stock SHA-256 set documented in ../../README.md. It always requires the
+  two-step experimental opt-in and never becomes hardware verified from a
+  userspace self-test.
 
-These .so files are NOT committed (see ../../.gitignore). They are LGPL-2.1+;
-ship the corresponding source offer with any distributed .ipk.
+All four files must be present in the package. C2 binds libgstisomp4_1_8.so only
+when that stock target exists. No legacy libgstmpegtsdemux.so is tracked, so the
+C2 capability is MKV/MP4 DTS only, never TS/M2TS or TrueHD.
+
+WARNING: applying these 1.14 libraries to an unmatched target can break media
+playback. The service refuses every identity/version/hash mismatch, every
+diagnostic B2/C3/B3 profile, and all unknown profiles; GStreamer version alone
+never authorizes C2.
+
+Generated payload .so files are NOT committed (see ../../.gitignore). The four
+legacy files are LGPL-2.1-or-later; include the license and corresponding-source
+provenance in licenses/NOTICE.md with every distributed .ipk.

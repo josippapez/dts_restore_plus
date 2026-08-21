@@ -93,6 +93,13 @@ jobs:
           cp -Pf ../restore/truehd-out/libgstlibav.so                             payload/webos25-truehd/
           cp -Pf ../restore/truehd-out/libav*.so* ../restore/truehd-out/libsw*.so* payload/webos25-truehd/
           cp -f  ../restore/demux-out/libgstisomp4.so ../restore/demux-out/libgstmpegtsdemux.so payload/webos25-demux/
+          # C2/G2 deliberately reuses the existing legacy payload directory. Do
+          # not duplicate these identical binaries under a model-specific path.
+          mkdir -p payload/cx
+          cp -f ../../gst/libgstlibav.so ../../gst/libgstisomp4.so ../../gst/libgstmatroska.so ../../gst/libgstisomp4_1_8.so payload/cx/
+          for f in libgstlibav.so libgstisomp4.so libgstmatroska.so libgstisomp4_1_8.so; do
+            [ -s "payload/cx/$f" ] || { echo "MISSING generated C2/CX payload: $f"; exit 1; }
+          done
 
       - name: Build the .ipk
         run: |
@@ -111,7 +118,7 @@ jobs:
           # ipkUrl is a bare filename: repogen urljoin()s it against manifestUrl,
           # so it resolves to the same release the manifest is hosted in.
           cat > webos25/app/dist/io.github.josippapez.dtsenabler.manifest.json <<EOF
-          {"id":"io.github.josippapez.dtsenabler","version":"$VER","type":"web","title":"DTS Enabler","appDescription":"Restore DTS and Dolby TrueHD/MLP audio on rooted LG webOS 25 TVs, including DTS in mp4/ts/m2ts containers. Decodes native discrete 5.1. Requires the Homebrew Channel + root.","iconUri":"https://raw.githubusercontent.com/josippapez/dts_restore_plus/main/assets/icon160.png","sourceUrl":"https://github.com/josippapez/dts_restore_plus","rootRequired":true,"ipkUrl":"$IPK_NAME","ipkSize":$SIZE,"ipkHash":{"sha256":"$SHA"}}
+          {"id":"io.github.josippapez.dtsenabler","version":"$VER","type":"web","title":"DTS Enabler","appDescription":"Restore DTS and Dolby TrueHD/MLP audio on rooted LG webOS 25 TVs, including DTS in mp4/ts/m2ts containers. Also offers exact-firmware experimental DTS support for C2/G2 via explicit opt-in. Requires the Homebrew Channel + root.","iconUri":"https://raw.githubusercontent.com/josippapez/dts_restore_plus/main/assets/icon160.png","sourceUrl":"https://github.com/josippapez/dts_restore_plus","rootRequired":true,"ipkUrl":"$IPK_NAME","ipkSize":$SIZE,"ipkHash":{"sha256":"$SHA"}}
           EOF
           cat webos25/app/dist/io.github.josippapez.dtsenabler.manifest.json
 

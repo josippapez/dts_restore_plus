@@ -30,6 +30,13 @@ Then install **DTS Enabler** from the list — it restores **DTS + Dolby TrueHD/
 and play-by-ear. The `.ipk` is pulled from the release and **sha256-verified**;
 updates are automatic. Prefer SSH? Use the CLI in [`webos25/`](webos25/README.md).
 
+The same app package also exposes an **app-only, experimental C2/G2 DTS profile** for
+the exact analyzed global `W22O` firmware. It reuses the legacy payload for MKV/MP4,
+requires a two-step opt-in, and is **not hardware-verified**. Other C2/G2 firmware and
+all B2/C3/B3/C4 families remain refused; see the
+[firmware evidence](webos25/docs/FIRMWARE-COMPATIBILITY.md) and
+[app profile contract](webos25/app/README.md#webos22-o22-gst118--exact-firmware-legacy-override-experimental-not-hardware-verified).
+
 *(For OLED CX / webOS 3–6, see the sections below.)*
 
 ---
@@ -107,18 +114,19 @@ and power-cycle.
 ## Supported models
 
 The shipped binaries are **GStreamer 1.14.4 / OLED CX** builds. They are field-confirmed working
-on other 1.14-class LG sets (per issue #72). There is a single library set — models outside the
-list below can still install (the installer just warns first), using the same binaries.
+on several later LG sets (per issue #72), even though extracted C2 firmware shows that not every
+such set has a 1.14 stock runtime. There is a single library set — models outside the list below
+can still install (the installer just warns first), using the same binaries.
 
 | Model family | webOS | GStreamer | Status |
 |---|---|---|---|
 | **OLED CX** | 5.x | 1.14.4 | **Reference target** |
 | OLED BX | 5.x | 1.14-class | Same generation as CX |
 | OLED C1 / G1 | 6.x | 1.14-class | Community-confirmed |
-| OLED C2 / G2 | 6.x / "22" | 1.14-class | Community-confirmed |
-| NanoCell / LCD (UN7xxx, NANO7xx, 2020–2022) | 5.x / 6.x | 1.14-class | Community-confirmed |
-| webOS 22 / 23 / 24 | — | — | Not covered (no source drop; no durable root path) |
-| webOS 25 (C5/G5) | "10" | **1.24** | Not these binaries — needs an aarch64/1.24 decoder ([webos25/docs/WEBOS25-DTS.md](webos25/docs/WEBOS25-DTS.md)) |
+| OLED C2 / G2 | "22" | stock **1.18.2**; legacy payload 1.14.4 | The root CX installer still only warns and applies its one legacy recipe. DTS Enabler 2.6.0 instead offers a fail-closed, exact-firmware **experimental opt-in** for global `W22O` `04.40.93`/`04.40.93.01`; firmware/QEMU evidence only, **not hardware-verified** ([firmware evidence](webos25/docs/FIRMWARE-COMPATIBILITY.md)) |
+| NanoCell / LCD (UN7xxx, NANO7xx, 2020–2021) | 5.x / 6.x | 1.14-class | Community-confirmed |
+| webOS 22 / 23 / 24 (C3/C4, G3/G4, Realtek B2/B3) | 22 / 23 / 24 | stock **1.18.2 / 1.18.5**; webOS 24 unextracted | B2/C3/B3 receive diagnostic refusal profiles; C4/G4 remains unknown. No forceable restore mechanism ([firmware evidence](webos25/docs/FIRMWARE-COMPATIBILITY.md)) |
+| webOS 25 (C5/G5) | "10" | **1.24** | Not these binaries — needs a separate soft-float armel 1.24 build ([webos25/README.md](webos25/README.md)) |
 
 ## Persistence — what survives a reboot
 
@@ -226,9 +234,8 @@ This fork adds two work-in-progress components alongside the core tool:
   rides LG's proprietary **multichannel** sink (real 5.1/7.1 instead of stereo downmix). See its
   own README for the design, build, and the on-TV test that gates the approach. **Not yet
   validated on hardware.**
-- **`dts-enabler-app/`** — a "DTS Enabler" webOS homebrew app: a GUI to enable/disable DTS
-  restore, view status, tune the downmix, and toggle DV, installable from the Homebrew Channel.
-  **Scaffold — not yet packaged/tested on hardware.**
+- **`webos25/app/`** — the shipping "DTS Enabler" Homebrew app: a GUI for the verified
+  webOS-25 mechanism plus the exact-firmware experimental C2/G2 profile described above.
 
 ## License
 
@@ -239,13 +246,16 @@ links a GPL library:
 | Shipped artifact | License | Why |
 |---|---|---|
 | App, service, `install.sh`/`init_dts25.sh`/`uninstall.sh` | LGPL-2.1-or-later | this repo's own code |
-| `libgstisomp4.so`, `libgstmpegtsdemux.so` | LGPL-2.1-or-later | built from gst-plugins-good / -bad |
-| `libgstlibav.so`, `libav*.so*`, `libsw*.so*` | LGPL-2.1-or-later | ffmpeg 4.4 configured **without** `--enable-gpl` / `--enable-version3` (see `webos25/restore/build-truehd.sh`) |
+| Legacy `gst/libgst{matroska,isomp4,isomp4_1_8,libav}.so` (packaged in `payload/cx/`) | LGPL-2.1-or-later | LG GStreamer 1.14.4 sources; shared by the inherited CX mechanism and experimental C2 profile |
+| `webos25/restore/demux-out/libgst{isomp4,mpegtsdemux}.so` | LGPL-2.1-or-later | built from gst-plugins-good / -bad |
+| `webos25/restore/truehd-out/libgstlibav.so`, `libav*.so*`, `libsw*.so*` | LGPL-2.1-or-later | ffmpeg 4.4 configured **without** `--enable-gpl` / `--enable-version3` (see `webos25/restore/build-truehd.sh`) |
 | `libgstdtsdec.so`, `libdca.so.0` | **GPL-2.0-or-later** | the plugin source is LGPL, but it links **libdca**, which is GPL-2.0-or-later — the resulting binary is a combined work |
 
 Each component keeps its own license; because the DTS decoder pair is GPL-2.0-or-later, any
 distributed `.ipk` or tarball contains GPL-2.0-or-later code, and the corresponding-source offer
-must cover it. The build scripts and patched sources in `webos25/restore/` are that source.
+must cover it. The webOS-25 build scripts and patched sources are in `webos25/restore/`; provenance
+for the separately packaged legacy LG 1.14.4 files is listed above and in
+`webos25/app/payload/cx/README`.
 
 **NOT endorsed by LG.** Provided "AS IS" without warranty of any kind; the entire risk as to
 quality and performance is with you.

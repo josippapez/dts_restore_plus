@@ -47,14 +47,24 @@ self-test and play-by-ear). The `.ipk` is pulled from the GitHub release and
 sha256-verified; updates flow automatically. Requires a rooted TV with the
 Homebrew Channel. (The CLI `restore/install.sh` above remains the SSH-based route.)
 
+The app package also contains an **app-only experimental C2/G2 profile** named
+`webos22-o22-gst118`. It is selected only for the exact analyzed global `W22O`
+identity, firmware, ABI, GStreamer version, and stock plugin SHA-256 set; even then,
+Enable requires the explicit two-step experimental opt-in and the UI says hardware
+verification **NO**. It restores only the legacy MKV/MP4 DTS path (no TS/M2TS,
+TrueHD, gain controls, or A/B compare). The webOS-25 CLI does not install this
+profile. See [`app/README.md`](app/README.md#webos22-o22-gst118--exact-firmware-legacy-override-experimental-not-hardware-verified)
+and [`docs/FIRMWARE-COMPATIBILITY.md`](docs/FIRMWARE-COMPATIBILITY.md#implemented-c2-app-policy-version-260).
+
 ## Folder layout
 
 - `restore/` — the CLI tool: prebuilt decoders (`out/`, `truehd-out/`) + container
   demuxers (`demux-out/`) + `install.sh`/`uninstall.sh` + the `build*.sh` scripts to
   rebuild them (Docker).
 - `app/` — the "DTS Enabler" webOS homebrew app (GUI enable/disable/uninstall).
-- `docs/` — design notes (`MULTI-MODEL.md`), the target-detection probe
-  (`detect-target.sh`), background (`WEBOS25-DTS.md`), and `experimental/`.
+- `docs/` — design notes (`MULTI-MODEL.md`), firmware evidence and proof labels
+  (`FIRMWARE-COMPATIBILITY.md`), the target-detection probe (`detect-target.sh`),
+  background (`WEBOS25-DTS.md`), and `experimental/`.
 
 ## Make-up gain + DRC (DTS/TrueHD quieter and less dynamically managed than native)
 
@@ -101,7 +111,8 @@ LG ships webOS 25 with **no DTS decoder and no TrueHD decoder**, and:
   soft-float** (`ld-linux.so.3`, `e_flags 0x05000200`) — Debian's `armel` port.
 - glibc **2.35**, GStreamer **1.24.0**, glib 2.72.
 - All shipped `.so` are armel soft-float with max GLIBC symbol `<= 2.35`.
-  (CX/dts_restore's armv7 hard-float GStreamer 1.14 binaries are incompatible.)
+  The legacy CX payload is also ELF32 ARM EABI5 soft-float, but targets GStreamer
+  1.14 and is incompatible with this 1.24 runtime.
 
 ## How the fix works
 

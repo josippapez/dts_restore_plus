@@ -100,6 +100,7 @@
   function mechLabel(profile, mech) {
     if (profile === "webos25-armel-gst124") return "decoder-inject (patched dtsdec)";
     if (profile === "cx-armv7-gst114") return "demuxer-override (rebuilt LG libs)";
+    if (profile === "webos22-o22-gst118") return "experimental legacy payload (C2/G2)";
     return mech || "none";
   }
 
@@ -112,6 +113,8 @@
     setVal("stProfile", profile, supported ? "ok" : "warn");
     setVal("stMech", mechLabel(profile, s.mechanism), supported ? null : "warn");
     setVal("stModel", s.model || "unknown");
+    setVal("stOta", s.otaId || "unknown");
+    setVal("stFirmware", s.firmwareVersion || "unknown");
     setVal("stWebos", s.webosVersion || "unknown");
     setVal("stGst", s.gstVersion || "unknown");
     setVal("stAbi", s.floatAbi || "unknown");
@@ -120,10 +123,13 @@
     var active = !!s.active;
     setVal("stActive", active ? "yes" : "no", active ? "ok" : "off");
 
-    // Container support (mp4/ts/m2ts) — only meaningful on the webOS 25 profile.
+    // The reused C2 payload supplies MP4 only; W25 has MP4 + TS/M2TS.
     if (profile === "webos25-armel-gst124") {
       var cont = !!s.containersActive;
-      setVal("stContainers", cont ? "yes" : "no", cont ? "ok" : "off");
+      setVal("stContainers", cont ? "MP4 / TS / M2TS active" : "inactive", cont ? "ok" : "off");
+    } else if (profile === "webos22-o22-gst118" || s.ownerMarker) {
+      var c2cont = !!s.containersActive;
+      setVal("stContainers", c2cont ? "MP4 active (TS/M2TS unavailable)" : "MP4 only (inactive)", c2cont ? "ok" : "off");
     } else {
       setVal("stContainers", "n/a");
     }
@@ -146,6 +152,16 @@
     if (verdict === "drift") {
       pill.textContent = "paused: firmware changed";
       pill.className = "pill pill--unknown";
+    } else if (verdict === "gated") {
+      // Decoder present but switched off. Not "unsupported" (the hardware can do it)
+      // and not "works" (it currently does not) -- say exactly that.
+      pill.textContent = "DTS present but disabled";
+      pill.className = "pill pill--unknown";
+    } else if (verdict === "native") {
+      // Good news, so it must not land in the "unsupported TV" bucket below: this TV
+      // never lost DTS (2023/2024 sets). Shown as on, because DTS genuinely works.
+      pill.textContent = "DTS works natively";
+      pill.className = "pill pill--on";
     } else if (verdict === "unverified" || verdict === "refused" || !supported) {
       pill.textContent = "unsupported TV";
       pill.className = "pill pill--unknown";
@@ -165,14 +181,18 @@
     renderHookStale(s);
     renderPayloadStale(s);
 
-    // Test features: only the webOS 25 profile has a self-test + bundled samples.
-    var canTest = profile === "webos25-armel-gst124";
+    // C2/G2 has MP4 self-test/play only. W25 additionally has TS/M2TS and A/B.
+    var canTest = profile === "webos25-armel-gst124" || profile === "webos22-o22-gst118";
+    var canW25Test = profile === "webos25-armel-gst124";
     $("btnTest").disabled = !canTest;
     $("btnPlayMp4").disabled = !canTest;
-    $("btnPlayTs").disabled = !canTest;
-    $("btnPlayM2ts").disabled = !canTest;
+    $("btnPlayTs").disabled = !canW25Test;
+    $("btnPlayM2ts").disabled = !canW25Test;
     // A/B compare renders through the patched dtsdec, so it needs the same profile.
-    $("btnAb").disabled = !canTest;
+    $("btnAb").disabled = !canW25Test;
+    Array.prototype.slice.call(document.querySelectorAll("[data-gain], [data-preset], [data-center]"))
+      .forEach(function (el) { el.disabled = !canW25Test; });
+    $("btnSaveGain").disabled = !canW25Test;
   }
 
   /* Installed-boot-script staleness.
@@ -229,7 +249,7 @@
    * (canForce) and the verdict is exactly "unverified" -- drift/refused never
    * get an opt-in.
    */
-  function md5OrNote(v) {
+  function hashOrNote(v) {
     return v ? v : "n/a (unmeasurable — our binds are already active)";
   }
 
@@ -243,11 +263,14 @@
       var measured = s.measured || {};
       $("verdictReport").textContent =
         "PRODUCT_ID=" + (s.model || "unknown") + "\n" +
+        "HARDWARE_ID=" + (s.otaId || "unknown") + "\n" +
+        "FIRMWARE=" + (s.firmwareVersion || "unknown") + "\n" +
         "WEBOS_RELEASE=" + (s.webosVersion || "unknown") + "\n" +
         "GST_VERSION=" + (s.gstVersion || "unknown") + "\n" +
-        "libgstlibav.so=" + md5OrNote(measured.libgstlibav) + "\n" +
-        "libgstisomp4.so=" + md5OrNote(measured.libgstisomp4) + "\n" +
-        "libgstmpegtsdemux.so=" + md5OrNote(measured.libgstmpegtsdemux);
+        "libgstlibav.so=" + hashOrNote(measured.libgstlibav) + "\n" +
+        "libgstisomp4.so=" + hashOrNote(measured.libgstisomp4) + "\n" +
+        (measured.libgstmatroska ? "libgstmatroska.so=" + hashOrNote(measured.libgstmatroska)
+                                 : "libgstmpegtsdemux.so=" + hashOrNote(measured.libgstmpegtsdemux));
     }
 
     // The opt-in only ever applies to "unverified" (never drift/refused), and

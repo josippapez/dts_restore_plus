@@ -7,12 +7,14 @@ here relicenses anything. The full texts are alongside this file: [`LGPL-2.1.txt
 | Shipped artifact | License | Upstream / how it is built |
 |---|---|---|
 | App (`index.html`, `js/`, `css/`), JS service, `install.sh`, `init_dts25.sh`, `uninstall.sh` | LGPL-2.1-or-later | this project |
-| `libgstisomp4.so` | LGPL-2.1-or-later | gst-plugins-good, `dts_support` default flipped to TRUE; built by `restore/build-demux.sh` |
-| `libgstmpegtsdemux.so` | LGPL-2.1-or-later | gst-plugins-bad, same patch; built by `restore/build-demux.sh` |
-| `libgstlibav.so` | LGPL-2.1-or-later | gst-libav; built by `restore/build-truehd.sh` |
+| `payload/webos25-demux/libgstisomp4.so` | LGPL-2.1-or-later | gst-plugins-good, `dts_support` default flipped to TRUE; built by `restore/build-demux.sh` |
+| `payload/webos25-demux/libgstmpegtsdemux.so` | LGPL-2.1-or-later | gst-plugins-bad, same patch; built by `restore/build-demux.sh` |
+| `payload/webos25-truehd/libgstlibav.so` | LGPL-2.1-or-later | gst-libav; built by `restore/build-truehd.sh` |
 | `libavcodec.so.58`, `libavformat.so.58`, `libavfilter.so.7`, `libavutil.so.56`, `libswresample.so.3` | LGPL-2.1-or-later | ffmpeg 4.4, configured **without** `--enable-gpl` and **without** `--enable-version3`, with a make-up-gain/DRC patch to `libavcodec/mlpdec.c`; built by `restore/build-truehd.sh` |
 | `libgstdtsdec.so` | **GPL-2.0-or-later** | plugin source is LGPL (gst-plugins-bad `ext/dts`), but it links libdca, so the resulting binary is a combined work governed by libdca's GPL |
 | `libdca.so.0` | **GPL-2.0-or-later** | libdca (VideoLAN), taken from the Debian `libdca-dev:armel` package during the cross-build |
+| `payload/cx/libgstmatroska.so`, `libgstisomp4.so`, `libgstisomp4_1_8.so` | LGPL-2.1-or-later | legacy LG GStreamer 1.14.4 gst-plugins-good payload tracked in root `gst/`; DTS demux restored, with the inherited Matroska Dolby Vision changes |
+| `payload/cx/libgstlibav.so` | LGPL-2.1-or-later | legacy LG GStreamer 1.14.4 gst-libav payload tracked in root `gst/`; dca decode with the inherited forced stereo-integer downmix |
 
 Because `libgstdtsdec.so` and `libdca.so.0` are GPL-2.0-or-later, this package **as distributed
 contains GPL-2.0-or-later code**, and the terms of that license govern its redistribution.
@@ -26,8 +28,10 @@ control compilation and installation, is published at:
 
 Specifically: `webos25/restore/build.sh` (dtsdec + libdca), `webos25/restore/build-truehd.sh`
 (gst-libav + ffmpeg), `webos25/restore/build-demux.sh` (isomp4 + mpegtsdemux), and the patched
-sources under `webos25/restore/src/`. The builds are containerised and reproducible from that repo
-alone.
+sources under `webos25/restore/src/`. Those webOS-25 builds are containerised and reproducible from
+that repository alone. The separately packaged legacy `payload/cx/` files are generated unchanged
+from the tracked root `gst/` artifacts; their per-file LG GStreamer 1.14.4 provenance and source
+repositories are documented in the root `README.md` and `webos25/app/payload/cx/README`.
 
 `libdca.so.0` is built from the Debian `libdca` source package (upstream: VideoLAN,
 https://www.videolan.org/developers/libdca.html); the build script pins and fetches it rather than

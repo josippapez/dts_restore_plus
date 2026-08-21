@@ -46,7 +46,7 @@ if [ -n "$REG" ] && [ -f "$REG" ]; then
   else
     log "refreshing GStreamer registry"
     export GST_REGISTRY_1_0=/tmp/gst_1_0_registry.arm.bin
-    /usr/bin/gst-inspect-1.0 > /var/tmp/gst-inspect.log 2>&1
+    GST_REGISTRY_FORK=no /usr/bin/gst-inspect-1.0 > /var/tmp/gst-inspect.log 2>&1
     chmod 644 "$GST_REGISTRY_1_0" 2>/dev/null
     chown :compositor "$GST_REGISTRY_1_0" 2>/dev/null
     mount -n --bind "$GST_REGISTRY_1_0" "$REG" || log "WARN: registry bind failed"

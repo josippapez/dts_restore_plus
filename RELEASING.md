@@ -11,14 +11,16 @@ truth in the repo, so they must be current *before* you tag.
 The single source of truth for the shipped binaries is:
 
 ```
+gst/                          four LG GStreamer 1.14.4 legacy plugins (CX/C2 app payload)
 webos25/restore/out/         libgstdtsdec.so, libdca.so.0        (DTS decoder)
 webos25/restore/truehd-out/  libgstlibav.so + libav*/libsw*      (TrueHD/MLP)
 webos25/restore/demux-out/   libgstisomp4.so, libgstmpegtsdemux.so (mp4/ts/m2ts DTS)
 ```
 
-The app's `webos25/app/payload/**` `.so` are **git-ignored** and are copied from
-`webos25/restore/**` at package time — so you only ever update the binaries in
-`webos25/restore/`.
+The app's `webos25/app/payload/**` `.so` are **git-ignored** generated copies. At
+package time the webOS-25 payload comes from `webos25/restore/**`, while the shared
+CX/experimental-C2 legacy payload comes from the four tracked files in root `gst/`.
+Never edit a generated `payload/**` binary.
 
 **If you touch anything that affects those binaries, you MUST rebuild + re-verify
 + re-commit them, then re-release.** "Affects those binaries" includes:
@@ -30,6 +32,8 @@ The app's `webos25/app/payload/**` `.so` are **git-ignored** and are copied from
 
 Editing `install.sh` / `init_dts25.sh` / the app JS/HTML does **not** require a
 rebuild — but still cut a new release so the tarball/`.ipk` carry the change.
+The root `gst/*.so` files are inherited prebuilt artifacts and must remain unchanged
+unless a separately verified CX/C2 binary update is intentionally being shipped.
 
 ## The boot script's three copies must match
 
@@ -143,21 +147,28 @@ straight disc copy.
 
 ```sh
 cd webos25/app
-# populate payloads from the committed restore/ binaries (they're git-ignored here)
+# populate payloads from committed source-of-truth binaries (generated files are ignored)
 cp -f  ../restore/out/libgstdtsdec.so ../restore/out/libdca.so.0        payload/webos25/
 cp -Pf ../restore/truehd-out/libgstlibav.so ../restore/truehd-out/libav*.so* \
        ../restore/truehd-out/libsw*.so*                                 payload/webos25-truehd/
 cp -f  ../restore/demux-out/libgstisomp4.so ../restore/demux-out/libgstmpegtsdemux.so \
-                                                                        payload/webos25-demux/
+                                                                         payload/webos25-demux/
+cp -f  ../../gst/libgstlibav.so ../../gst/libgstisomp4.so \
+       ../../gst/libgstmatroska.so ../../gst/libgstisomp4_1_8.so          payload/cx/
 npm install -g @webosose/ares-cli
 ares-package . service -o dist        # -> dist/io.github.josippapez.dtsenabler_<ver>_all.ipk
 ```
 
+All four root `gst/` files are required for packaging even though C2 binds
+`libgstisomp4_1_8.so` only when that stock target exists. There is no legacy
+`libgstmpegtsdemux.so`, so the C2 profile must remain MKV/MP4-only.
+
 ## Checklist
 
 - [ ] Binaries in `webos25/restore/**` current (rebuilt + on-device-verified if affected)
+- [ ] Four tracked root `gst/*.so` files copied into generated `payload/cx/`
 - [ ] `webos25/restore/demux-out/BUILD-REPORT.txt` reflects the current build
 - [ ] `sh webos25/restore/check-init-sync.sh` passes (the release workflow also runs it)
-- [ ] App version bumped (if the app changed)
+- [ ] `appinfo.json` and `service/package.json` versions match and are bumped if the app changed
 - [ ] Docs updated (`webos25/README.md`, this file)
 - [ ] Tag pushed → release workflow green → assets present on the release

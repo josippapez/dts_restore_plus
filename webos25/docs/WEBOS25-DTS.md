@@ -1,10 +1,22 @@
 # Restoring DTS on webOS 25 (C5 / G5 and other GStreamer 1.24 sets)
 
-**The `dts_restore` binaries in this repo do NOT work on webOS 25.** They are
-GStreamer **1.14.4 / armv7 (OLED CX)** libraries; webOS 25 TVs (e.g. LG C5,
-chassis `o22n3`) run **GStreamer 1.24 on aarch64**. The `.so` files are
-incompatible on two counts (CPU architecture *and* GStreamer version) and will
-not load — bind-mounting them **breaks** MKV/MP4 playback instead of adding DTS.
+> **SUPERSEDED — historical investigation note (2026).** The statements below
+> were written during the initial webOS-25 investigation and contain a **wrong ABI
+> assumption**: webOS 25 GStreamer userspace is **not aarch64**. Verified on-device, the C5's
+> GStreamer userspace is **32-bit ARM EABI5 soft-float (`armel`)**, GStreamer
+> 1.24.0, on an aarch64 *kernel* (see [`../README.md`](../README.md) and
+> [`MULTI-MODEL.md`](MULTI-MODEL.md)). The aarch64 toolchain/build instructions and
+> the "bottom line" below are therefore obsolete; the working C5 build is the
+> Debian-armel 1.22 cross described in `MULTI-MODEL.md §2.2`, and the TS-coverage
+> and TrueHD sections below describe the actual shipped payload. Treat this page as
+> history, not as current instructions.
+
+**The legacy `dts_restore` binaries in the repository root do NOT work on webOS
+25.** They are GStreamer **1.14.4 / ELF32 ARM EABI5 soft-float (OLED CX)**
+libraries; webOS 25 TVs such as the C5 run a **GStreamer 1.24 armel userspace on
+an aarch64 kernel**. The plugin ABI and restore mechanism are incompatible;
+bind-mounting the 1.14 libraries **breaks** MKV/MP4 playback instead of adding
+DTS.
 
 This document describes what webOS 25 actually needs.
 

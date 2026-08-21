@@ -87,6 +87,62 @@ all. So object audio can never reach the one element able to badge or render it,
 DTS:X / TrueHD-Atmos are structurally excluded — independently of the sink-caps
 problem above.
 
+## "Can we just re-enable the TV's native DTS, or port a C4's?" — no, settled
+
+Asked because the 2024 sets (C4/G4/M4/T4) keep full native DTS while the 2025 sets
+dropped it, so transplanting LG's own decoder looks tempting. Measured on the C5
+(2026-08-21):
+
+- **The capability advertisement survived.** `device_codec_capability_config.json`
+  still lists `DTS`, `DTSE` and `DTSH`, and the HAL's `src_codec_ext_type_t` still
+  enumerates `dts_hd`, `dts_hd_ma`, `dts_x_p1/p2`, `dts_express`. This is why the
+  platform *looks* DTS-capable from configuration alone.
+- **The decoder element's DTS path is gone.** `libgstlgaudiodec.so` exposes no
+  `audio/x-dts` sink cap and no `LGADEC_CODEC_DTS*` enum (compare the present
+  `LGADEC_CODEC_EAC3_ATMOS` / `_AC4_ATMOS`). Of 27 case-insensitive "dts" matches in
+  that binary, all but two are **ADTS** (AAC) false positives; the survivors are the
+  dead field names `isDTSSeamless` and `isDtsCoreless`. So there is no flag to flip —
+  unlike C3, where `dts_audiodec` is registered with full DTS caps and only the
+  Matroska `enable-dts` gate is off.
+- **The DSP cannot decode DTS either — this is the decisive one.** `/proc/aaudio/
+  module/` contains exactly two DTS modules: `DTSENC_P0` (en**coder**) and
+  `DTSVIRTUALX` (Virtual:X post-processing). DTS encode and Virtual:X are licensed
+  separately from DTS decode, and LG kept only those. The per-DSP decoder list
+  confirms it — `/proc/aaudio/processors/dsp0/` holds one `dec_*` node per codec the
+  DSP firmware can actually decode:
+
+  ```
+  dec_ac4   dec_amrnb  dec_amrwb  dec_ddp   dec_dra   dec_flac  dec_heaac
+  dec_iamf  dec_mat    dec_mp3    dec_mpegh dec_ogg   dec_opus  dec_pcm   dec_wma
+  ```
+
+  Every codec is present except DTS. There is **no `dec_dts`** — the decoder is
+  physically absent from the DSP firmware, not disabled.
+
+**So "port C3's files to a C5" cannot work, at either layer.** C3's
+`libgstlgaudiodec.so` is a thin wrapper that asks the DSP for a `dec_dts` that does
+not exist here, so the element would load and then have nothing to call. Going deeper
+and transplanting C3's DSP firmware is not a plugin swap but replacing the audio
+subsystem's firmware across SoC generations (`o22n` → `o22n3`), and C3's firmware is
+**not a superset**: the C5 list above includes `dec_mat` (Dolby MAT/Atmos), `dec_ac4`,
+`dec_mpegh` and `dec_iamf`, which a 2023 build does not carry. The trade would be DTS
+in exchange for losing Atmos, AC-4 and MPEG-H — on top of near-certain failure and
+risk to the whole audio path.
+
+So the missing link is not merely the userspace element: the decode capability is
+absent from the DSP as well. Dropping a C4's `libgstlgaudiodec.so` onto a C5 would
+install a wrapper with nothing behind it — and it would additionally have to survive
+a GStreamer version change (webOS 24 → 1.24) and a different SoC-generation HAL/DSP
+ABI. LG removed DTS from the 2025 line for licensing, so the decoder is genuinely not
+shipped, not merely disabled.
+
+**Consequence, and it is the useful one:** software decode (this project's
+`dtsdec`/`libdca` and ffmpeg path) is not a workaround for a lever we failed to find
+— it is the only available mechanism on webOS 25. What native decode would have
+bought, and what is therefore permanently out of reach here: DTS-HD MA lossless and
+DTS:X rather than the 5.1 core, DSP-offloaded decoding, and the DTS:X badge with DAP
+object rendering.
+
 There *is* a real signalling mechanism, and it is a dead end for us: LG's demuxers
 and parsers set an **`immersive=ATMOS` caps field** (`tsdemux.c:3031/3156/3742/3786`
 via `gst_ts_demux_set_caps_for_private_atmos_audio()`, `qtdemux.c:15180`,

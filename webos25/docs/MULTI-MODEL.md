@@ -8,13 +8,18 @@ axes that actually determine binary compatibility and fix strategy:
 3. **How LG disabled DTS** (drives *which* fix mechanism to apply).
 
 The C5 / webOS-25 branch is verified on hardware (see the epic). Everything about CX-class in
-this repo is inherited from the shipping tool; everything about webOS 22/23/24 is unverified
-(no hardware, no source drop) and is marked as such. This document distinguishes **[VERIFIED]**
-(observed on-device or read directly from source/config) from **[ASSUMED]** (inference,
-community report, or external knowledge).
+this repo is inherited from the shipping tool; the older webOS 22/23/24 generations are
+firmware-documented for the C2/C3/B2/B3 sets but remain unverified on hardware and are marked
+as such. This document distinguishes **[VERIFIED]**
+(observed on-device), **[FIRMWARE]** (read from an extracted firmware image but not run on that
+target), and **[ASSUMED]** (inference, community report, or external knowledge). See
+[`FIRMWARE-COMPATIBILITY.md`](FIRMWARE-COMPATIBILITY.md) for the dated firmware analysis
+(webOS 25 plus the older C2/C3/B2/B3 evidence)
+and why firmware evidence must not be presented as hardware verification.
 
 Provenance of the evidence used here:
-- `../README.md`, `../WEBOS25-DTS.md`, `../install.sh`, `../init_dts.sh` (the shipping CX tool).
+- `../../README.md`, `WEBOS25-DTS.md`, `../../install.sh`, `../../init_dts.sh` (the
+  shipping CX tool plus the webOS-25 background document).
 - `.orchestration/dts-restore-webos25/EPIC.md` — the on-device C5 findings (target ABI + root
   cause + working solution).
 - `.orchestration/dts-restore-improvement/issues/03-model-webos-support.md` — the
@@ -26,9 +31,16 @@ Provenance of the evidence used here:
 
 | Target family | Arch / float ABI of GStreamer userspace | GStreamer | How LG disabled DTS | Required fix | Root available? |
 |---|---|---|---|---|---|
-| **CX-class** — webOS 3.x–6.x (CX/BX/C1/G1/C2/G2, 2020–2022 NanoCell/LCD) | **armv7, float ABI to VERIFY** (this repo's `.so`s are hard-float per WEBOS25-DTS.md; loader name not captured on-device) `[ASSUMED]` | **1.14.4** `[VERIFIED` for CX via `install.sh` gate; 1.14-class for the rest `ASSUMED` from community reports] | **Demuxer nerf** — DTS demux stripped from `libgstmatroska.so` (and mp4/ts variants) `[VERIFIED` by repo provenance notes] | **Override demuxer libs** (`libgstmatroska.so`, `libgstisomp4*.so`, optional `libgstmpegtsdemux.so`) rebuilt from LG source with DTS demux re-enabled, **+ raise `avdec_dca` rank** `0→290` in `gstcool.conf`, + registry refresh | RootMyTV v1/v2 (webOS 3.4–6.x), largely patched since 2022 `[ASSUMED` per issue-03] |
-| **webOS 22 / 23 / 24** (C2/C3/C4/G-series 2022–2024) | Unknown — no source drop, no binary inspected `[ASSUMED` likely between 1.14 and 1.24] | Unknown | Unknown (no `lgstreamer` source repo; could be demuxer-nerf, decoder-absent, or re-tag) | **Undetermined** — cannot design a fix without a rooted unit to inspect | **No durable path.** RootMyTV excludes webOS 7(22)/8(23); DejaVuln: all webOS 9(24) release FW patched; faultmanager per-FW only `[ASSUMED` per issue-03] |
-| **webOS 25 / C5-class** (C5/G5, chassis o22n3, "webOS 10") | **32-bit ARM, EABI5 soft-float** — `ld-linux.so.3`, e_flags `0x05000200`, triplet `arm-webos-linux-gnueabi`, glibc 2.35, glib 2.72, on an **aarch64 kernel** `[VERIFIED` on-device] | **1.24.0** `[VERIFIED` on-device + `gstreamer-webos-25/meson.build`] | **Re-tag + no decoder** — demuxer kept, but `matroskademux` emits `audio/x-unknown, codec-id=(string)A_DTS` (raw DTS bytes preserved), and **no** `dts_audiodec`/`avdec_dca`/`dtsdec` is shipped `[VERIFIED` on-device] | **Inject a patched `dtsdec`** (gst-plugins-bad 1.22, armel soft-float) whose sink caps are **widened to also accept `audio/x-unknown, codec-id=A_DTS`**, bundle `libdca.so.0`, then rank it and inject into the media registry — **no LG library is overridden** `[VERIFIED` to autoplug on-device] | **faultmanager only**, factory FW pre-10.1 OTA — narrow window `[ASSUMED` per issue-03] |
+| **CX-class** — webOS 3.x–6.x (CX/BX/C1/G1, 2020–2021 NanoCell/LCD) | Payload: **ELF32 ARM EABI5 soft-float** (measured); stock target loader/e_flags not captured on-device | **1.14.4** `[VERIFIED` for CX via `install.sh` gate; 1.14-class for the rest `ASSUMED` from community reports] | **Demuxer nerf** — DTS demux stripped from `libgstmatroska.so` (and mp4/ts variants) `[VERIFIED` by repo provenance notes] | **Override demuxer libs** (`libgstmatroska.so`, `libgstisomp4*.so`, optional `libgstmpegtsdemux.so`) rebuilt from LG source with DTS demux re-enabled, **+ raise `avdec_dca` rank** `0→290` in `gstcool.conf`, + registry refresh | RootMyTV v1/v2 (webOS 3.4–6.x), largely patched since 2022 `[ASSUMED` per issue-03] |
+| **webOS 22 / C2-class** — LG/LX (`o22`, `W22O`; C2/G2, LX1Q/LX3Q, ART90) | **ARM EABI5 soft-float** `[FIRMWARE]` | stock **1.18.2** `[FIRMWARE]` (shipped legacy payload is 1.14.4) | **Re-tag + decoder absent** — Matroska emits `audio/x-unknown, codec-id=A_DTS`; `dts_audiodec` and `avdec_dca` are not registered despite stale rank/capability declarations `[FIRMWARE]` | DTS Enabler 2.6.0 implements `webos22-o22-gst118`: an app-only exact-identity/hash, two-step experimental opt-in that reuses the four legacy files with dedicated state. Firmware/QEMU evidence only; **not hardware-verified** | Root is still required; RootMyTV excludes webOS 7(22) `[ASSUMED` per issue-03] |
+| **webOS 23 / C3-class** — LG/LX (`o22n`, `W23O`; C3/G3, M3) | **ARM EABI5 soft-float** `[FIRMWARE]` | **1.18.5** `[FIRMWARE]` | **Gated proprietary decoder** — `dts_audiodec` ships (rank 128; 290 via `gstcool.conf`) but demux is product-gated: Matroska `enable-dts` defaults false → `audio/x-unknown, codec-id=A_DTS`; MP4 retagged `audio/x-gst-fourcc-dtsc`; LG documents C3 as **DTS:X by-pass only** ([FIRMWARE] + product docs) | **No restore recipe.** Decoder presence + conditional demux are not verified local playback; no rooted unit confirmed the runtime gate | No durable path — RootMyTV excludes webOS 8(23) `[ASSUMED` per issue-03] |
+| **webOS 22 / B2-class** — Realtek (`k8hp`, `W22H`; B2, QNED8x, UQ7x/9x) | **ARM EABI5 soft-float** `[FIRMWARE]` | **1.18.2** `[FIRMWARE]` | **No registered DTS decoder** — no `omxdtsdec1`/`avdec_dca`; demuxers re-tag (`audio/x-unknown, codec-id=A_DTS`, `audio/x-gst-fourcc-dtsc`); `rtkalsasink` statically accepts framed `audio/x-dts` but RTINGS reports **no DTS/DTS:X passthrough** ([FIRMWARE] + product docs) | **No automatic profile.** Legacy 1.14.4 payload decodes under QEMU, but sink/capability declarations are misleading and the closed S32LE→S16LE path is unverified | No durable path — RootMyTV excludes webOS 7(22) `[ASSUMED` per issue-03] |
+| **webOS 23 / B3-class** — Realtek (`k8hpp`, `W23H`; B3, QNED8x, UR8x) | **ARM EABI5 soft-float** `[FIRMWARE]` | **1.18.5** `[FIRMWARE]` | Registers `omxdtsdec1` (configured rank 0) and supports product passthrough; capability JSON and `gstcool.conf` are byte-identical to B2, so those files are not sufficient discriminators `[FIRMWARE]` | **No restore recipe.** Local decode and the closed hardware path remain unverified even though the factory registers | No durable path — RootMyTV excludes webOS 8(23) `[ASSUMED` per issue-03] |
+| **webOS 24 / C4-class** — LG/LX (`o22n2`, `W24G`; C4; also G4/M4/T4 `o24`/`W24O`) | Not extracted `[UNKNOWN]` | Not extracted `[UNKNOWN]` | Not extracted `[UNKNOWN]` | **None — no recipe.** Product-doc only `[UNKNOWN]` | No durable path — webOS 9(24) release FW patched `[ASSUMED` per issue-03] |
+| **webOS 25 / C5** (`o22n3`, `W25G`, "webOS 10") | **32-bit ARM, EABI5 soft-float** — `ld-linux.so.3`, e_flags `0x05000200`, triplet `arm-webos-linux-gnueabi`, glibc 2.35, glib 2.72, on an **aarch64 kernel** `[VERIFIED` on-device] | **1.24.0** `[VERIFIED` on-device + firmware packages] | **Re-tag + no decoder** — `matroskademux` emits `audio/x-unknown, codec-id=(string)A_DTS` (raw DTS bytes preserved), and **no** `dts_audiodec`/`avdec_dca`/`dtsdec` is shipped `[VERIFIED` on-device] | **Inject patched `dtsdec` + `libdca`; fingerprint-gated overrides for TrueHD and MP4/TS DTS.** The current payload also shadows stock `libgstlibav.so`, `libgstisomp4.so`, and `libgstmpegtsdemux.so`; see `../README.md`. `[VERIFIED` on-device] | **faultmanager only**, factory FW pre-10.1 OTA — narrow window `[ASSUMED` per issue-03] |
+| **webOS 25 / G5/M5** (`o24n`, `W25O`) | Same ARM EABI5 soft-float ABI as C5 `[FIRMWARE]` | **1.24.0** `[FIRMWARE]` | Extracted G5 firmware has byte-identical gated artifacts and common media-control binaries to the C5; runtime path not exercised `[FIRMWARE]` | **Strong candidate for the C5 payload, but hardware verification is still required.** Current hash-only logic would call it `verified`; the report recommends a separate firmware-match state. | Same webOS-25 rooting constraint `[ASSUMED]` |
+| **webOS 25 / B5 and higher LCD/QNED** (`k24n`, `W25H`, Realtek) | Same ARM EABI5 soft-float ABI as C5 `[FIRMWARE]` | **1.24.0** `[FIRMWARE]` | Common `decproxy`/`umediaserver` stack and MP4/TS demuxers match, but stock libav, configs, and the `rtkalsasink`/`omxlpcmdec` path differ `[FIRMWARE]` | **Experimental opt-in only pending a real B5/W25H test.** Static ABI compatibility is not sink/HAL proof. | Same webOS-25 rooting constraint `[ASSUMED]` |
+| **webOS 25 / lower LCD/QNED/NanoCell** (`k25lp`, `W25P`, Realtek) | Firmware metadata only; rootfs not inspected `[ASSUMED]` | webOS 10.3.1 images exist `[FIRMWARE]` | Unknown | **No automatic compatibility claim.** Extract separately; do not inherit the `k24n` result. | Same webOS-25 rooting constraint `[ASSUMED]` |
 
 ### Notes on the two DTS-disable mechanisms (they are genuinely different fixes)
 
@@ -36,12 +48,20 @@ Provenance of the evidence used here:
   irrelevant until you swap in a demuxer that *does* demux DTS. The fix is therefore
   **library-override-centric** (bind-mount rebuilt LG demuxer `.so`s over the nerfed ones) plus a
   one-line `gstcool.conf` rank bump so the already-present `avdec_dca` autoplugs. This is exactly
-  what `../init_dts.sh` does (steps 1–3).
-- **webOS 25 (re-tag + decoder-absent).** The demuxer is fine structurally but re-labels the DTS
-  track as `audio/x-unknown` and there is **no decoder at all**. Overriding LG libraries is both
-  unnecessary and dangerous (ABI is 1.24, not 1.14). The fix is **decoder-injection-centric**: add
-  a *new* plugin whose caps deliberately match LG's `audio/x-unknown, codec-id=A_DTS` so
-  `decodebin`/`decproxy` autoplugs it, and get it into the registry the media process trusts.
+  what `../../init_dts.sh` does (steps 1–3).
+- **C2 exact experimental profile (re-tag + decoder absent).** The app reuses the four legacy
+  demux/libav files only for the exact analyzed global firmware, after matching identity, ABI,
+  GStreamer 1.18.2, and three stock SHA-256 values. It is not a rebuilt 1.18 payload and is not a
+  general C2 claim: all other C2/G2 variants are refused. Its dedicated owner/baseline/hook and
+  MP4 userspace self-test keep this firmware recruitment path separate from CX mutable state and
+  from hardware verification.
+- **webOS 25 (re-tag + decoder-absent).** For the original MKV DTS problem, the demuxer is fine
+  structurally but re-labels the DTS track as `audio/x-unknown` and there is **no decoder at all**.
+  That fix is **decoder-injection-centric**: add a *new* plugin whose caps deliberately match LG's
+  `audio/x-unknown, codec-id=A_DTS` so `decodebin`/`decproxy` autoplugs it, and get it into the
+  registry the media process trusts. The current, broader payload also uses fingerprint-gated
+  same-ABI overrides for TrueHD and MP4/TS DTS. Arbitrarily applying the old 1.14 LG libraries is
+  still dangerous; the webOS-25 overrides are separate 1.24 builds guarded by stock fingerprints.
 
   > **Reconciling the two internal docs:** `../WEBOS25-DTS.md` (written earlier) assumed the
   > demuxer would emit `audio/x-dts` and that a normally-capped `dtsdec`/`avdec_dca` ranked in
@@ -58,7 +78,7 @@ Provenance of the evidence used here:
 
 ### 2.1 CX-class — `cx-armv7-gst114`
 
-- **Build what:** demuxer plugins from LG's released 1.14.4 source (per `../README.md` provenance):
+- **Build what:** demuxer plugins from LG's released 1.14.4 source (per `../../README.md` provenance):
   `libgstmatroska.so`, `libgstisomp4.so`, `libgstisomp4_1_8.so` from `lgstreamer/gst-plugins-good@lg`
   (DTS demux re-enabled + MKV Dolby Vision); `libgstlibav.so` from `lgstreamer/gst-libav@lg`
   (dca decode + forced stereo-integer downmix + `[downmix]` coefficients); optional
@@ -66,16 +86,18 @@ Provenance of the evidence used here:
 - **Toolchain:** WebOSBrew SDK — `meta-lg-webos-ndk` + `starfish-sdk-x86_64`, triplet
   **`arm-webos-linux-gnueabi`**, targeting CX-era **armv7a-neon**. Build system: **autotools**
   (`git checkout tags/1.14.0 -b lg && ./configure --disable-gtk-doc …`) `[ASSUMED` per issue-03].
-  - **Float-ABI verification still owed:** WEBOS25-DTS.md calls the CX libs "armv7 hard-float," but
-    the loader name / e_flags of a CX system `.so` were never captured on-device. The C5 turned out
-    to be *soft*-float despite sharing the `arm-webos-linux-gnueabi` triplet name — so CX's float ABI
-    must be read off a real CX (`detect-target.sh` does exactly this) before trusting "hard-float."
+  - **Target verification still owed:** the payload itself is measured ELF32 ARM EABI5 soft-float,
+    but the loader/e_flags of a stock CX system `.so` were never captured by this project. Read them
+    from a real target (`detect-target.sh` does exactly this) instead of inferring from the triplet.
 - **Select at install time:** matched when the detector reports GStreamer `1.14.x` and a
   `cx-*-gst114` profile; the already-present `avdec_dca` means no decoder needs shipping.
-- **These are the binaries already in `../gst/`.** No new work unless supporting a chassis whose
+- **These are the binaries already in `../../gst/`.** No new work unless supporting a chassis whose
   `gstcool.conf` schema differs.
 
-### 2.2 webOS 25 / C5-class — `webos25-armel-gst124`
+### 2.2 webOS 25 / C5 baseline — `webos25-armel-gst124`
+
+This subsection records the original DTS-only build recipe. The current shipping profile also
+contains the separately built TrueHD/libav and MP4/TS demuxer payloads described in `../README.md`.
 
 - **Build what:** a **single patched `dtsdec`** plugin (`libgstdtsdec.so`) from **gst-plugins-bad
   1.22** source (ABI-stable against the TV's 1.24 loader — verified on-device), with the sink caps
@@ -93,21 +115,50 @@ Provenance of the evidence used here:
 - **Select at install time:** matched when the detector reports GStreamer `1.24.x`, loader
   `ld-linux.so.3`, soft-float e_flags `0x05000200`, and **no** `dtsdec`/`avdec_dca` present.
 
-### 2.3 webOS 22/23/24 — no recipe yet
+### 2.3 webOS 22 / exact C2/G2 — `webos22-o22-gst118`
 
-Deliberately none. Without a rooted unit to run `detect-target.sh` (arch/float, GStreamer version)
-and to inspect whether DTS is demuxer-nerfed vs re-tagged vs decoder-absent, any recipe would be a
-guess. The detector will emit an `unknown-*` profile for these so the installer refuses rather than
-mis-applies a CX or C5 mechanism.
+This is a narrow app profile, not a new build and not a root-CLI profile.
+
+- **Payload:** package the four tracked `../../gst/*.so` files under the app's shared immutable
+  `payload/cx/`. All four must stage and resolve through `/lib/ld-linux.so.3`; the
+  `libgstisomp4_1_8.so` bind is used only when that stock target exists. No legacy
+  `libgstmpegtsdemux.so` is packaged.
+- **Select only on the exact analyzed set:** global OTA ID `HE_DTV_W22O_AFABATAA`, OLED C2/G2
+  product ID, known board, firmware `04.40.93` or `04.40.93.01`, webOS `7.4.0`, GStreamer
+  `1.18.2`, `ld-linux.so.3`, soft-float, and these pristine stock SHA-256 values:
+  `libgstlibav.so=6957fb676c11b3d6937b9c20cb8fb499167c233519b1881d03631c85fdedd2da`,
+  `libgstisomp4.so=163007136c14e5373f8b47c6bef530a6730b61d68a28213bf01feccb6d5dbff7`, and
+  `libgstmatroska.so=83d2cd366abf264469406f4e5bc94d0f2544335c13ab9238ad7d6b9134ef4a18`.
+- **Apply:** after a two-step explicit opt-in, bind the legacy libav/Matroska/isomp4 files,
+  raise `avdec_dca` to 290, and generate/bind an app-owned registry. C2 uses dedicated
+  `/var/lib/webosbrew/dtsenabler/c2` state and `/var/lib/webosbrew/init.d/restore_dts_c2`, with
+  exact mount-source ownership, authenticated generated scripts, baseline drift, and recovery
+  checks. It never adopts the CX hook or state.
+- **Capability/proof:** MKV/MP4 DTS only; the executable self-test is MP4-only. No TS/M2TS,
+  TrueHD/MLP, gain, or A/B. A self-test PASS is userspace mechanism proof, not playback or
+  hardware verification.
+
+### 2.4 B2/C3/B3/C4 — diagnostic refusal only
+
+Firmware evidence pins the arch/float ABI and stock GStreamer version for C3
+(LG/LX 1.18.5) and B2/B3 (Realtek 1.18.2/1.18.5), but no defensible local-playback
+recipe exists. The app emits `webos22-w22h-diagnostic`, `webos23-w23o-diagnostic`,
+or `webos23-w23h-diagnostic` with family-specific reasons and never offers force.
+C4/G4 remains unextracted/unknown. No family can inherit the C2 mechanism from a
+GStreamer version match alone.
 
 ---
 
-## 3. Installer-architecture proposal
+## 3. Historical root-CLI architecture proposal
+
+This section records the earlier proposal for replacing the repo-root CX installer.
+It has **not** been implemented: `../../install.sh` remains the inherited one-payload
+CX CLI, while the profile dispatcher described above is implemented in the Homebrew app.
 
 ### 3.1 Where we are today
 
-`../install.sh` ships **one** hardcoded library set in `../gst/` and a single mechanism
-(`../init_dts.sh`: demuxer bind-mounts + registry refresh + `gstcool.conf` rank bump). Its platform
+`../../install.sh` ships **one** hardcoded library set in `../../gst/` and a single mechanism
+(`../../init_dts.sh`: demuxer bind-mounts + registry refresh + `gstcool.conf` rank bump). Its platform
 "gate" (lines 84–111) is an **allowlist that only suppresses a warning** — on any TV it applies the
 *same* CX 1.14.4 demuxer-override mechanism, which on a webOS-25 TV would bind-mount 1.14/armv7
 libraries over 1.24/armel ones and **break** MKV/MP4 playback (WEBOS25-DTS.md §1). So today's
@@ -124,7 +175,7 @@ dts_restore/
   payload/
     cx-armv7-gst114/
       manifest.conf          # mechanism=demuxer-override; libs, ranks, gstcool key
-      gst/                    # the existing ../gst/*.so demuxer set
+      gst/                    # the existing ../../gst/*.so demuxer set
       apply.sh               # == today's init_dts.sh (bind-mounts + rank + registry)
     webos25-armel-gst124/
       manifest.conf          # mechanism=decoder-inject; plugin, bundled libs, caps note
@@ -142,7 +193,7 @@ dts_restore/
      operator must name the profile, so we never silently apply CX libs to a non-CX ABI).
 3. It copies `payload/<PROFILE>/` to a per-profile dir under `/var/lib/webosbrew/dts_restore/<PROFILE>/`
    and installs a boot hook that runs that profile's `apply.sh` (idempotent, always `exit 0` — same
-   failsafe discipline as `../init_dts.sh` line 74).
+   failsafe discipline as `../../init_dts.sh` line 74).
 4. Each `apply.sh` reads `manifest.conf` so the mechanism is data-driven, not hardcoded per TV.
 
 ### 3.4 Reconciliation with the current CX `install.sh`
@@ -150,23 +201,34 @@ dts_restore/
 - Keep `install.sh`'s robust script-path discovery, root check, media-player-running guard, and
   registry-env capture (`GST_REGISTRY_1_0`) — all still needed.
 - Replace the single-`gst/` copy + warn-and-proceed allowlist with the detect→select→dispatch flow.
-- The CX profile's `apply.sh` **is** today's `init_dts.sh` verbatim, so existing CX/BX/C1/C2/NanoCell
+- The CX profile's `apply.sh` **is** today's `init_dts.sh` verbatim, so existing CX/BX/C1/NanoCell
   installs behave identically; only the selection layer changes.
 - The off-target warning stays, but escalates from "warn, then apply CX libs anyway" to "refuse an
   ABI-mismatched mechanism unless an explicit `--force <profile>` names it."
+
+### 3.5 Current app implementation
+
+`../app/service/service.js` is the implemented profile dispatcher. It keeps webOS-25, CX, and C2
+commands hardcoded rather than loading arbitrary manifests. The C2 profile is narrower than this
+historical proposal: only its exact firmware/artifact match is forceable, the opt-in is a strict
+boolean confirmed in two UI steps, and B2/C3/B3 diagnostic profiles can never force. C2 and CX
+share only the immutable packaged source files; their state and hooks are separate.
 
 ---
 
 ## 4. Honest gaps
 
-- **Unverified targets (no hardware):** webOS 22/23/24 entirely — arch, float ABI, GStreamer
-  version, and DTS-disable mechanism are all unknown; no `lgstreamer` source drop exists for them.
-  BX/B9/C9 CX-library reuse is a community *request*, not a confirmed report (issue-03 §2). C1/C2/
+- **Unverified targets (no hardware):** arch/float/GStreamer version are firmware-documented
+  for C2/C3 (1.18.2/1.18.5, ARM EABI5 soft-float) and B2/B3 (Realtek, 1.18.2/1.18.5), and
+  the mechanisms are partially characterized (C2/B2: no registered DTS decoder; C3/B3: proprietary
+  factories present, with product passthrough only established). C2 now has the exact-firmware
+  app tester profile above, but no rooted C2/G2 has run it, so it remains explicitly experimental.
+  B2/C3/B3 remain refused and C4/G4 remain unextracted.
+  BX/B9/C9 CX-library reuse is a community *request*, not a confirmed report (issue-03 §2). C1/
   NanoCell "working" rests on a single community report, not repo/binary verification.
-- **CX float-ABI verification still owed:** the "armv7 hard-float" claim for CX is repo lore, not
-  an on-device measurement. The C5 proved the `arm-webos-linux-gnueabi` triplet can be *soft*-float,
-  so CX's loader name + e_flags must be read on a real CX before the `cx-armv7-gst114` profile can
-  assert hard-float. `detect-target.sh` captures exactly these.
+- **CX target ABI verification still owed:** the repository payload is measured ARM EABI5
+  soft-float, but this project has not captured a stock CX loader path/e_flags on-device.
+  `detect-target.sh` captures exactly these instead of inferring them from the toolchain triplet.
 - **Surround-at-output open question (C5):** RESOLVED that LG's sink is **integer-only** — `dtsdec`
   now emits **S32LE** (up to 5.1), which the sink accepts (the earlier F32LE issue is fixed). The
   remaining unknown is whether the TV **renders full surround** to speakers/eARC or downmixes to
@@ -178,11 +240,13 @@ dts_restore/
 - **Root-availability limits (webOS 22+):** even a perfect build is moot without root. RootMyTV
   excludes webOS 7(22)/8(23); webOS 9(24) release firmware is patched; webOS 25 is faultmanager-only
   on pre-10.1 factory firmware. Root, not the build, is the harder gate above CX-era (issue-03 §4).
-- **Chassis-codename mapping** (o22n3/o24n/k24n ↔ webOS-25 family) is external web knowledge, not
-  verified in the source tree (issue-03 §2).
+- **Machine/model mapping** (`o22`/`o22n`/`o22n2`/`o24`/`k8hp`/`k8hpp` and the webOS-25
+  `o22n3`/`o24n`/`k24n`/`k25lp` with their OTA IDs) comes from the
+  external TOH/caniroot data, not LG source in this tree. Firmware extraction confirms the OTA IDs
+  embedded in the analyzed images but does not independently prove every marketing-model mapping.
 
 ---
 
-*Status: design + detection skeleton. Read-only research; no TV was contacted and nothing was
-committed. Build scripts, `payload/<profile>/` population, and the refactored `install.sh` dispatcher
-are follow-on work gated on the verifications above.*
+*Status: historical CLI design plus current app behavior. The app ships the verified C5 mechanism
+and the exact-firmware, hardware-unverified C2 tester profile; use `../app/README.md` for its current
+contract and `FIRMWARE-COMPATIBILITY.md` for proof labels and extracted-firmware evidence.*

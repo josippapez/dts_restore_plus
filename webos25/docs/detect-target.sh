@@ -100,7 +100,7 @@ emit UNAME_M "$(uname -m 2>/dev/null || echo unknown)"
 # ===========================================================================
 GST_VERSION="unknown"
 if command -v gst-inspect-1.0 >/dev/null 2>&1; then
-  GST_VERSION=$(gst-inspect-1.0 --version 2>/dev/null | grep -i 'GStreamer' | head -n1 | awk '{print $2}')
+  GST_VERSION=$(GST_REGISTRY_FORK=no gst-inspect-1.0 --version 2>/dev/null | grep -i 'GStreamer' | head -n1 | awk '{print $2}')
   [ -n "$GST_VERSION" ] || GST_VERSION="unknown"
 fi
 emit GST_VERSION "$GST_VERSION"
@@ -116,14 +116,26 @@ emit GST_MAJMIN "${GST_MM:-unknown}"
 # ===========================================================================
 WEBOS_RELEASE="unknown"
 PRODUCT_ID="unknown"
+HARDWARE_ID="unknown"
+BOARD_TYPE="unknown"
+WEBOS_MANUFACTURING_VERSION="unknown"
 if command -v nyx-cmd >/dev/null 2>&1; then
   WEBOS_RELEASE=$(nyx-cmd OSInfo query webos_release 2>/dev/null | head -n1)
   PRODUCT_ID=$(nyx-cmd DeviceInfo query product_id 2>/dev/null | head -n1)
+  HARDWARE_ID=$(nyx-cmd DeviceInfo query hardware_id 2>/dev/null | head -n1)
+  BOARD_TYPE=$(nyx-cmd DeviceInfo query board_type 2>/dev/null | head -n1)
+  WEBOS_MANUFACTURING_VERSION=$(nyx-cmd OSInfo query webos_manufacturing_version 2>/dev/null | head -n1)
   [ -n "$WEBOS_RELEASE" ] || WEBOS_RELEASE="unknown"
   [ -n "$PRODUCT_ID" ] || PRODUCT_ID="unknown"
+  [ -n "$HARDWARE_ID" ] || HARDWARE_ID="unknown"
+  [ -n "$BOARD_TYPE" ] || BOARD_TYPE="unknown"
+  [ -n "$WEBOS_MANUFACTURING_VERSION" ] || WEBOS_MANUFACTURING_VERSION="unknown"
 fi
 emit WEBOS_RELEASE "$WEBOS_RELEASE"
 emit PRODUCT_ID "$PRODUCT_ID"
+emit HARDWARE_ID "$HARDWARE_ID"
+emit BOARD_TYPE "$BOARD_TYPE"
+emit WEBOS_MANUFACTURING_VERSION "$WEBOS_MANUFACTURING_VERSION"
 WEBOS_MAJOR=$(printf '%s' "$WEBOS_RELEASE" | cut -d. -f1)
 emit WEBOS_MAJOR "${WEBOS_MAJOR:-unknown}"
 
@@ -136,9 +148,9 @@ HAS_AVDEC_DCA="no"
 HAS_DTSDEC="no"
 HAS_DTS_AUDIODEC="no"   # LG's proprietary decoder name
 if command -v gst-inspect-1.0 >/dev/null 2>&1; then
-  gst-inspect-1.0 avdec_dca    >/dev/null 2>&1 && HAS_AVDEC_DCA="yes"
-  gst-inspect-1.0 dtsdec       >/dev/null 2>&1 && HAS_DTSDEC="yes"
-  gst-inspect-1.0 dts_audiodec >/dev/null 2>&1 && HAS_DTS_AUDIODEC="yes"
+  GST_REGISTRY_FORK=no gst-inspect-1.0 avdec_dca    >/dev/null 2>&1 && HAS_AVDEC_DCA="yes"
+  GST_REGISTRY_FORK=no gst-inspect-1.0 dtsdec       >/dev/null 2>&1 && HAS_DTSDEC="yes"
+  GST_REGISTRY_FORK=no gst-inspect-1.0 dts_audiodec >/dev/null 2>&1 && HAS_DTS_AUDIODEC="yes"
 fi
 emit HAS_AVDEC_DCA "$HAS_AVDEC_DCA"
 emit HAS_DTSDEC "$HAS_DTSDEC"
@@ -185,7 +197,7 @@ cat <<'PROBE_DOC'
 #   runtime. To confirm the re-tag, push a known DTS MKV through the demuxer and
 #   read the audio pad caps, e.g.:
 #
-#     gst-launch-1.0 -v filesrc location=/tmp/dts_sample.mkv ! matroskademux \
+#     GST_REGISTRY_FORK=no gst-launch-1.0 -v filesrc location=/tmp/dts_sample.mkv ! matroskademux \
 #        ! fakesink silent=false 2>&1 | grep -iE 'audio/x-(dts|unknown)'
 #
 #   - "audio/x-unknown, codec-id=(string)A_DTS"  => webos25-retag-no-decoder
@@ -218,6 +230,25 @@ case "$GST_MM" in
       PROFILE="webos25-${LOADER}-${FLOAT_ABI}"
     fi
     ;;
+  1.18)
+    case "$HARDWARE_ID" in
+      HE_DTV_W22O_AFABATAA)
+        case "$PRODUCT_ID" in OLED*C2*|OLED*G2*) C2_MODEL=1 ;; *) C2_MODEL=0 ;; esac
+        if [ "$C2_MODEL" = 1 ] && [ "$BOARD_TYPE" != "unknown" ] &&
+           { [ "$WEBOS_MANUFACTURING_VERSION" = "04.40.93" ] || [ "$WEBOS_MANUFACTURING_VERSION" = "04.40.93.01" ]; } &&
+           [ "$WEBOS_RELEASE" = "7.4.0" ] && [ "$GST_VERSION" = "1.18.2" ] &&
+           [ "$LOADER" = "ld-linux.so.3" ] && [ "$FLOAT_ABI" = "soft" ]; then
+          PROFILE="webos22-o22-gst118"
+        else
+          PROFILE="webos22-o22-c2-diagnostic"
+        fi
+        ;;
+      *W22H*) PROFILE="webos22-w22h-diagnostic" ;;
+      *W23O*) PROFILE="webos23-w23o-diagnostic" ;;
+      *W23H*) PROFILE="webos23-w23h-diagnostic" ;;
+      *) PROFILE="unknown-gst${GST_MM}-${LOADER}" ;;
+    esac
+    ;;
   *)
     arch_tag="${LOADER}"
     [ "$arch_tag" = "unknown" ] && arch_tag=$(uname -m 2>/dev/null || echo arch)
@@ -229,6 +260,6 @@ emit PROFILE "$PROFILE"
 
 # Exit 1 on an unknown profile so `detect-target.sh || refuse` works in install.sh.
 case "$PROFILE" in
-  cx-armv7-gst114|webos25-armel-gst124) exit 0 ;;
+  cx-armv7-gst114|webos25-armel-gst124|webos22-o22-gst118) exit 0 ;;
   *) exit 1 ;;
 esac

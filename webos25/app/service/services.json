@@ -11,7 +11,7 @@
         { "name": "enable",    "description": "Apply the DTS-restore mechanism matching the detected profile" },
         { "name": "disable",   "description": "Remove the boot hook + best-effort unmount for the detected profile" },
         { "name": "uninstall", "description": "Disable + remove all on-device state for the detected profile" },
-        { "name": "test",      "description": "Decode each bundled DTS sample (mp4/ts/m2ts) through the media registry; report PASS/FAIL per container" },
+        { "name": "test",      "description": "Decode the bundled DTS samples supported by the detected profile through its owned media registry; report PASS/FAIL" },
         { "name": "testfiles", "description": "Return on-device paths of the bundled DTS samples for in-app play-by-ear" },
         { "name": "setMakeupGain", "description": "Write both gain.conf files: per-codec make-up gain, DRC preset and dialogue boost" },
         { "name": "getMakeupGain", "description": "Read both gain.conf files back so the UI can show the saved settings" },
