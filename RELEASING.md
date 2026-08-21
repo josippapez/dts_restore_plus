@@ -169,6 +169,10 @@ All four root `gst/` files are required for packaging even though C2 binds
 - [ ] Four tracked root `gst/*.so` files copied into generated `payload/cx/`
 - [ ] `webos25/restore/demux-out/BUILD-REPORT.txt` reflects the current build
 - [ ] `sh webos25/restore/check-init-sync.sh` passes (the release workflow also runs it)
+- [ ] `sh webos25/restore/check-manifest-floor.sh` passes (the workflow runs it too) —
+      the Homebrew listing floor in `packaging/homebrew/*.yml` must not exclude a webOS
+      release the service gates a profile on. `>=10.0` once shipped alongside a C2
+      profile gated on webOS 7.4.0, making that profile unreachable
 - [ ] `appinfo.json` and `service/package.json` versions match and are bumped if the app changed
 - [ ] Docs updated (`webos25/README.md`, this file)
 - [ ] Tag pushed → release workflow green → assets present on the release

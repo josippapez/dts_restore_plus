@@ -64,6 +64,12 @@ jobs:
       - name: Verify the boot script's three copies are in sync
         run: sh webos25/restore/check-init-sync.sh
 
+      # The listing floor and the service's profile gates live in different files
+      # with nothing tying them together, which is how '>=10.0' shipped while the C2
+      # profile required webOS 7.4.0 -- a feature that could never be reached.
+      - name: Verify the Homebrew listing floor admits every implemented profile
+        run: sh webos25/restore/check-manifest-floor.sh
+
       - name: Package the CLI restore tarball
         env:
           REL_NAME: ${{ steps.rel.outputs.name }}

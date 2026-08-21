@@ -3,18 +3,32 @@ iconUri: https://raw.githubusercontent.com/josippapez/dts_restore_plus/main/asse
 manifestUrl: https://github.com/josippapez/dts_restore_plus/releases/latest/download/io.github.josippapez.dtsenabler.manifest.json
 category: multimedia
 pool: main
+# The floor must not exclude a generation the service actually implements a profile
+# or a useful verdict for -- '>=10.0' did exactly that, silently: it admitted only
+# webOS 25, so the experimental C2/G2 profile (gated on webOS 7.4.0) was unreachable
+# through the Homebrew Channel, and so were the inherited CX profile and the
+# native/gated verdicts for 2023-24 sets. '>=7.4' covers every generation this app
+# now answers for (2022 C2 onward) while still excluding the webOS 3-6 CX era, which
+# this fork has never verified and where upstream lgstreamer/dts_restore is the right
+# tool. check-manifest-floor.sh enforces the invariant.
 requirements:
-  webosRelease: '>=10.0'
+  webosRelease: '>=7.4'
 description: |
   # DTS Enabler
-  Restores **DTS** and **Dolby TrueHD/MLP** audio on rooted LG **webOS 25** TVs —
-  including DTS in `.mkv`, `.mp4`, `.ts` and `.m2ts`. Decodes native discrete 5.1
-  (no stereo downmix). Enable / disable / uninstall from the app, plus a self-test
-  and play-by-ear. No stock firmware file is modified in place: the overrides are
-  bind-mounts reverted by Disable/Uninstall or a reboot, and the one persistent
-  write — the GStreamer plugin registry — is reverted by regenerating a clean stock
-  registry. Applies only to TVs whose stock plugins match a verified set; anything
-  else is refused unless you take the explicit experimental opt-in.
+  Restores **DTS** and **Dolby TrueHD/MLP** audio on rooted LG TVs whose firmware
+  removed it — verified on **webOS 25** (C5), including DTS in `.mkv`, `.mp4`, `.ts`
+  and `.m2ts`. Decodes native discrete 5.1 (no stereo downmix). Enable / disable /
+  uninstall from the app, plus a self-test and play-by-ear. No stock firmware file is
+  modified in place: the overrides are bind-mounts reverted by Disable/Uninstall or a
+  reboot, and the one persistent write — the GStreamer plugin registry — is reverted
+  by regenerating a clean stock registry.
+
+  It also tells you when you **don't** need it: 2024 sets (C4/G4/M4/T4) kept native
+  DTS and are reported as needing nothing, and a set whose decoder is present but
+  switched off is reported as such rather than as unsupported. Applies its mechanism
+  only to TVs whose stock plugins match a verified set *and* whose model was actually
+  tested; a byte-identical match on an untested model, or anything else, requires the
+  explicit experimental opt-in.
 
   Requires the [Homebrew Channel](https://github.com/webosbrew/webos-homebrew-channel)
   with **root**. Not endorsed by LG.
