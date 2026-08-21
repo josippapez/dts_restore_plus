@@ -87,7 +87,11 @@
       </section>
 
       <!-- ===== Per-codec make-up gain + DRC ===== -->
-      <section class="card card--wide" aria-labelledby="h-gain">
+      <!-- Hidden outright off webOS 25: make-up gain/DRC only exists inside decoders
+           this project builds, and those are only injected where LG removed its own.
+           On C3/C4-era sets LG's native decoder handles loudness itself, so these
+           controls could never do anything. See docs/MULTI-MODEL.md section 2.6. -->
+      <section class="card card--wide" id="cardGain" aria-labelledby="h-gain">
         <h2 id="h-gain">Make-up gain &amp; dynamic range</h2>
         <p class="muted">
           The custom DTS and TrueHD decoders play quieter than LG's native codecs, and
@@ -187,7 +191,9 @@
       </section>
 
       <!-- ===== Test the patch ===== -->
-      <section class="card card--wide" aria-labelledby="h-test">
+      <!-- Hidden when this TV has no patch to test: a set with native DTS has
+           nothing of ours in the pipeline, and a refused one never applied anything. -->
+      <section class="card card--wide" id="cardTest" aria-labelledby="h-test">
         <h2 id="h-test">Test the patch</h2>
         <p class="muted">
           <strong>Run self-test</strong> decodes bundled DTS samples through the TV's

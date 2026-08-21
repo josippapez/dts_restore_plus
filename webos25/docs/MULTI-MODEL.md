@@ -138,14 +138,73 @@ This is a narrow app profile, not a new build and not a root-CLI profile.
   TrueHD/MLP, gain, or A/B. A self-test PASS is userspace mechanism proof, not playback or
   hardware verification.
 
-### 2.4 B2/C3/B3/C4 — diagnostic refusal only
+### 2.4 B2/B3 — diagnostic refusal only
 
-Firmware evidence pins the arch/float ABI and stock GStreamer version for C3
-(LG/LX 1.18.5) and B2/B3 (Realtek 1.18.2/1.18.5), but no defensible local-playback
-recipe exists. The app emits `webos22-w22h-diagnostic`, `webos23-w23o-diagnostic`,
-or `webos23-w23h-diagnostic` with family-specific reasons and never offers force.
-C4/G4 remains unextracted/unknown. No family can inherit the C2 mechanism from a
-GStreamer version match alone.
+Firmware evidence pins the arch/float ABI and stock GStreamer version for B2/B3
+(Realtek 1.18.2/1.18.5), but no defensible local-playback recipe exists: no
+registered decoder and an unverified Realtek sink path. The app emits
+`webos22-w22h-diagnostic` or `webos23-w23h-diagnostic` with family-specific reasons
+and never offers force. No family can inherit the C2 mechanism from a GStreamer
+version match alone.
+
+C3 and C4/G4 were also refused here originally. Both were misclassified — see §2.5.
+
+### 2.5 C3/C4-era — native decoder present, so NOT a refusal
+
+LG removed DTS for 2021–22, **restored it for 2023** (C3/G3/M3), kept it for **2024**
+(C4/G4/M4/T4), then dropped it again for 2025. The first firmware pass read LG's
+"DTS:X (by-pass only)" spec wording as absence of local decode and refused both
+families. That was wrong, and the artifact evidence disagrees with it: on C3
+`libgstlgaudiodec.so` registers `dts_audiodec` and `gstcool.conf` *raises* it to rank
+290 — not something you do to a decoder meant to stay unreachable.
+
+- **C4/G4/M4/T4** — native DTS, decode and passthrough. Nothing to add.
+- **C3/G3/M3** — decoder healthy, but the stock demuxers are nerfed, so nothing ever
+  emits `audio/x-dts` and the 290-ranked decoder is never reached. DTS is genuinely
+  present and genuinely unusable. Owner-reported: upstream `lgstreamer/dts_restore`
+  was needed on a real C3 to get DTS playing.
+
+Detection is behavioural rather than a model list (`dts_audiodec` registered, plus
+`avdec_dca`'s rank in `gstcool.conf`), so it covers regional variants and future sets
+and cannot go stale like an OTA-ID allowlist — which matters because C4/G4 firmware
+has never been extracted.
+
+### 2.6 Why make-up gain / DRC is webOS-25 only, and should stay that way
+
+This looks like a feature gap and is not one. **DRC exists because our software
+decoders apply no loudness management, while LG's native decoders bake in
+dialnorm/DRC.** It is implemented inside decoders *we build* — `gstdtsdec.c` for DTS
+and the `mlpdec.c` patch in `build-truehd.sh` for TrueHD — so it can only exist where
+we inject our own decoder.
+
+That is exactly the set of generations where LG's decoder is gone:
+
+| Generation | LG's DTS decoder | Correct approach | DRC needed? |
+|---|---|---|---|
+| C4/G4/M4/T4 | present, working | nothing | no |
+| C3/G3/M3 | present, rank 290 | un-nerf the demuxer only | **no — LG's own applies** |
+| C2/G2, C1/G1 | absent | inject a decoder | yes, would need porting |
+| C5/G5 and later | removed | inject a decoder | yes — implemented |
+
+So DRC is a **workaround for not having LG's decoder**, not a general feature. On a
+generation that still has one, routing to it is strictly better than injecting ours:
+you get LG's DSP decode *and* its loudness handling, with no payload, no ABI or
+soft-float matching, and no version-skew risk.
+
+Consequence for C3, and it improves on upstream: upstream's `init_dts.sh` raises
+`avdec_dca` to 290, which is right for CX where no native DTS decoder exists. On C3
+`dts_audiodec` is *already* at 290, so the better fix is to un-nerf the demuxer and
+**leave the ranks alone** — LG's decoder autoplugs and handles loudness itself.
+(Inference from the artifacts; the rank tie-break has not been measured, because no
+C3 has been available.)
+
+The app therefore refuses the gain/DRC/A-B endpoints off `webos25-armel-gst124`
+(`service.js:2916, 3002, 3034, 3067`). **Do not "fix" that by widening it.** The only
+generations that would legitimately need DRC are C2/G2 and C1/G1, and porting it
+there means retargeting `build.sh`/`build-truehd.sh` from GStreamer 1.24 to 1.18.x
+and shipping a second decoder payload — which the C2 profile's own design explicitly
+rules out ("do not rebuild or introduce a GStreamer 1.18 payload"), and which no
+available hardware could verify.
 
 ---
 

@@ -184,6 +184,25 @@
     // C2/G2 has MP4 self-test/play only. W25 additionally has TS/M2TS and A/B.
     var canTest = profile === "webos25-armel-gst124" || profile === "webos22-o22-gst118";
     var canW25Test = profile === "webos25-armel-gst124";
+
+    /* Hide whole cards a generation can never use, rather than showing them greyed.
+     *
+     * A C4 owner (native DTS, nothing to do) or a C3 owner (decoder present but
+     * switched off, no mechanism shipped) has no use for loudness sliders or a
+     * self-test, and a row of dead controls reads as "this app is broken" rather
+     * than "this does not apply to you". The verdict text carries the explanation;
+     * the cards just get out of the way.
+     *
+     * Gain/DRC is webOS-25-only by design, not by omission: it lives inside
+     * decoders this project builds, so it only exists where LG's own decoder is
+     * gone. On C3/C4-era sets LG's decoder handles loudness itself. Do not widen
+     * this to "any supported profile" -- see docs/MULTI-MODEL.md section 2.6.
+     * Actions stays visible throughout, because Refresh / re-detect is useful on
+     * every TV even when Enable is not. */
+    var gainCard = $("cardGain");
+    if (gainCard) gainCard.hidden = !canW25Test;
+    var testCard = $("cardTest");
+    if (testCard) testCard.hidden = !canTest;
     $("btnTest").disabled = !canTest;
     $("btnPlayMp4").disabled = !canTest;
     $("btnPlayTs").disabled = !canW25Test;

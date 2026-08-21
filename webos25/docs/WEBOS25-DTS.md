@@ -232,6 +232,14 @@ handling), so it needs new demuxer logic. Use MKV or `.m2ts` for TrueHD.
 
 ## Loudness / make-up gain
 
+> **Scope: webOS 25 only, deliberately.** This whole feature exists because *our*
+> software decoders apply no loudness management while LG's native decoders do. It
+> therefore only applies where LG's decoder is gone. On C3/C4-era sets the native
+> decoder is present (on C3, `dts_audiodec` at rank 290) and brings its own loudness
+> handling, so routing to it beats injecting ours. The app refuses the gain/DRC/A-B
+> endpoints off `webos25-armel-gst124` on purpose — see
+> [`MULTI-MODEL.md` §2.6](MULTI-MODEL.md) before widening that gate.
+
 Once DTS and TrueHD decode at all, they play **noticeably quieter** than LG's
 native AAC / AC-3 / Atmos on the same TV. Root cause (confirmed against the
 code, not guessed): LG's closed native decoders bake in dialnorm/DRC loudness
