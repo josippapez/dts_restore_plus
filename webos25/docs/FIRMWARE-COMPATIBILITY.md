@@ -23,8 +23,13 @@ into a hardware-verified target.
   spec wording as absence of local decode; that was wrong for both families. C4/G4
   need no profile; C3's only real gap is the MKV `enable-dts` demux gate. The
   remaining genuinely unsupported generations are **C1/G1 and C2/G2** (decoder
-  absent) and **C5/G5 onward** (decoder removed). C1/G1 has never been analyzed and
-  is the real untouched gap.
+  absent) and **C5/G5 onward** (decoder removed).
+- **C1/G1 is now analyzed (2026-08-21) and is the same case as C2/G2.** Both have an
+  un-nerfed demuxer, an LG decoder that accepts `audio/x-dtsl` only, and no compiled
+  ffmpeg `dca` decoder -- so both need a decoder INJECTED, and the shipped C2
+  legacy-payload approach is the right shape. `avdec_dca=0` in their `gstcool.conf`
+  looks like a one-line rank fix but is a leftover entry for an element that does not
+  exist. Neither is verified on hardware.
 - **G5/M5 (`o24n`, `W25O`) is the strongest next test target.** Its extracted
   firmware has the same ABI and byte-identical copies of all five analyzed stock
   artifacts (including the three plugin hashes used by the current gate). Its common media control
@@ -179,6 +184,8 @@ been hardware-verified; the strongest claims here are `Firmware analyzed`.
 |---|---|---|---|---|
 | `o22` | `HE_DTV_W22O_AFABATAA` | OLED C2 / G2, LX1Q/LX3Q, ART90 | LG/LX | Firmware analyzed; exact experimental app profile for global C2/G2 firmware, hardware unverified |
 | `o22n` | `HE_DTV_W23O_AFABATAA` | OLED C3 / G3, M3 | LG/LX | **Native DTS (LG restored it in 2023)**; only the MKV `enable-dts` gate blocks local MKV. Owner-reported working via upstream `dts_restore`. Do not refuse. |
+| `o20n` | `HE_DTV_W21O_AFABATAA` | OLED C1 / G1 | LG/LX | **Extracted 2026-08-21.** Decoder absent (LG's takes `audio/x-dtsl` only; ffmpeg `dca` not compiled). Needs an injected decoder. GStreamer 1.16.2; never upgraded past webOS 6.5.3. |
+| `o22` | `HE_DTV_W22O_AFABATAA` | OLED C2 / G2, LX1Q/LX3Q, ART90 | LG/LX | **Re-extracted 2026-08-21** (`04.40.90.01`, 7.4.0, GStreamer 1.18.2), confirming the shipped exact-gated experimental profile. Same shape as C1. |
 | `o22n2` | `HE_DTV_W24G_AFABATAA` | OLED C4 | LG/LX | **Native DTS, decode + passthrough — no action needed.** Not extracted; product/press evidence. |
 | `o24` | `HE_DTV_W24O_AFABATAA` | OLED G4 / M4 / T4 | LG/LX | **Native DTS, decode + passthrough — no action needed.** Not extracted; product/press evidence. |
 | `k8hp` | `HE_DTV_W22H_AFADATAA` (analyzed global image `AFABATPU`) | OLED B2, QNED8x, UQ7x/9x | Realtek | Firmware analyzed (stock GStreamer 1.18.2) |
@@ -395,6 +402,124 @@ rank rather than removing it.
 to be unreliable for both C3 and C4. Marketing copy conflates passthrough with
 decode. Prefer extracted artifacts, or an owner's on-device report, over the spec
 sheet.
+
+## C1/G1 (`o20n` / `W21O`) — extracted 2026-08-21; the blocker is decoder RANK only
+
+The generation that had never been analyzed. Extracted from
+`lib32-starfish-global-secured-o20n-koli-47-03.53.45_prodkey_usb_V3_SECURED.epk`
+(latest LG build, 1.4 GB).
+
+Identity, for a gate:
+
+| field | value |
+|---|---|
+| machine / OTA | `o20n` / `HE_DTV_W21O_AFABATAA` |
+| platform | `6.5.3` (archive shows the range `6.0.1` → `6.5.3`) |
+| firmware | `03.53.45.01` |
+| GStreamer | **1.16.2** (`libgstreamer-1.0.so.0.1602.0`) |
+| kernel | `4.4.84-223` |
+| starfish release | `Rockhopper release 6.0.1-4529 (kisscurl-kalaupapa)` (earliest build) |
+
+**C1 never received the webOS 25 upgrade** — its newest build is still platform 6.5.3.
+Unlike an upgraded C3 it therefore cannot fall through to `webos25-armel-gst124`; it is
+genuinely isolated on GStreamer 1.16.2.
+
+What is actually broken, layer by layer (all *read* from the extracted rootfs):
+
+| layer | state |
+|---|---|
+| `libgstmatroska.so` | **not nerfed** — `A_DTS` present, `audio/x-dts` caps present, no `enable-dts` gate property |
+| `libgstlxaudiodec.so` (LG's decoder, LX-generation name) | sink caps accept `audio/x-dtsl` **only** — no `audio/x-dts`, `x-dtsh`, `x-dtse`, `x-dtsx`. Retains `LXADEC_CODEC_DTS_CD` / `LXADEC_CODEC_DTS_EXPRESS` enums and the same vestigial `isDtsCoreless` / `isDTSSeamless` fields seen on the C5 |
+| `/etc/gst/gstcool.conf` | `dts_audiodec=290` (line 30), **`avdec_dca=0`** (line 43) |
+
+So the demuxer already emits `audio/x-dts`, and LG's own decoder will not accept it.
+`gstcool.conf` also carries `avdec_dca=0` -- the exact string upstream
+`lgstreamer/dts_restore`'s `init_dts.sh` rewrites to `290`.
+
+**That looks like a one-line rank fix, and it is not.** Verified against the extracted
+`libgstlibav.so`: ffmpeg's `dca` decoder is **not compiled in**, so there is no element
+for a rank bump to enable. `avdec_dca=0` is a leftover config entry, not a lever.
+
+Method and control, because the descriptor tables make this easy to get wrong:
+`avcodec_descriptors` is compiled in regardless of which decoders are enabled, so
+names like `DCA (DTS Coherent Acoustics)` and `DTS Express` prove nothing. A compiled
+decoder is instead detectable by its own error strings. Positive control on the same
+binary -- AAC internals are plainly present (`channel element %d.%d duplicate`,
+`Expected to read %d SBR bytes actually read %d.`, `frame sync error`), so the
+technique works on this file. Against that control, **no DCA internals appear at all**
+(and none for MLP/TrueHD either).
+
+C2 makes the same point more bluntly: its `libgstlibav.so` contains **no DCA string
+whatsoever**, not even the descriptor. That matches the original pass's "no registered
+decoder" reading for C2.
+
+### C1 and C2 are the same case, and both need an injected decoder
+
+| layer | C1 (`o20n`, GStreamer 1.16.2) | C2 (`o22`, GStreamer 1.18.2) |
+|---|---|---|
+| matroska demuxer | not nerfed (`A_DTS`, `audio/x-dts`, no gate) | not nerfed (identical) |
+| LG's audio decoder | `libgstlxaudiodec.so`, `audio/x-dtsl` only | `libgstlgaudiodec.so`, `audio/x-dtsl` only |
+| `gstcool.conf` | `dts_audiodec=290`, `avdec_dca=0` | `dts_audiodec=290`, `avdec_dca=0` |
+| ffmpeg `dca` decoder | descriptor only, **not compiled** | **absent entirely** |
+
+So neither is a rank-only target. Both need a **decoder injected**, which is the same
+shape as CX and as the shipped `webos22-o22-gst118` profile -- so that profile's
+legacy-payload approach is correct, not over-engineered. A C1 profile would mirror it:
+exact identity gate, legacy payload, rank bump, dedicated state namespace.
+
+Neither has been verified on hardware, and no C1 or C2 has been available.
+
+Loudness consequence, unchanged: a legacy/stock `avdec_dca` applies no dialnorm or
+DRC, so a fixed C1 or C2 would play quiet exactly as webOS 25 did before the
+make-up-gain work. This project's DRC lives in decoders it builds, so giving either
+one DRC means a patched decoder for GStreamer **1.16.2** (C1) or **1.18.2** (C2) --
+two more build targets. See [`MULTI-MODEL.md` §2.6](MULTI-MODEL.md).
+
+## Extraction gotcha that cost three false negatives (2026-08-21)
+
+`epk2extract` reports `ERROR: Cannot decrypt EPK content (proper AES key is missing)`
+in two completely different situations, and they look identical:
+
+1. the AES key for that chipset/OS combo genuinely is not public, **or**
+2. it never loaded any keys at all.
+
+Tell them apart by the lines above the error. A real key miss prints one
+`[+] Trying AES Key <hex>` line per candidate before failing. If you see
+`Trying known AES keys...` followed immediately by the error and **no `[+]` lines**,
+zero keys were loaded and the verdict is meaningless.
+
+The cause is the key search path. `config_opts.config_dir` is set from the executable
+location (`src/main.c:233`), and on macOS that resolves to **the directory containing
+the binary itself**; `AES.key` is then read as `<config_dir>/AES.key`
+(`src/util_crypto.c:26`) with no `keys/` subdirectory. So for a CMake build the keys
+must be copied to `build/src/` next to the `epk2extract` binary. Putting them in
+`keys/`, in `build/`, or in `build/src/keys/` all fail silently apart from a single
+`Error: Cannot open key file.` printed *before* the banner, which is easy to dismiss
+as noise about `MTK.key`.
+
+This produced three false "no key available" conclusions in a row — for a C1
+(`o20n`, webOS 6.5.3) and a C3 (`o22n`, webOS 25) — and briefly supported a wrong
+conclusion that LG's current `_SECURED` prodkey images were undecryptable in general.
+They are not: once the keys were placed correctly the C1 image extracted completely.
+
+Related, and still true: the key is per **chipset/OS combo**, and for a combo with no
+public key the only known recovery route is root access on that unit
+([epk2extract#24](https://github.com/openlgtv/epk2extract/issues/24), maintainer
+reply). So prefer the ORIGINAL firmware generation for a board over the newest one --
+an old board running a new webOS is a fresh combo and may genuinely be unkeyed.
+
+## Firmware archive
+
+Images beyond what LG's support pages still offer come from
+[`lg.slada.sk`](https://lg.slada.sk/processed_fw.json) (follow redirects; the index is
+~3 MB of JSON). Its `fws` map is keyed by mirror path, and each entry carries
+`zipFileSha256`, `zipFileSizeBytes` and a list of `epks` with `platformVersion`,
+`firmwareversion`, `firmwareotaID`, `starfishRelease`, `kernelVersion` and
+`buildTimestamp`. That is **header metadata only** -- no rootfs contents -- but it is
+enough to pin a gate's identity fields without downloading anything, and it exposes
+the full per-board upgrade path (the C3 alone has 26 distinct builds from platform
+8.1.0 to 10.3.1). Files are fetchable directly with `curl -L`; a few entries have a
+zero byte size and are simply absent (e.g. the C2's `04.40.93.01`).
 
 ## Reproducible workflow
 
