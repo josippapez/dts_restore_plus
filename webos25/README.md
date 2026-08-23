@@ -3,7 +3,8 @@
 Restores **DTS** *and* **Dolby TrueHD / MLP** audio playback on a rooted LG C5 /
 webOS 25 TV. Both codecs are **verified working on a real LG C5**, persistent
 across reboot (a boot hook re-applies everything). Reversibility: most changes
-are **bind-mounts** over a stock file, undone by Disable/Uninstall or a reboot —
+are **bind-mounts** over a stock file, undone by Disable/Uninstall — a reboot drops
+the mounts but the boot hook re-applies them, so only Disable/Uninstall turns it off —
 the one exception is the GStreamer plugin registry, a persistent `cp -f`
 reverted by regenerating a clean stock registry — and it only applies to a TV
 whose stock plugins match a **verified set**, refusing (with an explicit
@@ -274,7 +275,10 @@ and a gate change must not hide behind an unchanged app version. The app additio
 Enable *would* write against what is installed, so an un-bumped stamp is still caught.
 
 **Reversibility, precisely.** Most of the mechanism above is a **bind-mount** over a stock
-file, undone by Disable/Uninstall or by a reboot. The one exception is the GStreamer
+file, undone by Disable/Uninstall. Note a reboot does *not* disable anything: it drops the
+mounts, then the boot hook re-applies them. Only Disable/Uninstall removes the hook. (A
+half-applied Enable is the exception — its recovery marker survives, so the next boot
+detaches and refuses instead of retrying.) The one exception is the GStreamer
 plugin registry: it is written with a persistent `cp -f`, not a bind, so Disable/Uninstall
 explicitly regenerate a clean stock registry from the pristine on-disk plugins to revert
 it (`uninstall.sh` step 2b). A bind can also be **busy** at Disable time — on the C5,
