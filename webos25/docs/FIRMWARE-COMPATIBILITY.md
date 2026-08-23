@@ -453,6 +453,29 @@ C2 makes the same point more bluntly: its `libgstlibav.so` contains **no DCA str
 whatsoever**, not even the descriptor. That matches the original pass's "no registered
 decoder" reading for C2.
 
+### Owner report: OLED55CS6LA on webOS 9.2.2 — `libgstlibav.so` is a 128 KB stub
+
+An owner of an `OLED55CS6LA` (`HE_DTV_W22O_AFABATPU`, firmware `23.25.55`, webOS
+`9.2.2`, GStreamer `1.18.5`) hit the app's `gated` verdict. That exact build was
+extracted (`23.25.55.01-HE_DTV_W22O_AFABATPU`) and it sharpens the C2-family picture:
+
+| layer | state |
+|---|---|
+| `gstcool.conf` | `dts_audiodec=290`, `avdec_dca=0` |
+| `libgstlibav.so` | **128 KB stub** — compare 2.4 MB on C1 and 12.5 MB on C5. Links `libavfilter.so.7` and exports `gst_plugin_libav_register`, but no decoder internals: even an AAC positive control (`channel element %d.%d duplicate`) finds nothing |
+| `libgstlgaudiodec.so` | `audio/x-dtsl` only, as on C1/C2 |
+| `libgstmatroska.so` | not nerfed — `A_DTS` and `audio/x-dts` both present |
+
+So `avdec_dca=0` is a dead entry for a decoder **absent from the build**, which is the
+strongest evidence yet that the C2 family is not a rank-fix target. It also means the
+demuxer is not the obstacle either: the only missing piece is a decoder.
+
+This corrected the app's `gated` wording, which had claimed the decoder was "switched
+off" and "fixable — raising the rank and overriding the demuxers". Neither is true
+here: there is nothing to switch on. Note the C2 zstd-compressed squashfs needs a
+zstd-capable `unsquashfs` (Homebrew `squashfs`); epk2extract's bundled one silently
+emits only the `.pak` files.
+
 ### C1 and C2 are the same case, and both need an injected decoder
 
 | layer | C1 (`o20n`, GStreamer 1.16.2) | C2 (`o22`, GStreamer 1.18.2) |

@@ -1832,8 +1832,8 @@ function compatVerdict(profile, kv) {
   if (profile === PROFILE_NATIVE_GATED) {
     return {
       verdict: "gated",
-      verdictReason: "This TV ships a DTS decoder but it is switched off: avdec_dca is set to rank 0 in gstcool.conf, so it never autoplugs, and the stock demuxers are nerfed. DTS is built in but disabled. This is fixable — raising the rank and overriding the demuxers is exactly what the original lgstreamer/dts_restore does, and it is reported working on 2023 sets — but this app ships no mechanism for your generation yet, so nothing is offered here. Use the original dts_restore, or open an issue with your model and firmware so a profile can be built and verified.",
-      verifiedLabel: "DTS present but disabled — fixable, mechanism not shipped for this generation",
+      verdictReason: "This TV's audio configuration mentions a DTS decoder (avdec_dca at rank 0 in gstcool.conf) but that is a leftover entry — on the builds checked so far the decoder is not actually present in the firmware, so there is nothing a rank change could switch on. Restoring DTS here needs a decoder supplied, which is a bigger job than this app does for your generation, and no such profile is shipped. Nothing has been changed on your TV. Please open an issue with your model and firmware version so this generation can be looked at properly.",
+      verifiedLabel: "DTS not available — needs a decoder supplied, no profile for this generation",
       canForce: false,
       loaderResolves: null,
       loaderDetail: "",

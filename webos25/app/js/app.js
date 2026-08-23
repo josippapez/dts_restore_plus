@@ -153,9 +153,10 @@
       pill.textContent = "paused: firmware changed";
       pill.className = "pill pill--unknown";
     } else if (verdict === "gated") {
-      // Decoder present but switched off. Not "unsupported" (the hardware can do it)
-      // and not "works" (it currently does not) -- say exactly that.
-      pill.textContent = "DTS present but disabled";
+      // gstcool.conf mentions avdec_dca but the decoder is absent from the firmware on
+      // every build checked, so this is not "switched off" and not fixable by a rank
+      // change. Do not imply the user can turn it on.
+      pill.textContent = "DTS not available";
       pill.className = "pill pill--unknown";
     } else if (verdict === "native") {
       // Good news, so it must not land in the "unsupported TV" bucket below: this TV
