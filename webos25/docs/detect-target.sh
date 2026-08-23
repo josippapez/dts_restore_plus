@@ -232,11 +232,17 @@ case "$GST_MM" in
     ;;
   1.18)
     case "$HARDWARE_ID" in
-      HE_DTV_W22O_AFABATAA)
-        case "$PRODUCT_ID" in OLED*C2*|OLED*G2*) C2_MODEL=1 ;; *) C2_MODEL=0 ;; esac
-        if [ "$C2_MODEL" = 1 ] && [ "$BOARD_TYPE" != "unknown" ] &&
-           { [ "$WEBOS_MANUFACTURING_VERSION" = "04.40.93" ] || [ "$WEBOS_MANUFACTURING_VERSION" = "04.40.93.01" ]; } &&
-           [ "$WEBOS_RELEASE" = "7.4.0" ] && [ "$GST_VERSION" = "1.18.2" ] &&
+      HE_DTV_W22O_AFABATAA|HE_DTV_W22O_AFABATPU)
+        case "$PRODUCT_ID" in OLED*C2*|OLED*G2*|OLED*CS*) C2_MODEL=1 ;; *) C2_MODEL=0 ;; esac
+        # Each accepted image is an explicit firmware+webOS+GStreamer triple, not a
+        # range: 7.4.0 pairs only with 1.18.2, 9.2.2 only with 1.18.5. The 9.2.2 entry
+        # came from an OLED55CS6LA owner report and its extracted firmware.
+        C2_FWOK=0
+        { [ "$WEBOS_MANUFACTURING_VERSION" = "04.40.93" ] || [ "$WEBOS_MANUFACTURING_VERSION" = "04.40.93.01" ]; } &&
+          [ "$WEBOS_RELEASE" = "7.4.0" ] && [ "$GST_VERSION" = "1.18.2" ] && C2_FWOK=1
+        [ "$WEBOS_MANUFACTURING_VERSION" = "23.25.55" ] &&
+          [ "$WEBOS_RELEASE" = "9.2.2" ] && [ "$GST_VERSION" = "1.18.5" ] && C2_FWOK=1
+        if [ "$C2_MODEL" = 1 ] && [ "$BOARD_TYPE" != "unknown" ] && [ "$C2_FWOK" = 1 ] &&
            [ "$LOADER" = "ld-linux.so.3" ] && [ "$FLOAT_ABI" = "soft" ]; then
           PROFILE="webos22-o22-gst118"
         else

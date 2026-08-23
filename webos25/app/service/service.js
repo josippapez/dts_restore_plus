@@ -1213,9 +1213,39 @@ var C2_HOOK_SOURCE = C2_STATE + "/hook.sh";
 var C2_GSTCOOL_SRC = C2_STATE + "/gstcool.conf";
 var C2_REGISTRY_SRC = C2_STATE + "/registry.arm.bin";
 var C2_HOOK        = "/var/lib/webosbrew/init.d/restore_dts_c2";
-var C2_EXPECT_LIBAV = "6957fb676c11b3d6937b9c20cb8fb499167c233519b1881d03631c85fdedd2da";
-var C2_EXPECT_ISO   = "163007136c14e5373f8b47c6bef530a6730b61d68a28213bf01feccb6d5dbff7";
-var C2_EXPECT_MKV   = "83d2cd366abf264469406f4e5bc94d0f2544335c13ab9238ad7d6b9134ef4a18";
+/* Accepted C2/G2 stock artifact SETS. Each entry is one exact firmware -- the gate
+ * stays exact-match; this is a list of known sets, NOT a loosened check.
+ *
+ * Set 1: the originally analyzed global 04.40.93 / webOS 7.4.0 image.
+ * Set 2: 23.25.55 / webOS 9.2.2 (GStreamer 1.18.5), extracted from
+ *   23.25.55.01-HE_DTV_W22O_AFABATPU after an OLED55CS6LA owner reported the app
+ *   refusing their TV. Same board family, same payload target, one GStreamer point
+ *   release newer. Added so that owner can take the two-step experimental opt-in and
+ *   actually test the profile -- nobody has run it on any C2/G2 yet, so it stays
+ *   hardware-unverified either way.
+ *
+ * Adding a set does NOT promote the profile to verified. It only makes the exact
+ * gate recognise one more firmware as opt-in-eligible. */
+var C2_EXPECTED_SETS = [
+  { libav: "6957fb676c11b3d6937b9c20cb8fb499167c233519b1881d03631c85fdedd2da",
+    iso:   "163007136c14e5373f8b47c6bef530a6730b61d68a28213bf01feccb6d5dbff7",
+    mkv:   "83d2cd366abf264469406f4e5bc94d0f2544335c13ab9238ad7d6b9134ef4a18",
+    label: "global C2/G2 04.40.93 (webOS 7.4.0, GStreamer 1.18.2)" },
+  { libav: "499d56a598bd800a4116c93c179074015c46191fecbf58c39dc831cce172ad5c",
+    iso:   "f84fd5b7af3e84aae28262ab57b606b8a8d1bfb42287ff7d62c79a61496bbbc3",
+    mkv:   "07cfe1ee022bc2b1521b0f57139d896724394dd6d19d2e2ef1a85173f51c19fc",
+    label: "global C2/G2 23.25.55 (webOS 9.2.2, GStreamer 1.18.5)" }
+];
+/* Does this measured triple match ONE accepted set exactly? Returns the set (so the
+ * label is available) or null. Deliberately all-three-from-one-set: comparing each
+ * hash against "any set" independently would let a chimera of two firmwares pass. */
+function c2MatchSet(libav, iso, mkv) {
+  for (var i = 0; i < C2_EXPECTED_SETS.length; i++) {
+    var t = C2_EXPECTED_SETS[i];
+    if (libav === t.libav && iso === t.iso && mkv === t.mkv) return t;
+  }
+  return null;
+}
 
 /* =======================================================================
  * Root exec helper (hardened; carried over from the single-target app)
@@ -1370,9 +1400,16 @@ var DETECT_PROBE = [
   '    else PROFILE="webos25-${LOADER}-${FLOAT_ABI}"; fi ;;',
   '  1.18)',
   '    case "$HARDWARE_ID" in',
-  '      HE_DTV_W22O_AFABATAA)',
-  '        case "$PRODUCT_ID" in OLED*C2*|OLED*G2*) C2_MODEL=1 ;; *) C2_MODEL=0 ;; esac',
-  '        if [ "$C2_MODEL" = 1 ] && [ "$BOARD_TYPE" != unknown ] && { [ "$WEBOS_MANUFACTURING_VERSION" = "04.40.93" ] || [ "$WEBOS_MANUFACTURING_VERSION" = "04.40.93.01" ]; } && [ "$WEBOS_RELEASE" = "7.4.0" ] && [ "$GST_VERSION" = "1.18.2" ] && [ "$LOADER" = "ld-linux.so.3" ] && [ "$FLOAT_ABI" = "soft" ]; then PROFILE=webos22-o22-gst118; else PROFILE=webos22-o22-c2-diagnostic; fi ;;',
+  '      HE_DTV_W22O_AFABATAA|HE_DTV_W22O_AFABATPU)',
+  '        case "$PRODUCT_ID" in OLED*C2*|OLED*G2*|OLED*CS*) C2_MODEL=1 ;; *) C2_MODEL=0 ;; esac',
+  // Each accepted C2/G2 firmware is listed EXPLICITLY as a firmware+webOS+GStreamer
+  // triple. This is a list of known-analyzed images, not a loosened range: 7.4.0
+  // pairs only with 1.18.2, and 9.2.2 only with 1.18.5, so a mix of the two never
+  // selects the profile.
+  '        C2_FWOK=0',
+  '        { [ "$WEBOS_MANUFACTURING_VERSION" = "04.40.93" ] || [ "$WEBOS_MANUFACTURING_VERSION" = "04.40.93.01" ]; } && [ "$WEBOS_RELEASE" = "7.4.0" ] && [ "$GST_VERSION" = "1.18.2" ] && C2_FWOK=1',
+  '        [ "$WEBOS_MANUFACTURING_VERSION" = "23.25.55" ] && [ "$WEBOS_RELEASE" = "9.2.2" ] && [ "$GST_VERSION" = "1.18.5" ] && C2_FWOK=1',
+  '        if [ "$C2_MODEL" = 1 ] && [ "$BOARD_TYPE" != unknown ] && [ "$C2_FWOK" = 1 ] && [ "$LOADER" = "ld-linux.so.3" ] && [ "$FLOAT_ABI" = "soft" ]; then PROFILE=webos22-o22-gst118; else PROFILE=webos22-o22-c2-diagnostic; fi ;;',
   '      *W22H*) PROFILE=webos22-w22h-diagnostic ;;',
   '      *W23O*) PROFILE=webos23-w23o-diagnostic ;;',
   '      *W23H*) PROFILE=webos23-w23h-diagnostic ;;',
@@ -1784,8 +1821,11 @@ function compatVerdict(profile, kv) {
   }
   if (profile === PROFILE_C2) {
     var hashable = kv.C2_HASH_TOOL === "1" && /^[0-9a-f]{64}$/.test(kv.C2_GSTCOOL_SHA256 || "");
-    var exactHashes = kv.C2_LIBAV_SHA256 === C2_EXPECT_LIBAV &&
-      kv.C2_ISOMP4_SHA256 === C2_EXPECT_ISO && kv.C2_MATROSKA_SHA256 === C2_EXPECT_MKV;
+    // Match the triple against EACH accepted set, never field-by-field across sets:
+    // mixing set 1's libav with set 2's isomp4 must not pass. Mirrors the shell
+    // c2_expected() exactly, and both are generated from C2_EXPECTED_SETS.
+    var matchedSet = c2MatchSet(kv.C2_LIBAV_SHA256, kv.C2_ISOMP4_SHA256, kv.C2_MATROSKA_SHA256);
+    var exactHashes = matchedSet !== null;
     var ownerPresent = kv.C2_OWNED === "1";
     var owned = ownerPresent && kv.C2_BASELINE_VALID === "1";
     var bound = kv.C2_MOUNT_LIBAV === "owned";
@@ -1793,8 +1833,8 @@ function compatVerdict(profile, kv) {
     var baselineIdentity = kv.C2_FP_HARDWARE_ID === (kv.HARDWARE_ID || "") &&
       kv.C2_FP_PRODUCT_ID === (kv.PRODUCT_ID || "") && kv.C2_FP_BOARD_TYPE === (kv.BOARD_TYPE || "") &&
       kv.C2_FP_FIRMWARE === (kv.WEBOS_MANUFACTURING_VERSION || "") && kv.C2_FP_WEBOS === (kv.WEBOS_RELEASE || "") &&
-      kv.C2_FP_GSTREAMER === (kv.GST_VERSION || "") && kv.C2_FP_LIBGSTLIBAV === C2_EXPECT_LIBAV &&
-      kv.C2_FP_LIBGSTISOMP4 === C2_EXPECT_ISO && kv.C2_FP_LIBGSTMATROSKA === C2_EXPECT_MKV &&
+      kv.C2_FP_GSTREAMER === (kv.GST_VERSION || "") &&
+      c2MatchSet(kv.C2_FP_LIBGSTLIBAV, kv.C2_FP_LIBGSTISOMP4, kv.C2_FP_LIBGSTMATROSKA) !== null &&
       /^[0-9a-f]{64}$/.test(kv.C2_FP_GSTCOOL || "");
     var measurableBaseline = (kv.C2_MOUNT_LIBAV === "owned" || kv.C2_FP_LIBGSTLIBAV === kv.C2_LIBAV_SHA256) &&
       (kv.C2_MOUNT_ISO === "owned" || kv.C2_FP_LIBGSTISOMP4 === kv.C2_ISOMP4_SHA256) &&
@@ -1811,7 +1851,7 @@ function compatVerdict(profile, kv) {
     else if (owned && baselineIdentity && measurableBaseline && bound) { verdict = "forced"; reason = "App-owned experimental C2/G2 baseline is active; boot revalidates pristine hashes before every apply."; }
     else if (owned && baselineIdentity && measurableBaseline && exactHashes) { verdict = "forced"; reason = "App-owned experimental C2/G2 baseline is unchanged."; }
     else if (owned) { verdict = "drift"; reason = "C2/G2 firmware, plugin, or gstcool.conf identity differs from the persisted baseline; refusing unconditionally."; canForce = false; }
-    else if (!exactHashes) { verdict = "refused"; reason = "The three stock C2 plugin SHA-256 values do not exactly match firmware 04.40.93; refusing."; canForce = false; }
+    else if (!exactHashes) { verdict = "refused"; reason = "The three stock C2 plugin SHA-256 values do not exactly match any analyzed C2/G2 firmware (" + C2_EXPECTED_SETS.map(function (t) { return t.label; }).join("; ") + "); refusing."; canForce = false; }
     return {
       verdict: verdict, verdictReason: reason,
       verifiedLabel: "EXPERIMENTAL C2/G2 — firmware matched, hardware verification NO",
@@ -2466,9 +2506,14 @@ function c2EngineLines(c) {
     'c2_refuse() { echo "REFUSED=$1"; echo "REASON=$2"; exit 0; }',
     'c2_hash() { h=$(sha256sum "$1" 2>/dev/null | awk \'{print $1}\'); [ -n "$h" ] || h=$(busybox sha256sum "$1" 2>/dev/null | awk \'{print $1}\'); [ "${#h}" -eq 64 ] && case "$h" in *[!0-9a-f]*) return 1;; *) printf "%s" "$h";; esac; }',
     'c2_value() { nyx-cmd "$1" query "$2" 2>/dev/null | head -n1; }',
-    'c2_identity() { HW=$(c2_value DeviceInfo hardware_id); PID=$(c2_value DeviceInfo product_id); BT=$(c2_value DeviceInfo board_type); FW=$(c2_value OSInfo webos_manufacturing_version); WOS=$(c2_value OSInfo webos_release); GST=$(GST_REGISTRY_FORK=no "$C2_INSPECT" --version 2>/dev/null | grep -i GStreamer | head -n1 | awk \'{print $2}\'); [ "$HW" = HE_DTV_W22O_AFABATAA ] || return 1; case "$PID" in OLED*C2*|OLED*G2*) :;; *) return 1;; esac; [ -n "$BT" ] && [ "$BT" != unknown ] && { [ "$FW" = 04.40.93 ] || [ "$FW" = 04.40.93.01 ]; } && [ "$WOS" = 7.4.0 ] && [ "$GST" = 1.18.2 ] && [ -x "$C2_LOADER" ] || return 1; bytes=$(od -An -t x1 -j 36 -N 4 "$C2_CORE" 2>/dev/null | tr -d " \\n"); [ "${#bytes}" -eq 8 ] || return 1; b0=$(printf "%s" "$bytes"|cut -c1-2); b1=$(printf "%s" "$bytes"|cut -c3-4); b2=$(printf "%s" "$bytes"|cut -c5-6); b3=$(printf "%s" "$bytes"|cut -c7-8); val=$(printf "%d" "0x$b3$b2$b1$b0" 2>/dev/null || echo 0); [ "$((val & 0x200))" -ne 0 ] && [ "$((val & 0x400))" -eq 0 ]; }',
+    'c2_identity() { HW=$(c2_value DeviceInfo hardware_id); PID=$(c2_value DeviceInfo product_id); BT=$(c2_value DeviceInfo board_type); FW=$(c2_value OSInfo webos_manufacturing_version); WOS=$(c2_value OSInfo webos_release); GST=$(GST_REGISTRY_FORK=no "$C2_INSPECT" --version 2>/dev/null | grep -i GStreamer | head -n1 | awk \'{print $2}\'); { [ "$HW" = HE_DTV_W22O_AFABATAA ] || [ "$HW" = HE_DTV_W22O_AFABATPU ]; } || return 1; case "$PID" in OLED*C2*|OLED*G2*|OLED*CS*) :;; *) return 1;; esac; C2_FWOK=0; { [ "$FW" = 04.40.93 ] || [ "$FW" = 04.40.93.01 ]; } && [ "$WOS" = 7.4.0 ] && [ "$GST" = 1.18.2 ] && C2_FWOK=1; [ "$FW" = 23.25.55 ] && [ "$WOS" = 9.2.2 ] && [ "$GST" = 1.18.5 ] && C2_FWOK=1; [ -n "$BT" ] && [ "$BT" != unknown ] && [ "$C2_FWOK" = 1 ] && [ -x "$C2_LOADER" ] || return 1; bytes=$(od -An -t x1 -j 36 -N 4 "$C2_CORE" 2>/dev/null | tr -d " \\n"); [ "${#bytes}" -eq 8 ] || return 1; b0=$(printf "%s" "$bytes"|cut -c1-2); b1=$(printf "%s" "$bytes"|cut -c3-4); b2=$(printf "%s" "$bytes"|cut -c5-6); b3=$(printf "%s" "$bytes"|cut -c7-8); val=$(printf "%d" "0x$b3$b2$b1$b0" 2>/dev/null || echo 0); [ "$((val & 0x200))" -ne 0 ] && [ "$((val & 0x400))" -eq 0 ]; }',
     'c2_stock_hashes() { H_LIBAV=$(c2_hash "$C2_GSTTARGET/libgstlibav.so") && H_ISO=$(c2_hash "$C2_GSTTARGET/libgstisomp4.so") && H_MKV=$(c2_hash "$C2_GSTTARGET/libgstmatroska.so") && H_GC=$(c2_hash "$C2_GSTCOOL"); }',
-    'c2_expected() { [ "$H_LIBAV" = "' + C2_EXPECT_LIBAV + '" ] && [ "$H_ISO" = "' + C2_EXPECT_ISO + '" ] && [ "$H_MKV" = "' + C2_EXPECT_MKV + '" ]; }',
+    // One clause per accepted set; still an exact triple match, just more than one
+    // known firmware. Generated from C2_EXPECTED_SETS so the JS and shell sides
+    // cannot drift.
+    'c2_expected() { ' + C2_EXPECTED_SETS.map(function (t) {
+      return '{ [ "$H_LIBAV" = "' + t.libav + '" ] && [ "$H_ISO" = "' + t.iso + '" ] && [ "$H_MKV" = "' + t.mkv + '" ]; }';
+    }).join(' || ') + '; }',
     'c2_baseline_matches() { c2_baseline_complete && [ "$(c2_fp hardware_id)" = "$HW" ] && [ "$(c2_fp product_id)" = "$PID" ] && [ "$(c2_fp board_type)" = "$BT" ] && [ "$(c2_fp firmware)" = "$FW" ] && [ "$(c2_fp webos)" = "$WOS" ] && [ "$(c2_fp gstreamer)" = "$GST" ] && [ "$(c2_fp libgstlibav)" = "$H_LIBAV" ] && [ "$(c2_fp libgstisomp4)" = "$H_ISO" ] && [ "$(c2_fp libgstmatroska)" = "$H_MKV" ] && [ "$(c2_fp gstcool)" = "$H_GC" ]; }',
     'c2_payload() { "$C2_MKDIR" -p "$C2_GST" || return 1; for f in libgstlibav.so libgstisomp4.so libgstmatroska.so libgstisomp4_1_8.so; do [ -f "$C2_PAYLOAD/$f" ] && "$C2_CP" -f "$C2_PAYLOAD/$f" "$C2_GST/$f" && [ -s "$C2_GST/$f" ] || return 1; LD_TRACE_LOADED_OBJECTS=1 "$C2_LOADER" "$C2_GST/$f" > "$C2_STATE/trace.$f" 2>&1 || return 1; if grep -q "not found" "$C2_STATE/trace.$f"; then return 1; fi; done; return 0; }',
     'c2_regular_or_absent() { { [ ! -e "$1" ] && [ ! -L "$1" ]; } || { [ -f "$1" ] && [ ! -L "$1" ]; }; }',

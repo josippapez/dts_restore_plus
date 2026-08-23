@@ -20,7 +20,8 @@ function loadService() {
     "c2Config: c2Config, c2InitScriptBody: c2InitScriptBody," +
     "c2Enable: c2Enable, c2Disable: c2Disable, c2StatusProbe: c2StatusProbe," +
     "c2StatusBindsComplete: c2StatusBindsComplete, c2SelfTest: c2SelfTest, constants: {C2: PROFILE_C2," +
-    "libav: C2_EXPECT_LIBAV, iso: C2_EXPECT_ISO, mkv: C2_EXPECT_MKV}};";
+    "sets: C2_EXPECTED_SETS, matchSet: c2MatchSet," +
+    "libav: C2_EXPECTED_SETS[0].libav, iso: C2_EXPECTED_SETS[0].iso, mkv: C2_EXPECTED_SETS[0].mkv}};";
   var FakeService = function () { this.register = function () {}; };
   var context = {
     require: function (name) { return name === "webos-service" ? FakeService : require(name); },
@@ -87,6 +88,31 @@ function fixture() {
 function run(f, script, extra) { return sh(script, Object.assign({PATH: f.bin + ":" + process.env.PATH, GST_REGISTRY_1_0: f.registry}, extra || {})); }
 function ok(result, message) { assert.equal(result.status, 0, message + "\n" + result.stderr + "\n" + result.stdout); }
 function test(name, fn) { try { fn(); console.log("ok - " + name); } catch (e) { console.error("not ok - " + name + "\n" + e.stack); process.exitCode = 1; } }
+
+test("accepted C2 artifact sets match per-set and reject chimeras", function () {
+  var sets = C.sets, match = C.matchSet;
+  assert.ok(sets.length >= 2, "more than one analyzed C2 firmware should be accepted");
+  sets.forEach(function (t, i) {
+    assert.ok(match(t.libav, t.iso, t.mkv), "set " + (i + 1) + " must match itself exactly");
+    assert.ok(t.label && t.label.length, "set " + (i + 1) + " must carry a human label");
+    [t.libav, t.iso, t.mkv].forEach(function (h) {
+      assert.match(h, /^[0-9a-f]{64}$/, "hashes must be lowercase sha256");
+    });
+  });
+  // The whole point of matching per SET: a triple assembled from two different
+  // firmwares must never pass, or the gate stops being an exact-match gate.
+  assert.equal(match(sets[0].libav, sets[1].iso, sets[0].mkv), null, "chimera 1+2 must not match");
+  assert.equal(match(sets[1].libav, sets[0].iso, sets[1].mkv), null, "chimera 2+1 must not match");
+  assert.equal(match("x", "y", "z"), null, "junk must not match");
+  assert.equal(match(undefined, undefined, undefined), null, "absent hashes must not match");
+  // Every accepted set must be distinct, or a duplicate row hides a real mismatch.
+  var seen = {};
+  sets.forEach(function (t) {
+    var k = t.libav + t.iso + t.mkv;
+    assert.equal(seen[k], undefined, "duplicate artifact set: " + t.label);
+    seen[k] = 1;
+  });
+});
 
 test("transaction helpers execute with safe paths and generated shell is valid", function () {
   var f = fixture(), o = f.overrides();
