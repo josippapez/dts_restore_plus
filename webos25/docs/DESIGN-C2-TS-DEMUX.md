@@ -1,6 +1,10 @@
 # DESIGN — TS/M2TS containers for the C2/G2/CS profile
 
-Status: **DRAFT / NOT IMPLEMENTED**. Scoped 2026-08-24.
+Status: **BINARY BUILT, NOT DEVICE-VERIFIED, NOT INTEGRATED**. Scoped and built
+2026-08-24. The artifact is `webos25/restore/ts114-out/libgstmpegtsdemux.so`
+(246.7 KB, sha256 `c2fb3c63677cd267820984f37173772cb281929422099eb1b00e3707479dab1d`),
+built by `webos25/restore/build-ts114.sh`. It is wired into nothing: no payload, no
+installer, no release path, per [`../../.claude/rules/releasing.md`](../../.claude/rules/releasing.md).
 
 ## The blocker is the container, not the channel count
 
@@ -49,14 +53,30 @@ Keeping LG's own tree (rather than upstream 1.18) also keeps LG's TS extensions 
 `app_type`/RTC, dtcpip, miracast LPCM and the LG descriptor paths — which an
 upstream demuxer would drop, with unknown effect on live TV and DVR.
 
-## Build
+## Build — as actually done
 
-Same toolchain as the existing CX payload, targeting armel soft-float /
-`ld-linux.so.3` / ELF32 ARM EABI5:
+`webos25/restore/build-ts114.sh`, modelled on `build-demux.sh`: `debian:11-slim`,
+`dpkg --add-architecture armel`, snapshot pin `20250601T000000Z`,
+`gcc-arm-linux-gnueabi`, meson cross file. Source is `lgstreamer/gst-plugins-bad`
+branch `lg` (1.14.4) built against matching 1.14.4 `gstreamer` and
+`gst-plugins-base`. `tsdemux.c` compiled **untouched**, and the script now asserts
+the no-patch premise (zero `DTS_SUPPORT`, the sink caps template, the
+`ST_PS_AUDIO_DTS` case) on the host and again in-container, so a future `lg`
+revision that adds the gate fails the build instead of silently shipping.
 
-- source: `lgstreamer/gst-plugins-bad` branch `lg` (1.14.4), `gst/mpegtsdemux` only;
-- no patch;
-- output to a new directory, leaving the committed 1.24 `demux-out/` untouched.
+Three findings worth keeping:
+
+- **meson 1.4.2 cannot configure a 1.14.4 tree.** `build-demux.sh`'s pip pin had to
+  be replaced with bullseye's own **meson 0.56.2** from apt. The hazard was real.
+- Three upstream/LG defects in the 1.14.4 tree needed build-level workarounds, none
+  of them a source patch: `-Dwith-ptp-helper-permissions=none` crashes core's own
+  post-install script (used setuid-root instead); `gst-plugins-base`'s `use_orc=no`
+  branch never defines the `orc_dep` that `audiomixer` references (left orc on auto
+  with orc absent); and `gst-libs/gst/basedrm/meson.build` closes its `endif` before
+  the `declare_dependency` that uses `gstbasedrm` — the **same** defect, with the
+  same one-line fix, that `build-demux.sh` already applies to `gst-libs/gst/mpdclient`.
+- The build is bit-for-bit reproducible: the container image was torn down and the
+  rebuild produced an identical sha256.
 
 ## Deployment
 
@@ -79,6 +99,12 @@ Per-target payload, matching the multichannel plan:
    `mpegtsbase`/`mpegtspacketizer` in the same plugin is sound is untested — note
    the whole `mpegtsdemux` plugin is one `.so`, so `mpegtsbase` comes along with it
    and the pairing is internally consistent.
+1b. **Two library dependencies are additions.** Measured `NEEDED` adds
+   `libgstcodecparsers-1.0.so.0` and `libgstmpegts-1.0.so.0` versus the
+   `gst/libgstmatroska.so` baseline. Both are also required by the **device-verified**
+   `demux-out/libgstmpegtsdemux.so`, so they exist on a C5 — their presence on a
+   C2/G2/CS is **unverified**. Max GLIBC is `GLIBC_2.7`, equal to the baseline, not
+   higher. This is the first thing the loader trace on-device must confirm.
 2. **Live TV and DVR regression.** The bind is system-wide, so broadcast playback
    must be checked before this ships, not only file playback.
 3. **HDMV/BD paths.** `WEBOS25-DTS.md` records that which DTS recognition site a
