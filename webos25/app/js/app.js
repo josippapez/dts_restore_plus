@@ -211,8 +211,11 @@
     if (testCard) testCard.hidden = !canTest;
     $("btnTest").disabled = !canTest;
     $("btnPlayMp4").disabled = !canTest;
-    $("btnPlayTs").disabled = !canW25Test;
-    $("btnPlayM2ts").disabled = !canW25Test;
+    // TS/M2TS is no longer webOS-25-only: the C2 profile gets them when its optional
+    // TS demuxer actually bound (s.tsBound), so gate on that rather than the profile.
+    var canTsTest = canW25Test || (canTest && !!s.tsBound);
+    $("btnPlayTs").disabled = !canTsTest;
+    $("btnPlayM2ts").disabled = !canTsTest;
     // A/B compare renders through the patched dtsdec, so it needs the same profile.
     $("btnAb").disabled = !canW25Test;
     Array.prototype.slice.call(document.querySelectorAll("[data-gain], [data-preset], [data-center]"))

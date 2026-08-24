@@ -2753,7 +2753,20 @@ function c2SelfTest(testOverrides) {
     'OUT=/tmp/dtsenabler_c2.wav; F="' + PAYLOAD_TESTS + '/DTS-in-mp4.mp4"',
     'export GST_REGISTRY_1_0="$C2_REGISTRY" GST_REGISTRY_UPDATE=no GST_REGISTRY_FORK=no', 'rm -f "$OUT"',
     'timeout 60 gst-launch-1.0 -q filesrc location="$F" ! qtdemux name=d d. ! queue ! avdec_dca ! audioconvert ! wavenc ! filesink location="$OUT" >/dev/null 2>&1',
-    'SZ=$(stat -c%s "$OUT" 2>/dev/null || echo 0); rm -f "$OUT"; if [ "$SZ" -ge ' + TEST_WAV_MIN + ' ]; then echo "mp4=PASS:$SZ"; else echo "mp4=FAIL:$SZ"; fi; exit 0'
+    'SZ=$(stat -c%s "$OUT" 2>/dev/null || echo 0); rm -f "$OUT"; if [ "$SZ" -ge ' + TEST_WAV_MIN + ' ]; then echo "mp4=PASS:$SZ"; else echo "mp4=FAIL:$SZ"; fi',
+    // TS/M2TS only when our TS demuxer is actually bound; otherwise stay silent so
+    // the UI keeps showing "-" rather than a FAIL for a container this TV was never
+    // given. Same 5.1 DTS-HD MA samples the webOS-25 self-test uses.
+    'if [ "$C2_MOUNT_TS" = owned ]; then',
+    '  for c in ts m2ts; do',
+    '    F="' + PAYLOAD_TESTS + '/DTS-HD-MA-5.1.$c"',
+    '    rm -f "$OUT"',
+    '    timeout 60 gst-launch-1.0 -q filesrc location="$F" ! tsdemux name=d d. ! queue ! avdec_dca ! audioconvert ! wavenc ! filesink location="$OUT" >/dev/null 2>&1',
+    '    SZ=$(stat -c%s "$OUT" 2>/dev/null || echo 0); rm -f "$OUT"',
+    '    if [ "$SZ" -ge ' + TEST_WAV_MIN + ' ]; then echo "$c=PASS:$SZ"; else echo "$c=FAIL:$SZ"; fi',
+    '  done',
+    'fi',
+    'exit 0'
   ]).join("\n");
 }
 
@@ -2983,6 +2996,7 @@ function logDiagnostic(tag, res, kv) {
       " iso:" + (kv.C2_MOUNT_ISO || "?") +
       " mkv:" + (kv.C2_MOUNT_MKV || "?") +
       " iso18:" + (kv.C2_MOUNT_ISO18 || "?") +
+      " ts:" + (kv.C2_MOUNT_TS || "?") +
       " config:" + (kv.C2_MOUNT_CONFIG || "?") +
       " registry:" + (kv.C2_MOUNT_REGISTRY || "?")
   ];
