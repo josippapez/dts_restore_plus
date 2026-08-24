@@ -1871,7 +1871,29 @@ function compatVerdict(profile, kv) {
     var reason = "C2/G2 support is experimental and requires an explicit two-step opt-in.";
     var verdict = "unverified";
     var canForce = hashable && exactHashes && !foreign && !ownerPresent;
-    if (!hashable) { verdict = "refused"; reason = "SHA-256 is unavailable or returned an invalid digest; refusing fail-closed."; canForce = false; }
+    if (!hashable) {
+      verdict = "refused";
+      // "SHA-256 is unavailable" was unattributable: a missing sha256sum and an
+      // unreadable target read the same, and because this is checked BEFORE the
+      // foreign-bind case it also masks a leftover bind. Name what failed.
+      var unhashed = [];
+      if (!kv.C2_LIBAV_SHA256) unhashed.push("libgstlibav.so");
+      if (!kv.C2_ISOMP4_SHA256) unhashed.push("libgstisomp4.so");
+      if (!kv.C2_MATROSKA_SHA256) unhashed.push("libgstmatroska.so");
+      // Empty means unreadable; non-empty but malformed is a different fault.
+      if (!kv.C2_GSTCOOL_SHA256) unhashed.push("gstcool.conf");
+      if (kv.C2_HASH_TOOL !== "1") {
+        reason = "No working sha256sum on this TV, so the exact-match gate cannot be " +
+          "evaluated; refusing fail-closed.";
+      } else if (unhashed.length) {
+        reason = "Could not read these stock files to hash them: " + unhashed.join(", ") +
+          ". A leftover bind-mount from an interrupted attempt is the usual cause -- " +
+          "reboot the TV to clear it and try again. Refusing fail-closed until then.";
+      } else {
+        reason = "SHA-256 returned an invalid digest; refusing fail-closed.";
+      }
+      canForce = false;
+    }
     else if (ownerPresent && !owned) { verdict = "drift"; reason = "C2 owner exists without a complete valid baseline; recovery is never forceable."; canForce = false; }
     else if (kv.C2_RECOVERY_PRESENT === "1") { verdict = "drift"; reason = "C2 recovery state is active; Enable is refused until owned teardown succeeds."; canForce = false; }
     else if (foreign) { verdict = "refused"; reason = "A legacy hook or plugin bind exists without the DTS Enabler C2 owner marker; refusing to adopt or modify foreign state."; canForce = false; }
@@ -2905,7 +2927,22 @@ function logDiagnostic(tag, res, kv) {
     "C2_GATE_FAIL=" + (kv.C2_GATE_FAIL || ""),
     "libgstlibav=" + (kv.C2_LIBAV_SHA256 || ""),
     "libgstisomp4=" + (kv.C2_ISOMP4_SHA256 || ""),
-    "libgstmatroska=" + (kv.C2_MATROSKA_SHA256 || "")
+    "libgstmatroska=" + (kv.C2_MATROSKA_SHA256 || ""),
+    // The inputs that actually drive a `refused` verdict. Without these an empty
+    // hash is unattributable: a missing sha256sum, an unreadable target, and a
+    // stale bind over the target all look identical (issue #1 hit exactly this).
+    "C2_HASH_TOOL=" + (kv.C2_HASH_TOOL || ""),
+    "gstcool_sha256=" + (kv.C2_GSTCOOL_SHA256 || ""),
+    "C2_OWNED=" + (kv.C2_OWNED || ""),
+    "C2_FOREIGN=" + (kv.C2_FOREIGN || ""),
+    "C2_INSPECT_OK=" + (kv.C2_INSPECT_OK || ""),
+    "C2_RECOVERY_PRESENT=" + (kv.C2_RECOVERY_PRESENT || ""),
+    "mounts=libav:" + (kv.C2_MOUNT_LIBAV || "?") +
+      " iso:" + (kv.C2_MOUNT_ISO || "?") +
+      " mkv:" + (kv.C2_MOUNT_MKV || "?") +
+      " iso18:" + (kv.C2_MOUNT_ISO18 || "?") +
+      " config:" + (kv.C2_MOUNT_CONFIG || "?") +
+      " registry:" + (kv.C2_MOUNT_REGISTRY || "?")
   ];
   return logEvent(tag, fields, true);
 }

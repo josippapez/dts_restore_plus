@@ -436,3 +436,41 @@ test("the default generated script expands $APPBASE in the payload path", functi
     "resolved payload path still contains a variable: " + r.stdout);
   assert.match(r.stdout, /\/payload\/cx$/);
 });
+
+/* A `refused` SHA verdict must say WHICH fault occurred.
+ *
+ * From issue #1: after an interrupted enable, every stock hash came back empty and
+ * the app said only "SHA-256 is unavailable or returned an invalid digest". That one
+ * sentence covers three different faults -- no hashing tool, unreadable targets, and
+ * a malformed digest -- and because !hashable is evaluated before the foreign-bind
+ * case it also masks a leftover bind. The owner had no way to act on it. */
+test("the SHA refusal distinguishes no-tool, unreadable, and malformed", function () {
+  var full = "a".repeat(64);
+
+  var noTool = service.compatVerdict(C.C2, {C2_HASH_TOOL: "0", C2_GSTCOOL_SHA256: ""});
+  assert.strictEqual(noTool.verdict, "refused");
+  assert.match(noTool.verdictReason, /No working sha256sum/);
+
+  // Tool present, targets unreadable: name them and point at the likely cause.
+  var unreadable = service.compatVerdict(C.C2, {
+    C2_HASH_TOOL: "1", C2_LIBAV_SHA256: "", C2_ISOMP4_SHA256: "",
+    C2_MATROSKA_SHA256: "", C2_GSTCOOL_SHA256: ""
+  });
+  assert.strictEqual(unreadable.verdict, "refused");
+  assert.strictEqual(unreadable.canForce, false);
+  assert.match(unreadable.verdictReason, /Could not read these stock files/);
+  assert.match(unreadable.verdictReason, /libgstlibav\.so/);
+  assert.match(unreadable.verdictReason, /libgstmatroska\.so/);
+  assert.match(unreadable.verdictReason, /reboot/i);
+
+  // A digest that is present but not 64 hex chars is a different fault, and must
+  // NOT be reported as an unreadable file.
+  var malformed = service.compatVerdict(C.C2, {
+    C2_HASH_TOOL: "1", C2_LIBAV_SHA256: full, C2_ISOMP4_SHA256: full,
+    C2_MATROSKA_SHA256: full, C2_GSTCOOL_SHA256: "zz"
+  });
+  assert.strictEqual(malformed.verdict, "refused");
+  assert.match(malformed.verdictReason, /invalid digest/);
+  assert.ok(malformed.verdictReason.indexOf("Could not read") === -1,
+    "a malformed digest must not be reported as an unreadable file");
+});
