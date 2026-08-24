@@ -1441,7 +1441,15 @@ var DETECT_PROBE = [
   '# Deliberately behavioral, not a model list. webOS 25 and CX are unaffected:',
   '# neither registers dts_audiodec, and our payload adds dtsdec/avdec_dca, never',
   '# dts_audiodec.',
-  'if [ "$HAS_DTS_AUDIODEC" = "yes" ]; then',
+  // ...but a registered dts_audiodec is NOT proof of a usable decoder. On the C2
+  // family the element registers while libgstlibav.so is a 128 KB stub with no
+  // decoder internals at all (see FIRMWARE-COMPATIBILITY.md), so "built in but
+  // disabled" is false there and this override was stealing the exact-matched C2
+  // profile -- the owner in issue #1 matched all eleven C2 gates and still got the
+  // `gated` screen with no opt-in. An exact identity+hash match against a firmware
+  // we extracted and confirmed has no decoder outranks "an element is registered",
+  // so never let the behavioral guess displace it.
+  'if [ "$HAS_DTS_AUDIODEC" = "yes" ] && [ "$PROFILE" != webos22-o22-gst118 ]; then',
   '  if [ "$DCA_RANK" = "0" ]; then PROFILE=native-dts-gated',
   '  else PROFILE=native-dts; fi',
   'fi',

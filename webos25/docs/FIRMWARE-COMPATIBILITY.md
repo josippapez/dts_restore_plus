@@ -472,7 +472,18 @@ demuxer is not the obstacle either: the only missing piece is a decoder.
 
 This corrected the app's `gated` wording, which had claimed the decoder was "switched
 off" and "fixable — raising the rank and overriding the demuxers". Neither is true
-here: there is nothing to switch on. Note the C2 zstd-compressed squashfs needs a
+here: there is nothing to switch on.
+
+**And the wording was only half the bug.** The classification was wrong too, which
+issue #1 exposed: `DETECT_PROBE` relabels any set with a registered `dts_audiodec`
+as `native-dts` / `native-dts-gated`, and that override ran *after* profile
+selection, so this owner matched all eleven C2 gates and still landed on the
+`gated` screen with no opt-in offered. On the C2 family the element registers over
+the 128 KB stub, so the behavioral signal lies. The override now yields to an exact
+C2 match (`service.js`; mirrored in `restore/report-tv.sh`, both pinned by
+`restore/check-report-sync.sh` and by a regression test in
+`app/service/test/profile-compat.test.js`). It still fires for C3/C4, where the
+decoder is real and the demuxer gate is the actual problem. Note the C2 zstd-compressed squashfs needs a
 zstd-capable `unsquashfs` (Homebrew `squashfs`); epk2extract's bundled one silently
 emits only the `.pak` files.
 

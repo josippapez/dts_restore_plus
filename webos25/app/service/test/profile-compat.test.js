@@ -19,7 +19,8 @@ function loadService() {
     "c2OwnerRoute: c2OwnerRoute," +
     "c2Config: c2Config, c2InitScriptBody: c2InitScriptBody," +
     "c2Enable: c2Enable, c2Disable: c2Disable, c2StatusProbe: c2StatusProbe," +
-    "c2StatusBindsComplete: c2StatusBindsComplete, c2SelfTest: c2SelfTest, constants: {C2: PROFILE_C2," +
+    "c2StatusBindsComplete: c2StatusBindsComplete, c2SelfTest: c2SelfTest," +
+    "DETECT_PROBE: DETECT_PROBE, constants: {C2: PROFILE_C2," +
     "sets: C2_EXPECTED_SETS, matchSet: c2MatchSet," +
     "libav: C2_EXPECTED_SETS[0].libav, iso: C2_EXPECTED_SETS[0].iso, mkv: C2_EXPECTED_SETS[0].mkv}};";
   var FakeService = function () { this.register = function () {}; };
@@ -316,3 +317,66 @@ test("optional target absence, complete owned detach, dynamic tracing, and regis
 });
 
 if (process.exitCode) process.exit(process.exitCode);
+
+/* A registered dts_audiodec must not displace an exact-matched C2 profile.
+ *
+ * Regression for issue #1: an OLED55CS6LA matched all eleven C2 gates, but its
+ * gstcool.conf carries dts_audiodec=290 + avdec_dca=0, so the behavioral override
+ * relabelled it native-dts-gated and the opt-in button was never rendered. On the
+ * C2 family that element registers over a 128 KB stub with no decoder internals,
+ * so the override must yield to the exact gate -- while still firing for C3/C4,
+ * where the decoder is real and the demuxer gate is the actual problem. */
+test("dts_audiodec override yields to an exact C2 match but still fires elsewhere", function () {
+  var probe = service.DETECT_PROBE;
+  var start = probe.indexOf("# --- PROFILE SELECTION ---");
+  var end = probe.indexOf('echo "PROFILE=$PROFILE"');
+  assert.ok(start > 0 && end > start, "selection block not found in DETECT_PROBE");
+  var block = probe.slice(start, end);
+
+  function profileFor(v) {
+    var pre = [
+      "set -u",
+      "GST_VERSION=" + v.gst,
+      'GST_MM=$(printf "%s" "$GST_VERSION" | cut -d. -f1-2)',
+      "HARDWARE_ID=" + v.hw,
+      "PRODUCT_ID=" + v.pid,
+      "BOARD_TYPE=" + (v.board || "O22_DVB"),
+      "WEBOS_RELEASE=" + (v.webos || "9.2.2"),
+      "WEBOS_MANUFACTURING_VERSION=" + (v.fw || "23.25.55"),
+      "LOADER=" + (v.loader || "ld-linux.so.3"),
+      "FLOAT_ABI=" + (v.abi || "soft"),
+      "HAS_DTS_AUDIODEC=" + v.audiodec,
+      "DCA_RANK=" + v.rank
+    ].join("\n");
+    var r = sh(pre + "\n" + block + '\nprintf "%s" "$PROFILE"');
+    assert.strictEqual(r.status, 0, "selection block failed: " + r.stderr);
+    // The block also echoes C2_GATE_FAIL, so take only the final printf.
+    var lines = r.stdout.trim().split("\n");
+    return lines[lines.length - 1].trim();
+  }
+
+  // The exact-matched C2/CS set from issue #1: keeps its own profile.
+  assert.strictEqual(profileFor({
+    gst: "1.18.5", hw: "HE_DTV_W22O_AFABATPU", pid: "OLED55CS6LA",
+    audiodec: "yes", rank: "0"
+  }), C.C2, "an exact C2 match must not be relabelled native-dts-gated");
+
+  // C3: decoder is real, demuxer gate off -> the override is correct here.
+  assert.strictEqual(profileFor({
+    gst: "1.18.4", hw: "HE_DTV_W23O_AFAAATAA", pid: "OLED55C34LA",
+    audiodec: "yes", rank: "0"
+  }), "native-dts-gated");
+
+  // C3 with the rank already raised -> plain native.
+  assert.strictEqual(profileFor({
+    gst: "1.18.4", hw: "HE_DTV_W23O_AFAAATAA", pid: "OLED55C34LA",
+    audiodec: "yes", rank: "290"
+  }), "native-dts");
+
+  // A C2-family set that does NOT match the exact gate keeps the diagnostic
+  // profile rather than silently claiming native DTS.
+  assert.strictEqual(profileFor({
+    gst: "1.18.5", hw: "HE_DTV_W22O_AFABATPU", pid: "OLED55CS6LA",
+    fw: "99.99.99", audiodec: "no", rank: "0"
+  }), "webos22-o22-c2-diagnostic");
+});

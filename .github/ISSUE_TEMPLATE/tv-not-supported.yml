@@ -1,0 +1,72 @@
+name: My TV is refused / not supported
+description: The app says your TV is unsupported, or the "Try anyway" opt-in never appears.
+title: "[TV] <model> / <firmware>"
+labels: ["compatibility"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The compatibility gate is deliberately exact, so a refusal is almost always
+        one specific measured value not matching. The report below says which one.
+
+        **Run this on the TV as root** and paste the whole output in the first box.
+        It only reads — it mounts, copies and writes nothing.
+
+        ```sh
+        curl -sL https://raw.githubusercontent.com/josippapez/dts_restore_plus/main/webos25/restore/report-tv.sh | sh
+        ```
+
+        No `curl`? It also ships in the CLI tarball as `restore/report-tv.sh`:
+
+        ```sh
+        sh report-tv.sh
+        ```
+  - type: textarea
+    id: report
+    attributes:
+      label: Output of report-tv.sh
+      description: Paste it whole, including the PROFILE and C2_GATE_FAIL lines at the end.
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: TV model
+      placeholder: OLED55CS6LA
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Which did you use?
+      options:
+        - The DTS Enabler app (Homebrew Channel)
+        - The CLI (install.sh over SSH)
+        - Both
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: App or release version
+      placeholder: "2.7.2 / webos25-2.7"
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What did you see?
+      description: The on-screen message, or what you expected that did not happen.
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: App log (optional)
+      description: |
+        If you used the app, `/var/lib/webosbrew/dtsenabler/dtsenabler.log`.
+        The report script already includes the last 40 lines, so skip this if you ran it.
+      render: text
+    validations:
+      required: false
