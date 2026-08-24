@@ -4,13 +4,34 @@ Status: **DRAFT / NOT IMPLEMENTED**. Scoped 2026-08-24 after the first working C
 install (`OLED55CS6LA`, firmware `23.25.55`, webOS `9.2.2`, GStreamer `1.18.5`)
 reported DTS decoding correctly but arriving at the soundbar as **2.0 PCM**.
 
-## Why it is stereo — settled, and it is our binary
+## Why it is stereo — NOT settled; three live suspects
 
 The `webos22-o22-gst118` profile binds `gst/libgstlibav.so`, taken from
-`lgstreamer/gst-libav@lg` (1.14.4). That build performs "DTS (dca) decode with
-**forced stereo-integer downmix** and `[downmix]`-coefficient support"
-([`../../README.md`](../../README.md) line 222; stated again at line 196). So the
-profile can only ever produce 2.0, whatever the TV would accept.
+`lgstreamer/gst-libav@lg` (1.14.4), described as "DTS (dca) decode with **forced
+stereo-integer downmix** and `[downmix]`-coefficient support"
+([`../../README.md`](../../README.md) line 222; again at line 196).
+
+**That description is not the whole story, and an earlier draft of this doc wrongly
+called the cause settled.** This repo's own evidence contradicts "can only ever
+produce 2.0": [`FIRMWARE-COMPATIBILITY.md`](FIRMWARE-COMPATIBILITY.md) lines 216-218
+record the *same* binary decoding to **six-channel S32LE** under QEMU on a stock
+1.18.2 rootfs, and lines 333-334 record it again for B2. Disassembly agrees the
+downmix is **conditional**: `ff_dca_downmix_to_stereo_forced` (an LG symbol absent
+from upstream) is reached through a guard, so it is not applied unconditionally.
+
+Three suspects remain live, and the fix differs for each:
+
+1. **The decoder**, if the LG patch downmixes on the TV but not under QEMU.
+2. **Downstream fold** in LG's 1.18 `audiosink`/HAL/`audioconvert`. The C2 sink's
+   caps have never been read; the `channels=[1,10]` reading in
+   [`PASSTHROUGH.md`](PASSTHROUGH.md) lines 38-40 is **C5-only**.
+3. **The HDMI link.** Plain ARC and optical carry at most 2-channel LPCM;
+   multichannel LPCM needs **eARC** plus the right "Digital Sound Output" setting
+   (the same variable `PASSTHROUGH.md` lines 46-50 records for the C5). If the
+   owner's soundbar is on ARC or optical, "stereo PCM at the soundbar" is expected
+   **no matter what any decoder emits**, and no build can change it.
+
+Suspect 3 is the cheapest to rule out and was missing from this doc entirely.
 
 Two things this is **not**:
 
@@ -100,6 +121,33 @@ working stereo path rather than breaking a profile that now demonstrably works.
 
    This work is therefore **output quality (2.0 → 5.1), not playability**, and ranks
    below the TS demuxer.
+
+## Measure before building
+
+All three measurements are cheaper than one build, and any of them can make the
+build pointless:
+
+1. **Ask the owner:** eARC or plain ARC/optical, and the Digital Sound Output
+   setting. Free, and rules out suspect 3.
+2. **Read the C2 audio sink's caps template** from the already-extracted
+   `23.25.55.01-HE_DTV_W22O_AFABATPU` rootfs. Free and local; never done for C2.
+3. **Capture `avdec_dca`'s negotiated src caps** during real 5.1 playback on the
+   owner's TV. One round-trip.
+
+Only if the link is eARC-capable, the sink takes multichannel, and `avdec_dca`
+negotiates 2 channels is the decoder the culprit.
+
+## A second build option this doc originally missed
+
+Retarget **this project's own `gstdtsdec` + libdca** to 1.18, rather than building
+gst-libav against upstream ffmpeg. It swaps one decoder element instead of the whole
+libav plugin (which carries every `avdec_*` on the TV, including the AC3/AAC paths
+that work today), and it keeps the make-up-gain/DRC work, avoiding the loudness
+regression an upstream dca would bring. Costs more up front; better to live with.
+
+Note also that building a 1.18 payload contradicts the recorded decision in
+[`MULTI-MODEL.md`](MULTI-MODEL.md) lines 208-209. Amend that explicitly rather than
+silently overriding it.
 
 ## Order of work
 
