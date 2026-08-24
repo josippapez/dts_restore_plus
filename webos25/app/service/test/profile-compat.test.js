@@ -404,3 +404,35 @@ test("dts_audiodec override yields to an exact C2 match but still fires elsewher
   }), "webos22-o22-c2-diagnostic",
     "a near-miss C2 must keep its diagnostic profile, not become native-dts-gated");
 });
+
+/* The generated script must resolve $APPBASE, not carry it as a literal.
+ *
+ * Regression for issue #1's actual cause: c2Q() single-quotes every config value,
+ * which is correct for all of them except the payload path -- the one value that
+ * deliberately contains a shell variable. Emitting C2_PAYLOAD='$APPBASE/payload/cx'
+ * made the existence check test a path containing a dollar sign, so every C2 enable
+ * failed as "payload file absent" and rolled back. No C2/G2 TV had ever completed
+ * an enable because of it.
+ *
+ * Every other test builds the script with testOverrides, which substitutes a real
+ * temp path and so never exercises the indirection. This one deliberately uses the
+ * DEFAULT config. */
+test("the default generated script expands $APPBASE in the payload path", function () {
+  var script = service.c2Enable(true);
+
+  var line = script.split("\n").filter(function (l) { return l.indexOf("C2_PAYLOAD=") === 0; })[0];
+  assert.ok(line, "no C2_PAYLOAD assignment in the generated script");
+  assert.ok(line.indexOf("'$APPBASE") === -1,
+    "C2_PAYLOAD must not be single-quoted around $APPBASE: " + line);
+
+  // Behavioral, not just textual: run the prelude plus the assignment and confirm
+  // the value the script would actually use contains no unexpanded variable.
+  var prelude = script.split("\n").slice(0, 30).filter(function (l) {
+    return l.indexOf("APPBASE=") === 0 || l.indexOf("C2_PAYLOAD=") === 0;
+  }).join("\n");
+  var r = sh(prelude + '\nprintf "%s" "$C2_PAYLOAD"');
+  assert.strictEqual(r.status, 0, "prelude failed: " + r.stderr);
+  assert.ok(r.stdout.indexOf("$") === -1,
+    "resolved payload path still contains a variable: " + r.stdout);
+  assert.match(r.stdout, /\/payload\/cx$/);
+});

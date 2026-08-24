@@ -2504,7 +2504,21 @@ function c2Config(testOverrides) {
 function c2Q(value) { return "'" + String(value).replace(/'/g, "'\\''") + "'"; }
 function c2Vars(c) {
   var lines = [];
-  Object.keys(c).forEach(function (k) { lines.push("C2_" + k.toUpperCase() + "=" + c2Q(c[k])); });
+  Object.keys(c).forEach(function (k) {
+    // c2Q() single-quotes everything, which is right for every value EXCEPT the
+    // payload path: it is the one config value that deliberately contains a shell
+    // variable ($APPBASE, resolved by APPBASE_PRELUDE at the top of the script).
+    // Single-quoting it emitted C2_PAYLOAD='$APPBASE/payload/cx' literally, so the
+    // existence check tested a path containing a dollar sign, always failed, and
+    // every C2 enable died as "payload file absent" then rolled back -- which is
+    // why no C2/G2 TV had ever completed one (issue #1). Double-quote just this
+    // shape so $APPBASE expands; the suffix is our own literal, never user input.
+    var v = c[k];
+    var quoted = (typeof v === "string" && v.indexOf("$APPBASE") === 0 && !/['"`\\$;|&<>()]/.test(v.slice(8)))
+      ? '"' + v + '"'
+      : c2Q(v);
+    lines.push("C2_" + k.toUpperCase() + "=" + quoted);
+  });
   return lines;
 }
 
