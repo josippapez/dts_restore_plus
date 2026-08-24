@@ -33,7 +33,8 @@ check "gate: float-abi" '[ "$FLOAT_ABI" = "soft" ] || C2_GATE_FAIL="$C2_GATE_FAI
 check "W25 loader/abi condition" '[ "$LOADER" = "ld-linux.so.3" ] && [ "$FLOAT_ABI" = "soft" ]'
 check "float ABI hard bit" '[ "$((val & 0x400))" -ne 0 ]'
 check "float ABI soft bit" '[ "$((val & 0x200))" -ne 0 ]'
-check "native-dts override guard" 'if [ "$HAS_DTS_AUDIODEC" = "yes" ] && [ "$PROFILE" != webos22-o22-gst118 ]; then'
+check "C2 profiles kept from override" 'case "$PROFILE" in webos22-o22-gst118|webos22-o22-c2-diagnostic) C2_KEEP=1 ;; *) C2_KEEP=0 ;; esac'
+check "native-dts override guard" 'if [ "$HAS_DTS_AUDIODEC" = "yes" ] && [ "$C2_KEEP" = 0 ]; then'
 check "native-dts gated split" 'if [ "$DCA_RANK" = "0" ]; then PROFILE=native-dts-gated'
 check "GST_MM derivation" 'GST_MM=$(printf "%s" "$GST_VERSION" | cut -d. -f1-2)'
 

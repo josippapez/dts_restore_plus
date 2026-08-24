@@ -142,7 +142,8 @@ esac
 # A registered dts_audiodec normally means LG ships a real decoder -- but not on the
 # C2 family, where the element registers over a 128 KB stub. Must not displace an
 # exact-matched C2 profile. Keep identical to the app's DETECT_PROBE.
-if [ "$HAS_DTS_AUDIODEC" = "yes" ] && [ "$PROFILE" != webos22-o22-gst118 ]; then
+case "$PROFILE" in webos22-o22-gst118|webos22-o22-c2-diagnostic) C2_KEEP=1 ;; *) C2_KEEP=0 ;; esac
+if [ "$HAS_DTS_AUDIODEC" = "yes" ] && [ "$C2_KEEP" = 0 ]; then
   if [ "$DCA_RANK" = "0" ]; then PROFILE=native-dts-gated
   else PROFILE=native-dts; fi
 fi

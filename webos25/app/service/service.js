@@ -1449,7 +1449,12 @@ var DETECT_PROBE = [
   // `gated` screen with no opt-in. An exact identity+hash match against a firmware
   // we extracted and confirmed has no decoder outranks "an element is registered",
   // so never let the behavioral guess displace it.
-  'if [ "$HAS_DTS_AUDIODEC" = "yes" ] && [ "$PROFILE" != webos22-o22-gst118 ]; then',
+  // The C2-family diagnostic profile is excluded for the same reason: it is the only
+  // profile that reports WHICH C2 gate missed (C2_GATE_FAIL), and letting the override
+  // relabel it made that message unreachable on screen for precisely the TVs it was
+  // written for -- the owner in issue #1 never saw it.
+  'case "$PROFILE" in webos22-o22-gst118|webos22-o22-c2-diagnostic) C2_KEEP=1 ;; *) C2_KEEP=0 ;; esac',
+  'if [ "$HAS_DTS_AUDIODEC" = "yes" ] && [ "$C2_KEEP" = 0 ]; then',
   '  if [ "$DCA_RANK" = "0" ]; then PROFILE=native-dts-gated',
   '  else PROFILE=native-dts; fi',
   'fi',

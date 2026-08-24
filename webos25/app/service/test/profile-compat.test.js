@@ -379,4 +379,13 @@ test("dts_audiodec override yields to an exact C2 match but still fires elsewher
     gst: "1.18.5", hw: "HE_DTV_W22O_AFABATPU", pid: "OLED55CS6LA",
     fw: "99.99.99", audiodec: "no", rank: "0"
   }), "webos22-o22-c2-diagnostic");
+
+  // ...and it must survive the override too: the diagnostic profile is the only one
+  // that reports WHICH gate missed, so relabelling it hides that from the very TVs
+  // that need it.
+  assert.strictEqual(profileFor({
+    gst: "1.18.5", hw: "HE_DTV_W22O_AFABATPU", pid: "OLED55CS6LA",
+    fw: "99.99.99", audiodec: "yes", rank: "0"
+  }), "webos22-o22-c2-diagnostic",
+    "a near-miss C2 must keep its diagnostic profile, not become native-dts-gated");
 });
