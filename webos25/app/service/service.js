@@ -2887,9 +2887,18 @@ function logDiagnostic(tag, res, kv) {
     "libgstisomp4=" + (kv.C2_ISOMP4_SHA256 || ""),
     "libgstmatroska=" + (kv.C2_MATROSKA_SHA256 || "")
   ];
+  return logEvent(tag, fields, true);
+}
+
+/* Append one entry. dedupe=true collapses an unchanged repeat (status re-renders
+ * constantly); actions never dedupe, because each attempt is its own event and two
+ * identical failures in a row are exactly what you need to see. */
+function logEvent(tag, fields, dedupe) {
   var signature = tag + "|" + fields.join("|");
-  if (signature === lastLogSignature) return Promise.resolve(null);
-  lastLogSignature = signature;
+  if (dedupe) {
+    if (signature === lastLogSignature) return Promise.resolve(null);
+    lastLogSignature = signature;
+  }
   var body = fields.map(function (f) { return "  " + f; }).join("\n");
   var dir = APP_LOG.replace(/\/[^/]*$/, "");
   var cmd = "d=" + c2Q(dir) + "; f=" + c2Q(APP_LOG) + "; " +
@@ -2902,6 +2911,23 @@ function logDiagnostic(tag, res, kv) {
     "mv -f \"$f.tmp\" \"$f\" 2>/dev/null; fi; exit 0";
   // Logging must never turn a working detect into an error.
   return rootExec(cmd).catch(function () { return null; });
+}
+
+/* Log the outcome of enable/disable/uninstall.
+ *
+ * The refusal response carries the gate's own REFUSED=/REASON= lines, but the app
+ * shows them in a toast that auto-hides after ~5s, so a user hits "it fails" with
+ * nothing readable and nothing to attach. Keep the raw output: it is the only place
+ * the apply-time reason exists. */
+function logActionResult(action, profile, outcome, raw) {
+  var fields = ["action=" + action, "profile=" + (profile || "unknown"), "outcome=" + outcome];
+  var text = String(raw == null ? "" : raw).replace(/\s+$/, "");
+  if (text) {
+    if (text.length > 2000) text = text.slice(0, 2000) + " ...[truncated]";
+    fields.push("output:");
+    text.split("\n").forEach(function (l) { fields.push("  | " + l); });
+  }
+  return logEvent("action", fields, false);
 }
 
 service.register("detect", function (message) {
@@ -3365,10 +3391,12 @@ function runMechanism(message, action) {
         if (!alreadyOwned && !(forceRequested && compat.canForce)) {
           message.respond({ returnValue: false, profile: profile, supported: true, verdict: compat.verdict, verdictReason: compat.verdictReason, canForce: compat.canForce, errorText: "First C2/G2 enable is experimental and requires literal {force:true} after the exact compatibility gate passes." });
           return;
+          logActionResult(action, profile, "pre-refused:" + (compat && compat.verdict || "unknown"), compat && compat.verdictReason);
         }
         if (compat.verdict === "drift" || compat.verdict === "refused") {
           message.respond({ returnValue: false, profile: profile, supported: true, verdict: compat.verdict, verdictReason: compat.verdictReason, canForce: false, errorText: "Refusing C2/G2 enable: " + compat.verdictReason });
           return;
+          logActionResult(action, profile, "pre-refused:" + (compat && compat.verdict || "unknown"), compat && compat.verdictReason);
         }
         builder = function () { return c2Enable(!alreadyOwned && forceRequested); };
       } else {
@@ -3420,6 +3448,7 @@ function runMechanism(message, action) {
             : " Nothing of ours was applied on this TV, and nothing was changed.";
         }
         message.respond(refusal);
+        logActionResult(action, profile, "refused:" + kv.REFUSED, r.stdout + (r.stderr ? "\n" + r.stderr : ""));
         return;
       }
       // The success shape stays exactly what it was for any profile without a
@@ -3459,9 +3488,12 @@ function runMechanism(message, action) {
         res.verifiedLabel = kv.LABEL || compat.verifiedLabel;
       }
       message.respond(res);
+      logActionResult(action, profile, warnings.length ? "ok-with-warnings" : "ok",
+        r.stdout + (r.stderr ? "\n" + r.stderr : ""));
     });
   }).catch(function (e) {
     message.respond({ returnValue: false, errorText: e.errorText || e.message || String(e) });
+    logActionResult(action, "unknown", "error", e.errorText || e.message || String(e));
   });
 }
 

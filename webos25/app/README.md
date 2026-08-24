@@ -356,11 +356,15 @@ DTS pad from the demuxer, so the fix is library-override-centric.
 
 ## Diagnostic log
 
-`detect` and `status` append the gate's decision to
+`detect`, `status`, and every `enable`/`disable`/`uninstall` attempt append to
 **`/var/lib/webosbrew/dtsenabler/dtsenabler.log`** — profile, verdict, `canForce`,
 the refusal reason, the identity values (`PRODUCT_ID`, `HARDWARE_ID`, firmware,
 webOS, GStreamer, loader, float ABI), `C2_GATE_FAIL`, and the three measured stock
-plugin SHA-256s. That is everything needed to say why a TV was refused.
+plugin SHA-256s. Action entries add the outcome plus the builder's raw
+`REFUSED=`/`REASON=` output, which is the only place the apply-time reason exists —
+the app shows it in a toast that auto-hides, so "it fails" otherwise arrives with
+nothing attached. Action entries are never deduped: two identical failures in a row
+are exactly what you need to see.
 
 Three deliberate choices:
 
