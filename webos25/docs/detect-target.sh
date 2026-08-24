@@ -240,7 +240,7 @@ case "$GST_MM" in
         C2_FWOK=0
         { [ "$WEBOS_MANUFACTURING_VERSION" = "04.40.93" ] || [ "$WEBOS_MANUFACTURING_VERSION" = "04.40.93.01" ]; } &&
           [ "$WEBOS_RELEASE" = "7.4.0" ] && [ "$GST_VERSION" = "1.18.2" ] && C2_FWOK=1
-        [ "$WEBOS_MANUFACTURING_VERSION" = "23.25.55" ] &&
+        { [ "$WEBOS_MANUFACTURING_VERSION" = "23.25.55" ] || [ "$WEBOS_MANUFACTURING_VERSION" = "23.25.55.01" ]; } &&
           [ "$WEBOS_RELEASE" = "9.2.2" ] && [ "$GST_VERSION" = "1.18.5" ] && C2_FWOK=1
         if [ "$C2_MODEL" = 1 ] && [ "$BOARD_TYPE" != "unknown" ] && [ "$C2_FWOK" = 1 ] &&
            [ "$LOADER" = "ld-linux.so.3" ] && [ "$FLOAT_ABI" = "soft" ]; then

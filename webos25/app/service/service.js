@@ -1219,7 +1219,10 @@ var C2_HOOK        = "/var/lib/webosbrew/init.d/restore_dts_c2";
  * Set 1: the originally analyzed global 04.40.93 / webOS 7.4.0 image.
  * Set 2: 23.25.55 / webOS 9.2.2 (GStreamer 1.18.5), extracted from
  *   23.25.55.01-HE_DTV_W22O_AFABATPU after an OLED55CS6LA owner reported the app
- *   refusing their TV. Same board family, same payload target, one GStreamer point
+ *   refusing their TV. Both "23.25.55" and "23.25.55.01" are accepted as the
+ *   reported version string (as for 04.40.93) because the OTA image name carries
+ *   the sub-revision and DeviceInfo may report either; the exact hash triple below
+ *   is the real gate, so accepting both spellings widens nothing. Same board family, same payload target, one GStreamer point
  *   release newer. Added so that owner can take the two-step experimental opt-in and
  *   actually test the profile -- nobody has run it on any C2/G2 yet, so it stays
  *   hardware-unverified either way.
@@ -1408,8 +1411,20 @@ var DETECT_PROBE = [
   // selects the profile.
   '        C2_FWOK=0',
   '        { [ "$WEBOS_MANUFACTURING_VERSION" = "04.40.93" ] || [ "$WEBOS_MANUFACTURING_VERSION" = "04.40.93.01" ]; } && [ "$WEBOS_RELEASE" = "7.4.0" ] && [ "$GST_VERSION" = "1.18.2" ] && C2_FWOK=1',
-  '        [ "$WEBOS_MANUFACTURING_VERSION" = "23.25.55" ] && [ "$WEBOS_RELEASE" = "9.2.2" ] && [ "$GST_VERSION" = "1.18.5" ] && C2_FWOK=1',
-  '        if [ "$C2_MODEL" = 1 ] && [ "$BOARD_TYPE" != unknown ] && [ "$C2_FWOK" = 1 ] && [ "$LOADER" = "ld-linux.so.3" ] && [ "$FLOAT_ABI" = "soft" ]; then PROFILE=webos22-o22-gst118; else PROFILE=webos22-o22-c2-diagnostic; fi ;;',
+  '        { [ "$WEBOS_MANUFACTURING_VERSION" = "23.25.55" ] || [ "$WEBOS_MANUFACTURING_VERSION" = "23.25.55.01" ]; } && [ "$WEBOS_RELEASE" = "9.2.2" ] && [ "$GST_VERSION" = "1.18.5" ] && C2_FWOK=1',
+  // Name the gate(s) that actually failed. "one or more of these seven mismatched"
+  // is unactionable for an owner -- they cannot tell a wrong firmware from a wrong
+  // ABI, and the opt-in button is simply absent with no explanation. Report the
+  // specific failures so a report is diagnosable from one screenshot.
+  '        C2_GATE_FAIL=',
+  '        [ "$C2_MODEL" = 1 ] || C2_GATE_FAIL="$C2_GATE_FAIL model($PRODUCT_ID)"',
+  '        [ "$BOARD_TYPE" != unknown ] || C2_GATE_FAIL="$C2_GATE_FAIL board-type"',
+  '        [ "$C2_FWOK" = 1 ] || C2_GATE_FAIL="$C2_GATE_FAIL firmware($WEBOS_MANUFACTURING_VERSION/$WEBOS_RELEASE/$GST_VERSION)"',
+  '        [ "$LOADER" = "ld-linux.so.3" ] || C2_GATE_FAIL="$C2_GATE_FAIL loader($LOADER)"',
+  '        [ "$FLOAT_ABI" = "soft" ] || C2_GATE_FAIL="$C2_GATE_FAIL float-abi($FLOAT_ABI)"',
+  '        C2_GATE_FAIL=${C2_GATE_FAIL# }',
+  '        echo "C2_GATE_FAIL=$C2_GATE_FAIL"',
+  '        if [ -z "$C2_GATE_FAIL" ]; then PROFILE=webos22-o22-gst118; else PROFILE=webos22-o22-c2-diagnostic; fi ;;',
   '      *W22H*) PROFILE=webos22-w22h-diagnostic ;;',
   '      *W23O*) PROFILE=webos23-w23o-diagnostic ;;',
   '      *W23H*) PROFILE=webos23-w23h-diagnostic ;;',
@@ -1892,7 +1907,12 @@ function compatVerdict(profile, kv) {
     };
   }
   var diagnosticReason = "no supported DTS-restore mechanism matches this diagnostic profile.";
-  if (profile === "webos22-o22-c2-diagnostic") diagnosticReason = "C2-family evidence was found, but one or more exact C2 gates (OTA ID, model family, firmware, webOS, GStreamer, loader, or soft-float ABI) mismatched.";
+  if (profile === "webos22-o22-c2-diagnostic") {
+    diagnosticReason = kv.C2_GATE_FAIL
+      ? "C2-family evidence was found, but these exact C2 gates mismatched: " + kv.C2_GATE_FAIL +
+        ". Report those values if you want this firmware added."
+      : "C2-family evidence was found, but one or more exact C2 gates (OTA ID, model family, firmware, webOS, GStreamer, loader, or soft-float ABI) mismatched.";
+  }
   else if (profile === PROFILE_B2) diagnosticReason = "B2/W22H firmware has no registered DTS decoder and its sink path is unverified; no safe mechanism exists.";
   /* Reached only if a W23O set somehow does NOT register dts_audiodec (the native-dts
    * override above catches the normal case). LG restored DTS for 2023, so that would
@@ -2506,7 +2526,7 @@ function c2EngineLines(c) {
     'c2_refuse() { echo "REFUSED=$1"; echo "REASON=$2"; exit 0; }',
     'c2_hash() { h=$(sha256sum "$1" 2>/dev/null | awk \'{print $1}\'); [ -n "$h" ] || h=$(busybox sha256sum "$1" 2>/dev/null | awk \'{print $1}\'); [ "${#h}" -eq 64 ] && case "$h" in *[!0-9a-f]*) return 1;; *) printf "%s" "$h";; esac; }',
     'c2_value() { nyx-cmd "$1" query "$2" 2>/dev/null | head -n1; }',
-    'c2_identity() { HW=$(c2_value DeviceInfo hardware_id); PID=$(c2_value DeviceInfo product_id); BT=$(c2_value DeviceInfo board_type); FW=$(c2_value OSInfo webos_manufacturing_version); WOS=$(c2_value OSInfo webos_release); GST=$(GST_REGISTRY_FORK=no "$C2_INSPECT" --version 2>/dev/null | grep -i GStreamer | head -n1 | awk \'{print $2}\'); { [ "$HW" = HE_DTV_W22O_AFABATAA ] || [ "$HW" = HE_DTV_W22O_AFABATPU ]; } || return 1; case "$PID" in OLED*C2*|OLED*G2*|OLED*CS*) :;; *) return 1;; esac; C2_FWOK=0; { [ "$FW" = 04.40.93 ] || [ "$FW" = 04.40.93.01 ]; } && [ "$WOS" = 7.4.0 ] && [ "$GST" = 1.18.2 ] && C2_FWOK=1; [ "$FW" = 23.25.55 ] && [ "$WOS" = 9.2.2 ] && [ "$GST" = 1.18.5 ] && C2_FWOK=1; [ -n "$BT" ] && [ "$BT" != unknown ] && [ "$C2_FWOK" = 1 ] && [ -x "$C2_LOADER" ] || return 1; bytes=$(od -An -t x1 -j 36 -N 4 "$C2_CORE" 2>/dev/null | tr -d " \\n"); [ "${#bytes}" -eq 8 ] || return 1; b0=$(printf "%s" "$bytes"|cut -c1-2); b1=$(printf "%s" "$bytes"|cut -c3-4); b2=$(printf "%s" "$bytes"|cut -c5-6); b3=$(printf "%s" "$bytes"|cut -c7-8); val=$(printf "%d" "0x$b3$b2$b1$b0" 2>/dev/null || echo 0); [ "$((val & 0x200))" -ne 0 ] && [ "$((val & 0x400))" -eq 0 ]; }',
+    'c2_identity() { HW=$(c2_value DeviceInfo hardware_id); PID=$(c2_value DeviceInfo product_id); BT=$(c2_value DeviceInfo board_type); FW=$(c2_value OSInfo webos_manufacturing_version); WOS=$(c2_value OSInfo webos_release); GST=$(GST_REGISTRY_FORK=no "$C2_INSPECT" --version 2>/dev/null | grep -i GStreamer | head -n1 | awk \'{print $2}\'); { [ "$HW" = HE_DTV_W22O_AFABATAA ] || [ "$HW" = HE_DTV_W22O_AFABATPU ]; } || return 1; case "$PID" in OLED*C2*|OLED*G2*|OLED*CS*) :;; *) return 1;; esac; C2_FWOK=0; { [ "$FW" = 04.40.93 ] || [ "$FW" = 04.40.93.01 ]; } && [ "$WOS" = 7.4.0 ] && [ "$GST" = 1.18.2 ] && C2_FWOK=1; { [ "$FW" = 23.25.55 ] || [ "$FW" = 23.25.55.01 ]; } && [ "$WOS" = 9.2.2 ] && [ "$GST" = 1.18.5 ] && C2_FWOK=1; [ -n "$BT" ] && [ "$BT" != unknown ] && [ "$C2_FWOK" = 1 ] && [ -x "$C2_LOADER" ] || return 1; bytes=$(od -An -t x1 -j 36 -N 4 "$C2_CORE" 2>/dev/null | tr -d " \\n"); [ "${#bytes}" -eq 8 ] || return 1; b0=$(printf "%s" "$bytes"|cut -c1-2); b1=$(printf "%s" "$bytes"|cut -c3-4); b2=$(printf "%s" "$bytes"|cut -c5-6); b3=$(printf "%s" "$bytes"|cut -c7-8); val=$(printf "%d" "0x$b3$b2$b1$b0" 2>/dev/null || echo 0); [ "$((val & 0x200))" -ne 0 ] && [ "$((val & 0x400))" -eq 0 ]; }',
     'c2_stock_hashes() { H_LIBAV=$(c2_hash "$C2_GSTTARGET/libgstlibav.so") && H_ISO=$(c2_hash "$C2_GSTTARGET/libgstisomp4.so") && H_MKV=$(c2_hash "$C2_GSTTARGET/libgstmatroska.so") && H_GC=$(c2_hash "$C2_GSTCOOL"); }',
     // One clause per accepted set; still an exact triple match, just more than one
     // known firmware. Generated from C2_EXPECTED_SETS so the JS and shell sides
