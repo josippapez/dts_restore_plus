@@ -71,7 +71,11 @@ function fixture() {
   exe(path.join(bin, "gst-launch-1.0"), '[ "${FAIL_LAUNCH:-}" = 1 ] && exit 1; out=; for a in "$@"; do case "$a" in location=*) out=${a#location=};; esac; done; [ -n "$out" ] || exit 1; dd if=/dev/zero of="$out" bs=100001 count=1 >/dev/null 2>&1');
   exe(path.join(bin, "timeout"), 'shift; exec "$@"');
   exe(path.join(bin, "stat"), '[ "$1" = -c%s ] && exec /usr/bin/stat -f%z "$2"; exec /usr/bin/stat "$@"');
-  exe(path.join(bin, "loader"), '[ "${FAIL_TRACE:-}" = 1 ] && { echo "not found"; exit 1; }; exit 0');
+  // MISS_DEP reproduces the real shape of an unresolved dependency: the loader
+  // SUCCEEDS and reports the missing library in its trace output. FAIL_TRACE is the
+  // different case where the loader itself cannot run.
+  exe(path.join(bin, "loader"), '[ "${FAIL_TRACE:-}" = 1 ] && { echo "not found"; exit 1; }; ' +
+    '[ "${MISS_DEP:-}" = 1 ] && { echo "\tlibgstsubtitle-1.0.so.0 => not found"; exit 0; }; exit 0');
   [["cp", "/bin/cp"], ["rm", "/bin/rm"], ["rmdir", "/bin/rmdir"], ["mkdir", "/bin/mkdir"], ["mv", "/bin/mv"], ["chmod", "/bin/chmod"], ["ln", "/bin/ln"], ["sed", "/usr/bin/sed"]].forEach(function (entry) {
     exe(path.join(bin, entry[0]), '[ "${FAIL_' + entry[0].toUpperCase() + ':-}" = 1 ] && exit 1; [ -n "${FAIL_' + entry[0].toUpperCase() + '_PATH:-}" ] && { for a in "$@"; do [ "$a" = "$FAIL_' + entry[0].toUpperCase() + '_PATH" ] && exit 1; done; }; exec ' + entry[1] + ' "$@"');
   });
@@ -135,6 +139,17 @@ test("all four payload copies and loader tracing are required", function () {
   f = fixture(); o = f.overrides(); r = run(f, service.c2Enable(true, o), {FAIL_TRACE: "1"});
   ok(r, "loader trace refusal");
   assert.match(r.stdout, /payload|cleanup/);
+
+  // An unresolved dependency must name the file AND the library. Reporting only
+  // "one of four payload copies or loader traces failed" sent issue #1 in circles:
+  // the trace files that hold the answer are deleted by the rollback right after.
+  f = fixture(); o = f.overrides(); r = run(f, service.c2Enable(true, o), {MISS_DEP: "1"});
+  ok(r, "missing dependency refusal");
+  assert.match(r.stdout, /payload/);
+  assert.match(r.stdout, /libgstlibav\.so is missing dependencies on this TV/);
+  assert.match(r.stdout, /libgstsubtitle-1\.0\.so\.0/);
+  assert.equal(fs.existsSync(path.join(f.state, "owner")), false,
+    "a missing dependency must not leave an owner marker behind");
 });
 
 test("missing baseline, recovery, partial, stacked, and foreign mounts refuse before mutation", function () {

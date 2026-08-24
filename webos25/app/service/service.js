@@ -2548,7 +2548,13 @@ function c2EngineLines(c) {
       return '{ [ "$H_LIBAV" = "' + t.libav + '" ] && [ "$H_ISO" = "' + t.iso + '" ] && [ "$H_MKV" = "' + t.mkv + '" ]; }';
     }).join(' || ') + '; }',
     'c2_baseline_matches() { c2_baseline_complete && [ "$(c2_fp hardware_id)" = "$HW" ] && [ "$(c2_fp product_id)" = "$PID" ] && [ "$(c2_fp board_type)" = "$BT" ] && [ "$(c2_fp firmware)" = "$FW" ] && [ "$(c2_fp webos)" = "$WOS" ] && [ "$(c2_fp gstreamer)" = "$GST" ] && [ "$(c2_fp libgstlibav)" = "$H_LIBAV" ] && [ "$(c2_fp libgstisomp4)" = "$H_ISO" ] && [ "$(c2_fp libgstmatroska)" = "$H_MKV" ] && [ "$(c2_fp gstcool)" = "$H_GC" ]; }',
-    'c2_payload() { "$C2_MKDIR" -p "$C2_GST" || return 1; for f in libgstlibav.so libgstisomp4.so libgstmatroska.so libgstisomp4_1_8.so; do [ -f "$C2_PAYLOAD/$f" ] && "$C2_CP" -f "$C2_PAYLOAD/$f" "$C2_GST/$f" && [ -s "$C2_GST/$f" ] || return 1; LD_TRACE_LOADED_OBJECTS=1 "$C2_LOADER" "$C2_GST/$f" > "$C2_STATE/trace.$f" 2>&1 || return 1; if grep -q "not found" "$C2_STATE/trace.$f"; then return 1; fi; done; return 0; }',
+    // Report WHICH file failed and WHICH library is missing. "one of four payload
+    // copies or loader traces failed" is unactionable: it cannot distinguish a
+    // missing payload from an unresolved dependency, and the trace files it wrote
+    // are deleted by the rollback that follows. The owner in issue #1 hit exactly
+    // this and the reason told us nothing. C2_PAYLOAD_FAIL is a global on purpose
+    // (no subshell), so the caller can append it to its own reason.
+    'c2_payload() { C2_PAYLOAD_FAIL=; "$C2_MKDIR" -p "$C2_GST" || { C2_PAYLOAD_FAIL="cannot create $C2_GST"; return 1; }; for f in libgstlibav.so libgstisomp4.so libgstmatroska.so libgstisomp4_1_8.so; do [ -f "$C2_PAYLOAD/$f" ] || { C2_PAYLOAD_FAIL="payload file absent: $f"; return 1; }; "$C2_CP" -f "$C2_PAYLOAD/$f" "$C2_GST/$f" || { C2_PAYLOAD_FAIL="cannot copy $f"; return 1; }; [ -s "$C2_GST/$f" ] || { C2_PAYLOAD_FAIL="empty after copy: $f"; return 1; }; LD_TRACE_LOADED_OBJECTS=1 "$C2_LOADER" "$C2_GST/$f" > "$C2_STATE/trace.$f" 2>&1 || { C2_PAYLOAD_FAIL="loader could not trace $f"; return 1; }; miss=$(grep "not found" "$C2_STATE/trace.$f" | sed "s/^[[:space:]]*//;s/[[:space:]]*=>.*//" | tr "\n" " "); [ -z "$miss" ] || { C2_PAYLOAD_FAIL="$f is missing dependencies on this TV: $miss"; return 1; }; done; return 0; }',
     'c2_regular_or_absent() { { [ ! -e "$1" ] && [ ! -L "$1" ]; } || { [ -f "$1" ] && [ ! -L "$1" ]; }; }',
     'c2_state_known() { [ -d "$C2_STATE" ] && [ ! -L "$C2_STATE" ] || return 1; for p in "$C2_OWNER" "$C2_BASELINE" "$C2_BASELINE.tmp" "$C2_RECOVERY" "$C2_INIT" "$C2_INIT.tmp" "$C2_ENV" "$C2_HOOKSOURCE" "$C2_CONFIGSOURCE" "$C2_REGISTRYSOURCE" "$C2_STATE/trace.libgstlibav.so" "$C2_STATE/trace.libgstisomp4.so" "$C2_STATE/trace.libgstmatroska.so" "$C2_STATE/trace.libgstisomp4_1_8.so"; do c2_regular_or_absent "$p" || return 1; done; if [ -e "$C2_GST" ] || [ -L "$C2_GST" ]; then [ -d "$C2_GST" ] && [ ! -L "$C2_GST" ] || return 1; for p in "$C2_GST"/* "$C2_GST"/.[!.]* "$C2_GST"/..?*; do { [ -e "$p" ] || [ -L "$p" ]; } || continue; case "$p" in "$C2_GST/libgstlibav.so"|"$C2_GST/libgstisomp4.so"|"$C2_GST/libgstmatroska.so"|"$C2_GST/libgstisomp4_1_8.so") c2_regular_or_absent "$p" || return 1;; *) return 1;; esac; done; fi; for p in "$C2_STATE"/* "$C2_STATE"/.[!.]* "$C2_STATE"/..?*; do { [ -e "$p" ] || [ -L "$p" ]; } || continue; case "$p" in "$C2_GST"|"$C2_OWNER"|"$C2_BASELINE"|"$C2_BASELINE.tmp"|"$C2_RECOVERY"|"$C2_INIT"|"$C2_INIT.tmp"|"$C2_ENV"|"$C2_HOOKSOURCE"|"$C2_CONFIGSOURCE"|"$C2_REGISTRYSOURCE"|"$C2_STATE/trace.libgstlibav.so"|"$C2_STATE/trace.libgstisomp4.so"|"$C2_STATE/trace.libgstmatroska.so"|"$C2_STATE/trace.libgstisomp4_1_8.so") :;; *) return 1;; esac; done; }',
     'c2_snapshot_state() { c2_state_known && c2_baseline_complete && [ -f "$C2_OWNER" ] && [ -f "$C2_INIT" ] && [ ! -L "$C2_INIT" ] && [ -f "$C2_ENV" ] && [ ! -L "$C2_ENV" ] || return 1; C2_KEEP_BASELINE=$(cat "$C2_BASELINE") || return 1; C2_KEEP_INIT=$(cat "$C2_INIT") || return 1; C2_KEEP_ENV=$(cat "$C2_ENV") || return 1; C2_KEEP_HOOK_KIND=$(c2_hook_kind); [ "$C2_KEEP_HOOK_KIND" != foreign ] || return 1; C2_KEEP_HOOK=; if [ "$C2_KEEP_HOOK_KIND" = exact ]; then C2_KEEP_HOOK=$(cat "$C2_HOOK") || return 1; fi; }',
@@ -2586,7 +2592,7 @@ function c2InitScriptBody(testOverrides) {
     ': > "$C2_RECOVERY" || c2_refuse recovery "cannot write recovery marker"',
     'c2_detach || c2_recovery_fail "pre-apply detach incomplete"',
     'c2_identity && c2_stock_hashes && c2_baseline_matches || c2_recovery_fail "persisted identity or hashes drifted"',
-    'c2_payload || c2_recovery_fail "payload or dynamic-loader trace failed"',
+    'c2_payload || c2_recovery_fail "payload or dynamic-loader trace failed: ${C2_PAYLOAD_FAIL:-no detail}"',
     'c2_apply', 'exit 0'
   ]).join("\n") + "\n";
 }
@@ -2613,7 +2619,7 @@ function c2Enable(firstForce, testOverrides) {
     'c2_identity && c2_stock_hashes && c2_expected || c2_refuse drift "exact C2 identity or hashes do not match"',
     'if [ "$OWNED" = 1 ]; then c2_baseline_matches || c2_recovery_fail "persisted baseline drifted"; fi',
     'if [ "$OWNED" = 1 ]; then reg=$(c2_fp registry); else reg=${GST_REGISTRY_1_0:-}; fi; c2_registry_valid "$reg" || c2_refuse registry "GST_REGISTRY_1_0 must be an existing safe absolute path"; C2_REGISTRY=$reg',
-    'c2_payload || c2_tx_fail "one of four payload copies or loader traces failed" payload',
+    'c2_payload || c2_tx_fail "payload: ${C2_PAYLOAD_FAIL:-one of four copies or loader traces failed}" payload',
     'if [ "$OWNED" = 0 ]; then { echo "hardware_id=$HW"; echo "product_id=$PID"; echo "board_type=$BT"; echo "firmware=$FW"; echo "webos=$WOS"; echo "gstreamer=$GST"; echo "libgstlibav=$H_LIBAV"; echo "libgstisomp4=$H_ISO"; echo "libgstmatroska=$H_MKV"; echo "gstcool=$H_GC"; echo "registry=$reg"; echo "init_sha256=' + initHash + '"; echo "hook_sha256=' + hookHash + '"; } > "$C2_BASELINE.tmp" || c2_tx_fail "cannot write baseline" state; else "$C2_SED" "s/^init_sha256=.*/init_sha256=' + initHash + '/;s/^hook_sha256=.*/hook_sha256=' + hookHash + '/" "$C2_BASELINE" > "$C2_BASELINE.tmp" || c2_recovery_fail "cannot refresh generated-file baseline"; fi',
     'base64 -d > "$C2_INIT.tmp" <<\'C2INIT\'', b64, 'C2INIT',
     '[ "$?" -eq 0 ] && "$C2_CHMOD" 0755 "$C2_INIT.tmp" && [ "$(c2_file_hash "$C2_INIT.tmp")" = ' + c2Q(initHash) + ' ] || c2_tx_fail "cannot write exact init script" state',
