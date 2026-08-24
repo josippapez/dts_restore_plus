@@ -2570,7 +2570,19 @@ function c2InspectorLines(c) {
     'c2_registry_valid() { case "$1" in /*) case "$1" in *[!A-Za-z0-9_./-]*) return 1;; esac; [ -f "$1" ];; *) return 1;; esac; }',
     'c2_init_kind() { if [ -f "$C2_INIT" ] && [ ! -L "$C2_INIT" ]; then expected=$(c2_fp init_sha256); actual=$(c2_file_hash "$C2_INIT"); [ -n "$expected" ] && [ "$actual" = "$expected" ] && echo exact || echo foreign; elif [ -e "$C2_INIT" ] || [ -L "$C2_INIT" ]; then echo foreign; else echo absent; fi; }',
     'c2_hook_kind() { if [ -f "$C2_HOOK" ] && [ ! -L "$C2_HOOK" ]; then expected=$(c2_fp hook_sha256); actual=$(c2_file_hash "$C2_HOOK"); [ -n "$expected" ] && [ "$actual" = "$expected" ] && echo exact || echo foreign; elif [ -e "$C2_HOOK" ] || [ -L "$C2_HOOK" ]; then echo foreign; else echo absent; fi; }',
-    'c2_expected_source() { awk -v s="$1" \'{ mp=$5; if (s == mp || index(s, mp "/") == 1 || mp == "/") { if (length(mp) > best) { best=length(mp); dev=$3; root=$4; rel=(mp == "/" ? s : substr(s, length(mp)+1)); expected=root rel; gsub("//+", "/", expected) } } } END { if (best) print dev "|" expected }\' "$C2_MOUNTINFO" 2>/dev/null; }',
+    // Every plausible (dev|root) for this source, longest mountpoint first -- not
+    // just the longest. Taking only the longest assumes the file lives on the
+    // filesystem mounted there, which is false when the path crosses further
+    // mounts: on the C2/CS in issue #1 /var is its own tmpfs (0:49), so the source
+    // under /var/lib/webosbrew resolved to 0:49|/lib/webosbrew/... while the real
+    // bind reported 179:55|/var/lib/webosbrew/..., and our own mount read foreign.
+    // Every plausible (dev|root) for this source, longest mountpoint first -- not just
+    // the longest. Taking only the longest assumes the file lives on the filesystem
+    // mounted there, which is false when the path crosses further mounts: on the C2/CS
+    // in issue #1 /var is its own tmpfs (0:49), so the source under /var/lib/webosbrew
+    // derived 0:49|/lib/webosbrew/... while the real bind reported
+    // 179:55|/var/lib/webosbrew/..., and the app read its own mount as foreign.
+    "c2_expected_sources() { awk -v s=\"$1\" '{ mp=$5; if (s == mp || index(s, mp \"/\") == 1 || mp == \"/\") { rel=(mp == \"/\" ? s : substr(s, length(mp)+1)); e=$4 rel; gsub(\"//+\", \"/\", e); print length(mp) \"\\t\" $3 \"|\" e } }' \"$C2_MOUNTINFO\" 2>/dev/null | sort -rn | cut -f2-; }",
     // `mount` resolves symlinks, so a bind is recorded under the real path. On the
     // C2/CS in issue #1 the registry bind landed on /mnt/lg/flash/data/... while this
     // compared the configured /mnt/flash/data/..., read `none`, and could not see its
@@ -2579,7 +2591,7 @@ function c2InspectorLines(c) {
     // C2_MOUNT_DEBUG carries the raw records for anything not `owned`: the classifier
     // is correct against that TV's root-namespace mountinfo, so a `foreign` verdict
     // means the service's namespace differs, and only the records it matched can show how.
-    'c2_mount_one() { id=$1; target=$2; source=$3; ct=$(c2_canon "$2"); cs=$(c2_canon "$3"); records=$(awk -v t="$target" -v c="$ct" \'$5 == t || $5 == c { print $3 "|" $4 }\' "$C2_MOUNTINFO" 2>/dev/null); count=$(printf "%s\\n" "$records" | sed \'/^$/d\' | wc -l | tr -d " "); expected=$(c2_expected_source "$source"); expected2=$(c2_expected_source "$cs"); state=none; [ "$count" -eq 0 ] || { [ "$count" -eq 1 ] && { { [ -n "$expected" ] && [ "$records" = "$expected" ]; } || { [ -n "$expected2" ] && [ "$records" = "$expected2" ]; }; } && state=owned || state=foreign; }; eval "C2_MOUNT_${id}=\\$state"; [ "$state" = owned ] || C2_MOUNT_DEBUG="$C2_MOUNT_DEBUG ${id}[$state,n=$count,t=$target,got=$(echo $records)|want=$expected]"; [ "$state" != foreign ] || { [ -n "$C2_INSPECT_REASON" ] || C2_INSPECT_REASON="foreign, stacked, duplicate, or ambiguous mount at $target"; return 1; }; }',
+    'c2_mount_one() { id=$1; target=$2; source=$3; ct=$(c2_canon "$2"); cs=$(c2_canon "$3"); records=$(awk -v t="$target" -v c="$ct" \'$5 == t || $5 == c { print $3 "|" $4 }\' "$C2_MOUNTINFO" 2>/dev/null); count=$(printf "%s\\n" "$records" | sed \'/^$/d\' | wc -l | tr -d " "); state=none; if [ "$count" -eq 1 ]; then state=foreign; for e in $(c2_expected_sources "$source"; c2_expected_sources "$cs"); do [ "$records" = "$e" ] && { state=owned; break; }; done; elif [ "$count" -gt 1 ]; then state=foreign; fi; eval "C2_MOUNT_${id}=\\$state"; [ "$state" = owned ] || C2_MOUNT_DEBUG="$C2_MOUNT_DEBUG ${id}[$state,n=$count,t=$target,got=$(echo $records)|want=$(c2_expected_sources "$source" | tr \'\\n\' \' \')]"; [ "$state" != foreign ] || { [ -n "$C2_INSPECT_REASON" ] || C2_INSPECT_REASON="foreign, stacked, duplicate, or ambiguous mount at $target"; return 1; }; }',
     'c2_baseline_complete() { [ -f "$C2_BASELINE" ] || return 1; for k in hardware_id product_id board_type firmware webos gstreamer libgstlibav libgstisomp4 libgstmatroska gstcool registry init_sha256 hook_sha256; do v=$(c2_fp "$k"); [ -n "$v" ] || return 1; done; reg=$(c2_fp registry); c2_registry_valid "$reg"; }',
     'c2_inspect() { C2_INSPECT_REASON=; C2_MOUNT_DEBUG=; rc=0; C2_INIT_KIND=$(c2_init_kind); C2_HOOK_KIND=$(c2_hook_kind); C2_REGISTRY=$(c2_fp registry); [ -n "$C2_REGISTRY" ] || C2_REGISTRY=${GST_REGISTRY_1_0:-};'
   ]);
