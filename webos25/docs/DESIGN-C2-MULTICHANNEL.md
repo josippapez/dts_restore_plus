@@ -91,25 +91,24 @@ working stereo path rather than breaking a profile that now demonstrably works.
    output may be quiet — the same problem `MULTI-MODEL.md` §2.6 records for C1/C2.
 3. **DTS-HD MA vs core.** Upstream ffmpeg decodes the DTS core of an MA track; it is
    not a lossless MA decode.
-4. **Does the failing playback even reach our decoder?** The owner's multichannel
-   files report "Audio is not Supported", and a *downmixing* decoder should still
-   play a 5.1 file. That points at a separate cause, unresolved — see below.
+4. ~~**Does the failing playback even reach our decoder?**~~ **Answered
+   2026-08-24: multichannel is not the playback blocker.** All three bundled samples
+   are 6-channel DTS-HD MA by `ffprobe`, and `DTS-in-mp4.mp4` plays on the C2 while
+   the `.ts`/`.m2ts` do not. A 5.1 file therefore already plays; what is missing is
+   the TS container, not channel support. See
+   [`DESIGN-C2-TS-DEMUX.md`](DESIGN-C2-TS-DEMUX.md).
 
-## Open questions for the owner
-
-- Do the failing files play from **USB on the TV's own player**, rather than through
-  the STB? An HDMI source never touches our plugins, so that path proves nothing.
-- What exactly are those streams: DTS core, DTS-HD MA, or DTS:X, and how many
-  channels? `gst-discoverer-1.0 <file>` on the TV answers it.
-- Does a **stereo** DTS file play from the same source? That separates "multichannel
-  is refused" from "this container/route is refused".
+   This work is therefore **output quality (2.0 → 5.1), not playability**, and ranks
+   below the TS demuxer.
 
 ## Order of work
 
-1. Answer the three questions above. If multichannel files fail for a reason
-   unrelated to channel count, this build does not help and should not be started.
-2. Read the channel count the sink actually receives, by the method in
+Do [`DESIGN-C2-TS-DEMUX.md`](DESIGN-C2-TS-DEMUX.md) first: it restores playback of
+whole containers, needs no patch, and needs no new source. This one only changes
+2.0 to 5.1 on files that already play.
+
+1. Read the channel count the sink actually receives, by the method in
    `../restore/dts2lpcm/retag-staging/RUNBOOK-hardware-verification.md` §3.6
    (mixer-input readout, known-stereo control first) — if that interface exists on
-   webOS 9.2.2, which is unconfirmed.
-3. Only then build.
+   webOS 9.2.2, which is unconfirmed. If the sink will not take 6 channels, stop.
+2. Only then build.
