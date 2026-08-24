@@ -1471,7 +1471,7 @@ var DETECT_PROBE = [
   'echo "C2_HASH_TOOL=$C2_HASH_TOOL"; echo "C2_LIBAV_SHA256=$C2_LIBAV_SHA256"; echo "C2_ISOMP4_SHA256=$C2_ISOMP4_SHA256"; echo "C2_MATROSKA_SHA256=$C2_MATROSKA_SHA256"; echo "C2_GSTCOOL_SHA256=$C2_GSTCOOL_SHA256"',
   'C2_OWNED=0; [ -f "$C2_OWNER" ] && C2_OWNED=1; C2_BASELINE_VALID=0; c2_baseline_complete && C2_BASELINE_VALID=1; C2_RECOVERY_PRESENT=0; [ -f "$C2_RECOVERY" ] && C2_RECOVERY_PRESENT=1; C2_INSPECT_OK=1; c2_inspect || C2_INSPECT_OK=0',
   'echo "C2_OWNED=$C2_OWNED"; echo "C2_BASELINE_VALID=$C2_BASELINE_VALID"; echo "C2_RECOVERY_PRESENT=$C2_RECOVERY_PRESENT"; echo "C2_INSPECT_OK=$C2_INSPECT_OK"; echo "C2_INIT_KIND=$C2_INIT_KIND"; echo "C2_HOOK_KIND=$C2_HOOK_KIND"',
-  'echo "C2_MOUNT_LIBAV=$C2_MOUNT_LIBAV"; echo "C2_MOUNT_ISO=$C2_MOUNT_ISO"; echo "C2_MOUNT_MKV=$C2_MOUNT_MKV"; echo "C2_MOUNT_ISO18=$C2_MOUNT_ISO18"; echo "C2_MOUNT_CONFIG=$C2_MOUNT_CONFIG"; echo "C2_MOUNT_REGISTRY=$C2_MOUNT_REGISTRY"; echo "C2_INSPECT_REASON=$C2_INSPECT_REASON"; echo "C2_MOUNT_DEBUG=$C2_MOUNT_DEBUG"',
+  'echo "C2_MOUNT_LIBAV=$C2_MOUNT_LIBAV"; echo "C2_MOUNT_ISO=$C2_MOUNT_ISO"; echo "C2_MOUNT_MKV=$C2_MOUNT_MKV"; echo "C2_MOUNT_ISO18=$C2_MOUNT_ISO18"; echo "C2_MOUNT_TS=$C2_MOUNT_TS"; echo "C2_MOUNT_CONFIG=$C2_MOUNT_CONFIG"; echo "C2_MOUNT_REGISTRY=$C2_MOUNT_REGISTRY"; echo "C2_INSPECT_REASON=$C2_INSPECT_REASON"; echo "C2_MOUNT_DEBUG=$C2_MOUNT_DEBUG"',
   'c2_fp_probe() { sed -n "s/^$1=//p" "' + C2_BASELINE + '" 2>/dev/null | head -n1; }',
   'for k in hardware_id product_id board_type firmware webos gstreamer libgstlibav libgstisomp4 libgstmatroska gstcool; do v=$(c2_fp_probe "$k"); key=$(printf "%s" "$k" | tr "[:lower:]" "[:upper:]"); echo "C2_FP_${key}=$v"; done',
   'C2_FOREIGN=0; [ "$C2_INSPECT_OK" = 1 ] || C2_FOREIGN=1; if [ "$C2_OWNED" = 0 ]; then { [ ! -e "$C2_LEGACYHOOK" ] && [ ! -L "$C2_LEGACYHOOK" ] && [ "$C2_HOOK_KIND" = absent ]; } || C2_FOREIGN=1; c2_any_mount && C2_FOREIGN=1; fi; echo "C2_FOREIGN=$C2_FOREIGN"'
@@ -3206,10 +3206,22 @@ service.register("test", function (message) {
             verdict: kv.REFUSED, errorText: "C2 self-test refused: " + (kv.REASON || "the app-owned C2 mechanism is not active") });
           return;
         }
+        // Report every case the shell emitted. It runs ts/m2ts only when our TS
+        // demuxer is bound, so an unbound TV yields just mp4 and the UI keeps
+        // showing "-" for the containers it was never given.
+        var results = {};
+        var files = {mp4: "DTS-in-mp4.mp4", ts: "DTS-HD-MA-5.1.ts", m2ts: "DTS-HD-MA-5.1.m2ts"};
+        Object.keys(files).forEach(function (k) {
+          if (!kv[k]) return;
+          var parts = String(kv[k]).split(":");
+          results[k] = { verdict: parts[0], bytes: parseInt(parts[1] || "0", 10) || 0, file: files[k] };
+        });
         var raw = kv.mp4 || "FAIL:0";
         var verdict = raw.split(":")[0];
         var bytes = parseInt(raw.split(":")[1] || "0", 10) || 0;
-        message.respond({ returnValue: true, profile: d.profile, results: { mp4: { verdict: verdict, bytes: bytes, file: "DTS-in-mp4.mp4" } }, pass: verdict === "PASS", summary: verdict === "PASS" ? "MP4 decoded through avdec_dca." : "MP4 failed to decode through avdec_dca." });
+        if (!results.mp4) results.mp4 = { verdict: verdict, bytes: bytes, file: files.mp4 };
+        var allPass = Object.keys(results).every(function (k) { return results[k].verdict === "PASS"; });
+                message.respond({ returnValue: true, profile: d.profile, results: results, pass: allPass, summary: Object.keys(results).map(function (k) { return k + "=" + results[k].verdict; }).join(" ") });
       });
     }
     if (d.profile !== PROFILE_W25) {
