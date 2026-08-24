@@ -573,3 +573,42 @@ test("a failing TS demuxer degrades to MP4/MKV instead of failing the enable", f
   assert.match(r.stdout, /VERDICT=forced/);
   assert.match(r.stdout, /TS_BOUND=0/);
 });
+
+/* Every self-test case the C2 shell can emit must be mapped by the handler.
+ *
+ * check-kv-sync.js covers the UPPER_SNAKE probe keys, but cannot judge the short
+ * lowercase self-test keys (`mp4`, `ts`, `m2ts`) because those substrings appear all
+ * over service.js and app.js. That is exactly the gap the 2.7.14 bug fell through:
+ * the shell ran ts/m2ts and the handler's file map listed only mp4, so the results
+ * were discarded and the UI showed "-" while all three clips actually played. */
+test("the C2 self-test handler maps every case its shell can emit", function () {
+  var shell = service.c2SelfTest();
+
+  // Cases the shell can produce: the literal mp4 echo plus the `for c in ...` loop.
+  var emitted = {};
+  (shell.match(/echo\s+"([a-z0-9]+)=(?:PASS|FAIL)/g) || []).forEach(function (m) {
+    emitted[m.replace(/echo\s+"/, "").replace(/=.*/, "")] = true;
+  });
+  var loop = shell.match(/for\s+c\s+in\s+([a-z0-9 ]+);\s*do/);
+  if (loop) loop[1].trim().split(/\s+/).forEach(function (w) { emitted[w] = true; });
+
+  assert.ok(emitted.mp4, "the self-test must still cover mp4");
+  assert.ok(emitted.ts && emitted.m2ts,
+    "the self-test shell should emit ts and m2ts; got " + Object.keys(emitted).join(","));
+
+  // The handler's file map is the consumer. Read it out of the source rather than
+  // duplicating the list here, so the test tracks the real mapping.
+  var src = fs.readFileSync(SERVICE, "utf8");
+  var mapLine = src.match(/var files = \{([^}]*)\};/);
+  assert.ok(mapLine, "could not find the self-test file map in the handler");
+  var mapped = {};
+  (mapLine[1].match(/([a-z0-9]+)\s*:/g) || []).forEach(function (k) {
+    mapped[k.replace(/\s*:$/, "")] = true;
+  });
+
+  Object.keys(emitted).forEach(function (k) {
+    assert.ok(mapped[k],
+      "the C2 self-test shell emits '" + k + "=' but the handler's file map does not " +
+      "list it, so that result is silently discarded (this is the 2.7.14 bug)");
+  });
+});

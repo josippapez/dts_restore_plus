@@ -72,7 +72,11 @@ Then pick:
 (`gstplugin.c:487` in the webOS-25 tree).
 
 **An older-minor plugin loads on a newer core.** That is why 1.14.4 binaries run on a
-1.18.5 C2, and it usually means you do **not** need that generation's LG source. Check
+1.18.5 C2, and it usually means you do **not** need that generation's LG source.
+
+**Loading is not the same as behaving.** An older plugin brings older behaviour with
+it: the C2's 1.14.4 `libgstlibav.so` loads perfectly and also carries LG's forced
+stereo downmix. Weigh the behavioural delta, not just whether it loads. Check
 what LG actually publishes before assuming you need it: the `lgstreamer` org has only
 1.14.4 (CX) and 1.24.0 (webOS 25) — **no 1.18 tree exists**.
 
@@ -125,6 +129,43 @@ The single most important rule when widening an existing profile.
 - Cover all four paths in `app/service/test/profile-compat.test.js`: not shipped,
   dependency unresolved, usable, and no stock target to override. Then make the change
   hard-fail locally and confirm the test goes red. A guard that cannot fail is not a guard.
+
+## 6b. Walk the whole KV chain, and run the checks
+
+Most of the bugs in the C2 TS work were one shape: **a value changed in one place and
+not the others**. A single fact crosses five hand-synced points, and missing any one
+of them fails silently:
+
+```
+shell variable -> echo "KEY=" -> JS reads kv.KEY -> status/UI field -> self-test asserts it
+```
+
+When you add a value, walk all five. Then run the guards:
+
+```sh
+node webos25/restore/check-kv-sync.js      # every emitted key is consumed, and vice versa
+sh   webos25/restore/check-init-sync.sh
+sh   webos25/restore/check-revert-sync.sh
+sh   webos25/restore/check-report-sync.sh
+sh   webos25/restore/check-manifest-floor.sh
+cd webos25/app/service && node test/profile-compat.test.js
+cd webos25/restore && sh src/test/run-tests.sh
+```
+
+`check-kv-sync.js` catches produced-but-unread and read-but-unproduced for the
+UPPER_SNAKE probe keys. It **cannot** judge short lowercase keys (`mp4`, `ts`) — those
+need a real assertion in `profile-compat.test.js`; see the self-test-map test there.
+
+### Every place a new generation touches
+
+- `app/service/service.js`: profile constant, payload dir constant, `*Config`, the
+  payload staging function, apply, detach, cleanup, the inspector target table, the
+  inspector echo list, the status probe echo list, the status handler branch, the
+  self-test shell, the self-test response handler, the diagnostic log fields
+- `app/js/app.js`: the capability/label rendering and the button gating
+- `.github/workflows/release.yml`: staging the payload into the `.ipk`
+- `app/service/test/profile-compat.test.js`: the fixture and the new-path tests
+- docs: `MULTI-MODEL.md`, the profile's design doc, `app/README.md`
 
 ## 7. Make failures diagnosable before asking an owner to test
 

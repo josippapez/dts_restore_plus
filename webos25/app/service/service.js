@@ -3591,6 +3591,13 @@ function runMechanism(message, action) {
       // Anything that did not actually happen has to show up here. None of these
       // is fatal on its own -- the call did run -- but reporting a clean result
       // when the revert is incomplete is the exact silence this change removes.
+      // The apply reports whether the optional TS demuxer bound. Surface it on the
+      // response so the UI knows immediately instead of waiting for the next status,
+      // and so the value is consumed rather than only appearing in the raw log.
+      if (kv.TS_BOUND !== undefined) {
+        res.tsBound = kv.TS_BOUND === "1";
+        if (!res.tsBound && kv.TS_SKIP) res.tsSkipReason = kv.TS_SKIP;
+      }
       var warnings = [];
       if (kv.WARN_UNMOUNT) {
         res.unmountWarning = kv.WARN_UNMOUNT;
