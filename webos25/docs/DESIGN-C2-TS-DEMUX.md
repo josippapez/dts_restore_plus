@@ -99,21 +99,57 @@ Per-target payload, matching the multichannel plan:
    `mpegtsbase`/`mpegtspacketizer` in the same plugin is sound is untested — note
    the whole `mpegtsdemux` plugin is one `.so`, so `mpegtsbase` comes along with it
    and the pairing is internally consistent.
-1b. **Two library dependencies are additions.** Measured `NEEDED` adds
-   `libgstcodecparsers-1.0.so.0` and `libgstmpegts-1.0.so.0` versus the
-   `gst/libgstmatroska.so` baseline. Both are also required by the **device-verified**
-   `demux-out/libgstmpegtsdemux.so`, so they exist on a C5 — their presence on a
-   C2/G2/CS is **unverified**. Max GLIBC is `GLIBC_2.7`, equal to the baseline, not
-   higher. This is the first thing the loader trace on-device must confirm.
+1b. ~~**Two library dependencies are additions.**~~ **RESOLVED 2026-08-24 from the
+   owner's own firmware image.** Measured `NEEDED` adds `libgstcodecparsers-1.0.so.0`
+   and `libgstmpegts-1.0.so.0` versus the `gst/libgstmatroska.so` baseline, and both
+   are present on that generation:
+
+   ```
+   /usr/lib/libgstcodecparsers-1.0.so.0 -> libgstcodecparsers-1.0.so.0.1805.0
+   /usr/lib/libgstmpegts-1.0.so.0       -> libgstmpegts-1.0.so.0.1805.0
+   ```
+
+   The `.1805.0` suffix is the GStreamer 1.18.5 build, matching the TV's core, and
+   both ship as opkg packages (`lib32-libgstcodecparsers-1.0-0`,
+   `lib32-libgstmpegts-1.0-0`). The image also carries a stock
+   `/usr/lib/gstreamer-1.0/libgstmpegtsdemux.so` for ours to override. Max GLIBC is
+   `GLIBC_2.7`, equal to the baseline, not higher. So the plugin should load.
 2. **Live TV and DVR regression.** The bind is system-wide, so broadcast playback
    must be checked before this ships, not only file playback.
 3. **HDMV/BD paths.** `WEBOS25-DTS.md` records that which DTS recognition site a
    `.ts` lands in is decided entirely by its PMT; the 1.14 matrix has not been
    compared against the 1.24 one used for the C5 samples.
 
+## Firmware provenance for the dependency check
+
+Reproducing the check above, since picking the wrong image is easy — LG reuses
+version numbers across boards, and a `23.25.55` in the JP mirror is a **W23H**
+(Realtek B3) build, not this one.
+
+- Index: `https://lg.slada.sk/processed_fw.json` (3 MB). Match on
+  `firmwareotaID == HE_DTV_W22O_AFABATPU`, **not** on the version string.
+- Package: `mirror2/UK/ruM3H7hNU8VG0Tc3ChteHA---Software_File(Version_23.25.55).zip`,
+  1,509,767,293 bytes, sha256
+  `9a732d00cc3d0ef0021f7f11b703ecb7acc6ec7e7b6f4b9bafca20e783a158ef` (matches the
+  archive record). EPK `lib32-starfish-global-secured-o22-okapi.pine-61-23.25.55_prodkey_usb_V3_SECURED.epk`,
+  board `o22`, platform `9.2.2`, firmware `23.25.55.01`.
+- Download host is **`tv.slada.sk`**, not the `lg.slada.sk` SPA, and the link is
+  built client-side so it does not appear in the served HTML. `curl` needs
+  `--globoff` because the filename contains parentheses. LG's own
+  `gscs-b2c.lge.com/downloadFile?fileId=…` returns **403**.
+- `epk2extract` must show `Trying AES Key` lines — 48 here. None means no keys
+  loaded (see the memory note); `build.sh` installs them beside the binary.
+- The rootfs is **zstd** squashfs, so it needs a zstd-capable `unsquashfs`
+  (Homebrew `squashfs`, 4.7.5 here). `unsquashfs -l rootfs.pak` lists the tree
+  without extracting 1.3 GB, which is all this check needs.
+
 ## Order of work
 
-1. Build the 1.14.4 demuxer and confirm it loads on a C2 (`gst-inspect-1.0 tsdemux`).
-2. Play the two bundled samples; they are known-good 5.1 DTS-HD MA.
-3. Check live TV and a DVR recording still play before shipping.
-4. Only then extend the payload, the self-test, and the capability wording.
+1. ~~Build the demuxer~~ — done, `webos25/restore/ts114-out/`.
+2. ~~Confirm its dependencies exist on the target~~ — done from firmware, above.
+3. ~~Ship it behind an optional bind~~ — done, app 2.7.12 / `webos25-2.17`, in
+   `payload/c2-ts/`. It degrades to MP4/MKV if it cannot stage or trace.
+4. **Open:** confirm it loads on a real C2 (`gst-inspect-1.0 tsdemux`) and that the
+   two bundled 5.1 DTS-HD MA samples play.
+5. **Open:** check live TV and a DVR recording still play. The bind is system-wide,
+   so this is the regression that matters and it is untested.
