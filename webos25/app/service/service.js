@@ -1468,7 +1468,7 @@ var DETECT_PROBE = [
   'echo "C2_HASH_TOOL=$C2_HASH_TOOL"; echo "C2_LIBAV_SHA256=$C2_LIBAV_SHA256"; echo "C2_ISOMP4_SHA256=$C2_ISOMP4_SHA256"; echo "C2_MATROSKA_SHA256=$C2_MATROSKA_SHA256"; echo "C2_GSTCOOL_SHA256=$C2_GSTCOOL_SHA256"',
   'C2_OWNED=0; [ -f "$C2_OWNER" ] && C2_OWNED=1; C2_BASELINE_VALID=0; c2_baseline_complete && C2_BASELINE_VALID=1; C2_RECOVERY_PRESENT=0; [ -f "$C2_RECOVERY" ] && C2_RECOVERY_PRESENT=1; C2_INSPECT_OK=1; c2_inspect || C2_INSPECT_OK=0',
   'echo "C2_OWNED=$C2_OWNED"; echo "C2_BASELINE_VALID=$C2_BASELINE_VALID"; echo "C2_RECOVERY_PRESENT=$C2_RECOVERY_PRESENT"; echo "C2_INSPECT_OK=$C2_INSPECT_OK"; echo "C2_INIT_KIND=$C2_INIT_KIND"; echo "C2_HOOK_KIND=$C2_HOOK_KIND"',
-  'echo "C2_MOUNT_LIBAV=$C2_MOUNT_LIBAV"; echo "C2_MOUNT_ISO=$C2_MOUNT_ISO"; echo "C2_MOUNT_MKV=$C2_MOUNT_MKV"; echo "C2_MOUNT_ISO18=$C2_MOUNT_ISO18"; echo "C2_MOUNT_CONFIG=$C2_MOUNT_CONFIG"; echo "C2_MOUNT_REGISTRY=$C2_MOUNT_REGISTRY"',
+  'echo "C2_MOUNT_LIBAV=$C2_MOUNT_LIBAV"; echo "C2_MOUNT_ISO=$C2_MOUNT_ISO"; echo "C2_MOUNT_MKV=$C2_MOUNT_MKV"; echo "C2_MOUNT_ISO18=$C2_MOUNT_ISO18"; echo "C2_MOUNT_CONFIG=$C2_MOUNT_CONFIG"; echo "C2_MOUNT_REGISTRY=$C2_MOUNT_REGISTRY"; echo "C2_INSPECT_REASON=$C2_INSPECT_REASON"; echo "C2_MOUNT_DEBUG=$C2_MOUNT_DEBUG"',
   'c2_fp_probe() { sed -n "s/^$1=//p" "' + C2_BASELINE + '" 2>/dev/null | head -n1; }',
   'for k in hardware_id product_id board_type firmware webos gstreamer libgstlibav libgstisomp4 libgstmatroska gstcool; do v=$(c2_fp_probe "$k"); key=$(printf "%s" "$k" | tr "[:lower:]" "[:upper:]"); echo "C2_FP_${key}=$v"; done',
   'C2_FOREIGN=0; [ "$C2_INSPECT_OK" = 1 ] || C2_FOREIGN=1; if [ "$C2_OWNED" = 0 ]; then { [ ! -e "$C2_LEGACYHOOK" ] && [ ! -L "$C2_LEGACYHOOK" ] && [ "$C2_HOOK_KIND" = absent ]; } || C2_FOREIGN=1; c2_any_mount && C2_FOREIGN=1; fi; echo "C2_FOREIGN=$C2_FOREIGN"'
@@ -2571,9 +2571,17 @@ function c2InspectorLines(c) {
     'c2_init_kind() { if [ -f "$C2_INIT" ] && [ ! -L "$C2_INIT" ]; then expected=$(c2_fp init_sha256); actual=$(c2_file_hash "$C2_INIT"); [ -n "$expected" ] && [ "$actual" = "$expected" ] && echo exact || echo foreign; elif [ -e "$C2_INIT" ] || [ -L "$C2_INIT" ]; then echo foreign; else echo absent; fi; }',
     'c2_hook_kind() { if [ -f "$C2_HOOK" ] && [ ! -L "$C2_HOOK" ]; then expected=$(c2_fp hook_sha256); actual=$(c2_file_hash "$C2_HOOK"); [ -n "$expected" ] && [ "$actual" = "$expected" ] && echo exact || echo foreign; elif [ -e "$C2_HOOK" ] || [ -L "$C2_HOOK" ]; then echo foreign; else echo absent; fi; }',
     'c2_expected_source() { awk -v s="$1" \'{ mp=$5; if (s == mp || index(s, mp "/") == 1 || mp == "/") { if (length(mp) > best) { best=length(mp); dev=$3; root=$4; rel=(mp == "/" ? s : substr(s, length(mp)+1)); expected=root rel; gsub("//+", "/", expected) } } } END { if (best) print dev "|" expected }\' "$C2_MOUNTINFO" 2>/dev/null; }',
-    'c2_mount_one() { id=$1; target=$2; source=$3; records=$(awk -v t="$target" \'$5 == t { print $3 "|" $4 }\' "$C2_MOUNTINFO" 2>/dev/null); count=$(printf "%s\\n" "$records" | sed \'/^$/d\' | wc -l | tr -d " "); expected=$(c2_expected_source "$source"); state=none; [ "$count" -eq 0 ] || { [ "$count" -eq 1 ] && [ -n "$expected" ] && [ "$records" = "$expected" ] && state=owned || state=foreign; }; eval "C2_MOUNT_${id}=\\$state"; [ "$state" != foreign ] || { [ -n "$C2_INSPECT_REASON" ] || C2_INSPECT_REASON="foreign, stacked, duplicate, or ambiguous mount at $target"; return 1; }; }',
+    // `mount` resolves symlinks, so a bind is recorded under the real path. On the
+    // C2/CS in issue #1 the registry bind landed on /mnt/lg/flash/data/... while this
+    // compared the configured /mnt/flash/data/..., read `none`, and could not see its
+    // own mount. Canonicalise both sides before matching.
+    'c2_canon() { p=$(readlink -f "$1" 2>/dev/null); [ -n "$p" ] && printf "%s" "$p" || printf "%s" "$1"; }',
+    // C2_MOUNT_DEBUG carries the raw records for anything not `owned`: the classifier
+    // is correct against that TV's root-namespace mountinfo, so a `foreign` verdict
+    // means the service's namespace differs, and only the records it matched can show how.
+    'c2_mount_one() { id=$1; target=$2; source=$3; ct=$(c2_canon "$2"); cs=$(c2_canon "$3"); records=$(awk -v t="$target" -v c="$ct" \'$5 == t || $5 == c { print $3 "|" $4 }\' "$C2_MOUNTINFO" 2>/dev/null); count=$(printf "%s\\n" "$records" | sed \'/^$/d\' | wc -l | tr -d " "); expected=$(c2_expected_source "$source"); expected2=$(c2_expected_source "$cs"); state=none; [ "$count" -eq 0 ] || { [ "$count" -eq 1 ] && { { [ -n "$expected" ] && [ "$records" = "$expected" ]; } || { [ -n "$expected2" ] && [ "$records" = "$expected2" ]; }; } && state=owned || state=foreign; }; eval "C2_MOUNT_${id}=\\$state"; [ "$state" = owned ] || C2_MOUNT_DEBUG="$C2_MOUNT_DEBUG ${id}[$state,n=$count,t=$target,got=$(echo $records)|want=$expected]"; [ "$state" != foreign ] || { [ -n "$C2_INSPECT_REASON" ] || C2_INSPECT_REASON="foreign, stacked, duplicate, or ambiguous mount at $target"; return 1; }; }',
     'c2_baseline_complete() { [ -f "$C2_BASELINE" ] || return 1; for k in hardware_id product_id board_type firmware webos gstreamer libgstlibav libgstisomp4 libgstmatroska gstcool registry init_sha256 hook_sha256; do v=$(c2_fp "$k"); [ -n "$v" ] || return 1; done; reg=$(c2_fp registry); c2_registry_valid "$reg"; }',
-    'c2_inspect() { C2_INSPECT_REASON=; rc=0; C2_INIT_KIND=$(c2_init_kind); C2_HOOK_KIND=$(c2_hook_kind); C2_REGISTRY=$(c2_fp registry); [ -n "$C2_REGISTRY" ] || C2_REGISTRY=${GST_REGISTRY_1_0:-};'
+    'c2_inspect() { C2_INSPECT_REASON=; C2_MOUNT_DEBUG=; rc=0; C2_INIT_KIND=$(c2_init_kind); C2_HOOK_KIND=$(c2_hook_kind); C2_REGISTRY=$(c2_fp registry); [ -n "$C2_REGISTRY" ] || C2_REGISTRY=${GST_REGISTRY_1_0:-};'
   ]);
   targets.forEach(function (t) { lines.push('  c2_mount_one ' + t.map(c2Q).join(" ") + ' || rc=1;'); });
   lines.push('  if [ -n "$C2_REGISTRY" ]; then c2_registry_valid "$C2_REGISTRY" || { [ -n "$C2_INSPECT_REASON" ] || C2_INSPECT_REASON="invalid persisted registry target"; rc=1; }; if c2_registry_valid "$C2_REGISTRY"; then c2_mount_one REGISTRY "$C2_REGISTRY" "$C2_REGISTRYSOURCE" || rc=1; else C2_MOUNT_REGISTRY=none; fi; else C2_MOUNT_REGISTRY=none; fi');
@@ -2949,6 +2957,10 @@ function logDiagnostic(tag, res, kv) {
     "C2_FOREIGN=" + (kv.C2_FOREIGN || ""),
     "C2_INSPECT_OK=" + (kv.C2_INSPECT_OK || ""),
     "C2_RECOVERY_PRESENT=" + (kv.C2_RECOVERY_PRESENT || ""),
+    // The reason names WHICH target failed and how; the debug line carries the raw
+    // records it matched. Both already existed in the shell and were never surfaced.
+    "inspectReason=" + (kv.C2_INSPECT_REASON || ""),
+    "mountDebug=" + (kv.C2_MOUNT_DEBUG || ""),
     "mounts=libav:" + (kv.C2_MOUNT_LIBAV || "?") +
       " iso:" + (kv.C2_MOUNT_ISO || "?") +
       " mkv:" + (kv.C2_MOUNT_MKV || "?") +
