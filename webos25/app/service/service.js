@@ -2526,6 +2526,18 @@ function c2Config(testOverrides) {
 function c2Q(value) { return "'" + String(value).replace(/'/g, "'\\''") + "'"; }
 function c2Vars(c) {
   var lines = [];
+  // Define $APPBASE here rather than trusting each caller to prepend the prelude.
+  // Only two of the six scripts that embed these vars actually did, and every C2
+  // script runs under `set -u` -- so the moment C2_PAYLOAD started expanding
+  // $APPBASE (2.7.7), the probe and the BOOT HOOK both died on the assignment line
+  // and everything after it silently never ran. Emitting it with the vars makes the
+  // block self-contained; a duplicate definition in the callers that already have
+  // one is harmless.
+  if (Object.keys(c).some(function (k) {
+    return typeof c[k] === "string" && c[k].indexOf("$APPBASE") === 0;
+  })) {
+    lines.push(APPBASE_PRELUDE);
+  }
   Object.keys(c).forEach(function (k) {
     // c2Q() single-quotes everything, which is right for every value EXCEPT the
     // payload path: it is the one config value that deliberately contains a shell

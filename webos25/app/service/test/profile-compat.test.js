@@ -474,3 +474,45 @@ test("the SHA refusal distinguishes no-tool, unreadable, and malformed", functio
   assert.ok(malformed.verdictReason.indexOf("Could not read") === -1,
     "a malformed digest must not be reported as an unreadable file");
 });
+
+/* Every generated C2 script must define $APPBASE before using it.
+ *
+ * All of them run under `set -u`, and only two of the six that embed the C2 vars
+ * prepended APPBASE_PRELUDE. When C2_PAYLOAD started expanding $APPBASE (2.7.7),
+ * DETECT_PROBE and the boot hook died on that assignment line and every line after
+ * it silently never ran -- the C2 fields came back empty and the app refused with
+ * "no working sha256sum". 2.7.7 was verified against the enable script only, which
+ * was one of the two that happened to be correct. */
+test("every generated C2 script defines $APPBASE before using it", function () {
+  var scripts = {
+    DETECT_PROBE: service.DETECT_PROBE,
+    c2Enable: service.c2Enable(true),
+    c2Disable: service.c2Disable(false),
+    c2InitScriptBody: service.c2InitScriptBody(),
+    c2StatusProbe: service.c2StatusProbe(),
+    c2SelfTest: service.c2SelfTest()
+  };
+  Object.keys(scripts).forEach(function (name) {
+    var lines = scripts[name].split("\n");
+    var use = lines.findIndex(function (l) {
+      return l.indexOf("$APPBASE") >= 0 && l.indexOf("APPBASE=/media") !== 0;
+    });
+    if (use === -1) return;                       // does not use it: nothing to prove
+    var def = lines.findIndex(function (l) { return l.indexOf("APPBASE=") === 0; });
+    assert.notStrictEqual(def, -1, name + " uses $APPBASE but never defines it");
+    assert.ok(def < use,
+      name + " defines APPBASE at line " + def + " but uses it at " + use);
+  });
+
+  // Behavioral: the probe must run to completion under `set -u` on a machine with
+  // none of the TV's tools, and still emit its C2 fields. An unbound variable would
+  // abort it mid-script with a zero exit from the last successful echo.
+  var r = sh(service.DETECT_PROBE);
+  assert.strictEqual(r.status, 0, "probe exited " + r.status + ": " + r.stderr);
+  assert.ok(r.stderr.indexOf("unbound variable") === -1,
+    "probe hit an unbound variable: " + r.stderr);
+  ["C2_HASH_TOOL=", "C2_OWNED=", "C2_FOREIGN=", "C2_MOUNT_LIBAV="].forEach(function (k) {
+    assert.ok(r.stdout.indexOf("\n" + k) >= 0 || r.stdout.indexOf(k) === 0,
+      "probe did not emit " + k + " (it aborted before the C2 block)");
+  });
+});
