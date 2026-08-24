@@ -134,8 +134,11 @@ This is a narrow app profile, not a new build and not a root-CLI profile.
   `/var/lib/webosbrew/dtsenabler/c2` state and `/var/lib/webosbrew/init.d/restore_dts_c2`, with
   exact mount-source ownership, authenticated generated scripts, baseline drift, and recovery
   checks. It never adopts the CX hook or state.
-- **Capability/proof:** MKV/MP4 DTS only; the executable self-test is MP4-only. No TS/M2TS,
-  TrueHD/MLP, gain, or A/B. A self-test PASS is userspace mechanism proof, not playback or
+- **Capability/proof:** MKV/MP4 DTS, plus **optional** TS/M2TS when the bundled LG 1.14.4
+  `libgstmpegtsdemux.so` stages and its dependencies resolve on the TV — it is skipped silently
+  otherwise, so a TV without `libgstcodecparsers`/`libgstmpegts` keeps working MP4/MKV rather
+  than failing the enable. TS/M2TS is **unverified on hardware**. The executable self-test is
+  MP4-only. No TrueHD/MLP, gain, or A/B. A self-test PASS is userspace mechanism proof, not playback or
   hardware verification.
 
 ### 2.4 B2/B3 — diagnostic refusal only

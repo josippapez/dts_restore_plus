@@ -106,6 +106,13 @@ jobs:
           for f in libgstlibav.so libgstisomp4.so libgstmatroska.so libgstisomp4_1_8.so; do
             [ -s "payload/cx/$f" ] || { echo "MISSING generated C2/CX payload: $f"; exit 1; }
           done
+          # C2-only TS demuxer (LG 1.14.4). Kept OUT of payload/cx because that
+          # directory is shared with the cx-armv7-gst114 profile. Optional at
+          # runtime: if it cannot stage or its deps do not resolve, the C2 engine
+          # skips it and MP4/MKV keep working.
+          mkdir -p payload/c2-ts
+          cp -f ../restore/ts114-out/libgstmpegtsdemux.so payload/c2-ts/
+          [ -s "payload/c2-ts/libgstmpegtsdemux.so" ] || { echo "MISSING C2 TS payload"; exit 1; }
 
       - name: Build the .ipk
         run: |

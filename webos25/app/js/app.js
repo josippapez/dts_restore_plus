@@ -129,7 +129,12 @@
       setVal("stContainers", cont ? "MP4 / TS / M2TS active" : "inactive", cont ? "ok" : "off");
     } else if (profile === "webos22-o22-gst118" || s.ownerMarker) {
       var c2cont = !!s.containersActive;
-      setVal("stContainers", c2cont ? "MP4 active (TS/M2TS unavailable)" : "MP4 only (inactive)", c2cont ? "ok" : "off");
+      // TS/M2TS is optional on C2: the demuxer only binds when it stages and its
+      // dependencies resolve on this TV, so report what is actually mounted.
+      var c2label = c2cont
+        ? (s.tsBound ? "MP4 / TS / M2TS active" : "MP4 active (TS/M2TS unavailable)")
+        : "MP4 only (inactive)";
+      setVal("stContainers", c2label, c2cont ? "ok" : "off");
     } else {
       setVal("stContainers", "n/a");
     }

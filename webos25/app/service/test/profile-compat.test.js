@@ -55,6 +55,8 @@ function fixture() {
   var state = path.join(dir, "state"), gst = path.join(state, "gst");
   var target = path.join(dir, "target"), payload = path.join(dir, "payload");
   var mountinfo = path.join(dir, "mountinfo"), registry = path.join(dir, "registry.bin");
+  var payloadts = path.join(dir, "payload-ts");
+  fs.mkdirSync(payloadts, {recursive: true});
   fs.mkdirSync(bin, {recursive: true});
   [target, payload, path.join(dir, "etc")].forEach(function (p) { fs.mkdirSync(p, {recursive: true}); });
   ["libgstlibav.so", "libgstisomp4.so", "libgstmatroska.so", "libgstisomp4_1_8.so"].forEach(function (f) {
@@ -75,19 +77,22 @@ function fixture() {
   // SUCCEEDS and reports the missing library in its trace output. FAIL_TRACE is the
   // different case where the loader itself cannot run.
   exe(path.join(bin, "loader"), '[ "${FAIL_TRACE:-}" = 1 ] && { echo "not found"; exit 1; }; ' +
-    '[ "${MISS_DEP:-}" = 1 ] && { echo "\tlibgstsubtitle-1.0.so.0 => not found"; exit 0; }; exit 0');
+    '[ "${MISS_DEP:-}" = 1 ] && { echo "\tlibgstsubtitle-1.0.so.0 => not found"; exit 0; }; ' +
+    // TS_MISS_DEP fails the trace for the TS demuxer ONLY: that case must degrade
+    // to MP4/MKV, never fail the whole enable.
+    'case "${1:-}" in *libgstmpegtsdemux.so) [ "${TS_MISS_DEP:-}" = 1 ] && { echo "\tlibgstmpegts-1.0.so.0 => not found"; exit 0; };; esac; exit 0');
   [["cp", "/bin/cp"], ["rm", "/bin/rm"], ["rmdir", "/bin/rmdir"], ["mkdir", "/bin/mkdir"], ["mv", "/bin/mv"], ["chmod", "/bin/chmod"], ["ln", "/bin/ln"], ["sed", "/usr/bin/sed"]].forEach(function (entry) {
     exe(path.join(bin, entry[0]), '[ "${FAIL_' + entry[0].toUpperCase() + ':-}" = 1 ] && exit 1; [ -n "${FAIL_' + entry[0].toUpperCase() + '_PATH:-}" ] && { for a in "$@"; do [ "$a" = "$FAIL_' + entry[0].toUpperCase() + '_PATH" ] && exit 1; done; }; exec ' + entry[1] + ' "$@"');
   });
   exe(path.join(bin, "mount"), 'if [ "${FAIL_MOUNT:-}" = 1 ]; then case "${INJECT_STATE_ENTRY:-}" in file) printf foreign > "' + state + '/foreign-entry";; hidden) printf foreign > "' + state + '/.foreign-hidden";; dir) /bin/mkdir "' + state + '/foreign-dir";; symlink) /bin/ln -s "' + dir + '" "' + state + '/foreign-link";; esac; exit 1; fi; target=""; source=""; for a in "$@"; do source="$target"; target="$a"; done; printf "2 1 0:1 %s %s rw - fake fake rw\n" "$source" "$target" >> "' + mountinfo + '"');
   exe(path.join(bin, "umount"), '[ "${FAIL_UMOUNT:-}" = 1 ] && exit 1; target=""; for a in "$@"; do target="$a"; done; tmp="' + mountinfo + '.tmp"; grep -v " $target " "' + mountinfo + '" > "$tmp"; mv "$tmp" "' + mountinfo + '"');
-  return {dir: dir, bin: bin, state: state, gst: gst, target: target, payload: payload,
+  return {dir: dir, bin: bin, state: state, gst: gst, target: target, payload: payload, payloadts: payloadts,
     mountinfo: mountinfo, registry: registry, hook: path.join(dir, "hook"), legacy: path.join(dir, "legacy"),
     init: path.join(state, "init.sh"), env: path.join(state, "env"), hookSource: path.join(state, "hook.sh"), configSource: path.join(state, "gstcool.conf"),
     registrySource: path.join(state, "registry.bin"), gstcool: path.join(dir, "etc/gstcool.conf"),
     core: path.join(target, "libgstcoreelements.so"), loader: path.join(bin, "loader"),
     command: function (name) { return path.join(bin, name); },
-    overrides: function () { return {state: state, gst: gst, owner: path.join(state, "owner"), baseline: path.join(state, "baseline"), recovery: path.join(state, "recovery"), init: path.join(state, "init.sh"), env: path.join(state, "env"), hookSource: path.join(state, "hook.sh"), configSource: path.join(state, "gstcool.conf"), registrySource: path.join(state, "registry.bin"), hook: path.join(dir, "hook"), legacyHook: path.join(dir, "legacy"), payload: payload, mountinfo: mountinfo, gstTarget: target, gstcool: path.join(dir, "etc/gstcool.conf"), core: path.join(target, "libgstcoreelements.so"), loader: path.join(bin, "loader"), inspect: path.join(bin, "gst-inspect-1.0"), mount: path.join(bin, "mount"), umount: path.join(bin, "umount"), cp: path.join(bin, "cp"), rm: path.join(bin, "rm"), rmdir: path.join(bin, "rmdir"), mkdir: path.join(bin, "mkdir"), mv: path.join(bin, "mv"), chmod: path.join(bin, "chmod"), ln: path.join(bin, "ln"), readlink: "/usr/bin/readlink", sed: path.join(bin, "sed")}; }
+    overrides: function () { return {state: state, gst: gst, owner: path.join(state, "owner"), baseline: path.join(state, "baseline"), recovery: path.join(state, "recovery"), init: path.join(state, "init.sh"), env: path.join(state, "env"), hookSource: path.join(state, "hook.sh"), configSource: path.join(state, "gstcool.conf"), registrySource: path.join(state, "registry.bin"), hook: path.join(dir, "hook"), legacyHook: path.join(dir, "legacy"), payload: payload, payloadts: payloadts, mountinfo: mountinfo, gstTarget: target, gstcool: path.join(dir, "etc/gstcool.conf"), core: path.join(target, "libgstcoreelements.so"), loader: path.join(bin, "loader"), inspect: path.join(bin, "gst-inspect-1.0"), mount: path.join(bin, "mount"), umount: path.join(bin, "umount"), cp: path.join(bin, "cp"), rm: path.join(bin, "rm"), rmdir: path.join(bin, "rmdir"), mkdir: path.join(bin, "mkdir"), mv: path.join(bin, "mv"), chmod: path.join(bin, "chmod"), ln: path.join(bin, "ln"), readlink: "/usr/bin/readlink", sed: path.join(bin, "sed")}; }
   };
 }
 function run(f, script, extra) { return sh(script, Object.assign({PATH: f.bin + ":" + process.env.PATH, GST_REGISTRY_1_0: f.registry}, extra || {})); }
@@ -515,4 +520,56 @@ test("every generated C2 script defines $APPBASE before using it", function () {
     assert.ok(r.stdout.indexOf("\n" + k) >= 0 || r.stdout.indexOf(k) === 0,
       "probe did not emit " + k + " (it aborted before the C2 block)");
   });
+});
+
+/* The optional TS demuxer must never cost a working install.
+ *
+ * The C2 profile works today with four 1.14.4 binaries and MP4/MKV. Adding a fifth
+ * (LG 1.14.4 libgstmpegtsdemux.so) introduces two NEEDED libraries whose presence on
+ * a C2/G2/CS is unverified. c2_payload requires its mandatory files to copy AND trace,
+ * so a hard fifth file would fail the whole enable and take away working MP4 on any
+ * TV lacking those libs. It must degrade instead. */
+test("a failing TS demuxer degrades to MP4/MKV instead of failing the enable", function () {
+  var TSF = "libgstmpegtsdemux.so";
+
+  // 1. TS not shipped at all (an older .ipk, or the payload dir absent).
+  var f = fixture(), o = f.overrides();
+  var r = run(f, service.c2Enable(true, o));
+  ok(r, "enable with no TS payload");
+  assert.match(r.stdout, /VERDICT=forced/);
+  assert.match(r.stdout, /TS_BOUND=0/);
+  assert.equal(fs.existsSync(path.join(f.state, "owner")), true,
+    "the working four must still produce an owned install");
+
+  // 2. TS shipped, stock target present, but its dependencies do not resolve here.
+  //    This is the exact risk carried in DESIGN-C2-TS-DEMUX.md.
+  f = fixture(); o = f.overrides();
+  write(path.join(f.payloadts, TSF), "payload-" + TSF);
+  write(path.join(f.target, TSF), "stock-" + TSF);
+  r = run(f, service.c2Enable(true, o), {TS_MISS_DEP: "1"});
+  ok(r, "enable with an unresolvable TS demuxer");
+  assert.match(r.stdout, /VERDICT=forced/);
+  assert.match(r.stdout, /TS_BOUND=0/);
+  assert.match(r.stdout, /TS_SKIP=/);
+  assert.equal(fs.existsSync(path.join(f.state, "owner")), true,
+    "a bad TS demuxer must not roll back the working install");
+  assert.equal(fs.existsSync(path.join(f.gst, TSF)), false,
+    "the unusable TS file must not be left staged");
+
+  // 3. TS shipped, traces clean, stock target present -> bound.
+  f = fixture(); o = f.overrides();
+  write(path.join(f.payloadts, TSF), "payload-" + TSF);
+  write(path.join(f.target, TSF), "stock-" + TSF);
+  r = run(f, service.c2Enable(true, o));
+  ok(r, "enable with a usable TS demuxer");
+  assert.match(r.stdout, /VERDICT=forced/);
+  assert.match(r.stdout, /TS_BOUND=1/);
+
+  // 4. TS shipped and usable, but the TV has no stock TS demuxer to override.
+  f = fixture(); o = f.overrides();
+  write(path.join(f.payloadts, TSF), "payload-" + TSF);
+  r = run(f, service.c2Enable(true, o));
+  ok(r, "enable with no stock TS target");
+  assert.match(r.stdout, /VERDICT=forced/);
+  assert.match(r.stdout, /TS_BOUND=0/);
 });
