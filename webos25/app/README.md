@@ -354,6 +354,28 @@ DTS pad from the demuxer, so the fix is library-override-centric.
 
 ---
 
+## Diagnostic log
+
+`detect` and `status` append the gate's decision to
+**`/var/lib/webosbrew/dtsenabler/dtsenabler.log`** — profile, verdict, `canForce`,
+the refusal reason, the identity values (`PRODUCT_ID`, `HARDWARE_ID`, firmware,
+webOS, GStreamer, loader, float ABI), `C2_GATE_FAIL`, and the three measured stock
+plugin SHA-256s. That is everything needed to say why a TV was refused.
+
+Three deliberate choices:
+
+- **Under `/var/lib`, not `/tmp`.** The CLI logs to `/tmp/dts25.log`, but `/tmp` is
+  cleared on these TVs, so an owner asked for "the log" after a refusal finds
+  nothing. That is exactly what happened on issue #1.
+- **`DETECT_PROBE` stays read-only.** The probe still mounts, copies and writes
+  nothing; the service writes the log *after* the probe returns.
+- **Consecutive identical entries are collapsed, and the file is capped at 400
+  lines.** Status is re-rendered on focus and after every action; an unchanged
+  verdict logged 40 times buries the one line that matters.
+
+The log deliberately survives Disable/Uninstall — it is the post-mortem record of
+what happened. Delete it by hand if you want it gone.
+
 ## Security model
 
 ### Exec-bridge permissions (why the service can reach hbchannel)

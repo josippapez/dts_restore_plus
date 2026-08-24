@@ -2838,6 +2838,59 @@ function cxStatusProbe() {
 /* detect: run the read-only probe, return profile + compatibility verdict + raw
  * probes. `supported` keeps its old meaning ("a mechanism exists for this
  * profile"); `verdict` is the new, separate answer to "may we apply it HERE?". */
+/* Persistent diagnostic log.
+ *
+ * The CLI logs to /tmp/dts25.log, but /tmp is cleared on these TVs, so an owner
+ * asked for "the log" after a refusal finds nothing -- which is exactly what
+ * happened on issue #1. Keep the app's log under /var/lib so it survives, and cap
+ * it so it cannot grow without bound.
+ *
+ * DETECT_PROBE itself stays strictly read-only (README documents that it mounts,
+ * copies and writes nothing). This writes from the service AFTER the probe has
+ * returned, so that contract is unchanged.
+ *
+ * Consecutive identical entries are collapsed: status is re-rendered on focus and
+ * after every action, and an unchanged verdict logged 40 times buries the one line
+ * that matters. */
+var APP_LOG = "/var/lib/webosbrew/dtsenabler/dtsenabler.log";
+var APP_LOG_MAX_LINES = 400;
+var lastLogSignature = null;
+
+function logDiagnostic(tag, res, kv) {
+  var fields = [
+    "profile=" + (res.profile || "unknown"),
+    "verdict=" + (res.verdict || "n/a"),
+    "canForce=" + (res.canForce === true ? "1" : "0"),
+    "reason=" + (res.verdictReason || "n/a"),
+    "PRODUCT_ID=" + (kv.PRODUCT_ID || "unknown"),
+    "HARDWARE_ID=" + (kv.HARDWARE_ID || "unknown"),
+    "FIRMWARE=" + (kv.WEBOS_MANUFACTURING_VERSION || "unknown"),
+    "WEBOS_RELEASE=" + (kv.WEBOS_RELEASE || "unknown"),
+    "GST_VERSION=" + (kv.GST_VERSION || "unknown"),
+    "LOADER=" + (kv.LOADER || "unknown"),
+    "FLOAT_ABI=" + (kv.FLOAT_ABI || "unknown"),
+    "C2_GATE_FAIL=" + (kv.C2_GATE_FAIL || ""),
+    "libgstlibav=" + (kv.C2_LIBAV_SHA256 || ""),
+    "libgstisomp4=" + (kv.C2_ISOMP4_SHA256 || ""),
+    "libgstmatroska=" + (kv.C2_MATROSKA_SHA256 || "")
+  ];
+  var signature = tag + "|" + fields.join("|");
+  if (signature === lastLogSignature) return Promise.resolve(null);
+  lastLogSignature = signature;
+  var body = fields.map(function (f) { return "  " + f; }).join("\n");
+  var dir = APP_LOG.replace(/\/[^/]*$/, "");
+  var cmd = "d=" + c2Q(dir) + "; f=" + c2Q(APP_LOG) + "; " +
+    "mkdir -p \"$d\" 2>/dev/null; " +
+    "printf '%s [%s]\\n%s\\n' \"$(date 2>/dev/null)\" " + c2Q(tag) + " " + c2Q(body) +
+    " >> \"$f\" 2>/dev/null; " +
+    "n=$(wc -l < \"$f\" 2>/dev/null || echo 0); " +
+    "if [ \"$n\" -gt " + APP_LOG_MAX_LINES + " ]; then " +
+    "tail -n " + APP_LOG_MAX_LINES + " \"$f\" > \"$f.tmp\" 2>/dev/null && " +
+    "mv -f \"$f.tmp\" \"$f\" 2>/dev/null; fi; exit 0";
+  // Logging must never turn a working detect into an error.
+  return rootExec(cmd).catch(function () { return null; });
+}
+
 service.register("detect", function (message) {
   detectProfile().then(function (d) {
     var res = {
@@ -2853,6 +2906,7 @@ service.register("detect", function (message) {
     addHookFields(res, hookStaleness(d.profile, d.probes || {}, w25ExpectedInitMd5()));
     addPayloadFields(res, payloadStaleness(d.profile, d.probes || {}));
     message.respond(res);
+    logDiagnostic("detect", res, d.probes || {});
   }).catch(function (e) {
     message.respond({ returnValue: false, errorText: e.errorText || e.message || String(e) });
   });
@@ -2881,6 +2935,7 @@ service.register("status", function (message) {
     addCompatFields(base, c);
     addHookFields(base, hookStaleness(profile, p, w25ExpectedInitMd5()));
     addPayloadFields(base, payloadStaleness(profile, p));
+    logDiagnostic("status", base, p);
 
     if (profile === PROFILE_W25 && p.C2_OWNED !== "1") {
       return rootExec(w25StatusProbe()).then(function (r) {
