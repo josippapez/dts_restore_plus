@@ -487,6 +487,48 @@ decoder is real and the demuxer gate is the actual problem. Note the C2 zstd-com
 zstd-capable `unsquashfs` (Homebrew `squashfs`); epk2extract's bundled one silently
 emits only the `.pak` files.
 
+### CS/C2 vs C3 at the SAME firmware: the userspace is byte-identical (2026-08-25)
+
+Prompted by an owner asking why C3's GStreamer files could not simply be injected into
+a CS/C2, since both run GStreamer 1.18.x. Both images were extracted at **the same
+firmware version**, `23.25.55.01`, platform `9.2.2`,
+`Rockhopper release 9.2.2-61 (ombre-okapi)`:
+
+- CS/C2 `23.25.55.01-HE_DTV_W22O_AFABATPU` (`o22`)
+- C3 `23.25.55.01-HE_DTV_W23O_AFABATAA` (`o22n`)
+
+| artifact | result |
+|---|---|
+| `libgstlgaudiodec.so` (holds `dts_audiodec`) | **byte-identical**, md5 `500d52b8a0b7…`, 1,139,012 B |
+| `libgstmatroska.so` | **byte-identical**, md5 `d909e2441511…` |
+| `libgstmpegtsdemux.so` | **byte-identical**, md5 `4fe99d5b70d6…` |
+| `gstcool.conf` DTS ranks | identical: `dts_audiodec=290`, `avdec_dca=0` |
+| capability `DTS` entry | identical: `"channels": 6` (whole file differs elsewhere) |
+| DSP decoder module names | identical lists |
+| **`lib/firmware/audio_a0_dsp0.bin`** | **DIFFERS** — `8741bd01…` (7,092,424 B) vs `25ade509…` (7,092,680 B) |
+
+**So there is nothing to port.** Every userspace DTS component is already the same file
+on both. The only DTS-relevant difference is the audio DSP firmware blob, which is
+per-SoC and belongs to the chip, not to a copyable plugin.
+
+Two earlier claims in this document are **wrong for this image** and were derived from
+the original C2 (`04.40.93` / webOS `7.4.0`), not the upgraded 9.2.2 one:
+
+- "`libgstlgaudiodec.so` | `audio/x-dtsl` only" — this image exposes the full set:
+  `audio/x-dts`, `audio/x-dtse`, `audio/x-dtsh`, `audio/x-dtsl`, `audio/x-dtsx`,
+  `audio/x-private1-dts`, plus five `LGADEC_CODEC_DTS_*` enums
+  (`DTS_CD`, `DTS_EXPRESS`, `DTS_HD`, `DTS_HD_DTS`, `DTS_M6`).
+- "matroska demuxer not nerfed" — it is not stripped, but it *is* gated: all three
+  demuxers carry `dts-support`, and the 1.24 source shows it is a **"Smart property"**
+  populated from a custom-query response, i.e. the player answers it, not a compile
+  constant.
+
+What this leaves open, and it is a better prize than the software downmix: the CS/C2
+already has a registered `dts_audiodec`, DSP `dec_dtsx`, a 6-channel capability entry
+and rank 290. If the `dts-support` answer can be influenced, DTS would decode in
+**hardware, multichannel**, with LG's own loudness handling. Unverified whether the
+o22 DSP's `dec_dtsx` is licensed/functional, or who answers that query with 0.
+
 ### C1 and C2 are the same case, and both need an injected decoder
 
 | layer | C1 (`o20n`, GStreamer 1.16.2) | C2 (`o22`, GStreamer 1.18.2) |
