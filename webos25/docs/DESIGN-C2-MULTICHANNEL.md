@@ -122,6 +122,48 @@ working stereo path rather than breaking a profile that now demonstrably works.
    This work is therefore **output quality (2.0 → 5.1), not playability**, and ranks
    below the TS demuxer.
 
+## The CS/C2 hardware can apparently decode DTS itself (2026-08-25)
+
+Read from the owner's own image, `23.25.55.01-HE_DTV_W22O_AFABATPU`. This reframes the
+whole problem and came from the owner's question "why not use C3's GStreamer files?".
+
+| layer | CS/C2 state | evidence |
+|---|---|---|
+| audio DSP firmware | **`dec_dtsx` present** | `lib/firmware/audio_a0_dsp0.bin` strings; siblings `dec_ddp`, `dec_mat`, `dec_ac4`, `dec_mpegh`; **no** plain `dec_dts` |
+| audio-adapter shim | `usr/lib/aa/libaa_dtsx.so` (10 KB) — `dtsx_src`, `mod_dtsxsrc`, `DTSHDHDR` | a source/parser hook to the DSP, far too small to be a codec |
+| codec capability | `DTS`, `DTSH`, `DTSE` all `"channels": 6` | `etc/umediaserver/device_codec_capability_config.json` |
+| element rank | `dts_audiodec=290` | `etc/gst/gstcool.conf` (alongside `avdec_dca=0`) |
+| the GStreamer element | **absent** — no `dts_audiodec`, `libgstdtsdec`, or `libdca` anywhere in the image | rootfs listing |
+
+So on this generation the DSP decoder, the adapter shim, a 6-channel capability
+declaration and a rank entry are **all present**, and the only missing link is the
+userspace GStreamer element that would route `audio/x-dts` into that path. The
+`dts_audiodec=290` line is not a meaningless leftover after all: it is LG's own
+rank for an element this image no longer ships.
+
+If that element can be supplied — the owner's suggestion was to take it from a C3,
+which runs the same GStreamer 1.18.x — DTS would decode **in hardware, multichannel**,
+instead of through our software `avdec_dca` with its forced stereo downmix. That is a
+better outcome than any of the build options below, and it may also restore the DTS
+badge.
+
+**Unverified, and each could kill it:**
+
+1. A `dec_dtsx` string in a firmware blob is not proof the module is licensed or
+   reachable at runtime. DSP blobs are often shared across models regardless of
+   entitlement, and LG may have removed the element precisely because this model is
+   not licensed.
+2. C3's `dts_audiodec` is presumably a thin wrapper over LG's audio-adapter API; its
+   ABI must match this image's `libmodule_decoder.so` / `libaa_*` generation, not just
+   the GStreamer minor version.
+3. No C3 firmware has been extracted yet. That is the next step, and it is the same
+   procedure `DESIGN-C2-TS-DEMUX.md` documents.
+4. `dec_dtsx` is DTS:X; whether it also accepts DTS core and DTS-HD MA is an
+   assumption about DTS:X decoders being supersets, not something measured here.
+
+**This now outranks the gst-libav rebuild below.** Extract a C3 image, confirm
+`dts_audiodec` exists and what it links against, then decide.
+
 ## Measure before building
 
 All three measurements are cheaper than one build, and any of them can make the
