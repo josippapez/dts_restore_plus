@@ -487,6 +487,38 @@ decoder is real and the demuxer gate is the actual problem. Note the C2 zstd-com
 zstd-capable `unsquashfs` (Homebrew `squashfs`); epk2extract's bundled one silently
 emits only the `.pak` files.
 
+### G2 upgraded to webOS 25 (`W22O` on platform 10.3.1) — owner report, hashes firmware-confirmed
+
+An `OLED77G26LA` owner (issue #2) reported the `webos25-armel-gst124` profile working
+via "Try anyway" with all self-tests passing. This is a **2022 panel upgraded to
+webOS 25**: the KR mirror names the package `ReNEW25@22_O22_33.31.68` and the EPK is
+`starfish-global-secured-o22-papikonda-3006-33.31.68`.
+
+Identity: `HE_DTV_W22O_AFABATPU`, firmware `33.31.68.01`, platform `10.3.1`,
+GStreamer `1.24.0` — the same OTA ID as the CS/C2 above, but a webOS-25 build, so the
+W25 profile applies rather than the C2 one.
+
+Stock md5s, read from the image (`932cc5196c8b…`), **matching the owner's report
+exactly**:
+
+```
+libgstlibav.so        0fd6d65ac9e3a78b393a615eaff8ac0b   <- same as the C5/G5 row
+libgstisomp4.so       cf4d9bb9e3c3ad83f1a75a399d2f0b93   <- differs from C5/G5
+libgstmpegtsdemux.so  772fb3b29e224423035eec9e93615b23   <- differs from C5/G5
+```
+
+So the libav is byte-identical to the verified C5/G5 build while both demuxers differ,
+which is why the exact-set gate reported `unverified` and the owner had to force.
+
+Two things to note before adding a verified row:
+
+- `gstcool.conf` carries `dts_audiodec=290` and `avdec_dca=0`, the same leftover pair
+  as the CS/C2.
+- The capability config lists **AC3, EAC3, DTS, DTSH, DTSE only — no TRUEHD or MLP**.
+  TrueHD therefore depends on the override `install.sh` generates, exactly as on the
+  C5. Plausible, but unconfirmed on this TV, and `init_dts25.sh`'s table rule requires
+  DTS *and* TrueHD to have played before a product glob is added.
+
 ### CS/C2 vs C3 at the SAME firmware: the userspace is byte-identical (2026-08-25)
 
 Prompted by an owner asking why C3's GStreamer files could not simply be injected into
