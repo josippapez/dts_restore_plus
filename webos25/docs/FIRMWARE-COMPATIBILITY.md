@@ -508,8 +508,33 @@ firmware version**, `23.25.55.01`, platform `9.2.2`,
 | **`lib/firmware/audio_a0_dsp0.bin`** | **DIFFERS** — `8741bd01…` (7,092,424 B) vs `25ade509…` (7,092,680 B) |
 
 **So there is nothing to port.** Every userspace DTS component is already the same file
-on both. The only DTS-relevant difference is the audio DSP firmware blob, which is
-per-SoC and belongs to the chip, not to a copyable plugin.
+on both. Chased to the end:
+
+| layer | result |
+|---|---|
+| `libpf-1.0.so.1.0.0` (answers the `dts-support` query) | **byte-identical** |
+| `libplayerAPIs.so.1.0.0` | **byte-identical** |
+| `usr/sbin/starfish-media-pipeline` | **byte-identical** |
+| `etc/palm/audiooutputd-hwdata/audioPackages.json` | neither lists a DTS package (`lgse`, `pulseAudio`, `ms12` only) |
+| capability config | differs only in a copyright year |
+| **DTS:X decoder inside the DSP blob** | **same build on both**: `DTSX2 Decoder 6.019.101.0`, package `DTSX_TV_Hybrid_32fx_HiFi3_SS_SPFPU_7`, Xperi SDK commit `a95204d5363204154db0c8feb4a3825de778a2c8` |
+
+So the CS/C2 is not missing a DTS decoder anywhere. Its DSP carries a real, versioned
+DTS:X decoder from Xperi's SDK — the same one the C3 has — and its userspace has the
+element, the caps, rank 290 and a 6-channel capability entry.
+
+**What blocks it is a runtime decision, not a missing file.** `libpf` logs
+`platformSupportDTS [%s]` and feeds that into the `dts-support` smart property the
+demuxers read. The code that computes it is byte-identical across both models and no
+rootfs config carries the key, so the value must come from outside the rootfs
+(per-unit provisioning, NVRAM, or a model-ID lookup). That is why copying C3 files
+cannot help: there is no file to copy that differs.
+
+Consequence for the DTS-restore mechanism: flipping the demuxers' `dts_support`
+default (the webOS-25 `build-demux.sh` patch) is **not** sufficient here, because the
+1.24 source shows the query *response* overwrites the field
+(`tsdemux.c` around line 1098). On this generation the lever is whatever answers that
+query, which needs on-device investigation, not firmware archaeology.
 
 Two earlier claims in this document are **wrong for this image** and were derived from
 the original C2 (`04.40.93` / webOS `7.4.0`), not the upgraded 9.2.2 one:
