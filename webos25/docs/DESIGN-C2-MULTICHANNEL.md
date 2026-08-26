@@ -1,8 +1,23 @@
 # DESIGN — discrete multichannel DTS for the C2/G2/CS profile
 
-Status: **DRAFT / NOT IMPLEMENTED**. Scoped 2026-08-24 after the first working C2
-install (`OLED55CS6LA`, firmware `23.25.55`, webOS `9.2.2`, GStreamer `1.18.5`)
+Status: **DRAFT / SUPERSEDED IN PRIORITY**. Scoped 2026-08-24 after the first working
+C2 install (`OLED55CS6LA`, firmware `23.25.55`, webOS `9.2.2`, GStreamer `1.18.5`)
 reported DTS decoding correctly but arriving at the soundbar as **2.0 PCM**.
+
+> **Read this first (2026-08-25).** Everything below plans a *software* decoder that
+> does not downmix. Firmware comparison has since shown that is the second-best
+> option: this TV already contains a real DTS:X decoder in its audio DSP
+> (`DTSX2 Decoder 6.019.101.0`, byte-identical to the C3's), a registered
+> `dts_audiodec` at rank 290, and a 6-channel capability entry. Nothing is missing —
+> a runtime `platformSupportDTS` value withholds it. See
+> [`FIRMWARE-COMPATIBILITY.md`](FIRMWARE-COMPATIBILITY.md) §"CS/C2 vs C3 at the SAME
+> firmware".
+>
+> **Chase that flag before building anything here.** Hardware decode would give
+> multichannel *and* LG's own loudness handling, which the plan below explicitly
+> cannot. Note also that the webOS-25 trick of flipping the demuxers'
+> `dts_support` default does **not** transfer: on this generation the query response
+> overwrites the field, so the lever is whatever answers the query.
 
 ## Why it is stereo — NOT settled; three live suspects
 
