@@ -30,6 +30,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # full history + tags: the changelog step diffs against the previous tag
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -69,6 +72,20 @@ jobs:
       # profile required webOS 7.4.0 -- a feature that could never be reached.
       - name: Verify the Homebrew listing floor admits every implemented profile
         run: sh webos25/restore/check-manifest-floor.sh
+
+      - name: Collect changelog since the previous tag
+        id: changelog
+        env:
+          REL_NAME: ${{ steps.rel.outputs.name }}   # sanitized by the rel step
+        run: |
+          PREV=$(git describe --tags --abbrev=0 "$REL_NAME^" 2>/dev/null || true)
+          if [ -n "$PREV" ]; then RANGE="$PREV..$REL_NAME"; else RANGE="$REL_NAME"; fi
+          {
+            echo "log<<CHANGELOG_EOF"
+            git log --no-merges --format='- %s' "$RANGE"
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "prev=${PREV}" >> "$GITHUB_OUTPUT"
 
       - name: Package the CLI restore tarball
         env:
@@ -146,6 +163,9 @@ jobs:
           # to the newest webos25 build without a manual flag flip.
           make_latest: true
           body: |
+            ## What changed in ${{ steps.rel.outputs.name }}
+            ${{ steps.changelog.outputs.log }}
+
             Prebuilt, **on-device-verified** DTS restore for rooted **LG webOS 25** TVs
             (C5 class — 32-bit ARM soft-float, GStreamer 1.24). Not for CX/webOS 3–6
             (use upstream `lgstreamer/dts_restore` for those).
