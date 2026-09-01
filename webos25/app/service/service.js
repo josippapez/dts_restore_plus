@@ -2925,7 +2925,13 @@ function w25StatusProbe() {
     'echo "THDLIBSTAGED=$([ -f ' + W25_THD_DEST + '/libgstlibav.so ] && echo 1 || echo 0)"',
     'echo "ISOBIND=$(grep -c " ' + W25_ISO_LIVE + ' " /proc/mounts 2>/dev/null)"',
     'echo "TSDBIND=$(grep -c " ' + W25_TSD_LIVE + ' " /proc/mounts 2>/dev/null)"',
-    'echo "DMXSTAGED=$([ -f ' + W25_DMX_DEST + '/libgstisomp4.so ] && [ -f ' + W25_DMX_DEST + '/libgstmpegtsdemux.so ] && echo 1 || echo 0)"'
+    'echo "DMXSTAGED=$([ -f ' + W25_DMX_DEST + '/libgstisomp4.so ] && [ -f ' + W25_DMX_DEST + '/libgstmpegtsdemux.so ] && echo 1 || echo 0)"',
+    // The boot hook rewrites stock.fp on EVERY run, so "mtime older than boot"
+    // means the hook has not run yet this boot. Read all three clocks in one
+    // probe so they share one moment; the service does the comparison.
+    'echo "STOCKFP_MTIME=$(stat -c %Y ' + W25_STOCK_FP + ' 2>/dev/null || echo 0)"',
+    'echo "NOW_EPOCH=$(date +%s)"',
+    'echo "UPTIME_S=$(cut -d. -f1 /proc/uptime)"'
   ].join("\n");
 }
 function cxStatusProbe() {
@@ -3121,6 +3127,15 @@ service.register("status", function (message) {
         base.dtsActive = hook && dtsdec;
         base.truehdActive = hook && libavbind && cfgbind && gcbind && truehd;
         base.active = base.dtsActive && base.truehdActive;
+        // Boot race (observed on-device: app opened at 08:36:50, hook applied at
+        // 08:37:31): right after power-on the hook is installed but has not run
+        // yet, so "inactive" is transient, not "disabled". stock.fp is rewritten
+        // on every hook run; mtime older than boot time (with 10s slack for the
+        // clock settling during boot) means the run is still pending.
+        var fpMtime = parseInt(kv.STOCKFP_MTIME, 10) || 0;
+        var bootEpoch = (parseInt(kv.NOW_EPOCH, 10) || 0) - (parseInt(kv.UPTIME_S, 10) || 0);
+        base.bootPending = hook && !base.active &&
+          bootEpoch > 0 && fpMtime > 0 && fpMtime < (bootEpoch - 10);
         // "verified" now means THIS TV, not the mechanism: both codecs are proven
         // on a real C5 (decode + autoplug), but that only transfers to a TV whose
         // stock plugin fingerprints match the verified-sets table. Saying "yes"

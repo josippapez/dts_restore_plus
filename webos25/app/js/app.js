@@ -85,6 +85,7 @@
   /* ---------------------------------------------------------------------- */
 
   var lastSupported = false;
+  var bootPendingTimer = null;
 
   // Two-step "Try anyway (experimental)" force-enable arming state. Reset on
   // every status render (re-detect) and on focus leaving the button, so a
@@ -174,6 +175,18 @@
     } else if (active) {
       pill.textContent = "DTS enabled" + (verdict === "forced" ? " (unverified TV)" : "");
       pill.className = "pill pill--on";
+    } else if (s.bootPending) {
+      // The boot hook is installed but has not run yet this boot; "disabled"
+      // would be false. Re-check until the hook lands (it runs within ~a minute
+      // of power-on; opening the app early races it).
+      pill.textContent = "enabling at boot…";
+      pill.className = "pill pill--unknown";
+      if (!bootPendingTimer) {
+        bootPendingTimer = setTimeout(function () {
+          bootPendingTimer = null;
+          refreshStatus();
+        }, 15000);
+      }
     } else {
       pill.textContent = "DTS disabled" + (verdict === "forced" ? " (unverified TV)" : "");
       pill.className = "pill pill--off";
