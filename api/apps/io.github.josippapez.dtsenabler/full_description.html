@@ -1,0 +1,16 @@
+<h1>DTS Enabler</h1>
+<p>Restores <strong>DTS</strong> and <strong>Dolby TrueHD/MLP</strong> audio on rooted LG TVs whose firmware
+removed it — verified on <strong>webOS 25</strong> (C5), including DTS in <code>.mkv</code>, <code>.mp4</code>, <code>.ts</code>
+and <code>.m2ts</code>. Decodes native discrete 5.1 (no stereo downmix). Enable / disable /
+uninstall from the app, plus a self-test and play-by-ear. No stock firmware file is
+modified in place: the overrides are bind-mounts reverted by Disable/Uninstall or a
+reboot, and the one persistent write — the GStreamer plugin registry — is reverted
+by regenerating a clean stock registry.</p>
+<p>It also tells you when you <strong>don't</strong> need it: 2024 sets (C4/G4/M4/T4) kept native
+DTS and are reported as needing nothing, and a set whose decoder is present but
+switched off is reported as such rather than as unsupported. Applies its mechanism
+only to TVs whose stock plugins match a verified set <em>and</em> whose model was actually
+tested; a byte-identical match on an untested model, or anything else, requires the
+explicit experimental opt-in.</p>
+<p>Requires the <a href="https://github.com/webosbrew/webos-homebrew-channel">Homebrew Channel</a>
+with <strong>root</strong>. Not endorsed by LG.</p>

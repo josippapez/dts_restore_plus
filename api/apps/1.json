@@ -1,0 +1,39 @@
+{
+  "paging": {
+    "page": 1,
+    "count": 1,
+    "maxPage": 1,
+    "itemsTotal": 1,
+    "prevUrl": null,
+    "nextUrl": null
+  },
+  "packages": [
+    {
+      "id": "io.github.josippapez.dtsenabler",
+      "title": "DTS Enabler",
+      "iconUri": "https://raw.githubusercontent.com/josippapez/dts_restore_plus/main/assets/icon160.png",
+      "manifestUrl": "https://github.com/josippapez/dts_restore_plus/releases/download/webos25-2.20/io.github.josippapez.dtsenabler.manifest.json",
+      "manifest": {
+        "id": "io.github.josippapez.dtsenabler",
+        "version": "2.7.15",
+        "type": "web",
+        "title": "DTS Enabler",
+        "appDescription": "Restore DTS and Dolby TrueHD/MLP audio on rooted LG webOS 25 TVs, including DTS in mp4/ts/m2ts containers. Also offers exact-firmware experimental DTS support for C2/G2 via explicit opt-in. Requires the Homebrew Channel + root.",
+        "iconUri": "https://raw.githubusercontent.com/josippapez/dts_restore_plus/main/assets/icon160.png",
+        "sourceUrl": "https://github.com/josippapez/dts_restore_plus",
+        "rootRequired": true,
+        "ipkUrl": "https://github.com/josippapez/dts_restore_plus/releases/download/webos25-2.20/io.github.josippapez.dtsenabler_2.7.15_all.ipk",
+        "ipkSize": 32821672,
+        "ipkHash": {
+          "sha256": "f487c57f5475f9b65fbc96e16f7879455882debf263c8dbc0ea0140ef35aa323"
+        }
+      },
+      "pool": "main",
+      "requirements": {
+        "webosRelease": ">=7.4"
+      },
+      "shortDescription": "Restore DTS and Dolby TrueHD/MLP audio on rooted LG webOS 25 TVs, including DTS in mp4/ts/m2ts containers. Also offers exact-firmware experimental DTS support for C2/G2 via explicit opt-in. Requires the Homebrew Channel + root.",
+      "fullDescriptionUrl": "io.github.josippapez.dtsenabler/full_description.html"
+    }
+  ]
+}
