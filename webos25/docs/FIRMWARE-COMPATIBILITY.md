@@ -519,11 +519,11 @@ Two things to note before adding a verified row:
   C5. Plausible, but unconfirmed on this TV, and `init_dts25.sh`'s table rule requires
   DTS *and* TrueHD to have played before a product glob is added.
 
-### CS/C2 vs C3 at the SAME firmware: the userspace is byte-identical (2026-08-25)
+### CS/C2 vs C3 at the same release: selected userspace artifacts match (2026-08-25)
 
 Prompted by an owner asking why C3's GStreamer files could not simply be injected into
-a CS/C2, since both run GStreamer 1.18.x. Both images were extracted at **the same
-firmware version**, `23.25.55.01`, platform `9.2.2`,
+a CS/C2, since both run GStreamer 1.18.x. Both images were extracted at the same
+release/version, `23.25.55.01`, platform `9.2.2`,
 `Rockhopper release 9.2.2-61 (ombre-okapi)`:
 
 - CS/C2 `23.25.55.01-HE_DTV_W22O_AFABATPU` (`o22`)
@@ -539,34 +539,38 @@ firmware version**, `23.25.55.01`, platform `9.2.2`,
 | DSP decoder module names | identical lists |
 | **`lib/firmware/audio_a0_dsp0.bin`** | **DIFFERS** — `8741bd01…` (7,092,424 B) vs `25ade509…` (7,092,680 B) |
 
-**So there is nothing to port.** Every userspace DTS component is already the same file
-on both. Chased to the end:
+There is therefore no obvious replacement among these selected userspace artifacts.
+That narrower result must not be expanded to "every DTS component is identical": the
+capability files and DSP firmware are not byte-identical, and MP4 was not recorded in
+this same-version comparison table. Additional common media binaries were checked:
 
 | layer | result |
 |---|---|
-| `libpf-1.0.so.1.0.0` (answers the `dts-support` query) | **byte-identical** |
+| `libpf-1.0.so.1.0.0` (contains `platformSupportDTS`/`dts-support` strings) | **byte-identical**; not proven to answer the query |
 | `libplayerAPIs.so.1.0.0` | **byte-identical** |
 | `usr/sbin/starfish-media-pipeline` | **byte-identical** |
 | `etc/palm/audiooutputd-hwdata/audioPackages.json` | neither lists a DTS package (`lgse`, `pulseAudio`, `ms12` only) |
 | capability config | differs only in a copyright year |
-| **DTS:X decoder inside the DSP blob** | **same build on both**: `DTSX2 Decoder 6.019.101.0`, package `DTSX_TV_Hybrid_32fx_HiFi3_SS_SPFPU_7`, Xperi SDK commit `a95204d5363204154db0c8feb4a3825de778a2c8` |
+| DSP blob | different files, but both contain the metadata strings `DTSX2 Decoder 6.019.101.0`, package `DTSX_TV_Hybrid_32fx_HiFi3_SS_SPFPU_7`, Xperi SDK commit `a95204d5363204154db0c8feb4a3825de778a2c8` |
 
-So the CS/C2 is not missing a DTS decoder anywhere. Its DSP carries a real, versioned
-DTS:X decoder from Xperi's SDK — the same one the C3 has — and its userspace has the
-element, the caps, rank 290 and a 6-channel capability entry.
+The strings establish that both differing DSP images were built with matching DTS:X
+package metadata. They do not establish that the executable module is identical,
+licensed for either product, reachable at runtime, or functional on the CS/C2. The
+factory, caps, rank, and six-channel capability entry are likewise static declarations.
 
-**What blocks it is a runtime decision, not a missing file.** `libpf` logs
-`platformSupportDTS [%s]` and feeds that into the `dts-support` smart property the
-demuxers read. The code that computes it is byte-identical across both models and no
-rootfs config carries the key, so the value must come from outside the rootfs
-(per-unit provisioning, NVRAM, or a model-ID lookup). That is why copying C3 files
-cannot help: there is no file to copy that differs.
+**The blocker is still unknown.** Published webOS-25 source shows the demuxers asking
+for `dts-support` through a custom query on the connected pipeline. It does not show
+which component answers, and a `platformSupportDTS` string in `libpf` does not prove
+that `libpf` supplies the value. No rootfs text key was found, but that does not prove
+per-unit provisioning, NVRAM, or any other particular source. Equal binaries can also
+branch on model/runtime inputs. The source is GStreamer 1.24, not the exact 1.18.5
+binary under comparison.
 
-Consequence for the DTS-restore mechanism: flipping the demuxers' `dts_support`
-default (the webOS-25 `build-demux.sh` patch) is **not** sufficient here, because the
-1.24 source shows the query *response* overwrites the field
-(`tsdemux.c` around line 1098). On this generation the lever is whatever answers that
-query, which needs on-device investigation, not firmware archaeology.
+Consequence for the DTS-restore mechanism: changing a demuxer's default may be
+overwritten when a query responder returns a value, but the exact 1.18.5 behavior and
+responder need an on-device trace. Even making a demuxer emit DTS caps would prove only
+stream exposure; it would not prove that `dts_audiodec` can run or that it wins
+selection.
 
 Two earlier claims in this document are **wrong for this image** and were derived from
 the original C2 (`04.40.93` / webOS `7.4.0`), not the upgraded 9.2.2 one:
@@ -577,14 +581,14 @@ the original C2 (`04.40.93` / webOS `7.4.0`), not the upgraded 9.2.2 one:
   (`DTS_CD`, `DTS_EXPRESS`, `DTS_HD`, `DTS_HD_DTS`, `DTS_M6`).
 - "matroska demuxer not nerfed" — it is not stripped, but it *is* gated: all three
   demuxers carry `dts-support`, and the 1.24 source shows it is a **"Smart property"**
-  populated from a custom-query response, i.e. the player answers it, not a compile
-  constant.
+  that can be populated from a custom-query response. The responder is unknown.
 
-What this leaves open, and it is a better prize than the software downmix: the CS/C2
-already has a registered `dts_audiodec`, DSP `dec_dtsx`, a 6-channel capability entry
-and rank 290. If the `dts-support` answer can be influenced, DTS would decode in
-**hardware, multichannel**, with LG's own loudness handling. Unverified whether the
-o22 DSP's `dec_dtsx` is licensed/functional, or who answers that query with 0.
+What this leaves open is an experiment, not a predicted outcome. If `dts-support` can
+be influenced, the first result may only be a usable DTS pad. A live test must then
+identify the selected decoder, prove the DSP path is functional, capture negotiated
+channel count, and distinguish local PCM decoding from closed-HAL bitstream
+passthrough. Multichannel output and LG loudness handling cannot be inferred from the
+static artifacts.
 
 ### C1 and C2 are the same case, and both need an injected decoder
 
