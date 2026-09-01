@@ -90,3 +90,16 @@ binary-affecting.
 LG's `audiosink` accepts only integer PCM (S8..S32), no float. `avdec_truehd`
 already emits native **S32** PCM, so it negotiates directly with the sink — the
 same reason the DTS `dtsdec` was patched to output S32LE instead of F32LE.
+
+## Buffer-rate patch (0.5 s dropout fix, 2026-09-01)
+
+`build-truehd.sh` applies a second inline patch, to gst-libav's
+`ext/libav/gstavauddec.c`: `avdec_truehd`/`avdec_mlp` default the
+GstAudioDecoder `min-latency` property to 40 ms. TrueHD access units are 40
+samples (0.83 ms), so an unaggregated decoder emits 1200 output buffers/s;
+LG's audio renderer audibly drops ~0.5 s chunks at that rate whenever the
+video track sustains ~40 Mbps (measured on a C5 with a 38.7 Mbps remux — the
+identical file's AC-3 track at ~31 buffers/s played clean). With 40 ms
+aggregation the sink sees ~25 buffers/s and the dropouts are gone; decoded
+PCM is bit-identical (md5-verified on-device). The property stays
+per-instance overridable; every other avdec keeps stock behavior.

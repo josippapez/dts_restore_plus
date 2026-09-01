@@ -1,7 +1,7 @@
 ===================================================================
  TrueHD gst-libav bundle for LG C5 / webOS 25 — BUILD REPORT
 ===================================================================
-Generated:  Sun Jul 26 18:41:12 UTC 2026
+Generated:  Tue Sep  1 06:46:21 UTC 2026
 Build host: debian:11-slim (bullseye, glibc 2.31), --platform linux/arm64
 Toolchain:  arm-linux-gnueabi-gcc (Debian 10.2.1-6) 10.2.1 20210110 (soft-float EABI5)
 ffmpeg:     n4.4.4 — full stock LG decoder set (aac/ac3/eac3/alac/amrnb/amrwb/flac/mp3/
@@ -97,15 +97,15 @@ runtime by enumerating libavcodec decoders (element name is generated, not a
 static string — so we verify the decoder in libavcodec + the decode API in the plugin).
   libavcodec truehd/mlp strings: TrueHD truehd 
   libavcodec descriptor: MLP (Meridian Lossless Packing)
-  libgstlibav libav decode API: NO
-  => TrueHD MISSING
+  libgstlibav libav decode API linked: yes (avcodec_open2, av_codec_is_decoder, avcodec_send_packet)
+  => TrueHD decoder PRESENT in bundle
 
 ===================== webOS 25 LOUDNESS PATCH CHECK =====================
   Confirms the make-up gain / DRC / centre boost really reached the shipped
   libavcodec. Codec-locality itself is guaranteed EARLIER, by the pre-apply
   assertion that the patch names no file but libavcodec/mlpdec.c — that is
   the load-bearing check, and it does fail on an out-of-scope file.
-  config path present:  NO — patch did not reach the binary
+  config path present:  yes (/var/lib/webosbrew/truehd/gain.conf)
   exported symbols:     none [smoke test OK]
 
 ===================== BUNDLE CONTENTS + SIZE =====================
@@ -121,10 +121,10 @@ static string — so we verify the decoder in libavcodec + the decode API in the
         22  /out/libavutil.so
         22  /out/libavutil.so.56
     620320  /out/libavutil.so.56.70.100
-    242948  /out/libgstlibav.so
+    242960  /out/libgstlibav.so
         24  /out/libswresample.so
         24  /out/libswresample.so.3
      93196  /out/libswresample.so.3.9.100
   TOTAL: 4.4M
 
-OVERALL: CHECK FAILURES ABOVE
+OVERALL: PASS — all ELF objects ARM EABI5 soft-float (05000200), max GLIBC <=2.35, TrueHD decoder present, plugin links libavcodec decode API.

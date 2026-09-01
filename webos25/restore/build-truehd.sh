@@ -1380,6 +1380,36 @@ pkg_config_libdir = '/opt/ffmin/lib/pkgconfig:/sysroot/usr/lib/arm-linux-gnueabi
 EOF
 
 cd /build/gst-libav
+
+# --- webOS 25 buffer-rate patch: default min-latency=40ms for avdec_truehd/mlp ---
+# TrueHD access units are 40 samples (0.83 ms), so avdec_truehd emits 1200
+# output buffers/s; LG's audio renderer audibly drops ~0.5 s chunks at that
+# rate on sustained-high-bitrate files (measured on a C5, 2026-09-01 — AC-3 at
+# ~31 buffers/s on the identical file is clean). GstAudioDecoder's min-latency
+# property aggregates output (40 ms -> ~25 buffers/s, verified on-device), but
+# LG's decproxy autoplugs with default properties, so the default itself must
+# be non-zero. Scoped to TRUEHD/MLP; every other avdec keeps stock behavior.
+if ! grep -q 'dts_restore_plus: aggregate TrueHD' ext/libav/gstavauddec.c; then
+  awk '{
+    print
+    if ($0 ~ /gst_audio_decoder_set_needs_format \(GST_AUDIO_DECODER \(ffmpegdec\), TRUE\);/) {
+      print ""
+      print "  /* dts_restore_plus: aggregate TrueHD/MLP output to >= 40 ms. The 40-sample"
+      print "   * access units otherwise produce 1200 buffers/s, which LG'\''s audio sink"
+      print "   * cannot sustain alongside high-bitrate video (audible ~0.5 s dropouts,"
+      print "   * measured on a C5). decproxy autoplugs with default properties, so the"
+      print "   * aggregation must be the default; it stays overridable per instance. */"
+      print "  if (klass->in_plugin->id == AV_CODEC_ID_TRUEHD"
+      print "      || klass->in_plugin->id == AV_CODEC_ID_MLP) {"
+      print "    g_object_set (ffmpegdec, \"min-latency\", (gint64) 40000000, NULL);"
+      print "  }"
+    }
+  }' ext/libav/gstavauddec.c > /tmp/gstavauddec.c.patched
+  mv /tmp/gstavauddec.c.patched ext/libav/gstavauddec.c
+fi
+grep -q 'AV_CODEC_ID_TRUEHD' ext/libav/gstavauddec.c \
+  || { echo "PATCH VERIFY FAILED: truehd min-latency patch missing from gstavauddec.c"; exit 1; }
+
 rm -rf build
 # PKG_CONFIG_SYSROOT_DIR + PKG_CONFIG_LIBDIR already exported in step 1.
 meson setup build --cross-file /build/cross.txt -Ddoc=disabled --buildtype=release 2>&1 | tail -20 || {
@@ -1427,6 +1457,9 @@ REPORT=/out/BUILD-REPORT.txt
 ver_le(){ [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | tail -1)" = "$2" ]; }  # $1 <= $2 ?
 {
   set +e   # verification greps legitimately return non-zero; never abort the report
+  set +o pipefail  # `strings|grep -q` SIGPIPEs strings when grep exits at first
+                   # match; with pipefail that read every -q check as FAILED
+                   # (false "TrueHD MISSING"/"decode API: NO" in shipped reports)
   echo "==================================================================="
   echo " TrueHD gst-libav bundle for LG C5 / webOS 25 — BUILD REPORT"
   echo "==================================================================="
