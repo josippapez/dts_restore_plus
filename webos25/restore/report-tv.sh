@@ -109,6 +109,28 @@ if [ -r /etc/gst/gstcool.conf ]; then
 fi
 echo "DCA_RANK=$DCA_RANK"
 
+# How LG disabled DTS on this set. This is the value that decides which mechanism
+# applies on a generation we do not cover yet, and it was the one missing from the
+# first reports off unsupported TVs (issue #3, a 55C11 on GStreamer 1.16).
+HAS_AVDEC_DCA=no; HAS_DTSDEC=no
+if command -v gst-inspect-1.0 >/dev/null 2>&1; then
+  GST_REGISTRY_FORK=no gst-inspect-1.0 avdec_dca >/dev/null 2>&1 && HAS_AVDEC_DCA=yes
+  GST_REGISTRY_FORK=no gst-inspect-1.0 dtsdec    >/dev/null 2>&1 && HAS_DTSDEC=yes
+fi
+MKV_SO=/usr/lib/gstreamer-1.0/libgstmatroska.so
+MKV_HAS_ADTS=unknown; MKV_HAS_XDTS=unknown
+if [ -e "$MKV_SO" ] && command -v strings >/dev/null 2>&1; then
+  if strings "$MKV_SO" 2>/dev/null | grep -q "A_DTS"; then MKV_HAS_ADTS=yes; else MKV_HAS_ADTS=no; fi
+  if strings "$MKV_SO" 2>/dev/null | grep -q "audio/x-dts"; then MKV_HAS_XDTS=yes; else MKV_HAS_XDTS=no; fi
+fi
+echo "MKV_HAS_A_DTS_STRING=$MKV_HAS_ADTS"
+echo "MKV_HAS_XDTS_CAPS_STRING=$MKV_HAS_XDTS"
+MECH=unknown
+if [ "$MKV_HAS_ADTS" = "no" ]; then MECH=cx-demuxer-nerf
+elif [ "$MKV_HAS_ADTS" = "yes" ] && [ "$HAS_AVDEC_DCA" = "no" ] && [ "$HAS_DTSDEC" = "no" ] && [ "$HAS_DTS_AUDIODEC" = "no" ]; then MECH=webos25-retag-no-decoder
+elif [ "$MKV_HAS_ADTS" = "yes" ]; then MECH=demuxer-emits-dts; fi
+echo "DTS_DISABLE_MECHANISM_GUESS=$MECH"
+
 echo
 echo "--- computed profile (what the app will pick) ---"
 PROFILE=unknown
