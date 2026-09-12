@@ -330,7 +330,7 @@ var W25_COMPAT_SH = [
   "#      handling, so \"Try anyway\" reported the same refusal as Enable -- the message",
   "#      told the user to opt in and then ignored them. Reported by a G5 owner. Also",
   "#      adds the G5 row, which is now owner-verified on firmware 33.30.97.",
-  "W25_GATE_VERSION=4",
+  "W25_GATE_VERSION=5",
   "FP=/var/lib/webosbrew/dts25/stock.fp",
   "# Where the installed copy of THIS script lives, and the boot hook that symlinks",
   "# to it. Named here, in the shared block, so the read-only probe can fingerprint",
