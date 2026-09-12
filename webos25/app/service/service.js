@@ -2262,10 +2262,16 @@ function w25Uninstall() {
  * absent file. Author constants only.
  * ===================================================================== */
 var TEST_WAV_MIN = 100000;   // bytes; a real decode is far larger, a fail is ~44 (header) or 0
+// `dec` is per-case because the TrueHD sample does not go through dtsdec. The
+// TrueHD case is MKV, not TS, deliberately: a BluRay TrueHD track carries an AC-3
+// substream on the SAME PID, so a TS case passes by decoding the AC-3 core even
+// when the TrueHD pad was never exposed -- it would report the patch working when
+// it is not. Matroska has no such fallback, so a PASS there is a real TrueHD decode.
 var TEST_CASES = [
-  { key: "mp4",  file: "DTS-in-mp4.mp4",     demux: "qtdemux" },
-  { key: "ts",   file: "DTS-HD-MA-5.1.ts",   demux: "tsdemux" },
-  { key: "m2ts", file: "DTS-HD-MA-5.1.m2ts", demux: "tsdemux" }
+  { key: "mp4",    file: "DTS-in-mp4.mp4",     demux: "qtdemux",       dec: "dtsdec" },
+  { key: "ts",     file: "DTS-HD-MA-5.1.ts",   demux: "tsdemux",       dec: "dtsdec" },
+  { key: "m2ts",   file: "DTS-HD-MA-5.1.m2ts", demux: "tsdemux",       dec: "dtsdec" },
+  { key: "truehd", file: "TrueHD-5.1.mkv",     demux: "matroskademux", dec: "avdec_truehd" }
 ];
 function w25SelfTest() {
   var lines = [
@@ -2284,14 +2290,15 @@ function w25SelfTest() {
     '# post-boot load on the real C5 (2026-08-18) while the decode itself was fine.'
     ,
     'export GST_REGISTRY_1_0="$REG" GST_REGISTRY_UPDATE=no GST_REGISTRY_FORK=no',
-    'echo "DTSDEC=$(gst-inspect-1.0 dtsdec >/dev/null 2>&1 && echo 1 || echo 0)"'
+    'echo "DTSDEC=$(gst-inspect-1.0 dtsdec >/dev/null 2>&1 && echo 1 || echo 0)"',
+    'echo "TRUEHDDEC=$(gst-inspect-1.0 avdec_truehd >/dev/null 2>&1 && echo 1 || echo 0)"'
   ];
   TEST_CASES.forEach(function (t) {
     var f = PAYLOAD_TESTS + "/" + t.file;
     lines.push('F="' + f + '"');
     lines.push('rm -f "$OUT"');
     lines.push('if [ -f "$F" ]; then');
-    lines.push('  timeout 60 gst-launch-1.0 -q filesrc location="$F" ! ' + t.demux + ' name=d d. ! queue ! dtsdec ! audioconvert ! wavenc ! filesink location="$OUT" >/dev/null 2>&1');
+    lines.push('  timeout 60 gst-launch-1.0 -q filesrc location="$F" ! ' + t.demux + ' name=d d. ! queue ! ' + t.dec + ' ! audioconvert ! wavenc ! filesink location="$OUT" >/dev/null 2>&1');
     lines.push('  SZ=$(stat -c%s "$OUT" 2>/dev/null || echo 0)');
     lines.push('  if [ "$SZ" -ge ' + TEST_WAV_MIN + ' ]; then echo "' + t.key + '=PASS:$SZ"; else echo "' + t.key + '=FAIL:$SZ"; fi');
     lines.push('else echo "' + t.key + '=MISSING:0"; fi');
@@ -3269,10 +3276,11 @@ service.register("test", function (message) {
         returnValue: true,
         profile: d.profile,
         dtsdecPresent: kv.DTSDEC === "1",
+        truehdDecPresent: kv.TRUEHDDEC === "1",
         results: results,
         pass: anyRun && allPass,
-        summary: anyRun ? (allPass ? "All containers decode DTS — patch is working."
-                                   : "Some containers failed to decode — patch not fully active.")
+        summary: anyRun ? (allPass ? "Every sample decoded — DTS and TrueHD are both working."
+                                   : "Some samples failed to decode — patch not fully active.")
                         : "No test samples found (payload/testfiles not bundled)."
       });
     });

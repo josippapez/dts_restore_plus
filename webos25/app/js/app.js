@@ -229,6 +229,8 @@
     var canTsTest = canW25Test || (canTest && !!s.tsBound);
     $("btnPlayTs").disabled = !canTsTest;
     $("btnPlayM2ts").disabled = !canTsTest;
+    // TrueHD is webOS-25 only: the C2/G2 payload ships no TrueHD decoder at all.
+    $("btnPlayTrueHd").disabled = !canW25Test;
     // A/B compare renders through the patched dtsdec, so it needs the same profile.
     $("btnAb").disabled = !canW25Test;
     Array.prototype.slice.call(document.querySelectorAll("[data-gain], [data-preset], [data-center]"))
@@ -328,7 +330,7 @@
   /* Map a self-test verdict to a status cell. */
   function renderTestResults(res) {
     var r = (res && res.results) || {};
-    [["mp4", "tRmp4"], ["ts", "tRts"], ["m2ts", "tRm2ts"]].forEach(function (pair) {
+    [["mp4", "tRmp4"], ["ts", "tRts"], ["m2ts", "tRm2ts"], ["truehd", "tRtruehd"]].forEach(function (pair) {
       var v = r[pair[0]] || {};
       var verdict = v.verdict || "—";
       var cls = verdict === "PASS" ? "ok" : (verdict === "FAIL" ? "warn" : null);
@@ -423,12 +425,12 @@
 
   function doTest() {
     toast("Running self-test (decoding samples)…", "busy");
-    ["tRmp4", "tRts", "tRm2ts"].forEach(function (id) { setVal(id, "testing…"); });
+    ["tRmp4", "tRts", "tRm2ts", "tRtruehd"].forEach(function (id) { setVal(id, "testing…"); });
     callService("test", {}).then(function (res) {
       renderTestResults(res);
       toast(res.summary || "Self-test done", res.pass ? "ok" : "err");
     }).catch(function (e) {
-      ["tRmp4", "tRts", "tRm2ts"].forEach(function (id) { setVal(id, "—"); });
+      ["tRmp4", "tRts", "tRm2ts", "tRtruehd"].forEach(function (id) { setVal(id, "—"); });
       toast("Self-test failed: " + errText(e), "err");
     });
   }
@@ -437,7 +439,8 @@
   var TEST_FILES = {
     mp4:  "payload/testfiles/DTS-in-mp4.mp4",
     ts:   "payload/testfiles/DTS-HD-MA-5.1.ts",
-    m2ts: "payload/testfiles/DTS-HD-MA-5.1.m2ts"
+    m2ts: "payload/testfiles/DTS-HD-MA-5.1.m2ts",
+    truehd: "payload/testfiles/TrueHD-5.1.mkv"
   };
   function doPlay(key) {
     var v = $("testVideo");
@@ -779,6 +782,7 @@
     $("btnPlayMp4").addEventListener("click", function () { doPlay("mp4"); });
     $("btnPlayTs").addEventListener("click", function () { doPlay("ts"); });
     $("btnPlayM2ts").addEventListener("click", function () { doPlay("m2ts"); });
+    $("btnPlayTrueHd").addEventListener("click", function () { doPlay("truehd"); });
     $("btnSaveGain").addEventListener("click", doSaveGain);
     $("btnAb").addEventListener("click", doAbRender);
     $("btnAbA").addEventListener("click", function () { doAbPlay("a"); });

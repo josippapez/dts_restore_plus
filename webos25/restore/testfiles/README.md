@@ -57,3 +57,12 @@ reports `audio: Dolby TrueHD`) but as **2 channels**, and it decodes to nothing 
 ffmpeg does not write the BD PES substream framing the HDMV TrueHD path selects with
 `target_pes_substream = 0x72`. A TrueHD `.ts`/`.m2ts` test vector therefore has to be
 a genuine disc rip or tsMuxeR output; an ffmpeg mux will produce a false negative.
+
+  TrueHD-5.1.mkv      TrueHD 5.1 (side layout) -> matroskademux + avdec_truehd
+
+The TrueHD sample is MKV on purpose. A BluRay TrueHD track carries an AC-3
+substream on the SAME PID, so a .ts case passes by decoding the AC-3 core even
+when the TrueHD pad was never exposed -- it would report the patch working when
+it is not. Matroska has no such fallback. It is a synthetic 4s 6-channel tone
+bed (ffmpeg -c:a truehd), not a clip, because it only has to prove the decoder
+runs; channel_layout is 5.1(side), which is what a real TrueHD track negotiates.

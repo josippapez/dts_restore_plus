@@ -27,3 +27,12 @@ this BluRay-style original but nothing in the ffmpeg one, and the decode fails
 with `not-linked`. Retyping the PMT from 0x82 (DTS core) to 0x86 (DTS-HD MA) does
 NOT fix it, so it is not just the stream_type: LG's demuxer needs something else
 about the BluRay/HDMV layout. Keep these files byte-identical to restore/.
+
+  TrueHD-5.1.mkv      TrueHD 5.1 (side layout) -> matroskademux + avdec_truehd
+
+The TrueHD sample is MKV on purpose. A BluRay TrueHD track carries an AC-3
+substream on the SAME PID, so a .ts case passes by decoding the AC-3 core even
+when the TrueHD pad was never exposed -- it would report the patch working when
+it is not. Matroska has no such fallback. It is a synthetic 4s 6-channel tone
+bed (ffmpeg -c:a truehd), not a clip, because it only has to prove the decoder
+runs; channel_layout is 5.1(side), which is what a real TrueHD track negotiates.

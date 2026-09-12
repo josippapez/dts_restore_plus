@@ -198,7 +198,7 @@
         <p class="muted">
           <strong>Run self-test</strong> decodes bundled DTS samples through the TV's
           media pipeline and reports PASS/FAIL. C2/G2 tests MP4 through
-          <code>avdec_dca</code> only; webOS 25 additionally tests TS/M2TS &mdash; an
+          <code>avdec_dca</code> only; webOS 25 additionally tests TS/M2TS and TrueHD &mdash; an
           objective check that the patch works, no speakers needed. <strong>Play</strong>
           plays a sample so you can confirm by ear.
         </p>
@@ -207,11 +207,13 @@
           <button id="btnPlayMp4"  class="btn focusable" data-nav disabled>Play&nbsp;.mp4</button>
           <button id="btnPlayTs"   class="btn focusable" data-nav disabled>Play&nbsp;.ts</button>
           <button id="btnPlayM2ts" class="btn focusable" data-nav disabled>Play&nbsp;.m2ts</button>
+          <button id="btnPlayTrueHd" class="btn focusable" data-nav disabled>Play&nbsp;TrueHD</button>
         </div>
         <dl class="status">
           <dt>mp4 (qtdemux)</dt><dd id="tRmp4">&mdash;</dd>
           <dt>ts (tsdemux)</dt><dd id="tRts">&mdash;</dd>
           <dt>m2ts (tsdemux)</dt><dd id="tRm2ts">&mdash;</dd>
+          <dt>TrueHD mkv (avdec_truehd)</dt><dd id="tRtruehd">&mdash;</dd>
         </dl>
         <video id="testVideo" class="testvideo" controls playsinline hidden></video>
         <p class="muted note-warn">
