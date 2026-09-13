@@ -196,6 +196,21 @@ restart logs **zero** `parseFiles` lines, so patching the single string changes 
 key and leaves every other value byte-identical. Turning it off copies the pristine
 value back out of the factory file the same way.
 
+**Known cost, and it is not avoidable.** The boot hook restarts configd to make the
+new value live, and that restart briefly republishes the picture settings: for roughly
+45 seconds after each boot the panel sits on default settings before the real ones come
+back. Everything below was tried and none of it works:
+
+- `setConfigs` / `reconfigure` would change the value with no restart, but both sit in
+  configd's `configd.internal` permission group. `/usr/share/luna-service2/allowed_groups.json`
+  grants `part` only `partner.api` + `public`, and `oem` and `dev` nothing at all, and no
+  client on the TV holds that group. Calling it from the app service is refused.
+- configd has no reload path (`CanReload=no`, no `ExecReload`).
+- Running the hook earlier does not help: configd starts ~2.5s into boot and the
+  Homebrew hook runs at ~38s, long after the picture stack has settled.
+
+If that trade is not worth it, leave the opt-in off; it changes nothing else.
+
 A boot-ordered systemd unit would avoid the restart entirely, but there is nowhere
 to put one: `/etc` and `/lib/systemd/system` are read-only squashfs, and the only
 writable unit directory is `/run/systemd/system`, which is tmpfs and gone before
