@@ -196,20 +196,32 @@ restart logs **zero** `parseFiles` lines, so patching the single string changes 
 key and leaves every other value byte-identical. Turning it off copies the pristine
 value back out of the factory file the same way.
 
-**Known cost, and it is not avoidable.** The boot hook restarts configd to make the
-new value live, and that restart briefly republishes the picture settings: for roughly
-45 seconds after each boot the panel sits on default settings before the real ones come
-back. Everything below was tried and none of it works:
+**Applying it restarts configd, and how that restart is done is the whole story.**
+Ten units `Requires=configd.service`, among them `pqcontroller` (picture),
+`videooutputd`, `audiooutputd` and `umediaserver`. A plain `systemctl restart` queues
+restart jobs for all of them, configd's own job waits ~90s behind that cascade, and
+`pqcontroller` coming back is the "Auto Power Save for a minute and a half after every
+boot" an owner reported. Measured on a C5 with a 1-second sampler of systemd's job
+queue. Two other things compound it: configd ignores SIGTERM once it has subscribers,
+so the stop alone eats the 90s `TimeoutStopUSec`; and `systemctl kill` on its own trips
+`Restart=on-failure`, which cascades the same way.
 
-- `setConfigs` / `reconfigure` would change the value with no restart, but both sit in
-  configd's `configd.internal` permission group. `/usr/share/luna-service2/allowed_groups.json`
-  grants `part` only `partner.api` + `public`, and `oem` and `dev` nothing at all, and no
-  client on the TV holds that group. Calling it from the app service is refused.
-- configd has no reload path (`CanReload=no`, no `ExecReload`).
-- Running the hook earlier does not help: configd starts ~2.5s into boot and the
-  Homebrew hook runs at ~38s, long after the picture stack has settled.
+The hook therefore restarts configd **alone**:
 
-If that trade is not worth it, leave the opt-in off; it changes nothing else.
+```sh
+systemctl --job-mode=ignore-dependencies --no-block stop configd.service   # configd only, returns at once
+systemctl kill -s KILL configd.service                                       # so that stop completes now
+systemctl --job-mode=ignore-dependencies start configd.service              # configd only
+```
+
+A requested stop does not trigger `Restart=on-failure`, and `ignore-dependencies` keeps
+every other unit out of the job queue. Measured at boot: hook at 36s, applied at 39s,
+configd back in **1s**, and `pqcontroller` / `videooutputd` / `audiooutputd` /
+`umediaserver` never restarted. The new configd loads its cache (zero `parseFiles`) so
+it serves the patched value from the first request. `setConfigs` would have avoided the
+restart entirely, but it sits behind the `configd.internal` ACG group, which
+`/usr/share/luna-service2/allowed_groups.json` grants to no trust level a homebrew
+service can hold.
 
 A boot-ordered systemd unit would avoid the restart entirely, but there is nowhere
 to put one: `/etc` and `/lib/systemd/system` are read-only squashfs, and the only

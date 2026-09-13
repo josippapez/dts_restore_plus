@@ -101,7 +101,13 @@ if ! grep -q " $LLS_LIVE " /proc/mounts 2>/dev/null; then
   else
     rm -f /var/preferences/configd_db.json 2>>"$LOG"
   fi
-  systemctl restart configd.service >/dev/null 2>>"$LOG" && log "app-dts: edidType reverted to ${STOCK:-stock}"
+  # Dependency-free restart, same recipe as the APPLY 2d block in init_dts25.sh:
+  # a plain restart cascades into pqcontroller/audiooutputd/umediaserver and waits
+  # ~90s behind them. Stop configd alone, SIGKILL so the stop completes now, start
+  # it alone. 2s, nothing else restarted.
+  systemctl --job-mode=ignore-dependencies --no-block stop configd.service >/dev/null 2>>"$LOG"
+  systemctl kill -s KILL configd.service >/dev/null 2>>"$LOG"
+  systemctl --job-mode=ignore-dependencies start configd.service >/dev/null 2>>"$LOG" && log "app-dts: edidType reverted to ${STOCK:-stock}"
 fi
 rm -f "$REG_TMP" 2>/dev/null
 

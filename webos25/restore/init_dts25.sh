@@ -83,7 +83,7 @@ EXPECT_GST=1.24
 #      handling, so "Try anyway" reported the same refusal as Enable -- the message
 #      told the user to opt in and then ignored them. Reported by a G5 owner. Also
 #      adds the G5 row, which is now owner-verified on firmware 33.30.97.
-W25_GATE_VERSION=14
+W25_GATE_VERSION=16
 FP=/var/lib/webosbrew/dts25/stock.fp
 # Where the installed copy of THIS script lives, and the boot hook that symlinks
 # to it. Named here, in the shared block, so the read-only probe can fingerprint
@@ -780,22 +780,50 @@ w25_appdts_apply() {
       # runs, and it keeps the file and the cache telling the same story.
       if sed -i 's/"edidType"\([[:space:]]*\):\([[:space:]]*\)"TrueHD"/"edidType"\1:\2"TrueHD+dts"/' "$CONFIGD_DB" 2>>$LOG &&
          grep -q '"edidType"[[:space:]]*:[[:space:]]*"[^"]*dts' "$CONFIGD_DB" 2>/dev/null; then
-        systemctl restart configd.service >/dev/null 2>>$LOG
-        # configd loads the cache rather than re-parsing, so this is quick. Still
-        # bounded, and still fails closed: a configd that does not come back gets
-        # the override taken away rather than left half-applied.
+        # Restart configd WITHOUT its dependents, and without the 90s stop timeout.
+        #
+        # Ten units Requires= configd -- pqcontroller (picture), videooutputd,
+        # audiooutputd, umediaserver among them. A plain `systemctl restart` (or a
+        # kill that trips Restart=on-failure) queues restart jobs for all of them,
+        # configd's own job waits behind that cascade for ~90s, and pqcontroller
+        # restarting is the "Auto Power Save for a minute and a half after boot"
+        # owners saw. Measured on a C5 with a 1s sampler of systemd's job queue.
+        #
+        # So: enqueue a stop for configd ONLY (--job-mode=ignore-dependencies keeps
+        # the cascade out; --no-block returns at once), SIGKILL it so that stop
+        # completes now instead of after the 90s SIGTERM timeout it ignores once it
+        # has subscribers, and start it alone the same way. A requested stop does
+        # not trigger Restart=on-failure, so nothing else moves. Measured: 2s, with
+        # pqcontroller/videooutputd/umediaserver/devicereset pids unchanged. The
+        # new configd loads its cache (0 parseFiles) so it serves the patched value.
+        # If it is not back in 20s, fall back to the slow known-good restart.
+        T0=$(date +%s)
+        systemctl --job-mode=ignore-dependencies --no-block stop configd.service >/dev/null 2>>$LOG
+        systemctl kill -s KILL configd.service >/dev/null 2>>$LOG
+        systemctl --job-mode=ignore-dependencies start configd.service >/dev/null 2>>$LOG
         i=0
-        while [ "$i" -lt 45 ]; do
-          systemctl is-active configd.service >/dev/null 2>&1 && break
+        while [ "$i" -lt 20 ]; do
+          P=$(systemctl show -p MainPID --value configd.service 2>/dev/null)
+          [ -n "$P" ] && [ "$P" != 0 ] && systemctl is-active configd.service >/dev/null 2>&1 && break
           i=$((i + 1)); sleep 1
         done
-        if [ "$i" -ge 45 ]; then
-          w25_log "app-dts: configd did not come back in ${i}s -- reverting"
+        if [ "$i" -ge 20 ]; then
+          w25_log "app-dts: dependency-free restart not up after ${i}s; falling back to systemctl restart"
+          systemctl reset-failed configd.service >/dev/null 2>&1
+          systemctl restart configd.service >/dev/null 2>>$LOG
+          i=0
+          while [ "$i" -lt 45 ]; do systemctl is-active configd.service >/dev/null 2>&1 && break; i=$((i + 1)); sleep 1; done
+        fi
+        # Fail closed: a configd that still is not back gets the override taken
+        # away rather than left half-applied.
+        if systemctl is-active configd.service >/dev/null 2>&1; then
+          w25_log "app-dts: edidType -> TrueHD+dts (cache patched; configd back in $(( $(date +%s) - T0 ))s)"
+        else
+          w25_log "app-dts: configd did not come back -- reverting"
           umount "$LLS" 2>/dev/null || umount -l "$LLS" 2>/dev/null
           rm -f "$CONFIGD_DB" 2>>$LOG
+          systemctl reset-failed configd.service >/dev/null 2>&1
           systemctl restart configd.service >/dev/null 2>>$LOG
-        else
-          w25_log "app-dts: edidType -> TrueHD+dts (cache patched, no layer re-parse)"
         fi
       else
         w25_log "app-dts: could not patch $CONFIGD_DB -- left stock"
