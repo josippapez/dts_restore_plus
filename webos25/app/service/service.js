@@ -330,7 +330,7 @@ var W25_COMPAT_SH = [
   "#      handling, so \"Try anyway\" reported the same refusal as Enable -- the message",
   "#      told the user to opt in and then ignored them. Reported by a G5 owner. Also",
   "#      adds the G5 row, which is now owner-verified on firmware 33.30.97.",
-  "W25_GATE_VERSION=8",
+  "W25_GATE_VERSION=9",
   "FP=/var/lib/webosbrew/dts25/stock.fp",
   "# Where the installed copy of THIS script lives, and the boot hook that symlinks",
   "# to it. Named here, in the shared block, so the read-only probe can fingerprint",
@@ -605,6 +605,12 @@ var W25_COMPAT_SH = [
   "# without stutter. The C2 shares this exact binary set but has no TrueHD report",
   "# yet, so it stays on the opt-in path until one arrives.",
   "1.24|0fd6d65ac9e3a78b393a615eaff8ac0b|cf4d9bb9e3c3ad83f1a75a399d2f0b93|772fb3b29e224423035eec9e93615b23|OLED*G2*|LG G2 OLED77G26LA/OLED77G29LA (webOS 10.3.1, GStreamer 1.24.0)",
+  "# C2: the same o22 binary set as the G2 row above, so it was already matching by",
+  "# hashes only and forcing on every enable. TrueHD confirmed on an OLED55C21LA",
+  "# against two TrueHD-only Matroska samples -- single audio track, no AC-3",
+  "# alongside, so no compatibility track could decode in its place. DTS came from",
+  "# all three self-test containers.",
+  "1.24|0fd6d65ac9e3a78b393a615eaff8ac0b|cf4d9bb9e3c3ad83f1a75a399d2f0b93|772fb3b29e224423035eec9e93615b23|OLED*C2*|LG C2 OLED55C21LA (webOS 10.3.1, GStreamer 1.24.0)",
   "W25_SETS",
   "  [ \"$VERDICT\" = verified ] && return 0",
   "  # A hash match on an untested model leaves VERDICT=unverified + CANFORCE=1 and must",
@@ -3382,10 +3388,18 @@ function w25AppDtsSteps(on) {
   if (on) {
     lines.push('mkdir -p "$(dirname "$FLAG")" 2>/dev/null');
     lines.push(': > "$FLAG"');
-    // Re-run the boot script rather than duplicating the mount logic here: it
-    // is the single copy of this mechanism, and running it is also what proves
-    // the marker takes effect without waiting for a reboot.
-    lines.push('[ -x ' + W25_INIT_SCRIPT + ' ] && sh ' + W25_INIT_SCRIPT + ' >/dev/null 2>&1');
+    // Install the CURRENT boot script first. Only Enable used to write it, so a
+    // TV that was enabled by an older app kept running that older script -- and
+    // this feature lives in the script, not here. Turning the toggle on then
+    // wrote the marker, ran a boot script that had never heard of it, and
+    // reported nothing applied. Measured on a C5 still carrying gate v4.
+    lines.push('base64 -d > "' + W25_INIT_SCRIPT + '" <<\'B64EOF\'');
+    lines.push(Buffer.from(w25InitScriptBody(), "utf8").toString("base64"));
+    lines.push('B64EOF');
+    lines.push('chmod 0755 "' + W25_INIT_SCRIPT + '"');
+    // Then run it: it is the single copy of this mechanism, and running it also
+    // proves the marker takes effect without waiting for a reboot.
+    lines.push('sh ' + W25_INIT_SCRIPT + ' >/dev/null 2>&1');
   } else {
     lines.push('rm -f "$FLAG"');
     // /var/run is a symlink to /tmp/var/run, so /proc/mounts records the resolved
@@ -3398,6 +3412,7 @@ function w25AppDtsSteps(on) {
     lines.push('fi');
   }
   lines.push('echo "EDIDTYPE=$(grep -o \'"edidType"[[:space:]]*:[[:space:]]*"[^"]*"\' /var/preferences/configd_db.json 2>/dev/null | head -n1 | sed \'s/.*:[[:space:]]*"//; s/"$//\')"');
+  lines.push('echo "HOOKVER=$(sed -n "s/^W25_GATE_VERSION=//p" ' + W25_INIT_SCRIPT + ' 2>/dev/null | head -n1)"');
   lines.push('echo OK');
   lines.push("exit 0");
   return lines.join("\n");

@@ -487,7 +487,7 @@ decoder is real and the demuxer gate is the actual problem. Note the C2 zstd-com
 zstd-capable `unsquashfs` (Homebrew `squashfs`); epk2extract's bundled one silently
 emits only the `.pak` files.
 
-### G2 upgraded to webOS 25 (`W22O` on platform 10.3.1) — owner report, hashes firmware-confirmed
+### G2 upgraded to webOS 25 (`W22O` on platform 10.3.1) — VERIFIED, shipped in `webos25-2.22`
 
 An `OLED77G26LA` owner (issue #2) reported the `webos25-armel-gst124` profile working
 via "Try anyway" with all self-tests passing. This is a **2022 panel upgraded to
@@ -510,14 +510,27 @@ libgstmpegtsdemux.so  772fb3b29e224423035eec9e93615b23   <- differs from C5/G5
 So the libav is byte-identical to the verified C5/G5 build while both demuxers differ,
 which is why the exact-set gate reported `unverified` and the owner had to force.
 
-Two things to note before adding a verified row:
+Both conditions the table rule asks for were then met on hardware, so the
+`OLED*G2*` row shipped in [`webos25-2.22`](https://github.com/josippapez/dts_restore_plus/releases/tag/webos25-2.22):
 
-- `gstcool.conf` carries `dts_audiodec=290` and `avdec_dca=0`, the same leftover pair
-  as the CS/C2.
-- The capability config lists **AC3, EAC3, DTS, DTSH, DTSE only — no TRUEHD or MLP**.
-  TrueHD therefore depends on the override `install.sh` generates, exactly as on the
-  C5. Plausible, but unconfirmed on this TV, and `init_dts25.sh`'s table rule requires
-  DTS *and* TrueHD to have played before a product glob is added.
+- **DTS** — all three self-test containers passed (issue #2).
+- **TrueHD** — the owner remuxed a file down to video plus one TrueHD track and it
+  played with no stutter or lag (issue #2, 2026-08-31). That matters because the
+  capability config here lists **AC3, EAC3, DTS, DTSH, DTSE only, no TRUEHD or MLP**,
+  so TrueHD depends entirely on the override `install.sh` generates, exactly as on the
+  C5. A TrueHD-only remux is the right test precisely because it removes the AC-3
+  fallback that makes a normal BD track sound fine either way.
+- After the row shipped, the same owner confirmed the TV reads `verified` and enables
+  without the opt-in (2026-09-12). That closes it: the row was
+  [missing for two weeks](https://github.com/josippapez/dts_restore_plus/issues/2)
+  after the analysis above was written, which is the failure this note now guards.
+
+`gstcool.conf` carries `dts_audiodec=290` and `avdec_dca=0`, the same leftover pair as
+the CS/C2.
+
+**The C2 shares this exact binary set** (`OLED55C21LA`, issue #4) but has no TrueHD
+report, so it still matches by hashes only and stays on the opt-in path. One playback
+test is all that row needs.
 
 ### CS/C2 vs C3 at the same release: selected userspace artifacts match (2026-08-25)
 

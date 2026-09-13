@@ -1,5 +1,7 @@
 # dts_restore
 
+https://github.com/josippapez/dts_restore_plus
+
 Restore **DTS audio playback** (and add **Matroska Dolby Vision** support) on rooted LG webOS
 TVs, where LG deliberately removed DTS decoding in firmware.
 

@@ -83,7 +83,7 @@ EXPECT_GST=1.24
 #      handling, so "Try anyway" reported the same refusal as Enable -- the message
 #      told the user to opt in and then ignored them. Reported by a G5 owner. Also
 #      adds the G5 row, which is now owner-verified on firmware 33.30.97.
-W25_GATE_VERSION=8
+W25_GATE_VERSION=9
 FP=/var/lib/webosbrew/dts25/stock.fp
 # Where the installed copy of THIS script lives, and the boot hook that symlinks
 # to it. Named here, in the shared block, so the read-only probe can fingerprint
@@ -358,6 +358,12 @@ w25_verdict() {
 # without stutter. The C2 shares this exact binary set but has no TrueHD report
 # yet, so it stays on the opt-in path until one arrives.
 1.24|0fd6d65ac9e3a78b393a615eaff8ac0b|cf4d9bb9e3c3ad83f1a75a399d2f0b93|772fb3b29e224423035eec9e93615b23|OLED*G2*|LG G2 OLED77G26LA/OLED77G29LA (webOS 10.3.1, GStreamer 1.24.0)
+# C2: the same o22 binary set as the G2 row above, so it was already matching by
+# hashes only and forcing on every enable. TrueHD confirmed on an OLED55C21LA
+# against two TrueHD-only Matroska samples -- single audio track, no AC-3
+# alongside, so no compatibility track could decode in its place. DTS came from
+# all three self-test containers.
+1.24|0fd6d65ac9e3a78b393a615eaff8ac0b|cf4d9bb9e3c3ad83f1a75a399d2f0b93|772fb3b29e224423035eec9e93615b23|OLED*C2*|LG C2 OLED55C21LA (webOS 10.3.1, GStreamer 1.24.0)
 W25_SETS
   [ "$VERDICT" = verified ] && return 0
   # A hash match on an untested model leaves VERDICT=unverified + CANFORCE=1 and must
