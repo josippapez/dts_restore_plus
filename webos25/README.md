@@ -154,6 +154,41 @@ verbatim and symlinked from `/var/lib/webosbrew/init.d/restore_dts25`):
    `/mnt/flash/data/gst_1_0_registry.arm.bin`. See "Compatibility gate,
    reversibility, and self-heal" below for exactly what gates that write.
 
+## Show DTS tracks in apps (separate opt-in)
+
+Some apps decide whether to offer a DTS track from a capability string the TV
+reports, `tv.model.edidType`, rather than from what the pipeline can decode.
+Stremio hides DTS outright unless that string mentions `dts` (it reads the key
+over `luna://com.webos.service.config`), and Kodi uses the same key for
+`SupportsDTS()`. On a C5 it reads `TrueHD`, so DTS tracks never appear even with
+the patch active and working.
+
+The app's **Show DTS tracks in apps** card flips it to `TrueHD+dts`. It is
+deliberately **not** part of Enable and defaults to off, because `arccontroller`
+builds the EDID SADs the TV advertises over eARC from the same value and
+`extinput` gates HDMI-input DTS on it — so it also changes what a connected
+receiver is told this TV accepts on its own inputs.
+
+`edidType` is factory data, not a rootfs config file: `lowlevelstorage` writes it
+into `/tmp/var/run/tvconfig/lls/factorydb.json` (tmpfs) and configd folds that in
+as its "Low-Level Storage Info" layer. The boot hook binds an edited copy over
+that file, drops `/var/preferences/configd_db.json` (configd only re-parses the
+layer dirs when its cache is gone) and restarts configd. Both are rebuilt at
+boot, so **a reboot is a complete revert** and the marker file
+`/var/lib/webosbrew/dts25/appdts.enabled` is what makes the hook re-apply it.
+
+Two things measured on a real C5 that are easy to get wrong:
+
+- The higher-priority `/var/run/tvconfig/remote` layer declared in `layers.json`
+  looks like the natural place for an override, but its selector is empty on
+  these sets, so configd logs `(Remote) : ReadOnly Type (Skipped)` and never
+  reads it.
+- `/var/run` is a symlink to `/tmp/var/run`, so `/proc/mounts` records the bind
+  under the **resolved** path. Guards written against `/var/run/...` never match,
+  which stacks a new mount on every boot and never unmounts on Disable.
+
+This only changes which tracks apps offer. It is not a decoder change.
+
 ## Compatibility gate, reversibility, and self-heal
 
 **Verified TV sets.** Before binding anything, both the boot hook and Enable check the

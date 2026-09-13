@@ -83,7 +83,7 @@ EXPECT_GST=1.24
 #      handling, so "Try anyway" reported the same refusal as Enable -- the message
 #      told the user to opt in and then ignored them. Reported by a G5 owner. Also
 #      adds the G5 row, which is now owner-verified on firmware 33.30.97.
-W25_GATE_VERSION=5
+W25_GATE_VERSION=8
 FP=/var/lib/webosbrew/dts25/stock.fp
 # Where the installed copy of THIS script lives, and the boot hook that symlinks
 # to it. Named here, in the shared block, so the read-only probe can fingerprint
@@ -108,6 +108,17 @@ MYTSD=/var/lib/webosbrew/demux25/libgstmpegtsdemux.so
 MYCFG=/var/lib/webosbrew/truehd/codec_capability.json
 MYGC=/var/lib/webosbrew/truehd/gstcool.conf
 MYLIBS=/var/lib/webosbrew/truehd/libs:/var/lib/webosbrew/dts25/libs
+# APP-DTS opt-in: makes apps that gate on the TV's declared capability (Stremio
+# and Kodi both read tv.model.edidType) stop hiding DTS tracks. Off unless the
+# marker exists -- see the APPLY 2d block for why it is separate from Enable.
+APPDTS_FLAG=/var/lib/webosbrew/dts25/appdts.enabled
+# NOTE the /tmp path, not /var/run: /var/run is a symlink to /tmp/var/run, so a
+# bind made here is recorded in /proc/mounts under the RESOLVED path. Writing
+# /var/run/... would make every "is it already mounted" guard miss -- stacking a
+# fresh mount on every run and never unmounting on Disable.
+LLS=/tmp/var/run/tvconfig/lls/factorydb.json
+MYLLS=/var/lib/webosbrew/dts25/factorydb.override.json
+CONFIGD_DB=/var/preferences/configd_db.json
 w25_log() { [ -n "${W25_LOG:-}" ] || return 0; echo "[dts25-gate $(date '+%Y-%m-%d %H:%M:%S')] $*" >> "${W25_LOG:-}" 2>&1; }
 # Unmount ONE bind target, falling back to a LAZY detach when it is busy.
 # Measured on a real C5: umount of /usr/lib/gstreamer-1.0/libgstlibav.so fails
@@ -133,7 +144,7 @@ w25_umount() {
 # the warning up.
 w25_drop_binds() {
   UNMOUNT_FAILED=
-  for t in "$CFG" "$GC" "$LGLIBAV" "$LGISO" "$LGTSD" "$REG"; do
+  for t in "$CFG" "$GC" "$LGLIBAV" "$LGISO" "$LGTSD" "$REG" "$LLS"; do
     w25_umount "$t" || UNMOUNT_FAILED="${UNMOUNT_FAILED:+$UNMOUNT_FAILED }$t"
   done
   [ -z "$UNMOUNT_FAILED" ] && return 0
@@ -687,6 +698,36 @@ esac
 [ -f "$MYLIBAV" ] && ! grep -q " $LGLIBAV " /proc/mounts 2>/dev/null && mount -n --bind -o ro "$MYLIBAV" "$LGLIBAV" 2>>$LOG
 # --- APPLY 2b) gstcool.conf: give avdec_truehd a high SW rank so LG autoplugs it (not the HW path)
 [ -f "$MYGC" ] && ! grep -q " $GC " /proc/mounts 2>/dev/null && mount -n --bind "$MYGC" "$GC" 2>>$LOG
+# --- APPLY 2d) OPT-IN: tell apps this TV accepts DTS (tv.model.edidType) -------
+#     Kept OUT of Enable and gated on its own marker file. edidType is not a
+#     passive descriptor: arccontroller builds the EDID SADs the TV advertises
+#     over eARC from it and extinput gates HDMI-input DTS on it, so switching it
+#     changes what a connected AVR is told. That is a bigger claim than "decode
+#     DTS in our own pipeline" and needs its own consent.
+#
+#     edidType is factory data, not a rootfs config file: lowlevelstorage writes
+#     it into $LLS (tmpfs) and configd folds that in as the "Low-Level Storage
+#     Info" layer. Bind our edited copy over it, then drop configd's cache --
+#     configd only re-parses the layer dirs when the cache is gone. Both are
+#     rebuilt at boot, so this whole step re-runs cleanly every time.
+#
+#     Do NOT try the higher-priority /var/run/tvconfig/remote layer instead: it
+#     takes a selector that is empty on these sets, so configd logs
+#     "(Remote) : ReadOnly Type (Skipped)" and never reads it. Measured on a C5.
+if [ -f "$APPDTS_FLAG" ] && [ -f "$LLS" ] && ! grep -q " $LLS " /proc/mounts 2>/dev/null; then
+  if sed 's/"edidType":"TrueHD"/"edidType":"TrueHD+dts"/' "$LLS" > "$MYLLS" 2>>$LOG &&
+     grep -q '"edidType":"TrueHD+dts"' "$MYLLS" 2>/dev/null; then
+    if mount -n --bind "$MYLLS" "$LLS" 2>>$LOG; then
+      rm -f "$CONFIGD_DB" 2>>$LOG
+      systemctl restart configd.service >/dev/null 2>>$LOG && w25_log "app-dts: edidType -> TrueHD+dts"
+    fi
+  else
+    # Fail closed and leave no half-written copy: an unmatched sed would bind an
+    # unchanged file and look like configd refusing the override.
+    rm -f "$MYLLS" 2>/dev/null
+    w25_log "app-dts: edidType pattern not found in $LLS -- left stock"
+  fi
+fi
 # --- APPLY 2c) container demuxers with DTS re-enabled (mp4/ts/m2ts DTS -> audio/x-dts).
 #         Patched isomp4/mpegtsdemux default dts_support=TRUE. Bound BEFORE the
 #         regen below so the registry picks them up at their normal path.

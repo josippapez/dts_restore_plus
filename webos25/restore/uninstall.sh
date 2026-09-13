@@ -42,6 +42,14 @@ DMX_ISO=/usr/lib/gstreamer-1.0/libgstisomp4.so
 DMX_TSD=/usr/lib/gstreamer-1.0/libgstmpegtsdemux.so
 REG_TARGET=/mnt/flash/data/gst_1_0_registry.arm.bin
 REG_TMP=/tmp/gst_dts_reg.bin
+# The app-DTS opt-in bind (tv.model.edidType). Both it and configd's cache are
+# rebuilt at boot, so this is belt and braces -- it just avoids leaving the TV
+# claiming DTS on its inputs until the next power cycle.
+# NOTE the /tmp path, not /var/run: /var/run is a symlink to /tmp/var/run, so a
+# bind made here is recorded in /proc/mounts under the RESOLVED path. Writing
+# /var/run/... would make every "is it already mounted" guard miss -- stacking a
+# fresh mount on every run and never unmounting on Disable.
+LLS_LIVE=/tmp/var/run/tvconfig/lls/factorydb.json
 # The pristine stock fingerprints recorded by init_dts25.sh. It lives under
 # $DTS_DEST, which step 3 removes wholesale; removing it explicitly keeps the
 # intent visible and still holds if that directory removal fails.
@@ -76,9 +84,15 @@ fi
 # Rootfs paths only. The same binds propagate into every app jail (27 jail-side
 # copies per library on a real C5); those are left alone deliberately, because
 # detaching a jail's own view of the library would break that jail.
-for T in "$CFG_LIVE" "$GC_LIVE" "$LGLIBAV" "$DMX_ISO" "$DMX_TSD" "$REG_TARGET"; do
+for T in "$CFG_LIVE" "$GC_LIVE" "$LGLIBAV" "$DMX_ISO" "$DMX_TSD" "$REG_TARGET" "$LLS_LIVE"; do
   w25_umount "$T"
 done
+# configd caches the folded-in layer values; drop the cache and let it re-read the
+# now-stock factory file, otherwise edidType keeps reading TrueHD+dts until reboot.
+if ! grep -q " $LLS_LIVE " /proc/mounts 2>/dev/null; then
+  rm -f /var/preferences/configd_db.json 2>>"$LOG"
+  systemctl restart configd.service >/dev/null 2>>"$LOG" && log "app-dts: edidType reverted to stock"
+fi
 rm -f "$REG_TMP" 2>/dev/null
 
 # --- 2b. Regenerate a clean STOCK GStreamer registry -----------------------

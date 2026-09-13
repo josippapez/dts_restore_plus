@@ -330,7 +330,7 @@ var W25_COMPAT_SH = [
   "#      handling, so \"Try anyway\" reported the same refusal as Enable -- the message",
   "#      told the user to opt in and then ignored them. Reported by a G5 owner. Also",
   "#      adds the G5 row, which is now owner-verified on firmware 33.30.97.",
-  "W25_GATE_VERSION=5",
+  "W25_GATE_VERSION=8",
   "FP=/var/lib/webosbrew/dts25/stock.fp",
   "# Where the installed copy of THIS script lives, and the boot hook that symlinks",
   "# to it. Named here, in the shared block, so the read-only probe can fingerprint",
@@ -355,6 +355,17 @@ var W25_COMPAT_SH = [
   "MYCFG=/var/lib/webosbrew/truehd/codec_capability.json",
   "MYGC=/var/lib/webosbrew/truehd/gstcool.conf",
   "MYLIBS=/var/lib/webosbrew/truehd/libs:/var/lib/webosbrew/dts25/libs",
+  "# APP-DTS opt-in: makes apps that gate on the TV's declared capability (Stremio",
+  "# and Kodi both read tv.model.edidType) stop hiding DTS tracks. Off unless the",
+  "# marker exists -- see the APPLY 2d block for why it is separate from Enable.",
+  "APPDTS_FLAG=/var/lib/webosbrew/dts25/appdts.enabled",
+  "# NOTE the /tmp path, not /var/run: /var/run is a symlink to /tmp/var/run, so a",
+  "# bind made here is recorded in /proc/mounts under the RESOLVED path. Writing",
+  "# /var/run/... would make every \"is it already mounted\" guard miss -- stacking a",
+  "# fresh mount on every run and never unmounting on Disable.",
+  "LLS=/tmp/var/run/tvconfig/lls/factorydb.json",
+  "MYLLS=/var/lib/webosbrew/dts25/factorydb.override.json",
+  "CONFIGD_DB=/var/preferences/configd_db.json",
   "w25_log() { [ -n \"${W25_LOG:-}\" ] || return 0; echo \"[dts25-gate $(date '+%Y-%m-%d %H:%M:%S')] $*\" >> \"${W25_LOG:-}\" 2>&1; }",
   "# Unmount ONE bind target, falling back to a LAZY detach when it is busy.",
   "# Measured on a real C5: umount of /usr/lib/gstreamer-1.0/libgstlibav.so fails",
@@ -380,7 +391,7 @@ var W25_COMPAT_SH = [
   "# the warning up.",
   "w25_drop_binds() {",
   "  UNMOUNT_FAILED=",
-  "  for t in \"$CFG\" \"$GC\" \"$LGLIBAV\" \"$LGISO\" \"$LGTSD\" \"$REG\"; do",
+  "  for t in \"$CFG\" \"$GC\" \"$LGLIBAV\" \"$LGISO\" \"$LGTSD\" \"$REG\" \"$LLS\"; do",
   "    w25_umount \"$t\" || UNMOUNT_FAILED=\"${UNMOUNT_FAILED:+$UNMOUNT_FAILED }$t\"",
   "  done",
   "  [ -z \"$UNMOUNT_FAILED\" ] && return 0",
@@ -937,6 +948,36 @@ var W25_INIT_MAIN = [
   "[ -f \"$MYLIBAV\" ] && ! grep -q \" $LGLIBAV \" /proc/mounts 2>/dev/null && mount -n --bind -o ro \"$MYLIBAV\" \"$LGLIBAV\" 2>>$LOG",
   "# --- APPLY 2b) gstcool.conf: give avdec_truehd a high SW rank so LG autoplugs it (not the HW path)",
   "[ -f \"$MYGC\" ] && ! grep -q \" $GC \" /proc/mounts 2>/dev/null && mount -n --bind \"$MYGC\" \"$GC\" 2>>$LOG",
+  "# --- APPLY 2d) OPT-IN: tell apps this TV accepts DTS (tv.model.edidType) -------",
+  "#     Kept OUT of Enable and gated on its own marker file. edidType is not a",
+  "#     passive descriptor: arccontroller builds the EDID SADs the TV advertises",
+  "#     over eARC from it and extinput gates HDMI-input DTS on it, so switching it",
+  "#     changes what a connected AVR is told. That is a bigger claim than \"decode",
+  "#     DTS in our own pipeline\" and needs its own consent.",
+  "#",
+  "#     edidType is factory data, not a rootfs config file: lowlevelstorage writes",
+  "#     it into $LLS (tmpfs) and configd folds that in as the \"Low-Level Storage",
+  "#     Info\" layer. Bind our edited copy over it, then drop configd's cache --",
+  "#     configd only re-parses the layer dirs when the cache is gone. Both are",
+  "#     rebuilt at boot, so this whole step re-runs cleanly every time.",
+  "#",
+  "#     Do NOT try the higher-priority /var/run/tvconfig/remote layer instead: it",
+  "#     takes a selector that is empty on these sets, so configd logs",
+  "#     \"(Remote) : ReadOnly Type (Skipped)\" and never reads it. Measured on a C5.",
+  "if [ -f \"$APPDTS_FLAG\" ] && [ -f \"$LLS\" ] && ! grep -q \" $LLS \" /proc/mounts 2>/dev/null; then",
+  "  if sed 's/\"edidType\":\"TrueHD\"/\"edidType\":\"TrueHD+dts\"/' \"$LLS\" > \"$MYLLS\" 2>>$LOG &&",
+  "     grep -q '\"edidType\":\"TrueHD+dts\"' \"$MYLLS\" 2>/dev/null; then",
+  "    if mount -n --bind \"$MYLLS\" \"$LLS\" 2>>$LOG; then",
+  "      rm -f \"$CONFIGD_DB\" 2>>$LOG",
+  "      systemctl restart configd.service >/dev/null 2>>$LOG && w25_log \"app-dts: edidType -> TrueHD+dts\"",
+  "    fi",
+  "  else",
+  "    # Fail closed and leave no half-written copy: an unmatched sed would bind an",
+  "    # unchanged file and look like configd refusing the override.",
+  "    rm -f \"$MYLLS\" 2>/dev/null",
+  "    w25_log \"app-dts: edidType pattern not found in $LLS -- left stock\"",
+  "  fi",
+  "fi",
   "# --- APPLY 2c) container demuxers with DTS re-enabled (mp4/ts/m2ts DTS -> audio/x-dts).",
   "#         Patched isomp4/mpegtsdemux default dts_support=TRUE. Bound BEFORE the",
   "#         regen below so the registry picks them up at their normal path.",
@@ -2946,7 +2987,11 @@ function w25StatusProbe() {
     // probe so they share one moment; the service does the comparison.
     'echo "STOCKFP_MTIME=$(stat -c %Y ' + W25_STOCK_FP + ' 2>/dev/null || echo 0)"',
     'echo "NOW_EPOCH=$(date +%s)"',
-    'echo "UPTIME_S=$(cut -d. -f1 /proc/uptime)"'
+    'echo "UPTIME_S=$(cut -d. -f1 /proc/uptime)"',
+    // App-DTS opt-in: the marker is the intent, the live edidType is the effect.
+    // Report both so the UI can tell "asked for, not applied yet" from "on".
+    'echo "APPDTS_FLAG=$([ -f ' + W25_APPDTS_FLAG + ' ] && echo 1 || echo 0)"',
+    'echo "EDIDTYPE=$(grep -o \'"edidType"[[:space:]]*:[[:space:]]*"[^"]*"\' /var/preferences/configd_db.json 2>/dev/null | head -n1 | sed \'s/.*:[[:space:]]*"//; s/"$//\')"'
   ].join("\n");
 }
 function cxStatusProbe() {
@@ -3155,6 +3200,11 @@ service.register("status", function (message) {
         // on a real C5 (decode + autoplug), but that only transfers to a TV whose
         // stock plugin fingerprints match the verified-sets table. Saying "yes"
         // on a forced/unverified TV would contradict the verdict beside it.
+        base.appDtsRequested = kv.APPDTS_FLAG === "1";
+        base.edidType = kv.EDIDTYPE || "";
+        // The effect, not the intent: apps read this string, so it is what decides
+        // whether they will offer DTS tracks.
+        base.appDtsActive = (kv.EDIDTYPE || "").toLowerCase().indexOf("dts") !== -1;
         base.verified = c.verdict === "verified";
         message.respond(base);
       });
@@ -3311,6 +3361,82 @@ service.register("testfiles", function (message) {
  * work); when present they must be valid or the whole call is rejected,
  * same as the existing gain check. No registry re-init needed -- applies
  * on the next playback. */
+/* =======================================================================
+ * App-DTS opt-in (tv.model.edidType)
+ * ---------------------------------------------------------------------
+ * Apps that gate on the TV's declared capability -- Stremio and Kodi both
+ * read `tv.model.edidType` -- hide DTS tracks outright when it does not
+ * mention dts. This flips it to "TrueHD+dts" so those tracks are offered.
+ *
+ * Deliberately NOT part of Enable. edidType also feeds the EDID SADs the TV
+ * advertises over eARC (arccontroller) and gates HDMI-input DTS (extinput),
+ * so it changes what a connected AVR is told about this TV. That is a
+ * broader claim than "decode DTS in our own pipeline" and gets its own
+ * consent. The marker file is the whole state: init_dts25.sh re-applies the
+ * bind on every boot when it is present, because /var/run is tmpfs.
+ * ===================================================================== */
+var W25_APPDTS_FLAG = W25_DEST + "/appdts.enabled";
+
+function w25AppDtsSteps(on) {
+  var lines = ["set -u", 'FLAG=' + W25_APPDTS_FLAG];
+  if (on) {
+    lines.push('mkdir -p "$(dirname "$FLAG")" 2>/dev/null');
+    lines.push(': > "$FLAG"');
+    // Re-run the boot script rather than duplicating the mount logic here: it
+    // is the single copy of this mechanism, and running it is also what proves
+    // the marker takes effect without waiting for a reboot.
+    lines.push('[ -x ' + W25_INIT_SCRIPT + ' ] && sh ' + W25_INIT_SCRIPT + ' >/dev/null 2>&1');
+  } else {
+    lines.push('rm -f "$FLAG"');
+    // /var/run is a symlink to /tmp/var/run, so /proc/mounts records the resolved
+    // path; matching on /var/run/... would never find our own bind.
+    lines.push('LLS=/tmp/var/run/tvconfig/lls/factorydb.json');
+    lines.push('if grep -q " $LLS " /proc/mounts 2>/dev/null; then');
+    lines.push('  umount "$LLS" 2>/dev/null || umount -l "$LLS" 2>/dev/null');
+    lines.push('  rm -f /var/preferences/configd_db.json');
+    lines.push('  systemctl restart configd.service >/dev/null 2>&1');
+    lines.push('fi');
+  }
+  lines.push('echo "EDIDTYPE=$(grep -o \'"edidType"[[:space:]]*:[[:space:]]*"[^"]*"\' /var/preferences/configd_db.json 2>/dev/null | head -n1 | sed \'s/.*:[[:space:]]*"//; s/"$//\')"');
+  lines.push('echo OK');
+  lines.push("exit 0");
+  return lines.join("\n");
+}
+
+/* setAppDts: {enabled:boolean}. webOS 25 only -- the C2/G2 payload has no
+ * TrueHD decoder and its own gate is a different mechanism entirely. */
+service.register("setAppDts", function (message) {
+  var want = !!(message.payload && message.payload.enabled);
+  detectProfile().then(function (d) {
+    if (d.profile !== PROFILE_W25) {
+      message.respond({
+        returnValue: false, profile: d.profile, supported: false,
+        errorText: "Showing DTS tracks in apps is only available on the webOS 25 profile (found '" + d.profile + "')."
+      });
+      return;
+    }
+    return rootExec(w25AppDtsSteps(want)).then(function (r) {
+      var kv = parseKv(r.stdout);
+      var now = kv.EDIDTYPE || "";
+      var applied = want ? (now.toLowerCase().indexOf("dts") !== -1)
+                         : (now.toLowerCase().indexOf("dts") === -1);
+      message.respond({
+        returnValue: applied,
+        profile: d.profile,
+        enabled: want,
+        edidType: now,
+        errorText: applied ? undefined
+                           : "The TV did not take the change (edidType is still '" + now + "'). Rebooting restores stock.",
+        summary: applied
+          ? (want ? "Apps will now be offered DTS tracks." : "Back to stock: apps hide DTS tracks again.")
+          : "No change was applied."
+      });
+    });
+  }).catch(function (e) {
+    message.respond({ returnValue: false, errorText: e.errorText || e.message || String(e) });
+  });
+});
+
 service.register("setMakeupGain", function (message) {
   var p = message.payload || {};
   var dts = clampGainDb(p.dts);

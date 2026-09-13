@@ -223,6 +223,29 @@
         </p>
       </section>
 
+      <section class="card" id="cardAppDts" hidden>
+        <h2>Show DTS tracks in apps</h2>
+        <p class="muted">
+          Some apps hide DTS tracks before they ever reach the TV's decoder &mdash;
+          Stremio and Kodi both decide from a capability string this TV reports.
+          Turning this on changes that string so the tracks are offered.
+        </p>
+        <p class="muted note-warn">
+          This also changes what the TV tells a connected receiver it accepts on its
+          own inputs, which is why it is separate from Enable. Turn it off, or reboot,
+          to put it back.
+        </p>
+        <div class="row">
+          <button id="btnAppDtsOn"  class="btn focusable" data-nav disabled>Turn on</button>
+          <button id="btnAppDtsOff" class="btn focusable" data-nav disabled>Turn off</button>
+        </div>
+        <dl class="status">
+          <dt>Tracks shown in apps</dt><dd id="sAppDts">&mdash;</dd>
+          <dt>Reported as</dt><dd id="sEdidType">&mdash;</dd>
+        </dl>
+      </section>
+
+
     </main>
 
     <footer class="footbar muted">

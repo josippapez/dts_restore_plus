@@ -231,6 +231,20 @@
     $("btnPlayM2ts").disabled = !canTsTest;
     // TrueHD is webOS-25 only: the C2/G2 payload ships no TrueHD decoder at all.
     $("btnPlayTrueHd").disabled = !canW25Test;
+
+    // Showing DTS tracks in apps: webOS 25 only, and shown only there so the card
+    // does not advertise a switch the C2/G2 path cannot honour.
+    var appDtsCard = $("cardAppDts");
+    if (appDtsCard) appDtsCard.hidden = !canW25Test;
+    $("btnAppDtsOn").disabled  = !canW25Test || s.appDtsActive === true;
+    $("btnAppDtsOff").disabled = !canW25Test || s.appDtsActive !== true;
+    setVal("sEdidType", s.edidType || "—");
+    // Intent and effect are separate: the marker survives a reboot, the mount does
+    // not, so "asked for but not applied" is a state worth naming rather than
+    // showing a bare "no".
+    setVal("sAppDts",
+      s.appDtsActive ? "yes" : (s.appDtsRequested ? "on, applying at boot…" : "no"),
+      s.appDtsActive ? "ok" : (s.appDtsRequested ? "warn" : null));
     // A/B compare renders through the patched dtsdec, so it needs the same profile.
     $("btnAb").disabled = !canW25Test;
     Array.prototype.slice.call(document.querySelectorAll("[data-gain], [data-preset], [data-center]"))
@@ -421,6 +435,14 @@
         "Uninstall deferred — files kept on purpose; reboot and try again");
       return refreshStatus();
     }).catch(function (e) { toast("Uninstall failed: " + errText(e), "err"); });
+  }
+
+  function doAppDts(on) {
+    toast(on ? "Turning on…" : "Turning off…", "busy");
+    callService("setAppDts", { enabled: on }).then(function (res) {
+      toast(res.summary || (on ? "Turned on" : "Turned off"), res.returnValue ? "ok" : "err");
+      return refreshStatus();
+    }).catch(function (e) { toast("Could not change it: " + errText(e), "err"); });
   }
 
   function doTest() {
@@ -783,6 +805,8 @@
     $("btnPlayTs").addEventListener("click", function () { doPlay("ts"); });
     $("btnPlayM2ts").addEventListener("click", function () { doPlay("m2ts"); });
     $("btnPlayTrueHd").addEventListener("click", function () { doPlay("truehd"); });
+    $("btnAppDtsOn").addEventListener("click", function () { doAppDts(true); });
+    $("btnAppDtsOff").addEventListener("click", function () { doAppDts(false); });
     $("btnSaveGain").addEventListener("click", doSaveGain);
     $("btnAb").addEventListener("click", doAbRender);
     $("btnAbA").addEventListener("click", function () { doAbPlay("a"); });
