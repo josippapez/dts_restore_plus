@@ -83,7 +83,7 @@ EXPECT_GST=1.24
 #      handling, so "Try anyway" reported the same refusal as Enable -- the message
 #      told the user to opt in and then ignored them. Reported by a G5 owner. Also
 #      adds the G5 row, which is now owner-verified on firmware 33.30.97.
-W25_GATE_VERSION=11
+W25_GATE_VERSION=13
 FP=/var/lib/webosbrew/dts25/stock.fp
 # Where the installed copy of THIS script lives, and the boot hook that symlinks
 # to it. Named here, in the shared block, so the read-only probe can fingerprint
@@ -746,8 +746,22 @@ w25_appdts_apply() {
     return 0
   fi
   grep -q " $LLS " /proc/mounts 2>/dev/null && return 0
-  # Rule 2 -- if another copy of this script holds the lock, leave configd alone.
-  mkdir "$APPDTS_LOCK" 2>/dev/null || { w25_log "app-dts: another run holds the lock; skipped"; return 0; }
+  # Rule 2 -- one at a time. mkdir is atomic everywhere here, so it is the lock.
+  # It must be STALE-SAFE: restarting configd kills whatever process tree the
+  # caller is running in (that is what the detached invocation below exists for),
+  # so a run CAN die holding this. A lock whose owner is gone would then block the
+  # feature until the next reboot. Record the pid and take over a dead one.
+  if ! mkdir "$APPDTS_LOCK" 2>/dev/null; then
+    OWNER=$(cat "$APPDTS_LOCK/pid" 2>/dev/null)
+    if [ -n "$OWNER" ] && [ -d "/proc/$OWNER" ]; then
+      w25_log "app-dts: pid $OWNER holds the lock; skipped"
+      return 0
+    fi
+    w25_log "app-dts: took over a stale lock (owner ${OWNER:-unknown} is gone)"
+    rm -rf "$APPDTS_LOCK" 2>/dev/null
+    mkdir "$APPDTS_LOCK" 2>/dev/null || return 0
+  fi
+  echo $$ > "$APPDTS_LOCK/pid" 2>/dev/null
   if sed 's/"edidType":"TrueHD"/"edidType":"TrueHD+dts"/' "$LLS" > "$MYLLS" 2>>$LOG &&
      grep -q '"edidType":"TrueHD+dts"' "$MYLLS" 2>/dev/null; then
     if mount -n --bind "$MYLLS" "$LLS" 2>>$LOG; then
@@ -777,7 +791,10 @@ w25_appdts_apply() {
     rm -f "$MYLLS" 2>/dev/null
     w25_log "app-dts: edidType pattern not found in $LLS -- left stock"
   fi
-  rmdir "$APPDTS_LOCK" 2>/dev/null
+  # rm -rf, NOT rmdir: the lock dir holds a pid file, so rmdir always failed and
+  # every run leaked the lock. The stale-owner takeover above hid it -- the next
+  # run still worked -- which is why it survived a full boot test unnoticed.
+  rm -rf "$APPDTS_LOCK" 2>/dev/null
 }
 w25_appdts_apply
 # --- APPLY 2c) container demuxers with DTS re-enabled (mp4/ts/m2ts DTS -> audio/x-dts).

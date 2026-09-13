@@ -243,7 +243,7 @@
     // not, so "asked for but not applied" is a state worth naming rather than
     // showing a bare "no".
     setVal("sAppDts",
-      s.appDtsActive ? "yes" : (s.appDtsRequested ? "on, applying at boot…" : "no"),
+      s.appDtsActive ? "yes" : (s.appDtsRequested ? "on — restart the TV to apply" : "no"),
       s.appDtsActive ? "ok" : (s.appDtsRequested ? "warn" : null));
     // A/B compare renders through the patched dtsdec, so it needs the same profile.
     $("btnAb").disabled = !canW25Test;
@@ -364,6 +364,7 @@
     return callService("status", {}).then(function (res) {
       renderStatus(res);
       toast("Detected: " + (res.profile || "unknown"), res.supported ? "ok" : "err");
+      return res;   // callers poll on this (see doAppDts)
     }).catch(function (err) {
       toast("Status failed: " + errText(err), "err");
       $("masterState").textContent = "unavailable";
@@ -440,7 +441,7 @@
   function doAppDts(on) {
     toast(on ? "Turning on…" : "Turning off…", "busy");
     callService("setAppDts", { enabled: on }).then(function (res) {
-      toast(res.summary || (on ? "Turned on" : "Turned off"), res.returnValue ? "ok" : "err");
+      toast(res.summary || (on ? "Saved" : "Turned off"), res.returnValue ? "ok" : "err");
       return refreshStatus();
     }).catch(function (e) { toast("Could not change it: " + errText(e), "err"); });
   }

@@ -330,7 +330,7 @@ var W25_COMPAT_SH = [
   "#      handling, so \"Try anyway\" reported the same refusal as Enable -- the message",
   "#      told the user to opt in and then ignored them. Reported by a G5 owner. Also",
   "#      adds the G5 row, which is now owner-verified on firmware 33.30.97.",
-  "W25_GATE_VERSION=11",
+  "W25_GATE_VERSION=13",
   "FP=/var/lib/webosbrew/dts25/stock.fp",
   "# Where the installed copy of THIS script lives, and the boot hook that symlinks",
   "# to it. Named here, in the shared block, so the read-only probe can fingerprint",
@@ -996,8 +996,22 @@ var W25_INIT_MAIN = [
   "    return 0",
   "  fi",
   "  grep -q \" $LLS \" /proc/mounts 2>/dev/null && return 0",
-  "  # Rule 2 -- if another copy of this script holds the lock, leave configd alone.",
-  "  mkdir \"$APPDTS_LOCK\" 2>/dev/null || { w25_log \"app-dts: another run holds the lock; skipped\"; return 0; }",
+  "  # Rule 2 -- one at a time. mkdir is atomic everywhere here, so it is the lock.",
+  "  # It must be STALE-SAFE: restarting configd kills whatever process tree the",
+  "  # caller is running in (that is what the detached invocation below exists for),",
+  "  # so a run CAN die holding this. A lock whose owner is gone would then block the",
+  "  # feature until the next reboot. Record the pid and take over a dead one.",
+  "  if ! mkdir \"$APPDTS_LOCK\" 2>/dev/null; then",
+  "    OWNER=$(cat \"$APPDTS_LOCK/pid\" 2>/dev/null)",
+  "    if [ -n \"$OWNER\" ] && [ -d \"/proc/$OWNER\" ]; then",
+  "      w25_log \"app-dts: pid $OWNER holds the lock; skipped\"",
+  "      return 0",
+  "    fi",
+  "    w25_log \"app-dts: took over a stale lock (owner ${OWNER:-unknown} is gone)\"",
+  "    rm -rf \"$APPDTS_LOCK\" 2>/dev/null",
+  "    mkdir \"$APPDTS_LOCK\" 2>/dev/null || return 0",
+  "  fi",
+  "  echo $$ > \"$APPDTS_LOCK/pid\" 2>/dev/null",
   "  if sed 's/\"edidType\":\"TrueHD\"/\"edidType\":\"TrueHD+dts\"/' \"$LLS\" > \"$MYLLS\" 2>>$LOG &&",
   "     grep -q '\"edidType\":\"TrueHD+dts\"' \"$MYLLS\" 2>/dev/null; then",
   "    if mount -n --bind \"$MYLLS\" \"$LLS\" 2>>$LOG; then",
@@ -1027,7 +1041,10 @@ var W25_INIT_MAIN = [
   "    rm -f \"$MYLLS\" 2>/dev/null",
   "    w25_log \"app-dts: edidType pattern not found in $LLS -- left stock\"",
   "  fi",
-  "  rmdir \"$APPDTS_LOCK\" 2>/dev/null",
+  "  # rm -rf, NOT rmdir: the lock dir holds a pid file, so rmdir always failed and",
+  "  # every run leaked the lock. The stale-owner takeover above hid it -- the next",
+  "  # run still worked -- which is why it survived a full boot test unnoticed.",
+  "  rm -rf \"$APPDTS_LOCK\" 2>/dev/null",
   "}",
   "w25_appdts_apply",
   "# --- APPLY 2c) container demuxers with DTS re-enabled (mp4/ts/m2ts DTS -> audio/x-dts).",
@@ -3443,9 +3460,13 @@ function w25AppDtsSteps(on) {
     lines.push(Buffer.from(w25InitScriptBody(), "utf8").toString("base64"));
     lines.push('B64EOF');
     lines.push('chmod 0755 "' + W25_INIT_SCRIPT + '"');
-    // Then run it: it is the single copy of this mechanism, and running it also
-    // proves the marker takes effect without waiting for a reboot.
-    lines.push('sh ' + W25_INIT_SCRIPT + ' >/dev/null 2>&1');
+    // The app NEVER applies this itself. Applying restarts configd, and doing that
+    // from inside the Homebrew exec bridge killed the script mid-apply every time:
+    // the call never returned and the UI sat on "turning on..." forever. Three
+    // attempts to make it survive (waiting, locking, setsid) all failed on the TV
+    // while passing from an ssh shell, which is not in the bridge's process tree.
+    // The boot hook does it instead, verified end to end across a real reboot, so
+    // all the app has to do is record the intent and say a reboot is needed.
   } else {
     lines.push('rm -f "$FLAG"');
     // /var/run is a symlink to /tmp/var/run, so /proc/mounts records the resolved
@@ -3479,7 +3500,9 @@ service.register("setAppDts", function (message) {
     return rootExec(w25AppDtsSteps(want)).then(function (r) {
       var kv = parseKv(r.stdout);
       var now = kv.EDIDTYPE || "";
-      var applied = want ? (now.toLowerCase().indexOf("dts") !== -1)
+      // Turning ON only records intent; the boot hook applies it. Turning OFF is
+      // immediate, because dropping the bind needs no configd restart to be safe.
+      var applied = want ? true
                          : (now.toLowerCase().indexOf("dts") === -1);
       message.respond({
         returnValue: applied,
@@ -3488,8 +3511,10 @@ service.register("setAppDts", function (message) {
         edidType: now,
         errorText: applied ? undefined
                            : "The TV did not take the change (edidType is still '" + now + "'). Rebooting restores stock.",
+        needsReboot: want,
         summary: applied
-          ? (want ? "Apps will now be offered DTS tracks." : "Back to stock: apps hide DTS tracks again.")
+          ? (want ? "Saved. Restart the TV and apps will be offered DTS tracks."
+                  : "Back to stock: apps hide DTS tracks again.")
           : "No change was applied."
       });
     });

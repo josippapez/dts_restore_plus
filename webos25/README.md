@@ -169,13 +169,27 @@ builds the EDID SADs the TV advertises over eARC from the same value and
 `extinput` gates HDMI-input DTS on it — so it also changes what a connected
 receiver is told this TV accepts on its own inputs.
 
+**Turning it on records the intent and needs a restart to take effect.** The app
+writes the marker file and nothing else. Applying it means restarting configd, and
+doing that from inside the Homebrew exec bridge kills the script mid-apply every
+time: the call never returns and the UI sits on "turning on…" forever. Waiting on
+the restart, locking, and `setsid` were each tried on a real C5 and each failed
+there while passing from an ssh shell, which is not in the bridge's process tree.
+The boot hook does the work instead, which is verified end to end across a reboot.
+Turning it **off** is immediate, because dropping the bind needs no restart.
+
 `edidType` is factory data, not a rootfs config file: `lowlevelstorage` writes it
 into `/tmp/var/run/tvconfig/lls/factorydb.json` (tmpfs) and configd folds that in
 as its "Low-Level Storage Info" layer. The boot hook binds an edited copy over
 that file, drops `/var/preferences/configd_db.json` (configd only re-parses the
 layer dirs when its cache is gone) and restarts configd. Both are rebuilt at
-boot, so **a reboot is a complete revert** and the marker file
-`/var/lib/webosbrew/dts25/appdts.enabled` is what makes the hook re-apply it.
+boot, so **removing the marker plus a reboot is a complete revert**, and the marker
+file `/var/lib/webosbrew/dts25/appdts.enabled` is what makes the hook re-apply it.
+
+A boot-ordered systemd unit would avoid the restart entirely, but there is nowhere
+to put one: `/etc` and `/lib/systemd/system` are read-only squashfs, and the only
+writable unit directory is `/run/systemd/system`, which is tmpfs and gone before
+the next boot reads it.
 
 Two things measured on a real C5 that are easy to get wrong:
 
