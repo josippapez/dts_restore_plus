@@ -5,3 +5,7 @@ LICENSE
 # workflow copies them into webos25/restore/ so the CLI tarball ships them too --
 # that copy is build output, never a second committed source.
 webos25/restore/licenses/
+
+# Locally built release tarballs (the Release action builds its own). Two of these
+# were swept into commits by a careless `git add -A`; never again.
+/dts_restore_plus-restore-*.tar.gz
