@@ -207,6 +207,19 @@ queue. Two other things compound it: configd ignores SIGTERM once it has subscri
 so the stop alone eats the 90s `TimeoutStopUSec`; and `systemctl kill` on its own trips
 `Restart=on-failure`, which cascades the same way.
 
+It also **waits for boot to finish first**. The Homebrew hook runs about 30s in
+while `bootmode-normal-boot-done` only goes active around 45s, so the apply was
+restarting a core service with systemd still bringing the system up. An owner
+reported the remote's Home button dead after every boot with the opt-in on, and it
+survived both the cascading restart and the isolated one, which points at the timing
+rather than at what else gets restarted. The wait is bounded and applies anyway if
+the signal never arrives.
+
+Why a restart at all: configd starts at 2.41s and `/var` mounts at 2.47s, so its
+cache is genuinely unreadable that early (`Cache file is accessible (0)`) and it
+always re-parses the layer dirs. There is no way to have the value in place before
+its first read.
+
 The hook therefore restarts configd **alone**:
 
 ```sh
