@@ -20,19 +20,45 @@ hash_of() { # $1=algo(md5|sha256) $2=file
 }
 
 echo "=== dts_restore_plus TV report ==="
-echo "report_version=1"
+echo "report_version=2"
 
 echo
 echo "--- loader / ABI ---"
+echo "od_present=$(command -v od >/dev/null 2>&1 && echo yes || echo no)"
+# The loader we report must follow the ABI of the GStreamer plugins we bind
+# alongside, NOT whichever loader filename happens to sort first. A G5 on
+# firmware 43.21.73 ships BOTH /lib/ld-linux.so.3 and /lib/ld-linux-aarch64.so.1;
+# glob results are sorted and "-" sorts before ".", so the 64-bit one won and the
+# TV was reported unsupported while its media stack is plain 32-bit ARM
+# (issue #5 -- the owner's plugin reads class=01 machine=2800, same as a C5).
+# So read the plugin's ELF identity first and pick the matching loader.
+GSTSO=$(first_glob "/usr/lib/gstreamer-1.0/libgstcoreelements.so /usr/lib/gstreamer-1.0/libgsttypefindfunctions.so /usr/lib/gstreamer-1.0/*.so" 2>/dev/null)
+echo "eflag_probe_file=${GSTSO:-none}"
+ELF_CLASS=unknown; ELF_MACHINE=unknown; PLUGIN_ARCH=unknown
+if [ -n "${GSTSO:-}" ] && command -v od >/dev/null 2>&1; then
+  ELF_CLASS=$(od -An -t x1 -j 4 -N 1 "$GSTSO" 2>/dev/null | tr -d " \n")
+  ELF_MACHINE=$(od -An -t x1 -j 18 -N 2 "$GSTSO" 2>/dev/null | tr -d " \n")
+  case "${ELF_CLASS}/${ELF_MACHINE}" in
+    01/2800) PLUGIN_ARCH=arm32 ;;
+    02/b700) PLUGIN_ARCH=arm64 ;;
+  esac
+fi
+echo "ELF_CLASS=$ELF_CLASS"
+echo "ELF_MACHINE=$ELF_MACHINE"
+echo "PLUGIN_ARCH=$PLUGIN_ARCH"
+case "$PLUGIN_ARCH" in
+  arm32) LD=$(first_glob "/lib/ld-linux.so.3 /lib/ld-linux-armhf.so.3" 2>/dev/null) ;;
+  arm64) LD=$(first_glob "/lib/ld-linux-aarch64.so.1 /lib64/ld-linux-aarch64.so.1" 2>/dev/null) ;;
+  *)     LD= ;;
+esac
+# Fall back to the old wildcard only when the plugin's ELF identity could not be
+# read at all, so a TV without `od` behaves exactly as it did before.
+[ -n "${LD:-}" ] || LD=$(first_glob "/lib/ld-linux*.so.* /lib/ld-linux-*.so.* /lib/ld-*.so.*" 2>/dev/null)
 LOADER=unknown
-LD=$(first_glob "/lib/ld-linux*.so.* /lib/ld-linux-*.so.* /lib/ld-*.so.*" 2>/dev/null)
 [ -n "${LD:-}" ] && LOADER=$(basename "$LD")
 echo "LOADER=$LOADER"
 echo "LOADER_PATH=${LD:-none}"
-echo "od_present=$(command -v od >/dev/null 2>&1 && echo yes || echo no)"
 EFLAGS=unknown; FLOAT_ABI=unknown
-GSTSO=$(first_glob "/usr/lib/gstreamer-1.0/libgstcoreelements.so /usr/lib/gstreamer-1.0/libgsttypefindfunctions.so /usr/lib/gstreamer-1.0/*.so" 2>/dev/null)
-echo "eflag_probe_file=${GSTSO:-none}"
 if [ -n "${GSTSO:-}" ] && command -v od >/dev/null 2>&1; then
   bytes=$(od -An -t x1 -j 36 -N 4 "$GSTSO" 2>/dev/null | tr -d " \n")
   echo "eflag_bytes=${bytes:-none}"

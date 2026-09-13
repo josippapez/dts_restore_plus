@@ -1436,15 +1436,42 @@ var DETECT_PROBE = [
   'set -u',
   'first_glob() { for f in $1; do [ -e "$f" ] && { printf "%s\\n" "$f"; return 0; }; done; return 1; }',
   '',
-  '# --- PROBE 1a: dynamic loader -> coarse arch + float ABI hint ---',
+  // PROBE 1a: which loader matches the GStreamer plugins we bind alongside.
+  // NOT "whichever loader filename sorts first": a G5 on firmware 43.21.73 ships
+  // BOTH /lib/ld-linux.so.3 and /lib/ld-linux-aarch64.so.1, glob results are
+  // sorted, and "-" sorts before ".", so the 64-bit one won and the TV was told
+  // it was unsupported while its media stack is plain 32-bit ARM (issue #5; the
+  // owner's plugin reads class=01 machine=2800, identical to a verified C5).
+  // The plugin's own ELF identity is the thing that decides payload ABI, so read
+  // that first and pick the loader to match.
+  '# --- PROBE 1a: gstreamer plugin ELF identity -> loader that matches it ---',
+  'GSTSO=$(first_glob "/usr/lib/gstreamer-1.0/libgstcoreelements.so /usr/lib/gstreamer-1.0/libgsttypefindfunctions.so /usr/lib/gstreamer-1.0/*.so" 2>/dev/null)',
+  'ELF_CLASS=unknown; ELF_MACHINE=unknown; PLUGIN_ARCH=unknown',
+  'if [ -n "${GSTSO:-}" ] && command -v od >/dev/null 2>&1; then',
+  '  ELF_CLASS=$(od -An -t x1 -j 4 -N 1 "$GSTSO" 2>/dev/null | tr -d " \\n")',
+  '  ELF_MACHINE=$(od -An -t x1 -j 18 -N 2 "$GSTSO" 2>/dev/null | tr -d " \\n")',
+  '  case "${ELF_CLASS}/${ELF_MACHINE}" in',
+  '    01/2800) PLUGIN_ARCH=arm32 ;;',
+  '    02/b700) PLUGIN_ARCH=arm64 ;;',
+  '  esac',
+  'fi',
+  'echo "ELF_CLASS=$ELF_CLASS"',
+  'echo "ELF_MACHINE=$ELF_MACHINE"',
+  'echo "PLUGIN_ARCH=$PLUGIN_ARCH"',
+  'case "$PLUGIN_ARCH" in',
+  '  arm32) LD=$(first_glob "/lib/ld-linux.so.3 /lib/ld-linux-armhf.so.3" 2>/dev/null) ;;',
+  '  arm64) LD=$(first_glob "/lib/ld-linux-aarch64.so.1 /lib64/ld-linux-aarch64.so.1" 2>/dev/null) ;;',
+  '  *)     LD= ;;',
+  'esac',
+  // Fall back to the old wildcard only when the ELF identity could not be read at
+  // all, so a TV without `od` behaves exactly as it did before this change.
+  '[ -n "${LD:-}" ] || LD=$(first_glob "/lib/ld-linux*.so.* /lib/ld-linux-*.so.* /lib/ld-*.so.*" 2>/dev/null)',
   'LOADER=unknown',
-  'LD=$(first_glob "/lib/ld-linux*.so.* /lib/ld-linux-*.so.* /lib/ld-*.so.*" 2>/dev/null)',
   '[ -n "${LD:-}" ] && LOADER=$(basename "$LD")',
   'echo "LOADER=$LOADER"',
   '',
   '# --- PROBE 1b: ELF e_flags of a real gstreamer .so -> definitive float ABI ---',
   'EFLAGS=unknown; FLOAT_ABI=unknown',
-  'GSTSO=$(first_glob "/usr/lib/gstreamer-1.0/libgstcoreelements.so /usr/lib/gstreamer-1.0/libgsttypefindfunctions.so /usr/lib/gstreamer-1.0/*.so" 2>/dev/null)',
   'if [ -n "${GSTSO:-}" ] && command -v od >/dev/null 2>&1; then',
   '  bytes=$(od -An -t x1 -j 36 -N 4 "$GSTSO" 2>/dev/null | tr -d " \\n")',
   '  if [ -n "$bytes" ] && [ "${#bytes}" -eq 8 ]; then',
@@ -3486,26 +3513,16 @@ function w25AppDtsSteps(on) {
     // all the app has to do is record the intent and say a reboot is needed.
   } else {
     lines.push('rm -f "$FLAG"');
-    // /var/run is a symlink to /tmp/var/run, so /proc/mounts records the resolved
-    // path; matching on /var/run/... would never find our own bind.
+    // Turning OFF must not restart configd either -- that hangs the app exactly
+    // the way turning on did. It does not need to: dropping the bind is instant
+    // and harmless, and configd re-parses the layer dirs from scratch at every
+    // boot (its cache is not accessible that early), so the stock value comes
+    // back on its own at the next restart. Nothing here can wedge anything.
     lines.push('LLS=/tmp/var/run/tvconfig/lls/factorydb.json');
-    lines.push('DB=/var/preferences/configd_db.json');
     lines.push('if grep -q " $LLS " /proc/mounts 2>/dev/null; then');
     lines.push('  umount "$LLS" 2>/dev/null || umount -l "$LLS" 2>/dev/null');
-    // Patch the cache back to whatever the pristine factory file says, rather
-    // than deleting it. Deleting makes configd rebuild everything and republish
-    // the OLED panel keys that share the tv.model blob -- the reported cause of
-    // the panel dimming after screen-off. Read the real stock value from the
-    // now-unmounted file instead of assuming it was "TrueHD".
-    lines.push('  STOCK=$(grep -o \'"edidType":"[^"]*"\' "$LLS" 2>/dev/null | head -n1 | sed \'s/.*:"//; s/"$//\')');
-    lines.push('  if [ -n "$STOCK" ]; then');
-    lines.push('    sed -i "s/\\"edidType\\"\\([[:space:]]*\\):\\([[:space:]]*\\)\\"[^\\"]*\\"/\\"edidType\\"\\1:\\2\\"$STOCK\\"/" "$DB" 2>/dev/null');
-    lines.push('  else');
-    lines.push('    rm -f "$DB"');   // no stock value to copy: full rebuild is the only option left
-    lines.push('  fi');
-    lines.push('  systemctl restart configd.service >/dev/null 2>&1');
-    lines.push('  i=0; while [ "$i" -lt 45 ]; do systemctl is-active configd.service >/dev/null 2>&1 && break; i=$((i+1)); sleep 1; done');
     lines.push('fi');
+    lines.push('rm -f /var/lib/webosbrew/dts25/factorydb.override.json 2>/dev/null');
   }
   lines.push('echo "EDIDTYPE=$(grep -o \'"edidType"[[:space:]]*:[[:space:]]*"[^"]*"\' /var/preferences/configd_db.json 2>/dev/null | head -n1 | sed \'s/.*:[[:space:]]*"//; s/"$//\')"');
   lines.push('echo "HOOKVER=$(sed -n "s/^W25_GATE_VERSION=//p" ' + W25_INIT_SCRIPT + ' 2>/dev/null | head -n1)"');
@@ -3516,6 +3533,24 @@ function w25AppDtsSteps(on) {
 
 /* setAppDts: {enabled:boolean}. webOS 25 only -- the C2/G2 payload has no
  * TrueHD decoder and its own gate is a different mechanism entirely. */
+/* rebootTv: restart the TV. Only useful right after turning the app-DTS opt-in
+ * on, because the boot hook is what applies it (see w25AppDtsSteps). Deliberately
+ * a separate call with its own button rather than something Turn on does by
+ * itself: the TV may be mid-playback, and rebooting it unasked is not a decision
+ * this app gets to make.
+ *
+ * Detached on purpose. The reboot tears down the exec bridge this call came in
+ * on, so waiting for it to "finish" would just look like another hang. */
+service.register("rebootTv", function (message) {
+  rootExec('setsid sh -c "sleep 1; systemctl reboot" >/dev/null 2>&1 &\necho OK\nexit 0')
+    .then(function () {
+      message.respond({ returnValue: true, summary: "Restarting the TV…" });
+    })
+    .catch(function (e) {
+      message.respond({ returnValue: false, errorText: e.errorText || e.message || String(e) });
+    });
+});
+
 service.register("setAppDts", function (message) {
   var want = !!(message.payload && message.payload.enabled);
   detectProfile().then(function (d) {
@@ -3529,10 +3564,11 @@ service.register("setAppDts", function (message) {
     return rootExec(w25AppDtsSteps(want)).then(function (r) {
       var kv = parseKv(r.stdout);
       var now = kv.EDIDTYPE || "";
-      // Turning ON only records intent; the boot hook applies it. Turning OFF is
-      // immediate, because dropping the bind needs no configd restart to be safe.
-      var applied = want ? true
-                         : (now.toLowerCase().indexOf("dts") === -1);
+      // Neither direction changes the RUNNING value any more -- both only change
+      // what the next boot will do. Reading edidType back here would therefore
+      // report failure on a perfectly good "turn off", so the write itself is the
+      // success condition and the reboot is what makes it visible.
+      var applied = true;
       message.respond({
         returnValue: applied,
         profile: d.profile,
@@ -3540,11 +3576,10 @@ service.register("setAppDts", function (message) {
         edidType: now,
         errorText: applied ? undefined
                            : "The TV did not take the change (edidType is still '" + now + "'). Rebooting restores stock.",
-        needsReboot: want,
-        summary: applied
-          ? (want ? "Saved. Restart the TV and apps will be offered DTS tracks."
-                  : "Back to stock: apps hide DTS tracks again.")
-          : "No change was applied."
+        needsReboot: true,
+        summary: want
+          ? "Saved. Restart the TV and apps will be offered DTS tracks."
+          : "Saved. Restart the TV to go back to stock."
       });
     });
   }).catch(function (e) {

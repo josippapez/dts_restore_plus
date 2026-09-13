@@ -37,6 +37,11 @@ check "C2 profiles kept from override" 'case "$PROFILE" in webos22-o22-gst118|we
 check "native-dts override guard" 'if [ "$HAS_DTS_AUDIODEC" = "yes" ] && [ "$C2_KEEP" = 0 ]; then'
 check "native-dts gated split" 'if [ "$DCA_RANK" = "0" ]; then PROFILE=native-dts-gated'
 check "GST_MM derivation" 'GST_MM=$(printf "%s" "$GST_VERSION" | cut -d. -f1-2)'
+# The loader must be chosen from the plugin's own ELF identity, not from which
+# loader filename sorts first -- a TV carrying BOTH loaders (issue #5) picked the
+# 64-bit one and was reported unsupported while its media stack was 32-bit ARM.
+check "plugin ELF class/machine -> arch" '01/2800) PLUGIN_ARCH=arm32 ;;'
+check "loader chosen from plugin arch" 'arm32) LD=$(first_glob "/lib/ld-linux.so.3 /lib/ld-linux-armhf.so.3" 2>/dev/null) ;;'
 
 if [ "$fails" -ne 0 ]; then
   echo "FAILED: $fails gate line(s) out of sync between service.js and report-tv.sh"

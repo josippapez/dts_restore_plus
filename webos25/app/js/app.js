@@ -238,6 +238,15 @@
     if (appDtsCard) appDtsCard.hidden = !canW25Test;
     $("btnAppDtsOn").disabled  = !canW25Test || s.appDtsActive === true;
     $("btnAppDtsOff").disabled = !canW25Test || s.appDtsActive !== true;
+    // Only offer the restart while it would actually do something: asked for but
+    // not yet applied. Hidden the rest of the time so the card does not invite a
+    // pointless reboot.
+    // A restart is pending in either direction now, because neither Turn on nor
+    // Turn off changes the running value: asked for but not applied yet, or
+    // turned off while the old value is still live.
+    var pending = canW25Test && (s.appDtsRequested === true) !== (s.appDtsActive === true);
+    $("btnAppDtsReboot").hidden   = !pending;
+    $("btnAppDtsReboot").disabled = !pending;
     setVal("sEdidType", s.edidType || "—");
     // Intent and effect are separate: the marker survives a reboot, the mount does
     // not, so "asked for but not applied" is a state worth naming rather than
@@ -444,6 +453,18 @@
       toast(res.summary || (on ? "Saved" : "Turned off"), res.returnValue ? "ok" : "err");
       return refreshStatus();
     }).catch(function (e) { toast("Could not change it: " + errText(e), "err"); });
+  }
+
+  function doAppDtsReboot() {
+    // No second confirmation dialog: the button only appears when a restart is
+    // the remaining step, its label says exactly what it does, and it sits behind
+    // a deliberate Turn on.
+    toast("Restarting the TV…", "busy");
+    $("btnAppDtsReboot").disabled = true;
+    callService("rebootTv", {}).catch(function (e) {
+      toast("Could not restart: " + errText(e), "err");
+      $("btnAppDtsReboot").disabled = false;
+    });
   }
 
   function doTest() {
@@ -808,6 +829,7 @@
     $("btnPlayTrueHd").addEventListener("click", function () { doPlay("truehd"); });
     $("btnAppDtsOn").addEventListener("click", function () { doAppDts(true); });
     $("btnAppDtsOff").addEventListener("click", function () { doAppDts(false); });
+    $("btnAppDtsReboot").addEventListener("click", doAppDtsReboot);
     $("btnSaveGain").addEventListener("click", doSaveGain);
     $("btnAb").addEventListener("click", doAbRender);
     $("btnAbA").addEventListener("click", function () { doAbPlay("a"); });
