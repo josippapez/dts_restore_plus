@@ -275,6 +275,17 @@ on-device and reports a measured number, not an impression.
 - **DTS only.** The bundled samples are DTS, so this exercises the DTS decoder
   path; it says so on the card and does not imply TrueHD coverage.
 
+### Show DTS tracks in apps (separate opt-in, webOS 25 only)
+
+Some apps hide DTS tracks before they reach the decoder: Stremio and Kodi both decide
+from `tv.model.edidType`, a configd value that reads `TrueHD` on a C5. The card flips it
+to `TrueHD+dts`. Turn on / Turn off only record intent (a marker file) and never touch
+configd, so they cannot hang; the boot hook applies it at the next restart with a
+dependency-free configd restart (`--job-mode=ignore-dependencies` + SIGKILL, ~1s,
+nothing else restarted), and a **Restart TV now** button appears while that is the
+remaining step. Kept out of Enable because the same value feeds the TV's eARC EDID.
+Full mechanism, measurements and dead ends: `../README.md` § "Show DTS tracks in apps".
+
 ### `webos22-o22-gst118` — exact-firmware legacy override (EXPERIMENTAL; NOT HARDWARE VERIFIED)
 
 This is an **app-only tester profile** in version 2.6.0. It does not change the

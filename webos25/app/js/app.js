@@ -251,9 +251,13 @@
     // Intent and effect are separate: the marker survives a reboot, the mount does
     // not, so "asked for but not applied" is a state worth naming rather than
     // showing a bare "no".
-    setVal("sAppDts",
-      s.appDtsActive ? "yes" : (s.appDtsRequested ? "on — restart the TV to apply" : "no"),
-      s.appDtsActive ? "ok" : (s.appDtsRequested ? "warn" : null));
+    // Four states, because intent (marker) and effect (live value) move on
+    // different clocks: the effect only changes at boot.
+    var appDtsText = s.appDtsActive
+      ? (s.appDtsRequested ? "yes" : "on until restart")
+      : (s.appDtsRequested ? "on — restart the TV to apply" : "no");
+    setVal("sAppDts", appDtsText,
+      s.appDtsActive && s.appDtsRequested ? "ok" : (pending ? "warn" : null));
     // A/B compare renders through the patched dtsdec, so it needs the same profile.
     $("btnAb").disabled = !canW25Test;
     Array.prototype.slice.call(document.querySelectorAll("[data-gain], [data-preset], [data-center]"))

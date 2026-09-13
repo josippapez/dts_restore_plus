@@ -169,14 +169,13 @@ builds the EDID SADs the TV advertises over eARC from the same value and
 `extinput` gates HDMI-input DTS on it — so it also changes what a connected
 receiver is told this TV accepts on its own inputs.
 
-**Turning it on records the intent and needs a restart to take effect.** The app
-writes the marker file and nothing else. Applying it means restarting configd, and
-doing that from inside the Homebrew exec bridge kills the script mid-apply every
-time: the call never returns and the UI sits on "turning on…" forever. Waiting on
-the restart, locking, and `setsid` were each tried on a real C5 and each failed
-there while passing from an ssh shell, which is not in the bridge's process tree.
-The boot hook does the work instead, which is verified end to end across a reboot.
-Turning it **off** is immediate, because dropping the bind needs no restart.
+**Both directions record intent and take effect at the next restart.** Turn on
+writes the marker file (and refreshes the installed boot script); Turn off removes
+the marker and drops the bind. Neither touches configd, so neither can hang the app:
+with the old `systemctl restart` the apply blocked for ~90s (see below), longer than
+the Homebrew exec bridge waits, and the UI sat on "turning on…" forever. The boot
+hook does the actual apply, verified end to end across a reboot. A **Restart TV
+now** button appears whenever a restart is the remaining step in either direction.
 
 `edidType` is factory data, not a rootfs config file: `lowlevelstorage` writes it
 into `/tmp/var/run/tvconfig/lls/factorydb.json` (tmpfs) and configd folds that in
@@ -186,15 +185,17 @@ that file, changes the one `edidType` string inside
 boot, so **removing the marker plus a reboot is a complete revert**, and the marker
 file `/var/lib/webosbrew/dts25/appdts.enabled` is what makes the hook re-apply it.
 
-**Deleting that cache instead of patching it is what caused an owner-reported
-panel dimming after screen-off.** A missing cache makes configd rebuild its whole
-configuration from the layer dirs and republish every value, and the OLED panel
-settings share the `tv.model` blob with `edidType` (`defaultStdBacklight`,
+**Patch that cache, never delete it.** A missing cache makes configd rebuild its
+whole configuration from the layer dirs and republish every value, and the OLED
+panel settings share the `tv.model` blob with `edidType` (`defaultStdBacklight`,
 `digitalEye`, `eyeCurveDerivation`, `eyeSensorLEDGain`, `oledCPC`,
 `supportOledOffRsQuickStart`). Measured on a C5: with the cache present a configd
 restart logs **zero** `parseFiles` lines, so patching the single string changes one
-key and leaves every other value byte-identical. Turning it off copies the pristine
-value back out of the factory file the same way.
+key and leaves every other value byte-identical. (An owner reported the panel
+dimming after screen-off while the cache was still being deleted; that has not been
+re-tested since, so it is a suspect, not a confirmed cause.) Uninstall copies the
+pristine value back out of the factory file the same way; Turn off just removes the
+marker and lets the next boot re-read the stock file.
 
 **Applying it restarts configd, and how that restart is done is the whole story.**
 Ten units `Requires=configd.service`, among them `pqcontroller` (picture),
