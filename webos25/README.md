@@ -181,10 +181,20 @@ Turning it **off** is immediate, because dropping the bind needs no restart.
 `edidType` is factory data, not a rootfs config file: `lowlevelstorage` writes it
 into `/tmp/var/run/tvconfig/lls/factorydb.json` (tmpfs) and configd folds that in
 as its "Low-Level Storage Info" layer. The boot hook binds an edited copy over
-that file, drops `/var/preferences/configd_db.json` (configd only re-parses the
-layer dirs when its cache is gone) and restarts configd. Both are rebuilt at
+that file, changes the one `edidType` string inside
+`/var/preferences/configd_db.json` and restarts configd. Both are rebuilt at
 boot, so **removing the marker plus a reboot is a complete revert**, and the marker
 file `/var/lib/webosbrew/dts25/appdts.enabled` is what makes the hook re-apply it.
+
+**Deleting that cache instead of patching it is what caused an owner-reported
+panel dimming after screen-off.** A missing cache makes configd rebuild its whole
+configuration from the layer dirs and republish every value, and the OLED panel
+settings share the `tv.model` blob with `edidType` (`defaultStdBacklight`,
+`digitalEye`, `eyeCurveDerivation`, `eyeSensorLEDGain`, `oledCPC`,
+`supportOledOffRsQuickStart`). Measured on a C5: with the cache present a configd
+restart logs **zero** `parseFiles` lines, so patching the single string changes one
+key and leaves every other value byte-identical. Turning it off copies the pristine
+value back out of the factory file the same way.
 
 A boot-ordered systemd unit would avoid the restart entirely, but there is nowhere
 to put one: `/etc` and `/lib/systemd/system` are read-only squashfs, and the only

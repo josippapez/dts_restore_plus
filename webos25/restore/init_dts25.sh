@@ -83,7 +83,7 @@ EXPECT_GST=1.24
 #      handling, so "Try anyway" reported the same refusal as Enable -- the message
 #      told the user to opt in and then ignored them. Reported by a G5 owner. Also
 #      adds the G5 row, which is now owner-verified on firmware 33.30.97.
-W25_GATE_VERSION=13
+W25_GATE_VERSION=14
 FP=/var/lib/webosbrew/dts25/stock.fp
 # Where the installed copy of THIS script lives, and the boot hook that symlinks
 # to it. Named here, in the shared block, so the read-only probe can fingerprint
@@ -765,24 +765,41 @@ w25_appdts_apply() {
   if sed 's/"edidType":"TrueHD"/"edidType":"TrueHD+dts"/' "$LLS" > "$MYLLS" 2>>$LOG &&
      grep -q '"edidType":"TrueHD+dts"' "$MYLLS" 2>/dev/null; then
     if mount -n --bind "$MYLLS" "$LLS" 2>>$LOG; then
-      rm -f "$CONFIGD_DB" 2>>$LOG
-      systemctl restart configd.service >/dev/null 2>>$LOG
-      # WAIT for configd to rewrite its cache before returning. Without this the
-      # caller races a half-started configd, and the next caller's restart is the
-      # one that wedges it. Bounded so a genuinely broken configd cannot hang boot.
-      i=0
-      while [ "$i" -lt 45 ]; do
-        [ "$(stat -c%s "$CONFIGD_DB" 2>/dev/null || echo 0)" -gt 1000 ] && break
-        i=$((i + 1)); sleep 1
-      done
-      if [ "$i" -ge 45 ]; then
-        # Leave no override behind if configd did not come back: stock is the only
-        # safe state to hand to whatever runs next.
-        w25_log "app-dts: configd did not rewrite its cache in ${i}s -- reverting"
-        umount "$LLS" 2>/dev/null || umount -l "$LLS" 2>/dev/null
+      # PATCH the cache, do NOT delete it. Deleting it makes configd rebuild its
+      # whole configuration from the layer dirs and republish every value -- and
+      # the OLED panel settings live in the same tv.model blob as edidType
+      # (defaultStdBacklight, digitalEye, eyeCurveDerivation, eyeSensorLEDGain,
+      # oledCPC, supportOledOffRsQuickStart). An owner reported the panel dimming
+      # after screen-off and staying dim until reboot, which is what that rebuild
+      # touches. Measured on a C5: with the cache present a restart logs ZERO
+      # parseFiles lines, so patching the one string changes exactly one key and
+      # leaves every other value byte-identical. It is also the fragile window
+      # that wedged configd, so this removes that too.
+      #
+      # The bind above still matters: it is what the NEXT boot reads before this
+      # runs, and it keeps the file and the cache telling the same story.
+      if sed -i 's/"edidType"\([[:space:]]*\):\([[:space:]]*\)"TrueHD"/"edidType"\1:\2"TrueHD+dts"/' "$CONFIGD_DB" 2>>$LOG &&
+         grep -q '"edidType"[[:space:]]*:[[:space:]]*"[^"]*dts' "$CONFIGD_DB" 2>/dev/null; then
         systemctl restart configd.service >/dev/null 2>>$LOG
+        # configd loads the cache rather than re-parsing, so this is quick. Still
+        # bounded, and still fails closed: a configd that does not come back gets
+        # the override taken away rather than left half-applied.
+        i=0
+        while [ "$i" -lt 45 ]; do
+          systemctl is-active configd.service >/dev/null 2>&1 && break
+          i=$((i + 1)); sleep 1
+        done
+        if [ "$i" -ge 45 ]; then
+          w25_log "app-dts: configd did not come back in ${i}s -- reverting"
+          umount "$LLS" 2>/dev/null || umount -l "$LLS" 2>/dev/null
+          rm -f "$CONFIGD_DB" 2>>$LOG
+          systemctl restart configd.service >/dev/null 2>>$LOG
+        else
+          w25_log "app-dts: edidType -> TrueHD+dts (cache patched, no layer re-parse)"
+        fi
       else
-        w25_log "app-dts: edidType -> TrueHD+dts (configd back in ${i}s)"
+        w25_log "app-dts: could not patch $CONFIGD_DB -- left stock"
+        umount "$LLS" 2>/dev/null || umount -l "$LLS" 2>/dev/null
       fi
     fi
   else

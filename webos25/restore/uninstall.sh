@@ -90,8 +90,18 @@ done
 # configd caches the folded-in layer values; drop the cache and let it re-read the
 # now-stock factory file, otherwise edidType keeps reading TrueHD+dts until reboot.
 if ! grep -q " $LLS_LIVE " /proc/mounts 2>/dev/null; then
-  rm -f /var/preferences/configd_db.json 2>>"$LOG"
-  systemctl restart configd.service >/dev/null 2>>"$LOG" && log "app-dts: edidType reverted to stock"
+  # Patch the cached value back rather than deleting the cache. Deleting makes
+  # configd rebuild its whole configuration and republish the OLED panel keys that
+  # share the tv.model blob with edidType -- the reported cause of the panel
+  # dimming after screen-off. Copy the pristine value out of the (now unmounted)
+  # factory file instead of assuming what it was.
+  STOCK=$(grep -o '"edidType":"[^"]*"' "$LLS_LIVE" 2>/dev/null | head -n1 | sed 's/.*:"//; s/"$//')
+  if [ -n "$STOCK" ]; then
+    sed -i "s/\"edidType\"\([[:space:]]*\):\([[:space:]]*\)\"[^\"]*\"/\"edidType\"\1:\2\"$STOCK\"/" /var/preferences/configd_db.json 2>>"$LOG"
+  else
+    rm -f /var/preferences/configd_db.json 2>>"$LOG"
+  fi
+  systemctl restart configd.service >/dev/null 2>>"$LOG" && log "app-dts: edidType reverted to ${STOCK:-stock}"
 fi
 rm -f "$REG_TMP" 2>/dev/null
 
