@@ -1424,6 +1424,56 @@ function rootExec(command) {
   });
 }
 
+/**
+ * Call any luna service from this service and resolve with its raw payload.
+ * Never rejects on a refusal -- a denied ACG comes back as a normal payload with
+ * returnValue false, and callers here treat that as "not available" rather than
+ * an error, because every use of this has a working fallback.
+ */
+function lunaCall(uri, payload) {
+  return new Promise(function (resolve) {
+    var done = false;
+    var t = setTimeout(function () {
+      if (!done) { done = true; resolve({ returnValue: false, errorText: "timed out" }); }
+    }, 8000);
+    try {
+      service.call(uri, payload || {}, function (msg) {
+        if (done) return;
+        done = true; clearTimeout(t);
+        resolve((msg && msg.payload) ? msg.payload : { returnValue: false });
+      });
+    } catch (e) {
+      if (!done) { done = true; clearTimeout(t); resolve({ returnValue: false, errorText: String(e) }); }
+    }
+  });
+}
+
+/**
+ * Set tv.model.edidType through configd's own setConfigs, which changes the live
+ * value with NO service restart -- the restart is what drops the picture settings
+ * to defaults for ~45s, because it republishes the OLED panel keys that share the
+ * tv.model blob. setConfigs sits in the `configd.internal` permission group, so it
+ * may simply be refused; every caller falls back to the marker + reboot path.
+ *
+ * Resolves true only when the new value is READ BACK, never on the call's own
+ * returnValue: a service that accepts a write it then ignores would otherwise
+ * look like success.
+ */
+function w25SetEdidTypeLive(value) {
+  return lunaCall("luna://com.webos.service.config/setConfigs",
+                  { configs: { "tv.model.edidType": value } })
+    .then(function (res) {
+      if (!res || res.returnValue === false) return false;
+      return lunaCall("luna://com.webos.service.config/getConfigs",
+                      { configNames: ["tv.model.edidType"] })
+        .then(function (r) {
+          var got = r && r.configs && r.configs["tv.model.edidType"];
+          return got === value;
+        });
+    })
+    .catch(function () { return false; });
+}
+
 /* =======================================================================
  * Detection probe (embeds webos25/detect-target.sh logic, read-only)
  * ---------------------------------------------------------------------
@@ -3489,6 +3539,10 @@ service.register("testfiles", function (message) {
  * bind on every boot when it is present, because /var/run is tmpfs.
  * ===================================================================== */
 var W25_APPDTS_FLAG = W25_DEST + "/appdts.enabled";
+// The two values this toggle moves between. Kept as constants so the live
+// setConfigs path and the shell that edits the factory file cannot drift.
+var W25_EDID_DTS   = "TrueHD+dts";
+var W25_EDID_STOCK = "TrueHD";
 
 function w25AppDtsSteps(on) {
   var lines = ["set -u", 'FLAG=' + W25_APPDTS_FLAG];
@@ -3563,23 +3617,34 @@ service.register("setAppDts", function (message) {
     }
     return rootExec(w25AppDtsSteps(want)).then(function (r) {
       var kv = parseKv(r.stdout);
-      var now = kv.EDIDTYPE || "";
-      // Neither direction changes the RUNNING value any more -- both only change
-      // what the next boot will do. Reading edidType back here would therefore
-      // report failure on a perfectly good "turn off", so the write itself is the
-      // success condition and the reboot is what makes it visible.
-      var applied = true;
-      message.respond({
-        returnValue: applied,
-        profile: d.profile,
-        enabled: want,
-        edidType: now,
-        errorText: applied ? undefined
-                           : "The TV did not take the change (edidType is still '" + now + "'). Rebooting restores stock.",
-        needsReboot: true,
-        summary: want
-          ? "Saved. Restart the TV and apps will be offered DTS tracks."
-          : "Saved. Restart the TV to go back to stock."
+      var stock = kv.EDIDTYPE || "";
+      // The shell above only records intent -- marker on/off and the bind -- so
+      // the running value has not changed yet. Now try to change it live through
+      // configd's own setConfigs, which needs no restart and therefore does not
+      // disturb the picture settings. If configd refuses (it is behind the
+      // configd.internal group) this falls back to the reboot, which is exactly
+      // the behaviour before this path existed.
+      var target = want ? W25_EDID_DTS : (stock && stock.indexOf("dts") === -1 ? stock : W25_EDID_STOCK);
+      return w25SetEdidTypeLive(target).then(function (live) {
+        // Record which path actually worked. Whether configd grants setConfigs to
+        // a homebrew service is the one fact that decides whether this feature can
+        // ever avoid the boot-time restart, and it is only observable here.
+        logActionResult("app-dts", d.profile, live ? "live" : "needs-reboot",
+                        "want=" + (want ? "on" : "off") + "\ntarget=" + target +
+                        "\nsetConfigs=" + (live ? "accepted" : "refused or ignored"));
+        message.respond({
+          returnValue: true,
+          profile: d.profile,
+          enabled: want,
+          edidType: live ? target : stock,
+          appliedLive: live,
+          needsReboot: !live,
+          summary: live
+            ? (want ? "Apps will now be offered DTS tracks."
+                    : "Back to stock: apps hide DTS tracks again.")
+            : (want ? "Saved. Restart the TV and apps will be offered DTS tracks."
+                    : "Saved. Restart the TV to go back to stock.")
+        });
       });
     });
   }).catch(function (e) {
