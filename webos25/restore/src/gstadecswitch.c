@@ -303,10 +303,12 @@ gst_adecswitch_wait_hw_teardown (GstAdecSwitch * self, gint64 grace_us,
 
 /* Upstream events on the src ghost pad. A SEEK is what produces the FLUSH-START
  * that killed the DSP, so it waits until the decproxy teardown it would race
- * has completed plus the grace period. Everything else — including the
- * CUSTOM_UPSTREAM `acquired-resource`, `set-dts-seamless` and `set-dual-mono`
- * events that decproxy handles in gst_decproxy_src_event()
- * (gstdecproxy2.c:1317-1412) — is forwarded unchanged by the ghost pad. */
+ * has completed plus the grace period. `acquired-resource` is additionally
+ * cached here, because uMS sends it once per pipeline and a decproxy plugged
+ * after it passed would otherwise never get one. Everything else — including
+ * the CUSTOM_UPSTREAM `set-dts-seamless` and `set-dual-mono` events that
+ * decproxy handles in gst_decproxy_src_event() (gstdecproxy2.c:1317-1412) — is
+ * forwarded unchanged. Nothing is consumed: the probe always returns OK. */
 static GstPadProbeReturn
 gst_adecswitch_src_event_probe (GstPad * pad, GstPadProbeInfo * info,
     gpointer user_data)
@@ -454,9 +456,10 @@ gst_adecswitch_sink_event_probe (GstPad * pad, GstPadProbeInfo * info,
         GST_WARNING_OBJECT (self, "%s did not handle acquired-resource",
             GST_OBJECT_NAME (decoder));
     } else {
-      GST_WARNING_OBJECT (self,
-          "no acquired-resource seen yet; %s may stay a puppet",
-          GST_OBJECT_NAME (decoder));
+      /* Normal at start-up when the first track is Dolby: the grant has not
+       * travelled yet and reaches this decproxy by itself moments later. */
+      GST_INFO_OBJECT (self, "no acquired-resource cached yet; %s will get the"
+          " grant directly when uMS sends it", GST_OBJECT_NAME (decoder));
     }
   }
 
