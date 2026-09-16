@@ -195,13 +195,22 @@ builds the EDID SADs the TV advertises over eARC from the same value and
 `extinput` gates HDMI-input DTS on it — so it also changes what a connected
 receiver is told this TV accepts on its own inputs.
 
-**Both directions record intent and take effect at the next restart.** Turn on
+**Both directions try to apply immediately, and fall back to a restart.** Turn on
 writes the marker file (and refreshes the installed boot script); Turn off removes
-the marker and drops the bind. Neither touches configd, so neither can hang the app:
-with the old `systemctl restart` the apply blocked for ~90s (see below), longer than
-the Homebrew exec bridge waits, and the UI sat on "turning on…" forever. The boot
-hook does the actual apply, verified end to end across a reboot. A **Restart TV
-now** button appears whenever a restart is the remaining step in either direction.
+the marker and drops the bind. The app then tries configd's own `setConfigs`, which
+needs no restart at all; that is refused for a homebrew service, so it next runs the
+installed boot script with `W25_APPDTS_NOW=on|off`, which applies or reverts the one
+`edidType` string and restarts configd alone. Measured on a C5: **1s in each
+direction**, with `pqcontroller`, `videooutputd`, `umediaserver` and `surface-manager`
+all untouched. `audiooutputd` does restart, so expect a brief audio interruption.
+
+That invocation is **detached** (`setsid`) and the app learns the outcome by polling
+`configd_db.json`, never by waiting for the call to return: restarting configd kills
+the Homebrew exec bridge's process tree, which is what made three earlier attempts
+hang the UI on "turning on…" forever. It is also gated on the installed hook being
+version 19 or newer, so a TV still carrying an older hook goes straight to the
+restart rather than running an old script with an argument it does not understand.
+A **Restart TV now** button appears only when both live paths fail.
 
 `edidType` is factory data, not a rootfs config file: `lowlevelstorage` writes it
 into `/tmp/var/run/tvconfig/lls/factorydb.json` (tmpfs) and configd folds that in
