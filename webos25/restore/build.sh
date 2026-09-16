@@ -38,6 +38,15 @@ docker run --rm -i --platform linux/arm64 \
   debian:12-slim /bin/bash -euo pipefail -s <<'CONTAINER_EOF'
     export DEBIAN_FRONTEND=noninteractive
 
+    # Single suite for both architectures. bookworm-security carries an arm64
+    # libpcre2-8-0 10.42-1+deb12u1 that armel never got, and Multi-Arch: same
+    # packages must match version for version, so with the security suite
+    # enabled `libgstreamer1.0-dev:armel` is unsatisfiable: libglib2.0-0:armel,
+    # libpcre2-dev:armel, libpcre2-posix3:armel and libselinux1:armel all report
+    # "libpcre2-8-0:armel ... not going to be installed".
+    rm -f /etc/apt/sources.list.d/debian.sources
+    printf 'deb http://deb.debian.org/debian bookworm main\n' > /etc/apt/sources.list
+
     # Enable the armel (32-bit soft-float ARM) foreign architecture.
     dpkg --add-architecture armel
     apt-get update -qq >/dev/null 2>&1
