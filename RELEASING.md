@@ -14,6 +14,7 @@ The single source of truth for the shipped binaries is:
 gst/                          four LG GStreamer 1.14.4 legacy plugins (CX/C2 app payload)
 webos25/restore/out/         libgstdtsdec.so, libdca.so.0        (DTS decoder)
 webos25/restore/truehd-out/  libgstlibav.so + libav*/libsw*      (TrueHD/MLP)
+webos25/restore/switch-out/  libgstadecswitch.so                 (track A stream-switch bin)
 webos25/restore/demux-out/   libgstisomp4.so, libgstmpegtsdemux.so (mp4/ts/m2ts DTS)
 ```
 
@@ -27,8 +28,8 @@ Never edit a generated `payload/**` binary.
 
 - `webos25/restore/src/gstdtsdec.c` (the DTS patch)
 - the `dts_support` demuxer patch or its version, in `webos25/restore/build-demux.sh`
-- `webos25/restore/build.sh`, `build-truehd.sh`, `build-demux.sh` (toolchain,
-  flags, pinned sources, ABI)
+- `webos25/restore/build.sh`, `build-truehd.sh`, `build-demux.sh`, `build-switch.sh`
+  (toolchain, flags, pinned sources, ABI)
 
 Editing `install.sh` / `init_dts25.sh` / the app JS/HTML does **not** require a
 rebuild — but still cut a new release so the tarball/`.ipk` carry the change.
@@ -149,6 +150,7 @@ straight disc copy.
 cd webos25/app
 # populate payloads from committed source-of-truth binaries (generated files are ignored)
 cp -f  ../restore/out/libgstdtsdec.so ../restore/out/libdca.so.0        payload/webos25/
+cp -f  ../restore/switch-out/libgstadecswitch.so                        payload/webos25/
 cp -Pf ../restore/truehd-out/libgstlibav.so ../restore/truehd-out/libav*.so* \
        ../restore/truehd-out/libsw*.so*                                 payload/webos25-truehd/
 cp -f  ../restore/demux-out/libgstisomp4.so ../restore/demux-out/libgstmpegtsdemux.so \

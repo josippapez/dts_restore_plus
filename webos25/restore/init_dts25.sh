@@ -83,7 +83,15 @@ EXPECT_GST=1.24
 #      handling, so "Try anyway" reported the same refusal as Enable -- the message
 #      told the user to opt in and then ignored them. Reported by a G5 owner. Also
 #      adds the G5 row, which is now owner-verified on firmware 33.30.97.
-W25_GATE_VERSION=17
+#   5  adds adecswitch (GstBin, compiled rank 320) to the CORE payload: it fronts
+#      Dolby (AC-3/E-AC-3) caps ahead of decproxy (rank 300) so a decodebin3 stream
+#      switch on the same bin does not tear down and rebuild the HW decoder mid-
+#      switch, while still handing Dolby off to decproxy for the actual decode.
+#      Required like dtsdec/libav (w25_core_staged/w25_loader_ok) and added to the
+#      post-bind registry proof (w25_reg_has_all), which now checks SIX elements.
+#      A `[sw_decoder] adecswitch=320` line in the generated gstcool.conf remains a
+#      config-level kill switch (rank 0 reverts to stock decodebin3 behaviour).
+W25_GATE_VERSION=18
 FP=/var/lib/webosbrew/dts25/stock.fp
 # Where the installed copy of THIS script lives, and the boot hook that symlinks
 # to it. Named here, in the shared block, so the read-only probe can fingerprint
@@ -96,10 +104,16 @@ GC=/etc/gst/gstcool.conf
 LGLIBAV=/usr/lib/gstreamer-1.0/libgstlibav.so
 LGISO=/usr/lib/gstreamer-1.0/libgstisomp4.so
 LGTSD=/usr/lib/gstreamer-1.0/libgstmpegtsdemux.so
-# CORE payload -- without either of these there is no DTS and no TrueHD, so a
-# missing one means "do not bind anything".
+# CORE payload -- without any of these there is no DTS, no TrueHD, and no
+# switching bin, so a missing one means "do not bind anything".
 MYDTS=/var/lib/webosbrew/dts25/libgstdtsdec.so
 MYLIBAV=/var/lib/webosbrew/truehd/libgstlibav.so
+# adecswitch (track A): a GstBin (compiled rank 320) fronting Dolby/TrueHD/DTS
+# caps so decodebin3 keeps one bin across a same-family stream switch instead of
+# tearing the HW decoder down mid-switch, while still handing Dolby off to
+# decproxy (rank 300) for the actual decode. Staged alongside dtsdec -- the
+# plugin path at APPLY 3 below already includes /var/lib/webosbrew/dts25.
+MYSWITCH=/var/lib/webosbrew/dts25/libgstadecswitch.so
 # OPTIONAL payload: the patched container demuxers. Absent, DTS still works in
 # MKV -- which is exactly how this shipped before the gate existed -- so each is
 # bound only when staged and is never a reason to refuse or to delete anything.
@@ -424,7 +438,7 @@ w25_loader() {
 # Only the CORE objects are required. The optional demuxers are checked when they
 # are staged and skipped when they are not, so a core-only install is a first
 # class configuration rather than a failure.
-w25_core_staged() { [ -f "$MYDTS" ] && [ -f "$MYLIBAV" ]; }
+w25_core_staged() { [ -f "$MYDTS" ] && [ -f "$MYLIBAV" ] && [ -f "$MYSWITCH" ]; }
 w25_loader_ok() {
   LOADER_MISS=
   LOADER_STAGED=1
@@ -432,10 +446,10 @@ w25_loader_ok() {
   if [ -z "${LD_SO:-}" ]; then LOADER_MISS="no dynamic loader found on this TV"; return 1; fi
   if ! w25_core_staged; then
     LOADER_STAGED=0
-    LOADER_MISS="the core payload is not staged ($MYDTS / $MYLIBAV)"
+    LOADER_MISS="the core payload is not staged ($MYDTS / $MYLIBAV / $MYSWITCH)"
     return 1
   fi
-  for so in "$MYDTS" "$MYLIBAV" "$MYISO" "$MYTSD"; do
+  for so in "$MYDTS" "$MYLIBAV" "$MYSWITCH" "$MYISO" "$MYTSD"; do
     [ -f "$so" ] || continue
     n=$(LD_LIBRARY_PATH="$MYLIBS" LD_TRACE_LOADED_OBJECTS=1 "$LD_SO" "$so" 2>&1 | grep -c "not found")
     if [ "$n" != 0 ]; then LOADER_MISS="$so has $n unresolved dependencies on this TV"; return 1; fi
@@ -449,14 +463,15 @@ w25_loader_ok() {
 # missing underneath it.
 w25_reg_is_ours() { [ -f "$REG" ] && grep -q "/var/lib/webosbrew" "$REG" 2>/dev/null; }
 # Gate layer 2b -- post-bind pipeline proof. The regenerated registry must carry
-# ALL FIVE elements the DTS/TrueHD path needs: our two decoders AND the three
-# demuxers we shadow (all three are present in the media registry today).
+# ALL SIX elements the DTS/TrueHD/switch path needs: our three decoders (dtsdec,
+# avdec_truehd, adecswitch) AND the three demuxers we shadow (all three are
+# present in the media registry today).
 # A missing demuxer means our override produced a plugin the registry cannot
 # use, i.e. a broken mp4/ts/mkv pipeline -- so the caller refuses the commit and
 # drops the binds, which turns "the override didn't match" into a plain no-op.
 w25_reg_has_all() {
   REG_MISS=
-  for e in dtsdec avdec_truehd qtdemux tsdemux matroskademux; do
+  for e in dtsdec avdec_truehd adecswitch qtdemux tsdemux matroskademux; do
     GST_REGISTRY_1_0="$1" GST_REGISTRY_UPDATE=no GST_REGISTRY_FORK=no /usr/bin/gst-inspect-1.0 "$e" >/dev/null 2>&1 || { REG_MISS=$e; return 1; }
   done
   return 0
@@ -644,7 +659,7 @@ fi
 # 2026-07-23). Only the demuxers are optional; missing those is a normal
 # MKV-only install, not a fault.
 if ! w25_core_staged; then
-  w25_log "REFUSED: core payload incomplete (dtsdec present=$([ -f "$MYDTS" ] && echo 1 || echo 0), libav present=$([ -f "$MYLIBAV" ] && echo 1 || echo 0)); binding nothing, install left intact"
+  w25_log "REFUSED: core payload incomplete (dtsdec present=$([ -f "$MYDTS" ] && echo 1 || echo 0), libav present=$([ -f "$MYLIBAV" ] && echo 1 || echo 0), adecswitch present=$([ -f "$MYSWITCH" ] && echo 1 || echo 0)); binding nothing, install left intact"
   w25_stand_down
   toast "DTS Enabler: the installed files are incomplete, so nothing was applied. Re-open DTS Enabler (or re-run install.sh) to repair."
   echo "REFUSED=payload"
@@ -875,11 +890,11 @@ GST_REGISTRY_1_0="$REG_TMP" \
 GST_PLUGIN_PATH_1_0=/usr/lib/gstreamer-1.0:/mnt/lg/res/lglib/gstreamer-1.0:/var/lib/webosbrew/dts25 \
 GST_REGISTRY_FORK=no GST_REGISTRY_UPDATE=yes timeout 30 /usr/bin/gst-inspect-1.0 >/dev/null 2>>$LOG
 # --- GATE 2b) post-bind pipeline proof, then commit: overwrite the media
-#         registry only if the regen survived the binds with all five elements
+#         registry only if the regen survived the binds with all six elements
 #         intact. Otherwise drop our own binds -- that is what turns "the
 #         override did not match" from a broken media pipeline into a no-op.
 if w25_reg_has_all "$REG_TMP"; then
-  cp -f "$REG_TMP" "$REG" 2>>$LOG && echo "registry updated (dtsdec+avdec_truehd+qtdemux+tsdemux+matroskademux)" >>$LOG
+  cp -f "$REG_TMP" "$REG" 2>>$LOG && echo "registry updated (dtsdec+avdec_truehd+adecswitch+qtdemux+tsdemux+matroskademux)" >>$LOG
   echo "APPLIED=$VERDICT"
 else
   w25_log "REFUSED: regen is missing $REG_MISS; not committing it, and standing down"

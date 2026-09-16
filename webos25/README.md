@@ -147,10 +147,25 @@ verbatim and symlinked from `/var/lib/webosbrew/init.d/restore_dts25`):
    autoplugs the **SW** decoder instead of its HW path. Applied by bind-mounting
    an edited copy.
 
+4b. **`adecswitch` (same-family stream-switch bin)** — `libgstadecswitch.so`
+   (compiled rank 320) is staged in `/var/lib/webosbrew/dts25/` alongside
+   `dtsdec`, and `adecswitch=320` is added to the same `[sw_decoder]` section of
+   `gstcool.conf`. It fronts Dolby (AC-3/E-AC-3), TrueHD/MLP and DTS caps ahead
+   of `decproxy` (rank 300) so `decodebin3` keeps one bin across a same-family
+   stream switch instead of tearing the hardware decoder down mid-switch, while
+   still handing Dolby off to `decproxy` for the actual decode. Because uMS sends
+   the `acquired-resource` grant only once per pipeline, and stock `decodebin3`
+   used to earn a re-grant by removing and recreating the decoder, the bin caches
+   that event and replays it into every `decproxy` it plugs later; without the
+   replay a Dolby decoder created after a track switch stays a `fakeadec` puppet,
+   emits nothing and stalls the pipeline. The rank line is also a config-level
+   kill switch: setting it to `0` reverts to stock `decodebin3` behaviour without
+   touching the boot script.
+
 5. **Registry** — the media GStreamer registry is regenerated (with
    `LD_LIBRARY_PATH=/var/lib/webosbrew/truehd/libs` and a plugin path that
-   includes `/var/lib/webosbrew/dts25`) so it contains `dtsdec` and
-   `avdec_truehd` alongside the container demuxers, then written to
+   includes `/var/lib/webosbrew/dts25`) so it contains `dtsdec`, `avdec_truehd`
+   and `adecswitch` alongside the container demuxers, then written to
    `/mnt/flash/data/gst_1_0_registry.arm.bin`. See "Compatibility gate,
    reversibility, and self-heal" below for exactly what gates that write.
 
@@ -298,9 +313,9 @@ acceptable direction — it costs our codec and harms nothing else — and the r
 passes, because it checks that `matroskademux` registers, not what caps it emits.
 
 **Registry commit gate.** After binding, the regenerated registry is only copied over
-`/mnt/flash/data/gst_1_0_registry.arm.bin` if `dtsdec`, `avdec_truehd`, `qtdemux`,
-`tsdemux`, **and** `matroskademux` all survive the scan; if any is missing, the binds are
-dropped instead and the TV is left on its stock registry.
+`/mnt/flash/data/gst_1_0_registry.arm.bin` if `dtsdec`, `avdec_truehd`, `adecswitch`,
+`qtdemux`, `tsdemux`, **and** `matroskademux` all survive the scan; if any is missing, the
+binds are dropped instead and the TV is left on its stock registry.
 
 **Self-heal on removal.** Removing the payload (app or CLI) while still enabled no longer
 leaves a dangling override: at the next boot, finding neither the app's install directory

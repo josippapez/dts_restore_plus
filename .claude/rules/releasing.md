@@ -11,9 +11,10 @@ it does **not** rebuild from source. Two obligations follow:
    re-commit the `.so` in the SAME change. Binary-affecting files:
    - `webos25/restore/src/gstdtsdec.c`
    - the `dts_support` patch / pinned sources / flags in `webos25/restore/build-demux.sh`
-   - `webos25/restore/build.sh`, `build-truehd.sh`, `build-demux.sh`
+   - `webos25/restore/build.sh`, `build-truehd.sh`, `build-demux.sh`, `build-switch.sh`
 
-   The committed binaries live in `webos25/restore/{out,truehd-out,demux-out}`.
+   The committed binaries live in
+   `webos25/restore/{out,truehd-out,demux-out,switch-out}`.
    The app's `webos25/app/payload/**` `.so` are git-ignored and copied from
    `webos25/restore/**` at package time — never edit them there.
 

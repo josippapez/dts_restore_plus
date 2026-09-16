@@ -120,6 +120,10 @@ major/minor and the three plugin MD5 values. The extracted G5 therefore matches 
 C5 row and would currently be reported as `verified` with the C5 label, despite no
 G5 hardware test having occurred.
 
+As of gate version 18, the C5 row's post-bind registry proof also requires
+`adecswitch` (track A's same-family stream-switch bin, compiled rank 320, ahead of
+`decproxy`'s rank 300) — see `../README.md`. Other rows are unchanged until verified.
+
 That is a valid **binary-set match**, but it is not a valid **hardware-verification
 claim**. These concepts should be represented separately.
 

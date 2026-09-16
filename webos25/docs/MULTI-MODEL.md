@@ -97,7 +97,9 @@ Provenance of the evidence used here:
 ### 2.2 webOS 25 / C5 baseline — `webos25-armel-gst124`
 
 This subsection records the original DTS-only build recipe. The current shipping profile also
-contains the separately built TrueHD/libav and MP4/TS demuxer payloads described in `../README.md`.
+contains the separately built TrueHD/libav and MP4/TS demuxer payloads described in `../README.md`,
+plus `libgstadecswitch.so` (track A, compiled rank 320) — the C5 verified set now also requires
+this element in the post-bind registry proof; other rows/profiles are unchanged until verified.
 
 - **Build what:** a **single patched `dtsdec`** plugin (`libgstdtsdec.so`) from **gst-plugins-bad
   1.22** source (ABI-stable against the TV's 1.24 loader — verified on-device), with the sink caps

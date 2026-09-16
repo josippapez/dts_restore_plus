@@ -96,18 +96,23 @@ not supported — `qtdemux` has no TrueHD codepath)**.
 
 - **Enable:** re-detect, then run the same **compatibility gate** the CLI boot hook
   runs (see below) — refuse unless the TV's stock plugins match a verified set, or
-  the caller opted into `force`. If the gate passes, stage three payloads — DTS
-  (`libgstdtsdec.so` + `libdca.so.0` → `/var/lib/webosbrew/dts25/`), TrueHD
-  (`libgstlibav.so` + ffmpeg libs → `/var/lib/webosbrew/truehd/`), and the container
-  demuxers (patched `libgstisomp4.so` + `libgstmpegtsdemux.so`, `dts_support` default
-  TRUE plus the BD TrueHD stream-type case un-`#if-0`d → `/var/lib/webosbrew/demux25/`).
+  the caller opted into `force`. If the gate passes, stage the payloads — DTS
+  (`libgstdtsdec.so` + `libdca.so.0` → `/var/lib/webosbrew/dts25/`), the same-family
+  stream-switch bin (`libgstadecswitch.so`, compiled rank 320, also →
+  `/var/lib/webosbrew/dts25/` — see `../README.md`), TrueHD (`libgstlibav.so` +
+  ffmpeg libs → `/var/lib/webosbrew/truehd/`), and the container demuxers (patched
+  `libgstisomp4.so` + `libgstmpegtsdemux.so`, `dts_support` default TRUE plus the BD
+  TrueHD stream-type case un-`#if-0`d → `/var/lib/webosbrew/demux25/`).
   Generate the two `/etc` overrides
-  (codec-capability TRUEHD/MLP; gstcool `avdec_truehd/mlp=310`). Write the
-  canonical `init_dts25.sh`, which bind-mounts our libav, the demuxers, and the
-  overrides, then regenerates the media GStreamer registry and — only if `dtsdec`,
-  `avdec_truehd`, `qtdemux`, `tsdemux`, **and** `matroskademux` all survive the scan
-  — writes it to `/mnt/flash/data/gst_1_0_registry.arm.bin`. Symlink the boot hook,
-  apply now, restart `starfish-media-pipeline`.
+  (codec-capability TRUEHD/MLP; gstcool `avdec_truehd/mlp=310`, `adecswitch=320`).
+  Write the canonical `init_dts25.sh`, which bind-mounts our libav, the demuxers, and
+  the overrides, then regenerates the media GStreamer registry and — only if `dtsdec`,
+  `avdec_truehd`, `adecswitch`, `qtdemux`, `tsdemux`, **and** `matroskademux` all
+  survive the scan — writes it to `/mnt/flash/data/gst_1_0_registry.arm.bin`. Symlink
+  the boot hook, apply now, restart `starfish-media-pipeline`. `libgstadecswitch.so`
+  is CORE-required exactly like `libgstdtsdec.so`/`libgstlibav.so` as of gate version
+  18; an app-driven Enable stages it the same as the CLI `restore/install.sh` does,
+  and the payload-drift check (below) covers it too.
 - **Disable:** remove the boot hook, drop every bind (libav, demuxers, both `/etc`
   overrides — with a lazy-detach (`umount -l`) fallback if a target is busy, e.g. the
   live C5's `WebAppMgr` holding `libgstlibav.so` mapped), then regenerate a clean
@@ -454,7 +459,7 @@ webos25/app/
 │   ├── services.json         # Luna service + method registration
 │   └── service.js            # detect + per-profile mechanism builders + exec
 ├── payload/
-│   ├── webos25/              # <- drop libgstdtsdec.so + libdca.so.0 (see README)
+│   ├── webos25/              # <- drop libgstdtsdec.so + libdca.so.0 + libgstadecswitch.so (see README)
 │   │   ├── .gitkeep
 │   │   └── README
 │   └── cx/                   # <- shared immutable CX/C2 legacy .so set
@@ -475,6 +480,7 @@ want to support.
 ```sh
 # 1. Populate the payloads (see payload/*/README for provenance)
 cp ../restore/out/libgstdtsdec.so ../restore/out/libdca.so.0   payload/webos25/
+cp ../restore/switch-out/libgstadecswitch.so                   payload/webos25/
 cp ../restore/truehd-out/libgstlibav.so ../restore/truehd-out/libav*.so* \
    ../restore/truehd-out/libsw*.so*                            payload/webos25-truehd/
 cp ../restore/demux-out/libgstisomp4.so ../restore/demux-out/libgstmpegtsdemux.so \

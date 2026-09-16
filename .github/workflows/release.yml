@@ -59,6 +59,7 @@ jobs:
           cd webos25/restore
           for f in out/libgstdtsdec.so out/libdca.so.0 \
                    truehd-out/libgstlibav.so \
+                   switch-out/libgstadecswitch.so \
                    demux-out/libgstisomp4.so demux-out/libgstmpegtsdemux.so; do
             [ -f "$f" ] || { echo "MISSING committed binary: $f"; exit 1; }
           done
@@ -113,6 +114,7 @@ jobs:
         run: |
           cd webos25/app
           cp -f  ../restore/out/libgstdtsdec.so ../restore/out/libdca.so.0        payload/webos25/
+          cp -f  ../restore/switch-out/libgstadecswitch.so                        payload/webos25/
           cp -Pf ../restore/truehd-out/libgstlibav.so                             payload/webos25-truehd/
           cp -Pf ../restore/truehd-out/libav*.so* ../restore/truehd-out/libsw*.so* payload/webos25-truehd/
           cp -f  ../restore/demux-out/libgstisomp4.so ../restore/demux-out/libgstmpegtsdemux.so payload/webos25-demux/
