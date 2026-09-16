@@ -32,6 +32,12 @@ struct _GstAdecSwitch
   GstElement *decoder;
   const gchar *decoder_factory; /* static string, or NULL when none yet */
 
+  /* The decproxy we switched away from, kept alive and unlinked instead of
+   * being taken to NULL. Taking one to NULL takes over a second on the C5 and
+   * kills the audio DSP if a flush lands inside that window, so it only
+   * happens when the bin itself leaves PAUSED. Reused when Dolby comes back. */
+  GstElement *parked_hw;
+
   /* Hardware (decproxy) teardown bookkeeping, read by the seek-deferral path
    * on the event thread and written by the async teardown thread. */
   GMutex lock;

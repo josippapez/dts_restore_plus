@@ -348,7 +348,7 @@ gst_adecswitch_sink_event_probe (GstPad * pad, GstPadProbeInfo * info,
   GstEvent *event = GST_PAD_PROBE_INFO_EVENT (info);
   GstElement *old_decoder, *decoder;
   const gchar *factory_name;
-  gboolean is_hw;
+  gboolean is_hw, reused = FALSE;
   GstCaps *caps = NULL;
   GstPad *target;
 
@@ -375,6 +375,21 @@ gst_adecswitch_sink_event_probe (GstPad * pad, GstPadProbeInfo * info,
       self->decoder_factory ? self->decoder_factory : "(none)", factory_name,
       caps);
 
+  if (is_hw && self->parked_hw != NULL) {
+    /* Reuse the decproxy we parked on the way out: its DSP decoder is already
+     * built and still holds the grant, so nothing has to be created or
+     * replayed and no NULL transition ever happened. */
+    decoder = self->parked_hw;
+    self->parked_hw = NULL;
+    reused = TRUE;
+    gst_element_set_locked_state (decoder, FALSE);
+    GST_INFO_OBJECT (self, "reusing parked %s", GST_OBJECT_NAME (decoder));
+    goto have_decoder;
+  }
+
+  /* Held across the creation only: decproxy builds its own inner-decoder list
+   * from the registry and would otherwise pick us (gstdecproxy2.c:1413-1481).
+   * Released when the decproxy is finally destroyed, parked or not. */
   if (is_hw)
     gst_adecswitch_rank_hold (self);
 
@@ -404,19 +419,12 @@ gst_adecswitch_sink_event_probe (GstPad * pad, GstPadProbeInfo * info,
             gst_structure_new ("changing-decoder", "caps", GST_TYPE_CAPS, caps,
                 NULL)));
 
-  if (old_decoder != NULL) {
-    /* Count the teardown before anything is detached, so a SEEK arriving
-     * during the swap already waits instead of slipping past. */
-    if (gst_adecswitch_is_decproxy (old_decoder)) {
-      g_mutex_lock (&self->lock);
-      self->hw_teardown_pending++;
-      g_mutex_unlock (&self->lock);
-    }
+  if (old_decoder != NULL)
     gst_element_set_locked_state (old_decoder, TRUE);
-  }
 
   gst_bin_add (GST_BIN_CAST (self), decoder);
 
+have_decoder:
   /* Retargeting unlinks the old decoder and links the new one. gst_pad_link()
    * calls schedule_events() (gstreamer/gst/gstpad.c:2574), which marks the
    * ghost pad's sticky events unreceived; the CAPS event we are letting
@@ -442,7 +450,7 @@ gst_adecswitch_sink_event_probe (GstPad * pad, GstPadProbeInfo * info,
   /* Replay the cached grant, otherwise this decproxy keeps its fakeadec puppet,
    * produces no buffers and stalls the whole pipeline. Observed on the C5:
    * switching TrueHD -> Dolby a second time froze video and killed audio. */
-  if (is_hw) {
+  if (is_hw && !reused) {
     GstEvent *resource;
 
     g_mutex_lock (&self->lock);
@@ -463,10 +471,20 @@ gst_adecswitch_sink_event_probe (GstPad * pad, GstPadProbeInfo * info,
     }
   }
 
-  if (old_decoder != NULL)
-    gst_element_call_async (GST_ELEMENT_CAST (self),
-        gst_adecswitch_teardown_decoder, gst_object_ref (old_decoder),
-        (GDestroyNotify) gst_object_unref);
+  if (old_decoder != NULL) {
+    if (gst_adecswitch_is_decproxy (old_decoder)) {
+      /* Park it: unlinked and locked, but still PLAYING and still owning its
+       * DSP decoder, so the flush that would have raced its destruction just
+       * finds a live decoder. Destroyed when the bin leaves PAUSED. */
+      self->parked_hw = old_decoder;
+      GST_INFO_OBJECT (self, "parking %s instead of tearing it down",
+          GST_OBJECT_NAME (old_decoder));
+    } else {
+      gst_element_call_async (GST_ELEMENT_CAST (self),
+          gst_adecswitch_teardown_decoder, gst_object_ref (old_decoder),
+          (GDestroyNotify) gst_object_unref);
+    }
+  }
 
   return GST_PAD_PROBE_OK;
 }
@@ -476,15 +494,25 @@ gst_adecswitch_change_state (GstElement * element, GstStateChange transition)
 {
   GstAdecSwitch *self = GST_ADECSWITCH (element);
 
-  /* Let a pending async teardown finish before we leave PAUSED, so the
-   * decproxy has released the DSP before this bin stops. This is not a race
-   * with GstBin: gst_element_call_async() holds a ref on us
+  /* Leaving PAUSED is the one moment a decproxy can safely be taken to NULL:
+   * playback is over, so nothing is going to flush. Let any software teardown
+   * finish first — gst_element_call_async() holds a ref on us
    * (gstelement.c:3871-3875), GstBin only drops children in gst_bin_dispose,
    * and the old decoder is locked-state so gst_bin_element_set_state() skips
-   * it (gstbin.c:2489-2501). Nothing downstream can be seeking here, so only
-   * the pending teardown matters, not the grace period. */
-  if (transition == GST_STATE_CHANGE_PAUSED_TO_READY)
+   * it (gstbin.c:2489-2501). */
+  if (transition == GST_STATE_CHANGE_PAUSED_TO_READY) {
     gst_adecswitch_wait_hw_teardown (self, 0, 2 * G_TIME_SPAN_SECOND);
+
+    if (self->parked_hw != NULL) {
+      GstElement *parked = self->parked_hw;
+
+      self->parked_hw = NULL;
+      GST_INFO_OBJECT (self, "destroying parked %s", GST_OBJECT_NAME (parked));
+      gst_element_set_state (parked, GST_STATE_NULL);
+      gst_bin_remove (GST_BIN_CAST (self), parked);
+      gst_adecswitch_rank_release (self);
+    }
+  }
 
   return GST_ELEMENT_CLASS (gst_adecswitch_parent_class)->change_state (element,
       transition);
@@ -550,8 +578,10 @@ gst_adecswitch_dispose (GObject * object)
    * factory demoted to GST_RANK_NONE for the rest of the process, and
    * decodebin3 builds its factory list with minrank GST_RANK_MARGINAL
    * (gstdecodebin3.c:2879-2881), so we would never be plugged again. */
-  if (self->decoder != NULL && gst_adecswitch_is_decproxy (self->decoder))
+  if ((self->decoder != NULL && gst_adecswitch_is_decproxy (self->decoder))
+      || self->parked_hw != NULL)
     gst_adecswitch_rank_release (self);
+  self->parked_hw = NULL;
   self->decoder = NULL;
   self->decoder_factory = NULL;
   gst_event_replace (&self->resource_event, NULL);
@@ -574,9 +604,9 @@ gst_adecswitch_class_init (GstAdecSwitchClass * klass)
 
   g_object_class_install_property (gobject_class, PROP_HW_TEARDOWN_GRACE_MS,
       g_param_spec_uint ("hw-teardown-grace-ms", "HW teardown grace (ms)",
-          "How long after an inner decproxy reaches NULL an upstream SEEK is held "
-          "back, so its flush cannot reach a half-torn-down audio DSP. The total hold "
-          "is capped at 500 ms.",
+          "How far a decproxy teardown is kept from any flush, and how long after "
+          "one an upstream SEEK is held back, so a flush cannot reach a "
+          "half-torn-down audio DSP. Each hold is capped at 500 ms.",
           0, 500, DEFAULT_HW_TEARDOWN_GRACE_MS,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 

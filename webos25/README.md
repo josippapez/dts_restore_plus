@@ -158,9 +158,20 @@ verbatim and symlinked from `/var/lib/webosbrew/init.d/restore_dts25`):
    used to earn a re-grant by removing and recreating the decoder, the bin caches
    that event and replays it into every `decproxy` it plugs later; without the
    replay a Dolby decoder created after a track switch stays a `fakeadec` puppet,
-   emits nothing and stalls the pipeline. The rank line is also a config-level
-   kill switch: setting it to `0` reverts to stock `decodebin3` behaviour without
-   touching the boot script.
+   emits nothing and stalls the pipeline.
+
+   **A `decproxy` is never taken to NULL while playback is running.** Switching
+   away from Dolby parks it instead: unlinked and locked, but still alive and
+   still owning its DSP decoder, and the next switch back reuses it. Taking one
+   to NULL takes over a second on a C5, and any flush landing inside that window
+   kills audio DSP0 in `eform_flush()` — which a seek does, and so does the video
+   sink, which forces a pipeline flush whenever the video codec changes while
+   PAUSED. Parking removes that operation from playback entirely rather than
+   trying to time it; the parked decoder is released when the bin leaves PAUSED.
+   A live `decproxy` absorbs a flush without complaint.
+
+   The rank line is also a config-level kill switch: setting it to `0` reverts to
+   stock `decodebin3` behaviour without touching the boot script.
 
 5. **Registry** — the media GStreamer registry is regenerated (with
    `LD_LIBRARY_PATH=/var/lib/webosbrew/truehd/libs` and a plugin path that
