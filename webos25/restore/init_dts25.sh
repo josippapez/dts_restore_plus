@@ -91,7 +91,7 @@ EXPECT_GST=1.24
 #      post-bind registry proof (w25_reg_has_all), which now checks SIX elements.
 #      A `[sw_decoder] adecswitch=320` line in the generated gstcool.conf remains a
 #      config-level kill switch (rank 0 reverts to stock decodebin3 behaviour).
-W25_GATE_VERSION=21
+W25_GATE_VERSION=22
 FP=/var/lib/webosbrew/dts25/stock.fp
 # Where the installed copy of THIS script lives, and the boot hook that symlinks
 # to it. Named here, in the shared block, so the read-only probe can fingerprint
@@ -764,8 +764,14 @@ esac
 # up. `input 0x1` is main audio; the completion lines are 3410 for a connect and
 # 3644 for a disconnect. "input 0x1 port" cannot match "input 0x10 port" -- the
 # trailing space is what separates them.
+#
+# Read the persisted kernel log, not dmesg: the ring buffer had already scrolled
+# past the boot-time connects by the time this runs (measured on a C5: dmesg
+# started at 15s, the connects were earlier), which would show a still-held port
+# as free -- the exact misread this guards against. /var/log/legacy-log carries
+# the same lines from 3s. dmesg is the fallback if it is not there.
 w25_appdts_audio_idle() {
-  dmesg 2>/dev/null | awk '
+  { cat /var/log/legacy-log 2>/dev/null || dmesg 2>/dev/null; } | awk '
     /alsasndout/ && /input 0x1 port/ {
       if ($0 ~ /sndout_connect[ ]+3410:/) st = 1
       else if ($0 ~ /sndout_disconnect[ ]+3644:/) st = 0
