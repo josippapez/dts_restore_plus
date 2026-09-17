@@ -20,8 +20,7 @@ function loadService() {
     "c2Config: c2Config, c2InitScriptBody: c2InitScriptBody," +
     "c2Enable: c2Enable, c2Disable: c2Disable, c2StatusProbe: c2StatusProbe," +
     "c2StatusBindsComplete: c2StatusBindsComplete, c2SelfTest: c2SelfTest," +
-    "DETECT_PROBE: DETECT_PROBE, w25AppDtsSteps: w25AppDtsSteps," +
-    "constants: {C2: PROFILE_C2," +
+    "DETECT_PROBE: DETECT_PROBE, constants: {C2: PROFILE_C2," +
     "sets: C2_EXPECTED_SETS, matchSet: c2MatchSet," +
     "libav: C2_EXPECTED_SETS[0].libav, iso: C2_EXPECTED_SETS[0].iso, mkv: C2_EXPECTED_SETS[0].mkv}};";
   var FakeService = function () { this.register = function () {}; };
@@ -611,22 +610,5 @@ test("the C2 self-test handler maps every case its shell can emit", function () 
     assert.ok(mapped[k],
       "the C2 self-test shell emits '" + k + "=' but the handler's file map does not " +
       "list it, so that result is silently discarded (this is the 2.7.14 bug)");
-  });
-});
-
-/* webOS 25 app-DTS toggle. The EDIDTYPE read-back is now authored once
- * (W25_EDIDTYPE_ECHO) and used by both the intent-recording shell here and the
- * poll in w25AppDtsApplyNow, so a break in that one string would silently stop
- * BOTH sides reading the value -- and the UI would report the toggle failed
- * while the TV had actually applied it. */
-test("the webOS 25 app-DTS toggle shell stays valid and still reads edidType back", function () {
-  [true, false].forEach(function (on) {
-    var shell = service.w25AppDtsSteps(on);
-    ok(spawnSync("sh", ["-n"], {input: shell, encoding: "utf8"}),
-       "generated app-DTS shell syntax (on=" + on + ")");
-    assert.match(shell, /echo "EDIDTYPE=\$\(grep -o/,
-      "the app-DTS shell (on=" + on + ") must still emit EDIDTYPE= for parseKv");
-    assert.match(shell, /configd_db\.json/,
-      "the EDIDTYPE read-back (on=" + on + ") must still point at configd's cache");
   });
 });

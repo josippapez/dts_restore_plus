@@ -195,22 +195,46 @@ builds the EDID SADs the TV advertises over eARC from the same value and
 `extinput` gates HDMI-input DTS on it — so it also changes what a connected
 receiver is told this TV accepts on its own inputs.
 
-**Both directions try to apply immediately, and fall back to a restart.** Turn on
-writes the marker file (and refreshes the installed boot script); Turn off removes
-the marker and drops the bind. The app then tries configd's own `setConfigs`, which
-needs no restart at all; that is refused for a homebrew service, so it next runs the
-installed boot script with `W25_APPDTS_NOW=on|off`, which applies or reverts the one
-`edidType` string and restarts configd alone. Measured on a C5: **1s in each
-direction**, with `pqcontroller`, `videooutputd`, `umediaserver` and `surface-manager`
-all untouched. `audiooutputd` does restart, so expect a brief audio interruption.
+**Known risk, and why this opt-in is off by default.** Applying it restarts configd,
+which `audiooutputd` `Requires=`. On a C5 that service does not always survive the
+restart: measured 2026-09-17, it **aborted** (`Main process exited, code=killed,
+status=6/ABRT`), systemd brought it back, but the audio context was gone. Every pipeline
+created afterwards logged `lgadec ERR: audio device is not opened` and played silent,
+and the volume keys looked dead because the key arrived and the OSD appeared with
+nothing left to apply it. Restarting `audiooutputd`, `audiod` and `umediaserver` by hand
+did **not** recover it; only a reboot did. GitHub issue #5 reports the same shape on a
+G5 (webOS 11.2.0) where Home and Mute die instead, which fits: on webOS 11 the key
+handlers are themselves configd clients. It is intermittent and only reachable with this
+opt-in on. DTS and TrueHD playback are unaffected either way.
 
-That invocation is **detached** (`setsid`) and the app learns the outcome by polling
-`configd_db.json`, never by waiting for the call to return: restarting configd kills
-the Homebrew exec bridge's process tree, which is what made three earlier attempts
-hang the UI on "turning on…" forever. It is also gated on the installed hook being
-version 19 or newer, so a TV still carrying an older hook goes straight to the
-restart rather than running an old script with an argument it does not understand.
-A **Restart TV now** button appears only when both live paths fail.
+**There is no way to make it stick without that restart.** `tv.model.edidType` comes
+from the configd layer `/var/run/tvconfig/lls` (priority 153), regenerated every boot by
+`lowlevelstorage` from a raw eMMC partition. Every layer that outranks it is either on
+the read-only rootfs overlay (`tooltype` 155, `product` 190, `broadcast` 195,
+`tvoverlay` 199, and `/mnt/platform-plugins` 156, which is `ro` even though the path is
+absent) or on tmpfs wiped at boot (`rmm` 154, `remote` 299). configd re-parses the layer
+dirs at boot rather than trusting its cache, so a patched cache does not survive either.
+The only persistent source is the factory partition, which is exactly what the rooting
+projects warn never to write.
+
+**Do not make this apply live.** It was tried in `webos25-2.37` and withdrawn.
+Applying it means restarting configd, and on a C5 that does not stop `audiooutputd`
+cleanly: it **aborts** (`Main process exited, code=killed, status=6/ABRT`). systemd
+restarts it, but the audio context is gone, every pipeline created afterwards logs
+`lgadec ERR: audio device is not opened` and plays silent, and the volume keys appear
+dead because the key arrives and the OSD shows but nothing is left to apply it.
+Restarting `audiooutputd`, `audiod` and `umediaserver` by hand does **not** recover it;
+only a reboot does. Measured on a C5 (webOS 10.3.1) on 2026-09-17. The same restart also
+runs at boot, which is where it is least harmful because nothing is playing yet, but it
+is the same hazard.
+
+**Both directions record intent and take effect at the next restart.** Turn on
+writes the marker file (and refreshes the installed boot script); Turn off removes
+the marker and drops the bind. Neither touches configd, so neither can hang the app:
+with the old `systemctl restart` the apply blocked for ~90s (see below), longer than
+the Homebrew exec bridge waits, and the UI sat on "turning on…" forever. The boot
+hook does the actual apply, verified end to end across a reboot. A **Restart TV
+now** button appears whenever a restart is the remaining step in either direction.
 
 `edidType` is factory data, not a rootfs config file: `lowlevelstorage` writes it
 into `/tmp/var/run/tvconfig/lls/factorydb.json` (tmpfs) and configd folds that in

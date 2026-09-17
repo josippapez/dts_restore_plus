@@ -22,11 +22,6 @@
 #                 installers call when their preflight refuses AFTER they have
 #                 already detached the binds, so "nothing is applied" is true
 #                 rather than merely intended.
-#   W25_APPDTS_NOW=on|off
-#                 run ONLY the app-DTS (tv.model.edidType) toggle and exit: no
-#                 gate, no binds, no registry. This is the app's button asking
-#                 for the change now rather than at the next boot; `on` needs
-#                 the marker file already written, `off` undoes it live.
 #   FORCE=1       explicit opt-in on a TV that is not in the verified table.
 #
 # Always exits 0: a non-zero webosbrew init script trips the failsafe that
@@ -96,11 +91,7 @@ EXPECT_GST=1.24
 #      post-bind registry proof (w25_reg_has_all), which now checks SIX elements.
 #      A `[sw_decoder] adecswitch=320` line in the generated gstcool.conf remains a
 #      config-level kill switch (rank 0 reverts to stock decodebin3 behaviour).
-#   19 adds the W25_APPDTS_NOW=on|off mode: run ONLY the app-DTS toggle and exit,
-#      so the app can apply (or, via the new w25_appdts_revert, undo) the edidType
-#      opt-in immediately instead of asking for a TV restart. The boot-done wait
-#      is skipped in that mode -- a button press is not a boot.
-W25_GATE_VERSION=19
+W25_GATE_VERSION=20
 FP=/var/lib/webosbrew/dts25/stock.fp
 # Where the installed copy of THIS script lives, and the boot hook that symlinks
 # to it. Named here, in the shared block, so the read-only probe can fingerprint
@@ -144,228 +135,6 @@ LLS=/tmp/var/run/tvconfig/lls/factorydb.json
 MYLLS=/var/lib/webosbrew/dts25/factorydb.override.json
 CONFIGD_DB=/var/preferences/configd_db.json
 w25_log() { [ -n "${W25_LOG:-}" ] || return 0; echo "[dts25-gate $(date '+%Y-%m-%d %H:%M:%S')] $*" >> "${W25_LOG:-}" 2>&1; }
-# --- APPLY 2d) OPT-IN: tell apps this TV accepts DTS (tv.model.edidType) -------
-#     Kept OUT of Enable and gated on its own marker file. edidType is not a
-#     passive descriptor: arccontroller builds the EDID SADs the TV advertises
-#     over eARC from it and extinput gates HDMI-input DTS on it, so switching it
-#     changes what a connected AVR is told. That is a bigger claim than "decode
-#     DTS in our own pipeline" and needs its own consent.
-#
-#     edidType is factory data, not a rootfs config file: lowlevelstorage writes
-#     it into $LLS (tmpfs) and configd folds that in as the "Low-Level Storage
-#     Info" layer. Bind our edited copy over it, then drop configd's cache --
-#     configd only re-parses the layer dirs when the cache is gone. Both are
-#     rebuilt at boot, so this whole step re-runs cleanly every time.
-#
-#     Do NOT try the higher-priority /var/run/tvconfig/remote layer instead: it
-#     takes a selector that is empty on these sets, so configd logs
-#     "(Remote) : ReadOnly Type (Skipped)" and never reads it. Measured on a C5.
-# configd is a core service that much of the TV blocks on, and restarting it is
-# the only way to make it re-read the layer. Two rules keep that safe, both
-# learned the hard way on a C5 (2026-09-13): Enable ran this four times in 20
-# seconds, one restart landed on top of another mid-startup, and configd stuck in
-# `activating` with its cache deleted and never rebuilt -- which hung the app's
-# Enable and left the TV without configd.
-#
-#   1. Do nothing when the value is ALREADY what we want. Enable re-runs this
-#      script by design, so "already applied" must be free, not another restart.
-#   2. One at a time. mkdir is atomic on every filesystem here, so it is the lock.
-w25_appdts_apply() {
-  # Never from inside Enable. Enable writes this script AND runs it while the app
-  # blocks on the result, so a configd restart in that path is a core service
-  # going down inside a call the UI is waiting on -- that is what left Enable
-  # spinning on "enabling DTS..." twice on a real C5 (2026-09-13). Enable does
-  # not need to do this work: the boot hook applies it every boot, and the app's
-  # own toggle applies it immediately when the user asks for it.
-  [ -n "${W25_NO_APPDTS:-}" ] && return 0
-  [ -f "$APPDTS_FLAG" ] || return 0
-  [ -f "$LLS" ] || return 0
-  # Rule 1 -- cheapest exit first, and the one that makes re-running Enable free.
-  if grep -q '"edidType"[[:space:]]*:[[:space:]]*"[^"]*dts' "$CONFIGD_DB" 2>/dev/null; then
-    return 0
-  fi
-  grep -q " $LLS " /proc/mounts 2>/dev/null && return 0
-  # Rule 1b -- WAIT FOR BOOT TO FINISH before touching configd. The Homebrew hook
-  # runs ~30s in while bootmode-normal-boot-done only goes active at ~45s
-  # (measured on a C5), so this was restarting a core service with systemd still
-  # bringing the system up. An owner reported the remote's Home button dead after
-  # every boot with this opt-in on, and it survived BOTH restart shapes -- the
-  # cascading one and the isolated one -- which points at the timing rather than
-  # at what else gets restarted. Bounded, and it applies anyway if the signal
-  # never arrives, so a firmware without this unit still gets the feature.
-  #
-  # ONLY at boot. W25_APPDTS_NOW is the app's toggle asking for this right now --
-  # the user pressed a button long after boot, so there is nothing to wait for and
-  # waiting would just be the UI hanging. With the variable unset (the boot hook)
-  # the wait below is exactly what it always was.
-  if [ -z "${W25_APPDTS_NOW:-}" ]; then
-    i=0
-    while [ "$i" -lt 180 ]; do
-      systemctl is-active bootmode-normal-boot-done.service >/dev/null 2>&1 && break
-      i=$((i + 1)); sleep 1
-    done
-    if [ "$i" -ge 180 ]; then
-      w25_log "app-dts: no boot-done signal after ${i}s -- applying anyway"
-    elif [ "$i" -gt 0 ]; then
-      w25_log "app-dts: waited ${i}s for boot to finish"
-    fi
-  fi
-  # Rule 2 -- one at a time. mkdir is atomic everywhere here, so it is the lock.
-  # It must be STALE-SAFE: restarting configd kills whatever process tree the
-  # caller is running in (that is what the detached invocation below exists for),
-  # so a run CAN die holding this. A lock whose owner is gone would then block the
-  # feature until the next reboot. Record the pid and take over a dead one.
-  if ! mkdir "$APPDTS_LOCK" 2>/dev/null; then
-    OWNER=$(cat "$APPDTS_LOCK/pid" 2>/dev/null)
-    if [ -n "$OWNER" ] && [ -d "/proc/$OWNER" ]; then
-      w25_log "app-dts: pid $OWNER holds the lock; skipped"
-      return 0
-    fi
-    w25_log "app-dts: took over a stale lock (owner ${OWNER:-unknown} is gone)"
-    rm -rf "$APPDTS_LOCK" 2>/dev/null
-    mkdir "$APPDTS_LOCK" 2>/dev/null || return 0
-  fi
-  echo $$ > "$APPDTS_LOCK/pid" 2>/dev/null
-  if sed 's/"edidType":"TrueHD"/"edidType":"TrueHD+dts"/' "$LLS" > "$MYLLS" 2>>$LOG &&
-     grep -q '"edidType":"TrueHD+dts"' "$MYLLS" 2>/dev/null; then
-    if mount -n --bind "$MYLLS" "$LLS" 2>>$LOG; then
-      # PATCH the cache, do NOT delete it. Deleting it makes configd rebuild its
-      # whole configuration from the layer dirs and republish every value -- and
-      # the OLED panel settings live in the same tv.model blob as edidType
-      # (defaultStdBacklight, digitalEye, eyeCurveDerivation, eyeSensorLEDGain,
-      # oledCPC, supportOledOffRsQuickStart). An owner reported the panel dimming
-      # after screen-off and staying dim until reboot, which is what that rebuild
-      # touches. Measured on a C5: with the cache present a restart logs ZERO
-      # parseFiles lines, so patching the one string changes exactly one key and
-      # leaves every other value byte-identical. It is also the fragile window
-      # that wedged configd, so this removes that too.
-      #
-      # The bind above still matters: it is what the NEXT boot reads before this
-      # runs, and it keeps the file and the cache telling the same story.
-      if sed -i 's/"edidType"\([[:space:]]*\):\([[:space:]]*\)"TrueHD"/"edidType"\1:\2"TrueHD+dts"/' "$CONFIGD_DB" 2>>$LOG &&
-         grep -q '"edidType"[[:space:]]*:[[:space:]]*"[^"]*dts' "$CONFIGD_DB" 2>/dev/null; then
-        # Restart configd WITHOUT its dependents, and without the 90s stop timeout.
-        #
-        # Ten units Requires= configd -- pqcontroller (picture), videooutputd,
-        # audiooutputd, umediaserver among them. A plain `systemctl restart` (or a
-        # kill that trips Restart=on-failure) queues restart jobs for all of them,
-        # configd's own job waits behind that cascade for ~90s, and pqcontroller
-        # restarting is the "Auto Power Save for a minute and a half after boot"
-        # owners saw. Measured on a C5 with a 1s sampler of systemd's job queue.
-        #
-        # So: enqueue a stop for configd ONLY (--job-mode=ignore-dependencies keeps
-        # the cascade out; --no-block returns at once), SIGKILL it so that stop
-        # completes now instead of after the 90s SIGTERM timeout it ignores once it
-        # has subscribers, and start it alone the same way. A requested stop does
-        # not trigger Restart=on-failure, so nothing else moves. Measured: 2s, with
-        # pqcontroller/videooutputd/umediaserver/devicereset pids unchanged. The
-        # new configd loads its cache (0 parseFiles) so it serves the patched value.
-        # If it is not back in 20s, fall back to the slow known-good restart.
-        T0=$(date +%s)
-        systemctl --job-mode=ignore-dependencies --no-block stop configd.service >/dev/null 2>>$LOG
-        systemctl kill -s KILL configd.service >/dev/null 2>>$LOG
-        systemctl --job-mode=ignore-dependencies start configd.service >/dev/null 2>>$LOG
-        i=0
-        while [ "$i" -lt 20 ]; do
-          P=$(systemctl show -p MainPID --value configd.service 2>/dev/null)
-          [ -n "$P" ] && [ "$P" != 0 ] && systemctl is-active configd.service >/dev/null 2>&1 && break
-          i=$((i + 1)); sleep 1
-        done
-        if [ "$i" -ge 20 ]; then
-          w25_log "app-dts: dependency-free restart not up after ${i}s; falling back to systemctl restart"
-          systemctl reset-failed configd.service >/dev/null 2>&1
-          systemctl restart configd.service >/dev/null 2>>$LOG
-          i=0
-          while [ "$i" -lt 45 ]; do systemctl is-active configd.service >/dev/null 2>&1 && break; i=$((i + 1)); sleep 1; done
-        fi
-        # Fail closed: a configd that still is not back gets the override taken
-        # away rather than left half-applied.
-        if systemctl is-active configd.service >/dev/null 2>&1; then
-          w25_log "app-dts: edidType -> TrueHD+dts (cache patched; configd back in $(( $(date +%s) - T0 ))s)"
-        else
-          w25_log "app-dts: configd did not come back -- reverting"
-          umount "$LLS" 2>/dev/null || umount -l "$LLS" 2>/dev/null
-          rm -f "$CONFIGD_DB" 2>>$LOG
-          systemctl reset-failed configd.service >/dev/null 2>&1
-          systemctl restart configd.service >/dev/null 2>>$LOG
-        fi
-      else
-        w25_log "app-dts: could not patch $CONFIGD_DB -- left stock"
-        umount "$LLS" 2>/dev/null || umount -l "$LLS" 2>/dev/null
-      fi
-    fi
-  else
-    # Fail closed and leave no half-written copy: an unmatched sed would bind an
-    # unchanged file and look like configd refusing the override.
-    rm -f "$MYLLS" 2>/dev/null
-    w25_log "app-dts: edidType pattern not found in $LLS -- left stock"
-  fi
-  # rm -rf, NOT rmdir: the lock dir holds a pid file, so rmdir always failed and
-  # every run leaked the lock. The stale-owner takeover above hid it -- the next
-  # run still worked -- which is why it survived a full boot test unnoticed.
-  rm -rf "$APPDTS_LOCK" 2>/dev/null
-}
-# The inverse of the above, for the app's toggle going OFF. Dropping the bind
-# alone only takes effect at the next boot, because configd serves the value out
-# of its cache; undoing it live means putting the stock string back in that cache
-# and restarting configd the same isolated way the apply does. Every shape here
-# is the apply's -- same lock with the same stale-owner takeover so the two can
-# never run at once, same guarded sed, same restart recipe, same fallback.
-#
-# Fail-closed here means ENDING UP ON STOCK: every path out of a failure either
-# has the bind gone (so the next boot is stock) or reports why it could not be.
-w25_appdts_revert() {
-  # Nothing to undo: no bind of ours left and the cache already says stock.
-  if ! grep -q " $LLS " /proc/mounts 2>/dev/null &&
-     ! grep -q '"edidType"[[:space:]]*:[[:space:]]*"[^"]*dts' "$CONFIGD_DB" 2>/dev/null; then
-    return 0
-  fi
-  if ! mkdir "$APPDTS_LOCK" 2>/dev/null; then
-    OWNER=$(cat "$APPDTS_LOCK/pid" 2>/dev/null)
-    if [ -n "$OWNER" ] && [ -d "/proc/$OWNER" ]; then
-      w25_log "app-dts: pid $OWNER holds the lock; revert skipped"
-      return 0
-    fi
-    w25_log "app-dts: took over a stale lock (owner ${OWNER:-unknown} is gone)"
-    rm -rf "$APPDTS_LOCK" 2>/dev/null
-    mkdir "$APPDTS_LOCK" 2>/dev/null || return 0
-  fi
-  echo $$ > "$APPDTS_LOCK/pid" 2>/dev/null
-  # Bind first: with it gone the next boot reads stock even if everything below
-  # fails, so the worst case is "reverts at the next boot", never "still on".
-  umount "$LLS" 2>/dev/null || umount -l "$LLS" 2>/dev/null
-  if sed -i 's/"edidType"\([[:space:]]*\):\([[:space:]]*\)"TrueHD+dts"/"edidType"\1:\2"TrueHD"/' "$CONFIGD_DB" 2>>$LOG &&
-     ! grep -q '"edidType"[[:space:]]*:[[:space:]]*"[^"]*dts' "$CONFIGD_DB" 2>/dev/null; then
-    T0=$(date +%s)
-    systemctl --job-mode=ignore-dependencies --no-block stop configd.service >/dev/null 2>>$LOG
-    systemctl kill -s KILL configd.service >/dev/null 2>>$LOG
-    systemctl --job-mode=ignore-dependencies start configd.service >/dev/null 2>>$LOG
-    i=0
-    while [ "$i" -lt 20 ]; do
-      P=$(systemctl show -p MainPID --value configd.service 2>/dev/null)
-      [ -n "$P" ] && [ "$P" != 0 ] && systemctl is-active configd.service >/dev/null 2>&1 && break
-      i=$((i + 1)); sleep 1
-    done
-    if [ "$i" -ge 20 ]; then
-      w25_log "app-dts: dependency-free restart not up after ${i}s; falling back to systemctl restart"
-      systemctl reset-failed configd.service >/dev/null 2>&1
-      systemctl restart configd.service >/dev/null 2>>$LOG
-      i=0
-      while [ "$i" -lt 45 ]; do systemctl is-active configd.service >/dev/null 2>&1 && break; i=$((i + 1)); sleep 1; done
-    fi
-    if systemctl is-active configd.service >/dev/null 2>&1; then
-      w25_log "app-dts: edidType -> TrueHD (cache patched; configd back in $(( $(date +%s) - T0 ))s)"
-    else
-      w25_log "app-dts: configd did not come back -- rebuilding its cache"
-      rm -f "$CONFIGD_DB" 2>>$LOG
-      systemctl reset-failed configd.service >/dev/null 2>&1
-      systemctl restart configd.service >/dev/null 2>>$LOG
-    fi
-  else
-    w25_log "app-dts: could not restore $CONFIGD_DB -- bind dropped, stock returns at the next boot"
-  fi
-  rm -rf "$APPDTS_LOCK" 2>/dev/null
-}
 # Unmount ONE bind target, falling back to a LAZY detach when it is busy.
 # Measured on a real C5: umount of /usr/lib/gstreamer-1.0/libgstlibav.so fails
 # with "target is busy" because WebAppMgr has the .so mapped, while `umount -l`
@@ -777,24 +546,6 @@ w25_fp_write() {
   return 0
 }
 # <<< W25-COMPAT-END
-# W25_APPDTS_NOW=on|off: run ONLY the app-DTS toggle and exit. This is the app's
-# button asking for the change now instead of at the next boot; it must not drag
-# the gate, the binds or the registry regen along with it. Placed here, outside
-# the shared compat block, so the app's read-only probe (which sources that block
-# and nothing else) still mounts and writes nothing.
-#
-# w25_appdts_apply returns early unless $APPDTS_FLAG exists, which is right: the
-# app writes the marker before calling, so the marker stays the single source of
-# truth for what the next boot does.
-if [ -n "${W25_APPDTS_NOW:-}" ]; then
-  case "$W25_APPDTS_NOW" in
-    on)  w25_appdts_apply ;;
-    off) w25_appdts_revert ;;
-    *)   ;;
-  esac
-  echo "EDIDTYPE=$(grep -o '"edidType"[[:space:]]*:[[:space:]]*"[^"]*"' "$CONFIGD_DB" 2>/dev/null | head -n1 | sed 's/.*:[[:space:]]*"//; s/"$//')"
-  exit 0
-fi
 # W25_CHECK=1: read-only preflight used by install.sh and the app's Enable to
 # refuse with a readable reason BEFORE they link the boot hook. Prints only.
 if [ "${W25_CHECK:-0}" = 1 ]; then
@@ -969,6 +720,160 @@ esac
 [ -f "$MYLIBAV" ] && ! grep -q " $LGLIBAV " /proc/mounts 2>/dev/null && mount -n --bind -o ro "$MYLIBAV" "$LGLIBAV" 2>>$LOG
 # --- APPLY 2b) gstcool.conf: give avdec_truehd a high SW rank so LG autoplugs it (not the HW path)
 [ -f "$MYGC" ] && ! grep -q " $GC " /proc/mounts 2>/dev/null && mount -n --bind "$MYGC" "$GC" 2>>$LOG
+# --- APPLY 2d) OPT-IN: tell apps this TV accepts DTS (tv.model.edidType) -------
+#     Kept OUT of Enable and gated on its own marker file. edidType is not a
+#     passive descriptor: arccontroller builds the EDID SADs the TV advertises
+#     over eARC from it and extinput gates HDMI-input DTS on it, so switching it
+#     changes what a connected AVR is told. That is a bigger claim than "decode
+#     DTS in our own pipeline" and needs its own consent.
+#
+#     edidType is factory data, not a rootfs config file: lowlevelstorage writes
+#     it into $LLS (tmpfs) and configd folds that in as the "Low-Level Storage
+#     Info" layer. Bind our edited copy over it, then drop configd's cache --
+#     configd only re-parses the layer dirs when the cache is gone. Both are
+#     rebuilt at boot, so this whole step re-runs cleanly every time.
+#
+#     Do NOT try the higher-priority /var/run/tvconfig/remote layer instead: it
+#     takes a selector that is empty on these sets, so configd logs
+#     "(Remote) : ReadOnly Type (Skipped)" and never reads it. Measured on a C5.
+# configd is a core service that much of the TV blocks on, and restarting it is
+# the only way to make it re-read the layer. Two rules keep that safe, both
+# learned the hard way on a C5 (2026-09-13): Enable ran this four times in 20
+# seconds, one restart landed on top of another mid-startup, and configd stuck in
+# `activating` with its cache deleted and never rebuilt -- which hung the app's
+# Enable and left the TV without configd.
+#
+#   1. Do nothing when the value is ALREADY what we want. Enable re-runs this
+#      script by design, so "already applied" must be free, not another restart.
+#   2. One at a time. mkdir is atomic on every filesystem here, so it is the lock.
+w25_appdts_apply() {
+  # Never from inside Enable. Enable writes this script AND runs it while the app
+  # blocks on the result, so a configd restart in that path is a core service
+  # going down inside a call the UI is waiting on -- that is what left Enable
+  # spinning on "enabling DTS..." twice on a real C5 (2026-09-13). Enable does
+  # not need to do this work: the boot hook applies it every boot, and the app's
+  # own toggle applies it immediately when the user asks for it.
+  [ -n "${W25_NO_APPDTS:-}" ] && return 0
+  [ -f "$APPDTS_FLAG" ] || return 0
+  [ -f "$LLS" ] || return 0
+  # Rule 1 -- cheapest exit first, and the one that makes re-running Enable free.
+  if grep -q '"edidType"[[:space:]]*:[[:space:]]*"[^"]*dts' "$CONFIGD_DB" 2>/dev/null; then
+    return 0
+  fi
+  grep -q " $LLS " /proc/mounts 2>/dev/null && return 0
+  # Rule 1b -- WAIT FOR BOOT TO FINISH before touching configd. The Homebrew hook
+  # runs ~30s in while bootmode-normal-boot-done only goes active at ~45s
+  # (measured on a C5), so this was restarting a core service with systemd still
+  # bringing the system up. An owner reported the remote's Home button dead after
+  # every boot with this opt-in on, and it survived BOTH restart shapes -- the
+  # cascading one and the isolated one -- which points at the timing rather than
+  # at what else gets restarted. Bounded, and it applies anyway if the signal
+  # never arrives, so a firmware without this unit still gets the feature.
+  i=0
+  while [ "$i" -lt 180 ]; do
+    systemctl is-active bootmode-normal-boot-done.service >/dev/null 2>&1 && break
+    i=$((i + 1)); sleep 1
+  done
+  if [ "$i" -ge 180 ]; then
+    w25_log "app-dts: no boot-done signal after ${i}s -- applying anyway"
+  elif [ "$i" -gt 0 ]; then
+    w25_log "app-dts: waited ${i}s for boot to finish"
+  fi
+  # Rule 2 -- one at a time. mkdir is atomic everywhere here, so it is the lock.
+  # It must be STALE-SAFE: restarting configd kills whatever process tree the
+  # caller is running in (that is what the detached invocation below exists for),
+  # so a run CAN die holding this. A lock whose owner is gone would then block the
+  # feature until the next reboot. Record the pid and take over a dead one.
+  if ! mkdir "$APPDTS_LOCK" 2>/dev/null; then
+    OWNER=$(cat "$APPDTS_LOCK/pid" 2>/dev/null)
+    if [ -n "$OWNER" ] && [ -d "/proc/$OWNER" ]; then
+      w25_log "app-dts: pid $OWNER holds the lock; skipped"
+      return 0
+    fi
+    w25_log "app-dts: took over a stale lock (owner ${OWNER:-unknown} is gone)"
+    rm -rf "$APPDTS_LOCK" 2>/dev/null
+    mkdir "$APPDTS_LOCK" 2>/dev/null || return 0
+  fi
+  echo $$ > "$APPDTS_LOCK/pid" 2>/dev/null
+  if sed 's/"edidType":"TrueHD"/"edidType":"TrueHD+dts"/' "$LLS" > "$MYLLS" 2>>$LOG &&
+     grep -q '"edidType":"TrueHD+dts"' "$MYLLS" 2>/dev/null; then
+    if mount -n --bind "$MYLLS" "$LLS" 2>>$LOG; then
+      # PATCH the cache, do NOT delete it. Deleting it makes configd rebuild its
+      # whole configuration from the layer dirs and republish every value -- and
+      # the OLED panel settings live in the same tv.model blob as edidType
+      # (defaultStdBacklight, digitalEye, eyeCurveDerivation, eyeSensorLEDGain,
+      # oledCPC, supportOledOffRsQuickStart). An owner reported the panel dimming
+      # after screen-off and staying dim until reboot, which is what that rebuild
+      # touches. Measured on a C5: with the cache present a restart logs ZERO
+      # parseFiles lines, so patching the one string changes exactly one key and
+      # leaves every other value byte-identical. It is also the fragile window
+      # that wedged configd, so this removes that too.
+      #
+      # The bind above still matters: it is what the NEXT boot reads before this
+      # runs, and it keeps the file and the cache telling the same story.
+      if sed -i 's/"edidType"\([[:space:]]*\):\([[:space:]]*\)"TrueHD"/"edidType"\1:\2"TrueHD+dts"/' "$CONFIGD_DB" 2>>$LOG &&
+         grep -q '"edidType"[[:space:]]*:[[:space:]]*"[^"]*dts' "$CONFIGD_DB" 2>/dev/null; then
+        # Restart configd WITHOUT its dependents, and without the 90s stop timeout.
+        #
+        # Ten units Requires= configd -- pqcontroller (picture), videooutputd,
+        # audiooutputd, umediaserver among them. A plain `systemctl restart` (or a
+        # kill that trips Restart=on-failure) queues restart jobs for all of them,
+        # configd's own job waits behind that cascade for ~90s, and pqcontroller
+        # restarting is the "Auto Power Save for a minute and a half after boot"
+        # owners saw. Measured on a C5 with a 1s sampler of systemd's job queue.
+        #
+        # So: enqueue a stop for configd ONLY (--job-mode=ignore-dependencies keeps
+        # the cascade out; --no-block returns at once), SIGKILL it so that stop
+        # completes now instead of after the 90s SIGTERM timeout it ignores once it
+        # has subscribers, and start it alone the same way. A requested stop does
+        # not trigger Restart=on-failure, so nothing else moves. Measured: 2s, with
+        # pqcontroller/videooutputd/umediaserver/devicereset pids unchanged. The
+        # new configd loads its cache (0 parseFiles) so it serves the patched value.
+        # If it is not back in 20s, fall back to the slow known-good restart.
+        T0=$(date +%s)
+        systemctl --job-mode=ignore-dependencies --no-block stop configd.service >/dev/null 2>>$LOG
+        systemctl kill -s KILL configd.service >/dev/null 2>>$LOG
+        systemctl --job-mode=ignore-dependencies start configd.service >/dev/null 2>>$LOG
+        i=0
+        while [ "$i" -lt 20 ]; do
+          P=$(systemctl show -p MainPID --value configd.service 2>/dev/null)
+          [ -n "$P" ] && [ "$P" != 0 ] && systemctl is-active configd.service >/dev/null 2>&1 && break
+          i=$((i + 1)); sleep 1
+        done
+        if [ "$i" -ge 20 ]; then
+          w25_log "app-dts: dependency-free restart not up after ${i}s; falling back to systemctl restart"
+          systemctl reset-failed configd.service >/dev/null 2>&1
+          systemctl restart configd.service >/dev/null 2>>$LOG
+          i=0
+          while [ "$i" -lt 45 ]; do systemctl is-active configd.service >/dev/null 2>&1 && break; i=$((i + 1)); sleep 1; done
+        fi
+        # Fail closed: a configd that still is not back gets the override taken
+        # away rather than left half-applied.
+        if systemctl is-active configd.service >/dev/null 2>&1; then
+          w25_log "app-dts: edidType -> TrueHD+dts (cache patched; configd back in $(( $(date +%s) - T0 ))s)"
+        else
+          w25_log "app-dts: configd did not come back -- reverting"
+          umount "$LLS" 2>/dev/null || umount -l "$LLS" 2>/dev/null
+          rm -f "$CONFIGD_DB" 2>>$LOG
+          systemctl reset-failed configd.service >/dev/null 2>&1
+          systemctl restart configd.service >/dev/null 2>>$LOG
+        fi
+      else
+        w25_log "app-dts: could not patch $CONFIGD_DB -- left stock"
+        umount "$LLS" 2>/dev/null || umount -l "$LLS" 2>/dev/null
+      fi
+    fi
+  else
+    # Fail closed and leave no half-written copy: an unmatched sed would bind an
+    # unchanged file and look like configd refusing the override.
+    rm -f "$MYLLS" 2>/dev/null
+    w25_log "app-dts: edidType pattern not found in $LLS -- left stock"
+  fi
+  # rm -rf, NOT rmdir: the lock dir holds a pid file, so rmdir always failed and
+  # every run leaked the lock. The stale-owner takeover above hid it -- the next
+  # run still worked -- which is why it survived a full boot test unnoticed.
+  rm -rf "$APPDTS_LOCK" 2>/dev/null
+}
 w25_appdts_apply
 # --- APPLY 2c) container demuxers with DTS re-enabled (mp4/ts/m2ts DTS -> audio/x-dts).
 #         Patched isomp4/mpegtsdemux default dts_support=TRUE. Bound BEFORE the

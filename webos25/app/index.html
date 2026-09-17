@@ -235,6 +235,15 @@
           the TV tells a connected receiver it accepts on its own inputs, which is why
           it is separate from Enable. Turn it off to put everything back.
         </p>
+        <p class="muted note-warn">
+          <strong>Known risk.</strong> Applying this restarts a TV service that the
+          audio output depends on, and that service does not always survive it. When it
+          does not, playback is silent and the volume buttons stop working until you
+          restart the TV. Seen on a C5 on webOS 10.3.1 and reported on a G5 on webOS
+          11.2.0, where the Home and Mute buttons die instead. It is intermittent, it
+          only happens while this is on, and a restart always clears it. Nothing else
+          in this app does that, and DTS playback itself is unaffected.
+        </p>
         <div class="row">
           <button id="btnAppDtsOn"  class="btn focusable" data-nav disabled>Turn on</button>
           <button id="btnAppDtsOff" class="btn focusable" data-nav disabled>Turn off</button>
