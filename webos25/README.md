@@ -195,6 +195,15 @@ builds the EDID SADs the TV advertises over eARC from the same value and
 `extinput` gates HDMI-input DTS on it — so it also changes what a connected
 receiver is told this TV accepts on its own inputs.
 
+**Known issue: what breaks varies, and it is always cleared by a restart.** Across
+sessions on a C5 the same cause has produced a different victim each time: audio silent
+on every new pipeline; volume keys apparently dead (the key arrives and the OSD shows,
+nothing applies it); and, observed 2026-09-17 after a boot apply, the reverse -- volume
+adjusts fine but the on-screen volume bar stops appearing. GitHub issue #5 reports Home
+and Mute dead on a G5. All of it is reachable only with this opt-in on, none of it
+affects DTS or TrueHD playback, and a reboot always clears it. Not all of it is
+disruptive; the missing volume bar in particular is cosmetic.
+
 **Known risk, and why this opt-in is off by default.** Applying it restarts configd,
 which `audiooutputd` `Requires=`. On a C5 that service does not always survive the
 restart: measured 2026-09-17, it **aborted** (`Main process exited, code=killed,
