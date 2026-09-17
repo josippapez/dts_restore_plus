@@ -237,11 +237,13 @@
         </p>
         <p class="muted note-warn">
           <strong>Known issue.</strong> Applying this restarts a TV service that
-          audio and the on-screen menus depend on, and that service does not always
-          survive it. What breaks varies: playback silent on new streams, volume buttons
-          not responding, the volume bar not appearing, or on some models the Home and
-          Mute buttons. It is intermittent, only happens while this is on, and
-          <strong>restarting the TV always clears it</strong>. DTS playback itself is
+          audio and the on-screen menus depend on, and anything that service was in the
+          middle of can be left broken until the next restart: playback silent on new
+          streams, volume buttons not responding, the volume bar not appearing, or on
+          some models the Home and Mute buttons. To avoid it the TV now waits at boot
+          for the audio to be idle before applying this, and <strong>skips it for that
+          boot</strong> if the wait runs out, so you may occasionally start up without
+          DTS tracks. A notification tells you when that happens. DTS playback itself is
           never affected.
         </p>
         <div class="row">

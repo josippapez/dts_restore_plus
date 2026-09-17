@@ -205,16 +205,31 @@ affects DTS or TrueHD playback, and a reboot always clears it. Not all of it is
 disruptive; the missing volume bar in particular is cosmetic.
 
 **Known risk, and why this opt-in is off by default.** Applying it restarts configd,
-which `audiooutputd` `Requires=`. On a C5 that service does not always survive the
-restart: measured 2026-09-17, it **aborted** (`Main process exited, code=killed,
-status=6/ABRT`), systemd brought it back, but the audio context was gone. Every pipeline
-created afterwards logged `lgadec ERR: audio device is not opened` and played silent,
-and the volume keys looked dead because the key arrived and the OSD appeared with
-nothing left to apply it. Restarting `audiooutputd`, `audiod` and `umediaserver` by hand
-did **not** recover it; only a reboot did. GitHub issue #5 reports the same shape on a
-G5 (webOS 11.2.0) where Home and Mute die instead, which fits: on webOS 11 the key
-handlers are themselves configd clients. It is intermittent and only reachable with this
-opt-in on. DTS and TrueHD playback are unaffected either way.
+which `audiooutputd` `Requires=`, and `audiooutputd` dies the moment configd's luna
+socket goes away. Every `sndout` connection it was holding at that instant is
+**orphaned** in the kernel audio driver: the driver keeps it, the replacement
+`audiooutputd` has no record of it, and every later connect to that port is refused
+with `already connected`. Whatever needed that port is then dead until reboot. Measured
+on a C5 2026-09-17: `input 0x1 port 1` (main audio) was orphaned this way, and every
+stream uMS subsequently placed on port 1 played silent — which takes a second media
+pipeline to happen at all, so it can surface hours after the boot that caused it.
+
+Nothing in userspace clears it. `audiooutputd` logs no `sndout_disconnect` on SIGTERM,
+so even a clean stop orphans what it holds, and restarting `audiooutputd`, `audiod` and
+`umediaserver` all leave the driver's record in place. Only a reboot does.
+
+**Since gate 23 the boot hook refuses to create that state.** It waits up to 120s for
+the main audio input to have no live connection before it touches configd, and if the
+window never opens it **skips the opt-in for that boot** rather than applying anyway —
+losing DTS tracks for one session beats losing the TV's sound until reboot. On a C5
+`audiooutputd` wires up main audio at ~19s and this hook only runs at ~44s, so the wait
+is the normal path rather than the exception; a toast says so, and another says when it
+gave up. The connection state is read from `/var/log/legacy-log`, not `dmesg`, whose
+ring buffer has already scrolled past the boot-time connects by then.
+
+GitHub issue #5 reports a related shape on a G5 (webOS 11.2.0) where Home and Mute die
+instead, which fits: on webOS 11 the key handlers are themselves configd clients. DTS
+and TrueHD playback are unaffected either way.
 
 **There is no way to make it stick without that restart.** `tv.model.edidType` comes
 from the configd layer `/var/run/tvconfig/lls` (priority 153), regenerated every boot by
