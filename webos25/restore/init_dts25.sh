@@ -91,7 +91,7 @@ EXPECT_GST=1.24
 #      post-bind registry proof (w25_reg_has_all), which now checks SIX elements.
 #      A `[sw_decoder] adecswitch=320` line in the generated gstcool.conf remains a
 #      config-level kill switch (rank 0 reverts to stock decodebin3 behaviour).
-W25_GATE_VERSION=22
+W25_GATE_VERSION=23
 FP=/var/lib/webosbrew/dts25/stock.fp
 # Where the installed copy of THIS script lives, and the boot hook that symlinks
 # to it. Named here, in the shared block, so the read-only probe can fingerprint
@@ -830,13 +830,19 @@ w25_appdts_apply() {
   i=0
   while [ "$i" -lt 120 ]; do
     w25_appdts_audio_idle && break
+    # Measured on a C5: audiooutputd wires up main audio at ~19s and this hook
+    # only runs at ~44s, so the wait is the normal path, not the exception. Say
+    # so on screen rather than leaving Stremio silently without DTS tracks.
+    [ "$i" = 0 ] && toast "DTS Enabler: waiting for the TV's audio to settle before enabling DTS tracks."
     i=$((i + 1)); sleep 1
   done
   if [ "$i" -ge 120 ]; then
     w25_log "app-dts: main audio still wired up after ${i}s -- skipped this boot"
+    toast "DTS Enabler: DTS tracks are off this time -- enabling them now would have cost the TV its sound. Restart the TV to try again."
     return 0
   elif [ "$i" -gt 0 ]; then
     w25_log "app-dts: waited ${i}s for main audio to go idle"
+    toast "DTS Enabler: DTS tracks are ready."
   fi
   # Rule 2 -- one at a time. mkdir is atomic everywhere here, so it is the lock.
   # It must be STALE-SAFE: restarting configd kills whatever process tree the
