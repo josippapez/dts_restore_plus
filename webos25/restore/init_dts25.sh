@@ -91,7 +91,7 @@ EXPECT_GST=1.24
 #      post-bind registry proof (w25_reg_has_all), which now checks SIX elements.
 #      A `[sw_decoder] adecswitch=320` line in the generated gstcool.conf remains a
 #      config-level kill switch (rank 0 reverts to stock decodebin3 behaviour).
-W25_GATE_VERSION=23
+W25_GATE_VERSION=24
 FP=/var/lib/webosbrew/dts25/stock.fp
 # Where the installed copy of THIS script lives, and the boot hook that symlinks
 # to it. Named here, in the shared block, so the read-only probe can fingerprint
@@ -767,11 +767,22 @@ esac
 #
 # Read the persisted kernel log, not dmesg: the ring buffer had already scrolled
 # past the boot-time connects by the time this runs (measured on a C5: dmesg
-# started at 15s, the connects were earlier), which would show a still-held port
-# as free -- the exact misread this guards against. /var/log/legacy-log carries
-# the same lines from 3s. dmesg is the fallback if it is not there.
+# started at 15s, the connects were earlier), so dmesg shows a still-held port as
+# free -- the exact misread this guards against, which is why there is no dmesg
+# fallback. /var/log/legacy-log carries the same lines from 3s.
+#
+# ABSENCE OF A CONNECT IS NOT PROOF THE PORT IS FREE. The log is truncated at
+# boot but still rotates on size, and a rotation before this runs would leave the
+# connects in legacy-log.0.gz and the live file starting mid-boot -- "no events,
+# so idle", the misread again. So read one rotation back, and require the log to
+# reach back past the moment audiooutputd started, since nothing could have
+# connected before that. If it does not, refuse rather than guess.
 w25_appdts_audio_idle() {
-  { cat /var/log/legacy-log 2>/dev/null || dmesg 2>/dev/null; } | awk '
+  AOD_US=$(systemctl show -p ExecMainStartTimestampMonotonic --value audiooutputd.service 2>/dev/null)
+  case $AOD_US in '' | *[!0-9]*) AOD_US=10000000 ;; esac
+  { gzip -dc /var/log/legacy-log.0.gz 2>/dev/null
+    cat /var/log/legacy-log 2>/dev/null; } | awk -v aod="$AOD_US" '
+    first == "" && $2 ~ /^\[[0-9]+\.[0-9]+\]$/ { split($2, t, /[][]/); first = t[2] + 0 }
     /alsasndout/ && /input 0x1 port/ {
       if ($0 ~ /sndout_connect[ ]+3410:/) st = 1
       else if ($0 ~ /sndout_disconnect[ ]+3644:/) st = 0
@@ -783,7 +794,11 @@ w25_appdts_audio_idle() {
       sub(/\.$/, "", p)
       held[out "/" p] = st
     }
-    END { n = 0; for (k in held) if (held[k]) n++; exit (n > 0) }
+    END {
+      if (first == "" || first > aod / 1000000) exit 1
+      n = 0; for (k in held) if (held[k]) n++
+      exit (n > 0)
+    }
   '
 }
 
@@ -895,6 +910,19 @@ w25_appdts_apply() {
         # pqcontroller/videooutputd/umediaserver/devicereset pids unchanged. The
         # new configd loads its cache (0 parseFiles) so it serves the patched value.
         # If it is not back in 20s, fall back to the slow known-good restart.
+        # Last look, because the wait above finished before the sed and the mount
+        # that got us here, and audiooutputd can wire main audio up in any of the
+        # moments in between. Undoing is the same sed backwards plus dropping the
+        # bind; the running configd never re-reads its cache, so the edit we are
+        # reverting was never visible to anything.
+        if ! w25_appdts_audio_idle; then
+          w25_log "app-dts: main audio came back before the restart -- skipped this boot"
+          sed -i 's/"edidType"\([[:space:]]*\):\([[:space:]]*\)"TrueHD+dts"/"edidType"\1:\2"TrueHD"/' "$CONFIGD_DB" 2>>$LOG
+          umount "$LLS" 2>/dev/null || umount -l "$LLS" 2>/dev/null
+          toast "DTS Enabler: DTS tracks are off this time -- enabling them now would have cost the TV its sound. Restart the TV to try again."
+          rm -rf "$APPDTS_LOCK" 2>/dev/null
+          return 0
+        fi
         T0=$(date +%s)
         systemctl --job-mode=ignore-dependencies --no-block stop configd.service >/dev/null 2>>$LOG
         systemctl kill -s KILL configd.service >/dev/null 2>>$LOG
