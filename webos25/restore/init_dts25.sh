@@ -91,7 +91,7 @@ EXPECT_GST=1.24
 #      post-bind registry proof (w25_reg_has_all), which now checks SIX elements.
 #      A `[sw_decoder] adecswitch=320` line in the generated gstcool.conf remains a
 #      config-level kill switch (rank 0 reverts to stock decodebin3 behaviour).
-W25_GATE_VERSION=25
+W25_GATE_VERSION=26
 FP=/var/lib/webosbrew/dts25/stock.fp
 # Where the installed copy of THIS script lives, and the boot hook that symlinks
 # to it. Named here, in the shared block, so the read-only probe can fingerprint
@@ -127,6 +127,11 @@ MYLIBS=/var/lib/webosbrew/truehd/libs:/var/lib/webosbrew/dts25/libs
 # marker exists -- see the APPLY 2d block for why it is separate from Enable.
 APPDTS_FLAG=/var/lib/webosbrew/dts25/appdts.enabled
 APPDTS_LOCK=/tmp/dts25-appdts.lock
+# Outcome of every apply attempt. Kept out of /tmp: the boot log there is gone
+# by the next boot, which left no record of the boots where this did not apply.
+# appdts.last is one line, "<epoch> <on|skipped|failed> <message>", for the app.
+APPDTS_LAST=/var/lib/webosbrew/dts25/appdts.last
+APPDTS_HIST=/var/lib/webosbrew/dts25/appdts.log
 # NOTE the /tmp path, not /var/run: /var/run is a symlink to /tmp/var/run, so a
 # bind made here is recorded in /proc/mounts under the RESOLVED path. Writing
 # /var/run/... would make every "is it already mounted" guard miss -- stacking a
@@ -805,6 +810,17 @@ w25_appdts_audio_idle() {
   '
 }
 
+# Every outcome ends here, so none of them is silent: the boot log, a history
+# that survives reboots (last 50 lines), the line the app shows, and a toast.
+# $2 goes into the toast's JSON, so it must not contain a double quote.
+w25_appdts_report() {
+  w25_log "app-dts: $1: $2"
+  echo "$(date +%s) $1 $2" > "$APPDTS_LAST" 2>/dev/null
+  { tail -n 49 "$APPDTS_HIST" 2>/dev/null; echo "$(date '+%Y-%m-%d %H:%M:%S') $1 $2"; } > "$APPDTS_HIST.tmp" 2>/dev/null &&
+    mv -f "$APPDTS_HIST.tmp" "$APPDTS_HIST" 2>/dev/null
+  toast "DTS Enabler: $2"
+}
+
 w25_appdts_apply() {
   # Never from inside Enable. Enable writes this script AND runs it while the app
   # blocks on the result, so a configd restart in that path is a core service
@@ -814,12 +830,21 @@ w25_appdts_apply() {
   # own toggle applies it immediately when the user asks for it.
   [ -n "${W25_NO_APPDTS:-}" ] && return 0
   [ -f "$APPDTS_FLAG" ] || return 0
-  [ -f "$LLS" ] || return 0
-  # Rule 1 -- cheapest exit first, and the one that makes re-running Enable free.
-  if grep -q '"edidType"[[:space:]]*:[[:space:]]*"[^"]*dts' "$CONFIGD_DB" 2>/dev/null; then
+  if [ ! -f "$LLS" ]; then
+    w25_appdts_report failed "DTS tracks are off this time: the TV's capability file $LLS was missing. Restart the TV to try again."
     return 0
   fi
-  grep -q " $LLS " /proc/mounts 2>/dev/null && return 0
+  # Rule 1 -- cheapest exit first, and the one that makes re-running Enable free.
+  if grep -q '"edidType"[[:space:]]*:[[:space:]]*"[^"]*dts' "$CONFIGD_DB" 2>/dev/null; then
+    w25_appdts_report on "DTS tracks are on for apps."
+    return 0
+  fi
+  # Bound but the cache still stock: an earlier run died between the two. The
+  # bound copy no longer matches the pattern below, so retrying cannot fix it.
+  if grep -q " $LLS " /proc/mounts 2>/dev/null; then
+    w25_appdts_report failed "DTS tracks are off: an earlier attempt stopped half-way. Restart the TV to try again."
+    return 0
+  fi
   # Rule 1b -- WAIT FOR BOOT TO FINISH before touching configd. The Homebrew hook
   # runs ~30s in while bootmode-normal-boot-done only goes active at ~45s
   # (measured on a C5), so this was restarting a core service with systemd still
@@ -845,22 +870,22 @@ w25_appdts_apply() {
   # second. Unlike every other wait here this one gives up instead of applying
   # anyway -- orphaning the playback port costs the TV all sound until the next
   # reboot, which is worse than Stremio not listing DTS tracks for one session.
+  #
+  # This runs detached from the boot hook (see w25_appdts_start), so it can wait
+  # far longer than the 120s it used to: anything playing sound in the first two
+  # minutes (Live TV, an HDMI source, an app resumed at boot) used to cost the
+  # whole session its DTS tracks. 3s polls for up to 20 minutes.
   i=0
-  while [ "$i" -lt 120 ]; do
+  while [ "$i" -lt 1200 ]; do
     w25_appdts_audio_idle && break
-    # Measured on a C5: audiooutputd wires up main audio at ~19s and this hook
-    # only runs at ~44s, so the wait is the normal path, not the exception. Say
-    # so on screen rather than leaving Stremio silently without DTS tracks.
-    [ "$i" = 0 ] && toast "DTS Enabler: waiting for the TV's audio to settle before enabling DTS tracks."
-    i=$((i + 1)); sleep 1
+    [ "$i" = 0 ] && toast "DTS Enabler: DTS tracks will turn on once nothing is playing."
+    i=$((i + 3)); sleep 3
   done
-  if [ "$i" -ge 120 ]; then
-    w25_log "app-dts: main audio still wired up after ${i}s -- skipped this boot"
-    toast "DTS Enabler: DTS tracks are off this time -- enabling them now would have cost the TV its sound. Restart the TV to try again."
+  if [ "$i" -ge 1200 ]; then
+    w25_appdts_report skipped "DTS tracks are off this time: something kept playing for 20 minutes, and enabling them during playback would cost the TV its sound. Restart the TV to try again."
     return 0
   elif [ "$i" -gt 0 ]; then
     w25_log "app-dts: waited ${i}s for main audio to go idle"
-    toast "DTS Enabler: DTS tracks are ready."
   fi
   # Rule 2 -- one at a time. mkdir is atomic everywhere here, so it is the lock.
   # It must be STALE-SAFE: restarting configd kills whatever process tree the
@@ -870,6 +895,7 @@ w25_appdts_apply() {
   if ! mkdir "$APPDTS_LOCK" 2>/dev/null; then
     OWNER=$(cat "$APPDTS_LOCK/pid" 2>/dev/null)
     if [ -n "$OWNER" ] && [ -d "/proc/$OWNER" ]; then
+      # The owner reports its own outcome.
       w25_log "app-dts: pid $OWNER holds the lock; skipped"
       return 0
     fi
@@ -877,7 +903,9 @@ w25_appdts_apply() {
     rm -rf "$APPDTS_LOCK" 2>/dev/null
     mkdir "$APPDTS_LOCK" 2>/dev/null || return 0
   fi
-  echo $$ > "$APPDTS_LOCK/pid" 2>/dev/null
+  # Not $$: in the detached subshell that is the boot hook's pid, which exits
+  # long before this does and would make a live lock look stale.
+  sh -c 'echo $PPID' > "$APPDTS_LOCK/pid" 2>/dev/null
   if sed 's/"edidType":"TrueHD"/"edidType":"TrueHD+dts"/' "$LLS" > "$MYLLS" 2>>$LOG &&
      grep -q '"edidType":"TrueHD+dts"' "$MYLLS" 2>/dev/null; then
     if mount -n --bind "$MYLLS" "$LLS" 2>>$LOG; then
@@ -922,7 +950,7 @@ w25_appdts_apply() {
           w25_log "app-dts: main audio came back before the restart -- skipped this boot"
           sed -i 's/"edidType"\([[:space:]]*\):\([[:space:]]*\)"TrueHD+dts"/"edidType"\1:\2"TrueHD"/' "$CONFIGD_DB" 2>>$LOG
           umount "$LLS" 2>/dev/null || umount -l "$LLS" 2>/dev/null
-          toast "DTS Enabler: DTS tracks are off this time -- enabling them now would have cost the TV its sound. Restart the TV to try again."
+          w25_appdts_report skipped "DTS tracks are off this time: audio started just before the switch, and enabling them during playback would cost the TV its sound. Restart the TV to try again."
           rm -rf "$APPDTS_LOCK" 2>/dev/null
           return 0
         fi
@@ -945,32 +973,49 @@ w25_appdts_apply() {
         fi
         # Fail closed: a configd that still is not back gets the override taken
         # away rather than left half-applied.
+        # "Active" is not "applied": check the cache the restarted configd serves
+        # from still carries the value, since that file is what apps get.
         if systemctl is-active configd.service >/dev/null 2>&1; then
-          w25_log "app-dts: edidType -> TrueHD+dts (cache patched; configd back in $(( $(date +%s) - T0 ))s)"
+          if grep -q '"edidType"[[:space:]]*:[[:space:]]*"[^"]*dts' "$CONFIGD_DB" 2>/dev/null; then
+            w25_log "app-dts: edidType -> TrueHD+dts (cache patched; configd back in $(( $(date +%s) - T0 ))s)"
+            w25_appdts_report on "DTS tracks are on for apps. Reopen Stremio or Kodi if it was already open."
+          else
+            w25_appdts_report failed "DTS tracks are off: the TV's settings service came back without the change. Restart the TV to try again."
+          fi
         else
-          w25_log "app-dts: configd did not come back -- reverting"
           umount "$LLS" 2>/dev/null || umount -l "$LLS" 2>/dev/null
           rm -f "$CONFIGD_DB" 2>>$LOG
           systemctl reset-failed configd.service >/dev/null 2>&1
           systemctl restart configd.service >/dev/null 2>>$LOG
+          w25_appdts_report failed "DTS tracks are off: the TV's settings service did not restart, so the change was undone. Restart the TV to try again."
         fi
       else
-        w25_log "app-dts: could not patch $CONFIGD_DB -- left stock"
         umount "$LLS" 2>/dev/null || umount -l "$LLS" 2>/dev/null
+        w25_appdts_report failed "DTS tracks are off: could not update $CONFIGD_DB."
       fi
+    else
+      w25_appdts_report failed "DTS tracks are off: could not mount the patched capability file over $LLS."
     fi
   else
     # Fail closed and leave no half-written copy: an unmatched sed would bind an
     # unchanged file and look like configd refusing the override.
     rm -f "$MYLLS" 2>/dev/null
-    w25_log "app-dts: edidType pattern not found in $LLS -- left stock"
+    w25_appdts_report failed "DTS tracks are off: this TV does not report TrueHD in $LLS, so there was nothing to change."
   fi
   # rm -rf, NOT rmdir: the lock dir holds a pid file, so rmdir always failed and
   # every run leaked the lock. The stale-owner takeover above hid it -- the next
   # run still worked -- which is why it survived a full boot test unnoticed.
   rm -rf "$APPDTS_LOCK" 2>/dev/null
 }
-w25_appdts_apply
+# Detached, so its waits (up to ~23 minutes) never hold up the rest of this hook
+# or Homebrew's run-parts, which keeps its failsafe flag armed until every hook
+# returns. stdio goes to /dev/null so nothing waits on our pipes.
+w25_appdts_start() {
+  [ -n "${W25_NO_APPDTS:-}" ] && return 0
+  [ -f "$APPDTS_FLAG" ] || return 0
+  ( w25_appdts_apply ) </dev/null >/dev/null 2>&1 &
+}
+w25_appdts_start
 # --- APPLY 2c) container demuxers with DTS re-enabled (mp4/ts/m2ts DTS -> audio/x-dts).
 #         Patched isomp4/mpegtsdemux default dts_support=TRUE. Bound BEFORE the
 #         regen below so the registry picks them up at their normal path.

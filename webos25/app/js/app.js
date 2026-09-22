@@ -258,6 +258,10 @@
       : (s.appDtsRequested ? "on — restart the TV to apply" : "no");
     setVal("sAppDts", appDtsText,
       s.appDtsActive && s.appDtsRequested ? "ok" : (pending ? "warn" : null));
+    var last = s.appDtsLast;
+    setVal("sAppDtsLast", last
+      ? new Date(last.at * 1000).toLocaleString() + ": " + last.message
+      : "—", last ? (last.result === "on" ? "ok" : "warn") : null);
     // A/B compare renders through the patched dtsdec, so it needs the same profile.
     $("btnAb").disabled = !canW25Test;
     Array.prototype.slice.call(document.querySelectorAll("[data-gain], [data-preset], [data-center]"))

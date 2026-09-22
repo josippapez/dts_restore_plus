@@ -218,14 +218,20 @@ Nothing in userspace clears it. `audiooutputd` logs no `sndout_disconnect` on SI
 so even a clean stop orphans what it holds, and restarting `audiooutputd`, `audiod` and
 `umediaserver` all leave the driver's record in place. Only a reboot does.
 
-**Since gate 23 the boot hook refuses to create that state.** It waits up to 120s for
-the main audio input to have no live connection before it touches configd, and if the
-window never opens it **skips the opt-in for that boot** rather than applying anyway —
-losing DTS tracks for one session beats losing the TV's sound until reboot. On a C5
-`audiooutputd` wires up main audio at ~19s and this hook only runs at ~44s, so the wait
-is the normal path rather than the exception; a toast says so, and another says when it
-gave up. The connection state is read from `/var/log/legacy-log`, not `dmesg`, whose
+**Since gate 23 the boot hook refuses to create that state.** It waits for the main
+audio input to have no live connection before it touches configd, and if the window
+never opens it **skips the opt-in for that boot** rather than applying anyway —
+losing DTS tracks for one session beats losing the TV's sound until reboot. Since gate
+26 the apply runs detached from the boot hook and waits up to 20 minutes (it was 120s,
+so anything playing sound in the first two minutes cost the whole session its DTS
+tracks). The connection state is read from `/var/log/legacy-log`, not `dmesg`, whose
 ring buffer has already scrolled past the boot-time connects by then.
+
+**Every attempt reports its outcome.** A toast says whether DTS tracks turned on,
+were skipped, or failed and why. The same line goes to
+`/var/lib/webosbrew/dts25/appdts.last` (shown in the app as "Last attempt") and to a
+50-line history in `/var/lib/webosbrew/dts25/appdts.log`, which, unlike the boot log in
+`/tmp`, survives the reboot.
 
 GitHub issue #5 reports a related shape on a G5 (webOS 11.2.0) where Home and Mute die
 instead, which fits: on webOS 11 the key handlers are themselves configd clients. DTS
