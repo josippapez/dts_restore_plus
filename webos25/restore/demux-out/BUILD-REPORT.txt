@@ -1,5 +1,5 @@
 Container-demuxer rebuild — DTS re-enabled for mp4/ts/m2ts (with the DTS-HD
-extension in ts/m2ts), TrueHD in ts/m2ts, and Dolby Vision profile 7 in MKV
+extension in ts/m2ts), TrueHD in ts/m2ts, and Dolby Vision profile 7 in MKV and MP4
 ==================================================================================
 
 Source: LG webOS-25 GStreamer 1.24 monorepo (lgstreamer/gstreamer-webos-25).
@@ -157,8 +157,21 @@ played in LG's Media Player:
   TrueHD-5.1.mkv         -> sound
   DTS in the P7 FEL MKV  -> sound (silent before change 3)
 The FEL residual layer is NOT decoded (one video decoder): DV comes from the base
-layer + RPU, the same result as a P7 -> P8.1 conversion. MP4 P7 is still HDR10 --
-qtdemux.c has the same gate, left unpatched because no MP4 P7 sample is verified.
+layer + RPU, the same result as a P7 -> P8.1 conversion.
+
+Dolby Vision profile 7 MP4 (real LG C5, webOS 10.3.1, 2026-09-29)
+-----------------------------------------------------------------
+qtdemux.c returned early for dv_profile == 7 exactly like matroska-demux.c; the
+same fold into the "<= 7 requires dvcC" branch is applied (build-demux.sh "DV7
+MP4" patch). Only libgstisomp4.so changed: md5 f504c39c4a4f0a298b870d6665798d1d,
+sha1 9e8ef1ba0d729818e931355e55237d9194adf1c5 (was ee47bee841f5baff9f34e2f6f9b01792);
+matroska and mpegtsdemux rebuilt byte-identical. Played in LG's Media Player with
+it bind-mounted and the registry regenerated:
+  P7 MEL MP4 (AC-3), P7 FEL MP4 (AC-3) -> Dolby Vision badge, sound
+  P8.1 MP4 (E-AC-3)                    -> Dolby Vision, sound
+  DTS-in-mp4.mp4                       -> sound
+(test MP4s were remuxed from the P7/P8.1 MKV samples with ffmpeg -c copy
+-tag:v hvc1 -strict unofficial, which keeps the dvcC box.)
 
 NOT covered: TrueHD in .mp4. qtdemux.c has no TrueHD/MLP codepath at all (no
 `mlpa` fourcc handling), so that needs new code, not a gate flip — still

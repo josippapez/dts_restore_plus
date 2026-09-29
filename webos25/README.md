@@ -137,8 +137,9 @@ verbatim and symlinked from `/var/lib/webosbrew/init.d/restore_dts25`):
    `/usr/lib/gstreamer-1.0/libgst{isomp4,mpegtsdemux}.so` **before** the registry
    regen, so the demuxers emit `audio/x-dts` for mp4/ts/m2ts instead of an
    untargetable fourcc. Video pads (H.264/HEVC/DV) are untouched. A patched
-   `libgstmatroska.so` is staged and bound the same way, for Dolby Vision
-   profile 7 in MKV (see "Dolby Vision profile 7 (MKV)" below).
+   `libgstmatroska.so` is staged and bound the same way; with the patched
+   `libgstisomp4.so` it plays Dolby Vision profile 7 in MKV and MP4 (see
+   "Dolby Vision profile 7 (MKV and MP4)" below).
 
 3. **Codec capability** — `TRUEHD` + `MLP` audio-codec objects are added to
    `/etc/umediaserver/device_codec_capability_config.json` so `umediaserver`
@@ -564,7 +565,7 @@ unchanged. **`.mp4` TrueHD remains unsupported** — `qtdemux.c` has no TrueHD/M
   [`docs/PASSTHROUGH.md`](docs/PASSTHROUGH.md).
 - **No bitstream passthrough** to an AVR (decode-to-PCM only) — out of scope.
 
-## Dolby Vision profile 7 (MKV)
+## Dolby Vision profile 7 (MKV and MP4)
 
 Stock LG `matroskademux` plays a Dolby Vision **profile 7** MKV (UHD Blu-ray) as plain
 HDR10: it returns early with *"Dolby Vision profile 7 is not supported, but can play as
@@ -581,8 +582,14 @@ and DTS in MKV are unaffected.
 - DV comes from the **base layer + RPU metadata**. A FEL's residual (enhancement) layer is
   **not decoded** — the TV has one video decoder — which is the same result as converting
   P7 to P8.1.
-- **MP4 profile 7 still plays as HDR10.** `qtdemux.c` has the same gate but is not patched,
-  because no MP4 P7 sample has been verified.
+- **MP4 too (since webos25-2.44):** `qtdemux.c` has the same gate, folded the same way in
+  `libgstisomp4.so`. It reads the DOVI config only from the `dvcC`/`dvvC` box, so the MKV
+  `hvcE` fix has no MP4 counterpart. Verified with P7 MEL/FEL MP4s (DV badge, sound), a P8.1
+  MP4 (still DV) and DTS in MP4 (still decodes).
+- **Known issue:** on a TV that has been up for hours, a P7 **FEL** title can start with a
+  green/blue tint that clears on replay or after a reboot. Seen with both containers and
+  with a byte-patched stock demuxer too; not reproduced on a freshly booted TV. MEL titles
+  have not shown it.
 
 ## Build
 

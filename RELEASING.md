@@ -15,8 +15,8 @@ gst/                          four LG GStreamer 1.14.4 legacy plugins (CX/C2 app
 webos25/restore/out/         libgstdtsdec.so                     (DTS decoder, ffmpeg dca static)
 webos25/restore/truehd-out/  libgstlibav.so + libav*/libsw*      (TrueHD/MLP)
 webos25/restore/switch-out/  libgstadecswitch.so                 (track A stream-switch bin)
-webos25/restore/demux-out/   libgstisomp4.so, libgstmpegtsdemux.so (mp4/ts/m2ts DTS),
-                              libgstmatroska.so (MKV Dolby Vision profile 7)
+webos25/restore/demux-out/   libgstisomp4.so, libgstmpegtsdemux.so (mp4/ts/m2ts DTS,
+                              MP4 Dolby Vision profile 7), libgstmatroska.so (MKV DV profile 7)
 ```
 
 The app's `webos25/app/payload/**` `.so` are **git-ignored** generated copies. At
@@ -29,7 +29,7 @@ Never edit a generated `payload/**` binary.
 
 - `webos25/restore/src/gstdtsdec.c` (the DTS patch)
 - the `dts_support` demuxer patch, the DTS-HD substream (0x72) tsdemux patch, the Dolby
-  Vision profile 7 matroska patch, or their version, in `webos25/restore/build-demux.sh`
+  Vision profile 7 matroska/qtdemux patches, or their version, in `webos25/restore/build-demux.sh`
 - `webos25/restore/build.sh`, `build-truehd.sh`, `build-demux.sh`, `build-switch.sh`
   (toolchain, flags, pinned sources, ABI — for `build.sh` that includes the ffmpeg
   `n4.4.4` tag, its configure flags and the pinned Debian snapshot)
@@ -130,6 +130,8 @@ LG's Media Player: it must show the **Dolby Vision** badge with correct colours 
 plays it as HDR10), a P8.1/P5 MKV must still show Dolby Vision, and a DTS MKV must have
 sound (this build drops DTS tracks unless `dts_support` defaults TRUE). Its ABI report must
 list `NEEDED libbz2.so.1` (the C5 has no `libbz2.so.1.0`). Only then commit the new `.so`.
+If `libgstisomp4.so` changed, play a P7 MP4 the same way (Dolby Vision badge), plus a P8.1
+MP4 (still DV) and `DTS-in-mp4.mp4` (still has sound).
 
 The TrueHD `.ts`/`.m2ts` case is easy to skip and easy to be fooled by: BD TrueHD
 carries an AC-3 compatibility substream on the **same PID**, so if the TrueHD pad is
@@ -190,8 +192,8 @@ All four root `gst/` files are required for packaging even though C2 binds
 - [ ] A DTS-HD MA 7.1 file decodes to 8 channels (if `libgstdtsdec.so` changed)
 - [ ] DTS-HD in `.ts`/`.m2ts` decodes lossless — tsdemux passes substream 0x72, output
       bit-exact against desktop `ffmpeg` (if `libgstdtsdec.so` or `libgstmpegtsdemux.so` changed)
-- [ ] A Dolby Vision profile 7 MKV shows the Dolby Vision badge on a real webOS-25 TV
-      (if `libgstmatroska.so` changed)
+- [ ] A Dolby Vision profile 7 MKV / MP4 shows the Dolby Vision badge on a real webOS-25 TV
+      (if `libgstmatroska.so` / `libgstisomp4.so` changed)
 - [ ] `sh webos25/restore/check-init-sync.sh` passes (the release workflow also runs it)
 - [ ] `sh webos25/restore/check-manifest-floor.sh` passes (the workflow runs it too) —
       the Homebrew listing floor in `packaging/homebrew/*.yml` must not exclude a webOS

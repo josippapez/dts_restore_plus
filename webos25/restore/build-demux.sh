@@ -141,9 +141,10 @@ echo "=== DTS-HD patch OK (both BD DTS substreams passed on) ==="
 #    playback. Remember each mapping's BlockAddIDType and only parse extradata
 #    from a dvcC (1685480259) or dvvC (1685485123) mapping.
 #
-# A byte-patched stock LG binary with change 1 showed a green tint on FEL, so
-# this is shipped as a source build only. Applied to the copied source, then
-# verified (build fails if either change did not land).
+# Shipped as a source build, not a byte-patched stock binary (the FEL green
+# tint first blamed on the byte patch also showed with this build, on a TV
+# degraded by hours of uptime; neither showed it after a reboot). Applied to
+# the copied source, then verified (build fails if either change did not land).
 # ---------------------------------------------------------------------------
 perl - "$MKVDEMUX" <<'DV7_PL'
 use strict; use warnings;
@@ -171,6 +172,32 @@ grep -n 'map_type = num;' "$MKVDEMUX" \
 grep -n 'map_type != 1685480259 && map_type != 1685485123' "$MKVDEMUX" \
   || { echo "PATCH FAILED: extradata not gated on dvcC/dvvC in $MKVDEMUX"; exit 1; }
 echo "=== DV7 patch OK (P7 -> Dolby Vision, extradata gated on dvcC/dvvC) ==="
+
+# ---------------------------------------------------------------------------
+# DOLBY VISION PROFILE 7 (MP4) PATCH -- qtdemux.c has the same early return for
+# dv_profile == 7 as matroska-demux.c (change 1 above); fold P7 into the "< 7
+# requires a dvcC box" branch the same way. qtdemux reads the DOVI config only
+# from the dvcC/dvvC box itself, so change 2 has no MP4 counterpart.
+# ---------------------------------------------------------------------------
+perl - "$QTDEMUX" <<'DV7MP4_PL'
+use strict; use warnings;
+local $/; my $f = shift; open my $fh, '<', $f or die "$f: $!"; my $s = <$fh>; close $fh;
+my $n = ($s =~ s{
+      if\ \(qtdemux->dv_profile\ ==\ 7\)\ \{\n
+      \s*GST_DEBUG_OBJECT\ \(qtdemux,\n
+      \s*"Dolby\ Vision\ profile\ 7\ is\ not\ supported,\ but\ can\ play\ as\ HDR10\."\);\n
+      \s*return\ TRUE;\n
+      \s*\}\ else\ if\ \(qtdemux->dv_profile\ <\ 7\)\ \{
+}{if (qtdemux->dv_profile <= 7) \{}xs);
+die "DV7 MP4 PATCH FAILED: expected 1 P7 gate in $f, got $n\n" if $n != 1;
+open my $out, '>', $f or die "$f: $!"; print $out $s; close $out;
+DV7MP4_PL
+grep -n 'qtdemux->dv_profile <= 7' "$QTDEMUX" \
+  || { echo "PATCH FAILED: no dv_profile <= 7 in $QTDEMUX"; exit 1; }
+if grep -n 'profile 7 is not supported' "$QTDEMUX"; then
+  echo "PATCH FAILED: DV7 HDR10 gate still present in $QTDEMUX"; exit 1
+fi
+echo "=== DV7 MP4 patch OK (P7 -> Dolby Vision in qtdemux) ==="
 
 # Minimal patch for an LG meson bug: gst-libs/gst/mpdclient/meson.build uses
 # gstmpdclient/pkg_name outside the "if xml2_dep.found()" guard, which breaks
