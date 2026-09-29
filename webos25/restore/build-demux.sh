@@ -5,7 +5,11 @@
 # property `dts_support` from FALSE to TRUE (LG never sets it true on-device,
 # so mp4 DTS fell back to audio/x-gst-fourcc-dtsc).
 #
-# Produces libgstisomp4.so + libgstmpegtsdemux.so for LG C5 (webOS 25):
+# Also patches matroska-demux so Dolby Vision profile 7 (UHD Blu-ray) MKVs
+# are signalled as Dolby Vision instead of being downgraded to HDR10.
+#
+# Produces libgstisomp4.so + libgstmpegtsdemux.so + libgstmatroska.so for
+# LG C5 (webOS 25):
 #   32-bit ARM EABI5 soft-float (arm-linux-gnueabi), e_flags 0x05000200,
 #   ld-linux.so.3, glibc <= 2.35 (built on debian:11-slim). GStreamer 1.24.
 #
@@ -24,25 +28,29 @@ for p in gstreamer gst-plugins-base gst-plugins-good gst-plugins-bad; do
 done
 
 # ---------------------------------------------------------------------------
-# 2-LINE DTS RUNTIME PATCH: flip the default of the `dts_support` property
-# from FALSE to TRUE in both demuxers (only the default-init assignments,
+# 3-LINE DTS RUNTIME PATCH: flip the default of the `dts_support` property
+# from FALSE to TRUE in all three demuxers (only the default-init assignments,
 # inside #ifdef DTS_SUPPORT). Applied to the copied source, then verified.
 # ---------------------------------------------------------------------------
 QTDEMUX="$CTX/src/gst-plugins-good/gst/isomp4/qtdemux.c"
 TSDEMUX="$CTX/src/gst-plugins-bad/gst/mpegtsdemux/tsdemux.c"
+MKVDEMUX="$CTX/src/gst-plugins-good/gst/matroska/matroska-demux.c"
 
 perl -0pi -e 's/qtdemux->dts_support = FALSE;/qtdemux->dts_support = TRUE;/g' "$QTDEMUX"
 perl -0pi -e 's/demux->dts_support = FALSE;/demux->dts_support = TRUE;/g'     "$TSDEMUX"
+# matroska: with dts_support FALSE this build drops A_DTS tracks entirely (no
+# pad), unlike LG's stock binary, which re-tags them for our dtsdec.
+perl -0pi -e 's/demux->dts_support = FALSE;/demux->dts_support = TRUE;/g'     "$MKVDEMUX"
 
 echo "=== DTS patch verification ==="
-for f in "$QTDEMUX" "$TSDEMUX"; do
+for f in "$QTDEMUX" "$TSDEMUX" "$MKVDEMUX"; do
   echo "--- $f"
   grep -n 'dts_support = TRUE'  "$f" || { echo "PATCH FAILED: no TRUE in $f"; exit 1; }
   if grep -n 'dts_support = FALSE' "$f"; then
     echo "PATCH FAILED: dts_support = FALSE still present in $f"; exit 1
   fi
 done
-echo "=== DTS patch OK (both files: dts_support = TRUE, no remaining FALSE) ==="
+echo "=== DTS patch OK (all three files: dts_support = TRUE, no remaining FALSE) ==="
 
 # ---------------------------------------------------------------------------
 # TRUEHD-IN-MPEG-TS PATCH: LG wraps the BD TrueHD stream-type case in tsdemux.c
@@ -97,6 +105,51 @@ if [ $((TH_IF + TH_IFDEF + TH_IFNDEF)) -ne "$TH_ENDIF" ]; then
 fi
 echo "=== TrueHD patch OK (audio/x-true-hd exposed, substream 0x72, balanced) ==="
 
+# ---------------------------------------------------------------------------
+# DOLBY VISION PROFILE 7 (MKV) PATCHES -- two changes to matroska-demux.c:
+#
+# 1. LG returns early for dv_profile == 7 ("not supported, but can play as
+#    HDR10"), so UHD-BD P7 MKVs never get Dolby Vision caps. Fold P7 into the
+#    "< 7 requires a dvcC box" branch so it reaches "Set as Dolby Vision". The
+#    TV decodes the base layer + RPU; a FEL residual layer is not decoded.
+#
+# 2. The BlockAdditionMapping parser treats EVERY BlockAddIDExtraData as a DOVI
+#    config. UHD-BD P7 MKVs carry a second mapping of type hvcE (the EL's HEVC
+#    config), whose bytes then overwrite dv_profile (read as 16) and kill
+#    playback. Remember each mapping's BlockAddIDType and only parse extradata
+#    from a dvcC (1685480259) or dvvC (1685485123) mapping.
+#
+# A byte-patched stock LG binary with change 1 showed a green tint on FEL, so
+# this is shipped as a source build only. Applied to the copied source, then
+# verified (build fails if either change did not land).
+# ---------------------------------------------------------------------------
+perl - "$MKVDEMUX" <<'DV7_PL'
+use strict; use warnings;
+local $/; my $f = shift; open my $fh, '<', $f or die "$f: $!"; my $s = <$fh>; close $fh;
+my $n;
+$n = $s =~ s~if \(demux->dv_profile == 7\) \{\n\s*GST_DEBUG_OBJECT \(demux,\n\s*"Dolby Vision profile 7 is not supported, but can play as HDR10\."\);\n\s*return TRUE;\n\s*\} else if \(demux->dv_profile < 7\) \{~if (demux->dv_profile <= 7) {~g;
+die "DV7 PATCH FAILED: P7 HDR10 gate matched ${\($n||0)} times in $f\n" unless $n && $n == 1;
+$n = $s =~ s~(      case GST_MATROSKA_ID_BLOCKADDITIONMAPPING:\{\n)~$1        guint64 map_type = 0;\n~g;
+die "DV7 PATCH FAILED: BlockAdditionMapping case matched ${\($n||0)} times in $f\n" unless $n && $n == 1;
+$n = $s =~ s~("BlockAdditionMapping BlockAddIDType: %" G_GUINT64_FORMAT,\n\s*num\);\n)~$1              map_type = num;\n~g;
+die "DV7 PATCH FAILED: BlockAddIDType debug matched ${\($n||0)} times in $f\n" unless $n && $n == 1;
+$n = $s =~ s~(&size\)\) != GST_FLOW_OK\)\n\s*break;\n\n)( *)(demux->dv_profile = \(data\[2\] >> 1\) & 0x7f;)~$1$2/* dts_restore_plus: only dvcC/dvvC carry a DOVI config (hvcE is the EL's HEVC config) */\n$2if (map_type != 1685480259 && map_type != 1685485123) {\n$2  g_free (data);\n$2  break;\n$2}\n\n$2$3~g;
+die "DV7 PATCH FAILED: DOVI extradata parse matched ${\($n||0)} times in $f\n" unless $n && $n == 1;
+open my $out, '>', $f or die "$f: $!"; print $out $s; close $out;
+DV7_PL
+
+echo "=== DV7 patch verification ==="
+grep -n 'demux->dv_profile <= 7' "$MKVDEMUX" \
+  || { echo "PATCH FAILED: no dv_profile <= 7 in $MKVDEMUX"; exit 1; }
+if grep -n 'profile 7 is not supported' "$MKVDEMUX"; then
+  echo "PATCH FAILED: DV7 HDR10 gate still present in $MKVDEMUX"; exit 1
+fi
+grep -n 'map_type = num;' "$MKVDEMUX" \
+  || { echo "PATCH FAILED: BlockAddIDType not recorded in $MKVDEMUX"; exit 1; }
+grep -n 'map_type != 1685480259 && map_type != 1685485123' "$MKVDEMUX" \
+  || { echo "PATCH FAILED: extradata not gated on dvcC/dvvC in $MKVDEMUX"; exit 1; }
+echo "=== DV7 patch OK (P7 -> Dolby Vision, extradata gated on dvcC/dvvC) ==="
+
 # Minimal patch for an LG meson bug: gst-libs/gst/mpdclient/meson.build uses
 # gstmpdclient/pkg_name outside the "if xml2_dep.found()" guard, which breaks
 # configuration when dash is disabled. Move the endif to end of file.
@@ -140,6 +193,8 @@ export PATH="$PREFIX/bin:$PATH"
 echo "=== in-container DTS patch check ==="
 grep -n 'qtdemux->dts_support = TRUE' "$SRC/gst-plugins-good/gst/isomp4/qtdemux.c"
 grep -n 'demux->dts_support = TRUE'   "$SRC/gst-plugins-bad/gst/mpegtsdemux/tsdemux.c"
+grep -n 'demux->dts_support = TRUE'   "$SRC/gst-plugins-good/gst/matroska/matroska-demux.c"
+grep -n 'demux->dv_profile <= 7'      "$SRC/gst-plugins-good/gst/matroska/matroska-demux.c"
 
 COMMON="--cross-file $CROSS --prefix $PREFIX --libdir lib --buildtype release
   -Dexamples=disabled -Dtests=disabled -Ddoc=disabled
@@ -159,7 +214,8 @@ meson setup "$WORK/base" "$SRC/gst-plugins-base" $COMMON \
 ninja -C "$WORK/base" install
 
 meson setup "$WORK/good" "$SRC/gst-plugins-good" $COMMON \
-  -Dauto_features=disabled -Disomp4=enabled -Ddca=true -Dorc=disabled
+  -Dauto_features=disabled -Disomp4=enabled -Dmatroska=enabled -Dbz2=enabled \
+  -Ddca=true -Dorc=disabled
 ninja -C "$WORK/good" install
 
 meson setup "$WORK/bad" "$SRC/gst-plugins-bad" $COMMON \
@@ -169,9 +225,16 @@ ninja -C "$WORK/bad" install
 
 cp "$PREFIX/lib/gstreamer-1.0/libgstisomp4.so" "$OUT/"
 cp "$PREFIX/lib/gstreamer-1.0/libgstmpegtsdemux.so" "$OUT/"
-arm-linux-gnueabi-strip --strip-unneeded "$OUT/libgstisomp4.so" "$OUT/libgstmpegtsdemux.so"
+cp "$PREFIX/lib/gstreamer-1.0/libgstmatroska.so" "$OUT/"
+arm-linux-gnueabi-strip --strip-unneeded "$OUT/libgstisomp4.so" "$OUT/libgstmpegtsdemux.so" \
+  "$OUT/libgstmatroska.so"
+# Debian's bz2 soname is libbz2.so.1.0; the C5 only has libbz2.so.1 (the stock
+# libgstmatroska.so NEEDs that name too), so rewrite it or the plugin won't load.
+patchelf --replace-needed libbz2.so.1.0 libbz2.so.1 "$OUT/libgstmatroska.so"
+arm-linux-gnueabi-readelf -d "$OUT/libgstmatroska.so" | grep -q 'NEEDED.*\[libbz2\.so\.1\]' \
+  || { echo "libgstmatroska.so does not NEED libbz2.so.1"; exit 1; }
 
-for so in "$OUT"/libgstisomp4.so "$OUT"/libgstmpegtsdemux.so; do
+for so in "$OUT"/libgstisomp4.so "$OUT"/libgstmpegtsdemux.so "$OUT"/libgstmatroska.so; do
   echo "--- $so"
   file "$so"
   echo -n "e_flags: "; od -An -tx4 -j36 -N4 "$so"
@@ -197,10 +260,10 @@ RUN dpkg --add-architecture armel && \\
       build-essential gcc-arm-linux-gnueabi g++-arm-linux-gnueabi \\
       ninja-build pkg-config flex bison \\
       python3 python3-pip python3-setuptools python3-wheel \\
-      libglib2.0-dev-bin libglib2.0-dev:armel zlib1g-dev:armel \\
+      libglib2.0-dev-bin libglib2.0-dev:armel zlib1g-dev:armel libbz2-dev:armel \\
       file binutils && \\
     rm -rf /var/lib/apt/lists/*
-RUN pip3 install --no-cache-dir 'meson==1.4.2'
+RUN pip3 install --no-cache-dir 'meson==1.4.2' 'patchelf==0.19.1.0'
 COPY cross-armel.txt /cross-armel.txt
 COPY build-inside.sh /build-inside.sh
 RUN chmod +x /build-inside.sh

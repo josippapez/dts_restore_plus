@@ -102,7 +102,8 @@ not supported — `qtdemux` has no TrueHD codepath)**.
   `/var/lib/webosbrew/dts25/` — see `../README.md`), TrueHD (`libgstlibav.so` +
   ffmpeg libs → `/var/lib/webosbrew/truehd/`), and the container demuxers (patched
   `libgstisomp4.so` + `libgstmpegtsdemux.so`, `dts_support` default TRUE plus the BD
-  TrueHD stream-type case un-`#if-0`d → `/var/lib/webosbrew/demux25/`).
+  TrueHD stream-type case un-`#if-0`d, and `libgstmatroska.so` with Dolby Vision
+  profile 7 enabled → `/var/lib/webosbrew/demux25/`).
   Generate the two `/etc` overrides
   (codec-capability TRUEHD/MLP; gstcool `avdec_truehd/mlp=310`, `adecswitch=320`).
   Write the canonical `init_dts25.sh`, which bind-mounts our libav, the demuxers, and
@@ -160,10 +161,10 @@ so the detect probe md5s them against each other — no hash has to be embedded 
 It reports `payloadStale`, `payloadStaleReason` and `payloadStaleFiles`, naming the files
 that differ, and the UI shows a note asking the user to press Enable.
 
-Six files are compared: `libgstdtsdec.so` and `libdca.so.0` (DTS), `libgstlibav.so` plus
-`libavcodec.so.58` as the representative of the ffmpeg set — those libs move together, so
-one is enough to catch a TrueHD payload swap without hashing a dozen files — and
-`libgstisomp4.so` + `libgstmpegtsdemux.so` (container demuxers). A file this build ships
+Eight files are compared: `libgstdtsdec.so` and `libdca.so.0` (DTS), `libgstadecswitch.so`,
+`libgstlibav.so` plus `libavcodec.so.58` as the representative of the ffmpeg set — those libs
+move together, so one is enough to catch a TrueHD payload swap without hashing a dozen files —
+and `libgstisomp4.so` + `libgstmpegtsdemux.so` + `libgstmatroska.so` (container demuxers). A file this build ships
 that is absent from the staged set is reported as missing rather than drifted (a partial
 stage, e.g. a TV enabled under a build that shipped no demuxers), and a TV with nothing
 staged at all is reported as neither — it was simply never enabled.
@@ -484,7 +485,7 @@ cp ../restore/switch-out/libgstadecswitch.so                   payload/webos25/
 cp ../restore/truehd-out/libgstlibav.so ../restore/truehd-out/libav*.so* \
    ../restore/truehd-out/libsw*.so*                            payload/webos25-truehd/
 cp ../restore/demux-out/libgstisomp4.so ../restore/demux-out/libgstmpegtsdemux.so \
-                                                               payload/webos25-demux/
+   ../restore/demux-out/libgstmatroska.so                      payload/webos25-demux/
 # small DTS samples for the self-test / play-by-ear (already bundled)
 # payload/testfiles/{DTS-in-mp4.mp4,DTS-HD-MA-5.1.ts,DTS-HD-MA-5.1.m2ts}
 cp -f ../../gst/*.so                                           payload/cx/  # shared CX + C2

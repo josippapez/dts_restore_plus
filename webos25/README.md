@@ -135,7 +135,9 @@ verbatim and symlinked from `/var/lib/webosbrew/init.d/restore_dts25`):
    TRUE) are staged in `/var/lib/webosbrew/demux25/` and **bind-mounted over** LG's
    `/usr/lib/gstreamer-1.0/libgst{isomp4,mpegtsdemux}.so` **before** the registry
    regen, so the demuxers emit `audio/x-dts` for mp4/ts/m2ts instead of an
-   untargetable fourcc. Video pads (H.264/HEVC/DV) are untouched.
+   untargetable fourcc. Video pads (H.264/HEVC/DV) are untouched. A patched
+   `libgstmatroska.so` is staged and bound the same way, for Dolby Vision
+   profile 7 in MKV (see "Dolby Vision profile 7 (MKV)" below).
 
 3. **Codec capability** — `TRUEHD` + `MLP` audio-codec objects are added to
    `/etc/umediaserver/device_codec_capability_config.json` so `umediaserver`
@@ -370,9 +372,9 @@ would reject the very TV the payload is verified on. Enabling therefore moves gs
 software decoders from LG's ffmpeg 5 build to our ffmpeg 4.4 build.
 
 **Firmware-drift stand-down.** `/var/lib/webosbrew/dts25/stock.fp` records, from the last time the
-gate passed, the pristine hashes of the three plugins we shadow **and** of the two live `/etc` files we
+gate passed, the pristine hashes of the plugins we shadow **and** of the two live `/etc` files we
 bind snapshots of (`device_codec_capability_config.json`, `gstcool.conf`). If a firmware update changes
-any of the five, the boot hook stands itself down — toast, nothing bound — instead of applying a payload
+any of them, the boot hook stands itself down — toast, nothing bound — instead of applying a payload
 verified against a stock file the TV no longer has. The `/etc` pair is in there because those snapshots
 are derived at install time and only change via OTA: without them, an update that rewrote only
 `gstcool.conf` would keep the verdict `verified` while the hook quietly reverted LG's own config change,
@@ -381,10 +383,10 @@ table keys on the plugin hashes and cannot express `/etc` state, so "has this TV
 recorded it" outranks "does this TV look like a known-good one". Protection engages from the first apply
 under a build that records those keys; an older `stock.fp` that never had them does not read as drift.
 
-One residual, stated rather than engineered around: `libgstmatroska.so` is neither shadowed nor
-fingerprinted, so an OTA changing its `A_DTS` retag would silently lose MKV DTS. That fails in the
-acceptable direction — it costs our codec and harms nothing else — and the registry commit gate still
-passes, because it checks that `matroskademux` registers, not what caps it emits.
+`libgstmatroska.so` (shadowed for Dolby Vision profile 7) is recorded in `stock.fp` too, but it is
+not a key of the verified-sets table above, whose rows predate it. It is drift-checked like the `/etc`
+pair: an older `stock.fp` without it is not drift, and protection engages from the next unbound
+measurement (the next boot or Enable).
 
 **Registry commit gate.** After binding, the regenerated registry is only copied over
 `/mnt/flash/data/gst_1_0_registry.arm.bin` if `dtsdec`, `avdec_truehd`, `adecswitch`,
@@ -557,6 +559,26 @@ unchanged. **`.mp4` TrueHD remains unsupported** — `qtdemux.c` has no TrueHD/M
   [`docs/PASSTHROUGH.md`](docs/PASSTHROUGH.md).
 - **No bitstream passthrough** to an AVR (decode-to-PCM only) — out of scope.
 
+## Dolby Vision profile 7 (MKV)
+
+Stock LG `matroskademux` plays a Dolby Vision **profile 7** MKV (UHD Blu-ray) as plain
+HDR10: it returns early with *"Dolby Vision profile 7 is not supported, but can play as
+HDR10"*. `build-demux.sh` rebuilds `libgstmatroska.so` from LG's webOS-25 source with that
+gate folded into the profile ≤ 7 / `dvcC` branch, and with the `BlockAdditionMapping`
+parser reading the DOVI config only from a `dvcC`/`dvvC` mapping — UHD-BD remuxes carry a
+second `hvcE` mapping (the enhancement layer's HEVC config) whose bytes otherwise overwrite
+the profile and break playback.
+
+Verified on a C5 in LG's Media Player: P7 MEL and P7 FEL MKVs show the **Dolby Vision**
+badge with correct colours; P8.1 and P5 MKVs still play as Dolby Vision with Atmos; TrueHD
+and DTS in MKV are unaffected.
+
+- DV comes from the **base layer + RPU metadata**. A FEL's residual (enhancement) layer is
+  **not decoded** — the TV has one video decoder — which is the same result as converting
+  P7 to P8.1.
+- **MP4 profile 7 still plays as HDR10.** `qtdemux.c` has the same gate but is not patched,
+  because no MP4 P7 sample has been verified.
+
 ## Build
 
 Both builds are reproducible Docker / cross-builds and print an ABI report
@@ -566,7 +588,7 @@ soft-float `0x05000200` before deploying.
 ```sh
 ./build.sh          # -> out/libgstdtsdec.so, out/libdca.so.0     (patched dtsdec)
 ./build-truehd.sh   # -> truehd-out/libgstlibav.so + libav*/libsw* (gst-libav + ffmpeg n4.4.4)
-./build-demux.sh    # -> demux-out/libgst{isomp4,mpegtsdemux}.so   (DTS demux, dts_support=TRUE)
+./build-demux.sh    # -> demux-out/libgst{isomp4,mpegtsdemux,matroska}.so   (DTS demux, dts_support=TRUE; MKV DV7)
 ```
 
 `build.sh` needs Docker with arm64 emulation

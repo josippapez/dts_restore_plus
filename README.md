@@ -249,7 +249,7 @@ links a GPL library:
 |---|---|---|
 | App, service, `install.sh`/`init_dts25.sh`/`uninstall.sh` | LGPL-2.1-or-later | this repo's own code |
 | Legacy `gst/libgst{matroska,isomp4,isomp4_1_8,libav}.so` (packaged in `payload/cx/`) | LGPL-2.1-or-later | LG GStreamer 1.14.4 sources; shared by the inherited CX mechanism and experimental C2 profile |
-| `webos25/restore/demux-out/libgst{isomp4,mpegtsdemux}.so` | LGPL-2.1-or-later | built from gst-plugins-good / -bad |
+| `webos25/restore/demux-out/libgst{isomp4,mpegtsdemux,matroska}.so` | LGPL-2.1-or-later | built from gst-plugins-good / -bad |
 | `webos25/restore/truehd-out/libgstlibav.so`, `libav*.so*`, `libsw*.so*` | LGPL-2.1-or-later | ffmpeg 4.4 configured **without** `--enable-gpl` / `--enable-version3` (see `webos25/restore/build-truehd.sh`) |
 | `libgstdtsdec.so`, `libdca.so.0` | **GPL-2.0-or-later** | the plugin source is LGPL, but it links **libdca**, which is GPL-2.0-or-later — the resulting binary is a combined work |
 

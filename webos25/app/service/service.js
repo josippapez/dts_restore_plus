@@ -141,7 +141,7 @@ var APPBASE_PRELUDE =
 var APP_INSTALL  = "$APPBASE";
 var PAYLOAD_W25     = APP_INSTALL + "/payload/webos25";          // libgstdtsdec.so + libdca.so.0
 var PAYLOAD_W25_THD = APP_INSTALL + "/payload/webos25-truehd";   // libgstlibav.so + ffmpeg libs
-var PAYLOAD_W25_DMX = APP_INSTALL + "/payload/webos25-demux";    // patched isomp4 + mpegtsdemux
+var PAYLOAD_W25_DMX = APP_INSTALL + "/payload/webos25-demux";    // patched isomp4 + mpegtsdemux + matroska
 var PAYLOAD_CX      = APP_INSTALL + "/payload/cx";               // CX demuxer/libav .so set
 // C2-only, deliberately NOT in payload/cx: that directory is shared with the
 // cx-armv7-gst114 profile, and adding a TS demuxer there would change CX behaviour.
@@ -197,11 +197,13 @@ var W25_GC_LIVE     = "/etc/gst/gstcool.conf";
 var W25_GC_OVR      = W25_THD_DEST + "/gstcool.conf";
 var W25_LGLIBAV     = "/usr/lib/gstreamer-1.0/libgstlibav.so";
 /* Container-demuxer side: patched isomp4/mpegtsdemux (dts_support default TRUE)
- * so DTS works in mp4/ts/m2ts, not just MKV. Staged then bind-mounted over LG's
- * demuxers BEFORE the registry regen (fully reversible). */
+ * so DTS works in mp4/ts/m2ts, not just MKV, and patched matroska so Dolby Vision
+ * profile 7 MKVs play as DV. Staged then bind-mounted over LG's demuxers BEFORE
+ * the registry regen (fully reversible). */
 var W25_DMX_DEST    = "/var/lib/webosbrew/demux25";
 var W25_ISO_LIVE    = "/usr/lib/gstreamer-1.0/libgstisomp4.so";
 var W25_TSD_LIVE    = "/usr/lib/gstreamer-1.0/libgstmpegtsdemux.so";
+var W25_MKV_LIVE    = "/usr/lib/gstreamer-1.0/libgstmatroska.so";
 /* awk programs that generate the two overrides (same logic as install.sh;
  * written to the TV via base64 heredoc + run with `awk -f` to avoid any
  * shell quoting hazard). Author constants only -- nothing caller-supplied. */
@@ -271,7 +273,7 @@ var W25_INIT_HEAD = [
   "# Always exits 0: a non-zero webosbrew init script trips the failsafe that",
   "# disables ALL root customisations on the next boot. Every refusal path binds",
   "# nothing -- the overrides are system-wide (they propagate into every app jail),",
-  "# so \"not sure\" must mean \"do not touch this TV\". The two container demuxers are",
+  "# so \"not sure\" must mean \"do not touch this TV\". The container demuxers are",
   "# OPTIONAL: without them DTS still works in MKV, which is how this shipped before",
   "# the gate existed, so each is bound only when staged.",
   "#",
@@ -338,7 +340,10 @@ var W25_COMPAT_SH = [
   "#      post-bind registry proof (w25_reg_has_all), which now checks SIX elements.",
   "#      A `[sw_decoder] adecswitch=320` line in the generated gstcool.conf remains a",
   "#      config-level kill switch (rank 0 reverts to stock decodebin3 behaviour).",
-  "W25_GATE_VERSION=26",
+  "#   27 shadows libgstmatroska.so too (optional demuxer, Dolby Vision profile 7):",
+  "#      bound in APPLY 2c, unbound by w25_drop_binds, fingerprinted in stock.fp and",
+  "#      drift-checked like the /etc keys, so an older stock.fp without it is not drift.",
+  "W25_GATE_VERSION=27",
   "FP=/var/lib/webosbrew/dts25/stock.fp",
   "# Where the installed copy of THIS script lives, and the boot hook that symlinks",
   "# to it. Named here, in the shared block, so the read-only probe can fingerprint",
@@ -351,6 +356,7 @@ var W25_COMPAT_SH = [
   "LGLIBAV=/usr/lib/gstreamer-1.0/libgstlibav.so",
   "LGISO=/usr/lib/gstreamer-1.0/libgstisomp4.so",
   "LGTSD=/usr/lib/gstreamer-1.0/libgstmpegtsdemux.so",
+  "LGMKV=/usr/lib/gstreamer-1.0/libgstmatroska.so",
   "# CORE payload -- without any of these there is no DTS, no TrueHD, and no",
   "# switching bin, so a missing one means \"do not bind anything\".",
   "MYDTS=/var/lib/webosbrew/dts25/libgstdtsdec.so",
@@ -366,6 +372,7 @@ var W25_COMPAT_SH = [
   "# bound only when staged and is never a reason to refuse or to delete anything.",
   "MYISO=/var/lib/webosbrew/demux25/libgstisomp4.so",
   "MYTSD=/var/lib/webosbrew/demux25/libgstmpegtsdemux.so",
+  "MYMKV=/var/lib/webosbrew/demux25/libgstmatroska.so",
   "MYCFG=/var/lib/webosbrew/truehd/codec_capability.json",
   "MYGC=/var/lib/webosbrew/truehd/gstcool.conf",
   "MYLIBS=/var/lib/webosbrew/truehd/libs:/var/lib/webosbrew/dts25/libs",
@@ -411,7 +418,7 @@ var W25_COMPAT_SH = [
   "# the warning up.",
   "w25_drop_binds() {",
   "  UNMOUNT_FAILED=",
-  "  for t in \"$CFG\" \"$GC\" \"$LGLIBAV\" \"$LGISO\" \"$LGTSD\" \"$REG\" \"$LLS\"; do",
+  "  for t in \"$CFG\" \"$GC\" \"$LGLIBAV\" \"$LGISO\" \"$LGTSD\" \"$LGMKV\" \"$REG\" \"$LLS\"; do",
   "    w25_umount \"$t\" || UNMOUNT_FAILED=\"${UNMOUNT_FAILED:+$UNMOUNT_FAILED }$t\"",
   "  done",
   "  [ -z \"$UNMOUNT_FAILED\" ] && return 0",
@@ -460,35 +467,40 @@ var W25_COMPAT_SH = [
   "# while leaving the three plugins alone must not read as \"verified\": the hook",
   "# would silently revert LG's own config change, system-wide, forever.",
   "#",
-  "# Residual we are NOT engineering around: libgstmatroska.so is neither shadowed",
-  "# nor fingerprinted, so an OTA that changes its A_DTS retag would silently lose",
-  "# MKV DTS. That fails in the acceptable direction -- it costs our codec and harms",
-  "# nothing else -- and the five-element proof still passes, because it checks that",
-  "# matroskademux REGISTERS, not what caps it emits.",
+  "# libgstmatroska.so (shadowed since gate 27, for Dolby Vision profile 7) is",
+  "# fingerprinted too, but it is NOT a verified-sets table key: the table predates",
+  "# it and its rows carry no matroska hash. Its drift check therefore goes through",
+  "# w25_fp_differs like the /etc keys, so a stock.fp written before gate 27 is not",
+  "# drift; protection engages from the first unbound measurement that records it.",
   "w25_measure() {",
   "  B_LIBAV=$(w25_bound \"$LGLIBAV\")",
   "  B_ISOMP4=$(w25_bound \"$LGISO\")",
   "  B_MPEGTS=$(w25_bound \"$LGTSD\")",
+  "  B_MKV=$(w25_bound \"$LGMKV\")",
   "  B_CFG=$(w25_bound \"$CFG\")",
   "  B_GC=$(w25_bound \"$GC\")",
   "  S_LIBAV=",
   "  S_ISOMP4=",
   "  S_MPEGTS=",
+  "  S_MKV=",
   "  S_CFG=",
   "  S_GC=",
   "  [ \"$B_LIBAV\" = 0 ] && S_LIBAV=$(w25_md5 \"$LGLIBAV\")",
   "  [ \"$B_ISOMP4\" = 0 ] && S_ISOMP4=$(w25_md5 \"$LGISO\")",
   "  [ \"$B_MPEGTS\" = 0 ] && S_MPEGTS=$(w25_md5 \"$LGTSD\")",
+  "  [ \"$B_MKV\" = 0 ] && S_MKV=$(w25_md5 \"$LGMKV\")",
   "  [ \"$B_CFG\" = 0 ] && S_CFG=$(w25_md5 \"$CFG\")",
   "  [ \"$B_GC\" = 0 ] && S_GC=$(w25_md5 \"$GC\")",
   "  M_LIBAV=$S_LIBAV",
   "  M_ISOMP4=$S_ISOMP4",
   "  M_MPEGTS=$S_MPEGTS",
+  "  M_MKV=$S_MKV",
   "  M_CFG=$S_CFG",
   "  M_GC=$S_GC",
   "  [ -n \"$M_LIBAV\" ] || M_LIBAV=$(w25_fp_get libgstlibav)",
   "  [ -n \"$M_ISOMP4\" ] || M_ISOMP4=$(w25_fp_get libgstisomp4)",
   "  [ -n \"$M_MPEGTS\" ] || M_MPEGTS=$(w25_fp_get libgstmpegtsdemux)",
+  "  [ -n \"$M_MKV\" ] || M_MKV=$(w25_fp_get libgstmatroska)",
   "  [ -n \"$M_CFG\" ] || M_CFG=$(w25_fp_get device_codec_capability_config)",
   "  [ -n \"$M_GC\" ] || M_GC=$(w25_fp_get gstcool)",
   "  GST_MM_NOW=$(w25_gst_mm)",
@@ -532,17 +544,19 @@ var W25_COMPAT_SH = [
   "  FP_AV=$(w25_fp_get libgstlibav)",
   "  FP_ISO=$(w25_fp_get libgstisomp4)",
   "  FP_TSD=$(w25_fp_get libgstmpegtsdemux)",
+  "  FP_MKV=$(w25_fp_get libgstmatroska)",
   "  FP_CFG=$(w25_fp_get device_codec_capability_config)",
   "  FP_GC=$(w25_fp_get gstcool)",
   "  # The three plugin hashes compare strictly (they have always been recorded).",
-  "  # The two /etc hashes go through w25_fp_differs so an older stock.fp that never",
-  "  # recorded them does not read as drift.",
+  "  # The two /etc hashes and libgstmatroska go through w25_fp_differs so an older",
+  "  # stock.fp that never recorded them does not read as drift.",
   "  DRIFT_WHAT=",
   "  DRIFT_PLUGINS=0",
   "  DRIFT_CONFIG=0",
   "  [ \"$FP_AV\" != \"$M_LIBAV\" ] && { DRIFT_WHAT=\"${DRIFT_WHAT:+$DRIFT_WHAT }libgstlibav.so\"; DRIFT_PLUGINS=1; }",
   "  [ \"$FP_ISO\" != \"$M_ISOMP4\" ] && { DRIFT_WHAT=\"${DRIFT_WHAT:+$DRIFT_WHAT }libgstisomp4.so\"; DRIFT_PLUGINS=1; }",
   "  [ \"$FP_TSD\" != \"$M_MPEGTS\" ] && { DRIFT_WHAT=\"${DRIFT_WHAT:+$DRIFT_WHAT }libgstmpegtsdemux.so\"; DRIFT_PLUGINS=1; }",
+  "  w25_fp_differs \"$FP_MKV\" \"$M_MKV\" && { DRIFT_WHAT=\"${DRIFT_WHAT:+$DRIFT_WHAT }libgstmatroska.so\"; DRIFT_PLUGINS=1; }",
   "  w25_fp_differs \"$FP_CFG\" \"$M_CFG\" && { DRIFT_WHAT=\"${DRIFT_WHAT:+$DRIFT_WHAT }device_codec_capability_config.json\"; DRIFT_CONFIG=1; }",
   "  w25_fp_differs \"$FP_GC\" \"$M_GC\" && { DRIFT_WHAT=\"${DRIFT_WHAT:+$DRIFT_WHAT }gstcool.conf\"; DRIFT_CONFIG=1; }",
   "  if [ -n \"$FP_AV$FP_ISO$FP_TSD\" ] && [ -n \"$DRIFT_WHAT\" ]; then",
@@ -701,7 +715,7 @@ var W25_COMPAT_SH = [
   "    LOADER_MISS=\"the core payload is not staged ($MYDTS / $MYLIBAV / $MYSWITCH)\"",
   "    return 1",
   "  fi",
-  "  for so in \"$MYDTS\" \"$MYLIBAV\" \"$MYSWITCH\" \"$MYISO\" \"$MYTSD\"; do",
+  "  for so in \"$MYDTS\" \"$MYLIBAV\" \"$MYSWITCH\" \"$MYISO\" \"$MYTSD\" \"$MYMKV\"; do",
   "    [ -f \"$so\" ] || continue",
   "    n=$(LD_LIBRARY_PATH=\"$MYLIBS\" LD_TRACE_LOADED_OBJECTS=1 \"$LD_SO\" \"$so\" 2>&1 | grep -c \"not found\")",
   "    if [ \"$n\" != 0 ]; then LOADER_MISS=\"$so has $n unresolved dependencies on this TV\"; return 1; fi",
@@ -754,6 +768,7 @@ var W25_COMPAT_SH = [
   "  grep -q \" $LGLIBAV \" /proc/mounts 2>/dev/null && return 0",
   "  grep -q \" $LGISO \" /proc/mounts 2>/dev/null && return 0",
   "  grep -q \" $LGTSD \" /proc/mounts 2>/dev/null && return 0",
+  "  grep -q \" $LGMKV \" /proc/mounts 2>/dev/null && return 0",
   "  return 1",
   "}",
   "w25_stock_registry() {",
@@ -788,6 +803,7 @@ var W25_COMPAT_SH = [
   "    echo \"libgstlibav=$M_LIBAV\"",
   "    echo \"libgstisomp4=$M_ISOMP4\"",
   "    echo \"libgstmpegtsdemux=$M_MPEGTS\"",
+  "    echo \"libgstmatroska=$M_MKV\"",
   "    echo \"device_codec_capability_config=$M_CFG\"",
   "    echo \"gstcool=$M_GC\"",
   "    echo \"verified=$1\"",
@@ -821,6 +837,7 @@ var W25_INIT_MAIN = [
   "  echo \"MD5_LIBGSTLIBAV=$S_LIBAV\"",
   "  echo \"MD5_LIBGSTISOMP4=$S_ISOMP4\"",
   "  echo \"MD5_LIBGSTMPEGTSDEMUX=$S_MPEGTS\"",
+  "  echo \"MD5_LIBGSTMATROSKA=$S_MKV\"",
   "  echo \"MD5_DEVICE_CODEC_CAPABILITY_CONFIG=$S_CFG\"",
   "  echo \"MD5_GSTCOOL=$S_GC\"",
   "  # Which gate this script enforces, and its own fingerprint. \"$0\" is the",
@@ -1267,10 +1284,12 @@ var W25_INIT_MAIN = [
   "}",
   "w25_appdts_start",
   "# --- APPLY 2c) container demuxers with DTS re-enabled (mp4/ts/m2ts DTS -> audio/x-dts).",
-  "#         Patched isomp4/mpegtsdemux default dts_support=TRUE. Bound BEFORE the",
-  "#         regen below so the registry picks them up at their normal path.",
+  "#         Patched isomp4/mpegtsdemux default dts_support=TRUE; patched matroska",
+  "#         signals Dolby Vision profile 7. Bound BEFORE the regen below so the",
+  "#         registry picks them up at their normal path.",
   "[ -f \"$MYISO\" ] && ! grep -q \" $LGISO \" /proc/mounts 2>/dev/null && mount -n --bind -o ro \"$MYISO\" \"$LGISO\" 2>>$LOG",
   "[ -f \"$MYTSD\" ] && ! grep -q \" $LGTSD \" /proc/mounts 2>/dev/null && mount -n --bind -o ro \"$MYTSD\" \"$LGTSD\" 2>>$LOG",
+  "[ -f \"$MYMKV\" ] && ! grep -q \" $LGMKV \" /proc/mounts 2>/dev/null && mount -n --bind -o ro \"$MYMKV\" \"$LGMKV\" 2>>$LOG",
   "# --- APPLY 3) regenerate the media registry (fresh) with dtsdec + our libav, then write it to the media path.",
   "#    Bounded by `timeout` and scanned in-process (GST_REGISTRY_FORK=no) so a hang can't trip HBC",
   "#    failsafe and no gst-plugin-scanner child lingers past the timeout.",
@@ -1984,6 +2003,7 @@ var DETECT_PROBE = [
   "w25_pd_cmp \"" + PAYLOAD_W25_THD + "/libgstlibav.so\" \"" + W25_THD_DEST + "/libgstlibav.so\" libgstlibav.so",
   "w25_pd_cmp \"" + PAYLOAD_W25_DMX + "/libgstisomp4.so\" \"" + W25_DMX_DEST + "/libgstisomp4.so\" libgstisomp4.so",
   "w25_pd_cmp \"" + PAYLOAD_W25_DMX + "/libgstmpegtsdemux.so\" \"" + W25_DMX_DEST + "/libgstmpegtsdemux.so\" libgstmpegtsdemux.so",
+  "w25_pd_cmp \"" + PAYLOAD_W25_DMX + "/libgstmatroska.so\" \"" + W25_DMX_DEST + "/libgstmatroska.so\" libgstmatroska.so",
   "# The ffmpeg libs move as a set with libgstlibav.so, so one representative is",
   "# enough to detect a TrueHD payload swap without hashing a dozen files.",
   "w25_pd_cmp \"" + PAYLOAD_W25_THD + "/libavcodec.so.58\" \"" + W25_THD_LIBS + "/libavcodec.so.58\" libavcodec.so.58",
@@ -2488,8 +2508,8 @@ function w25Enable(force) {
     'log "staged $n ffmpeg lib entries -> ' + W25_THD_LIBS + '"',
     // 2c. Stage the container-demuxer payload (optional; skipped if absent).
     'mkdir -p "' + W25_DMX_DEST + '" || log "WARN: cannot create ' + W25_DMX_DEST + '"',
-    'for so in libgstisomp4.so libgstmpegtsdemux.so; do',
-    '  if [ -f "' + PAYLOAD_W25_DMX + '/$so" ]; then cp -f "' + PAYLOAD_W25_DMX + '/$so" "' + W25_DMX_DEST + '/$so" && log "installed $so"; else log "note: ' + PAYLOAD_W25_DMX + '/$so absent; container DTS skipped"; fi',
+    'for so in libgstisomp4.so libgstmpegtsdemux.so libgstmatroska.so; do',
+    '  if [ -f "' + PAYLOAD_W25_DMX + '/$so" ]; then cp -f "' + PAYLOAD_W25_DMX + '/$so" "' + W25_DMX_DEST + '/$so" && log "installed $so"; else log "note: ' + PAYLOAD_W25_DMX + '/$so absent; its demuxer override skipped"; fi',
     'done',
     // 2d. Seed first-run audio defaults (only when no config exists yet).
     w25GainConfSeedScript(DTS_GAIN_CONF),
@@ -3353,6 +3373,7 @@ function w25StatusProbe() {
     'echo "THDLIBSTAGED=$([ -f ' + W25_THD_DEST + '/libgstlibav.so ] && echo 1 || echo 0)"',
     'echo "ISOBIND=$(grep -c " ' + W25_ISO_LIVE + ' " /proc/mounts 2>/dev/null)"',
     'echo "TSDBIND=$(grep -c " ' + W25_TSD_LIVE + ' " /proc/mounts 2>/dev/null)"',
+    'echo "MKVBIND=$(grep -c " ' + W25_MKV_LIVE + ' " /proc/mounts 2>/dev/null)"',
     'echo "DMXSTAGED=$([ -f ' + W25_DMX_DEST + '/libgstisomp4.so ] && [ -f ' + W25_DMX_DEST + '/libgstmpegtsdemux.so ] && echo 1 || echo 0)"',
     // The boot hook rewrites stock.fp on EVERY run, so "mtime older than boot"
     // means the hook has not run yet this boot. Read all three clocks in one
@@ -3553,6 +3574,7 @@ service.register("status", function (message) {
         var tsdbind = parseInt(kv.TSDBIND, 10) > 0;
         base.isomp4Bound = isobind;
         base.mpegtsBound = tsdbind;
+        base.matroskaBound = parseInt(kv.MKVBIND, 10) > 0;   // Dolby Vision profile 7 MKV
         base.demuxPayloadStaged = kv.DMXSTAGED === "1";
         base.containersActive = hook && isobind && tsdbind;   // mp4/ts/m2ts DTS
         // The registry is regenerated + COPIED over the media path (not bind-mounted),

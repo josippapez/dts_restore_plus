@@ -15,7 +15,8 @@ gst/                          four LG GStreamer 1.14.4 legacy plugins (CX/C2 app
 webos25/restore/out/         libgstdtsdec.so, libdca.so.0        (DTS decoder)
 webos25/restore/truehd-out/  libgstlibav.so + libav*/libsw*      (TrueHD/MLP)
 webos25/restore/switch-out/  libgstadecswitch.so                 (track A stream-switch bin)
-webos25/restore/demux-out/   libgstisomp4.so, libgstmpegtsdemux.so (mp4/ts/m2ts DTS)
+webos25/restore/demux-out/   libgstisomp4.so, libgstmpegtsdemux.so (mp4/ts/m2ts DTS),
+                              libgstmatroska.so (MKV Dolby Vision profile 7)
 ```
 
 The app's `webos25/app/payload/**` `.so` are **git-ignored** generated copies. At
@@ -27,7 +28,8 @@ Never edit a generated `payload/**` binary.
 + re-commit them, then re-release.** "Affects those binaries" includes:
 
 - `webos25/restore/src/gstdtsdec.c` (the DTS patch)
-- the `dts_support` demuxer patch or its version, in `webos25/restore/build-demux.sh`
+- the `dts_support` demuxer patch, the Dolby Vision profile 7 matroska patch, or their
+  version, in `webos25/restore/build-demux.sh`
 - `webos25/restore/build.sh`, `build-truehd.sh`, `build-demux.sh`, `build-switch.sh`
   (toolchain, flags, pinned sources, ABI)
 
@@ -107,14 +109,18 @@ the root `README.md`.
 cd webos25/restore
 ./build.sh          # -> out/libgstdtsdec.so, out/libdca.so.0
 ./build-truehd.sh   # -> truehd-out/libgstlibav.so + libav*/libsw*
-./build-demux.sh    # -> demux-out/libgst{isomp4,mpegtsdemux}.so
+./build-demux.sh    # -> demux-out/libgst{isomp4,mpegtsdemux,matroska}.so
 ```
 
 Each build prints an ABI report — **confirm ARM EABI5 soft-float
 (`e_flags 0x05000200`), interpreter `ld-linux.so.3`, max GLIBC ≤ 2.35** before
 trusting the output. Then **verify on a real webOS-25 TV** (install, play a DTS
 MKV + an mp4/ts/m2ts DTS file; a TrueHD MKV **and** a TrueHD `.ts`/`.m2ts`).
-Only then commit the new `.so`.
+If `libgstmatroska.so` changed, also play a Dolby Vision profile 7 MKV (MEL and FEL) in
+LG's Media Player: it must show the **Dolby Vision** badge with correct colours (stock
+plays it as HDR10), a P8.1/P5 MKV must still show Dolby Vision, and a DTS MKV must have
+sound (this build drops DTS tracks unless `dts_support` defaults TRUE). Its ABI report must
+list `NEEDED libbz2.so.1` (the C5 has no `libbz2.so.1.0`). Only then commit the new `.so`.
 
 The TrueHD `.ts`/`.m2ts` case is easy to skip and easy to be fooled by: BD TrueHD
 carries an AC-3 compatibility substream on the **same PID**, so if the TrueHD pad is
@@ -154,7 +160,7 @@ cp -f  ../restore/switch-out/libgstadecswitch.so                        payload/
 cp -Pf ../restore/truehd-out/libgstlibav.so ../restore/truehd-out/libav*.so* \
        ../restore/truehd-out/libsw*.so*                                 payload/webos25-truehd/
 cp -f  ../restore/demux-out/libgstisomp4.so ../restore/demux-out/libgstmpegtsdemux.so \
-                                                                         payload/webos25-demux/
+       ../restore/demux-out/libgstmatroska.so                            payload/webos25-demux/
 cp -f  ../../gst/libgstlibav.so ../../gst/libgstisomp4.so \
        ../../gst/libgstmatroska.so ../../gst/libgstisomp4_1_8.so          payload/cx/
 npm install -g @webosose/ares-cli
@@ -170,6 +176,8 @@ All four root `gst/` files are required for packaging even though C2 binds
 - [ ] Binaries in `webos25/restore/**` current (rebuilt + on-device-verified if affected)
 - [ ] Four tracked root `gst/*.so` files copied into generated `payload/cx/`
 - [ ] `webos25/restore/demux-out/BUILD-REPORT.txt` reflects the current build
+- [ ] A Dolby Vision profile 7 MKV shows the Dolby Vision badge on a real webOS-25 TV
+      (if `libgstmatroska.so` changed)
 - [ ] `sh webos25/restore/check-init-sync.sh` passes (the release workflow also runs it)
 - [ ] `sh webos25/restore/check-manifest-floor.sh` passes (the workflow runs it too) —
       the Homebrew listing floor in `packaging/homebrew/*.yml` must not exclude a webOS

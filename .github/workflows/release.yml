@@ -60,7 +60,8 @@ jobs:
           for f in out/libgstdtsdec.so out/libdca.so.0 \
                    truehd-out/libgstlibav.so \
                    switch-out/libgstadecswitch.so \
-                   demux-out/libgstisomp4.so demux-out/libgstmpegtsdemux.so; do
+                   demux-out/libgstisomp4.so demux-out/libgstmpegtsdemux.so \
+                   demux-out/libgstmatroska.so; do
             [ -f "$f" ] || { echo "MISSING committed binary: $f"; exit 1; }
           done
           echo "all prebuilt binaries present"
@@ -117,7 +118,8 @@ jobs:
           cp -f  ../restore/switch-out/libgstadecswitch.so                        payload/webos25/
           cp -Pf ../restore/truehd-out/libgstlibav.so                             payload/webos25-truehd/
           cp -Pf ../restore/truehd-out/libav*.so* ../restore/truehd-out/libsw*.so* payload/webos25-truehd/
-          cp -f  ../restore/demux-out/libgstisomp4.so ../restore/demux-out/libgstmpegtsdemux.so payload/webos25-demux/
+          cp -f  ../restore/demux-out/libgstisomp4.so ../restore/demux-out/libgstmpegtsdemux.so \
+                 ../restore/demux-out/libgstmatroska.so payload/webos25-demux/
           # C2/G2 deliberately reuses the existing legacy payload directory. Do
           # not duplicate these identical binaries under a model-specific path.
           mkdir -p payload/cx

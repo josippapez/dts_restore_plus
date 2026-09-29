@@ -13,6 +13,7 @@
 #        - /usr/lib/gstreamer-1.0/libgstlibav.so
 #        - /usr/lib/gstreamer-1.0/libgstisomp4.so       (container DTS)
 #        - /usr/lib/gstreamer-1.0/libgstmpegtsdemux.so  (container DTS)
+#        - /usr/lib/gstreamer-1.0/libgstmatroska.so     (Dolby Vision profile 7)
 #        - /mnt/flash/data/gst_1_0_registry.arm.bin
 #   2c. Regenerates a clean STOCK registry -- and this gates step 3.
 #   3. Removes dts25/stock.fp and /var/lib/webosbrew/{dts25,truehd,demux25},
@@ -40,6 +41,7 @@ GC_LIVE=/etc/gst/gstcool.conf
 LGLIBAV=/usr/lib/gstreamer-1.0/libgstlibav.so
 DMX_ISO=/usr/lib/gstreamer-1.0/libgstisomp4.so
 DMX_TSD=/usr/lib/gstreamer-1.0/libgstmpegtsdemux.so
+DMX_MKV=/usr/lib/gstreamer-1.0/libgstmatroska.so
 REG_TARGET=/mnt/flash/data/gst_1_0_registry.arm.bin
 REG_TMP=/tmp/gst_dts_reg.bin
 # The app-DTS opt-in bind (tv.model.edidType). Both it and configd's cache are
@@ -84,7 +86,7 @@ fi
 # Rootfs paths only. The same binds propagate into every app jail (27 jail-side
 # copies per library on a real C5); those are left alone deliberately, because
 # detaching a jail's own view of the library would break that jail.
-for T in "$CFG_LIVE" "$GC_LIVE" "$LGLIBAV" "$DMX_ISO" "$DMX_TSD" "$REG_TARGET" "$LLS_LIVE"; do
+for T in "$CFG_LIVE" "$GC_LIVE" "$LGLIBAV" "$DMX_ISO" "$DMX_TSD" "$DMX_MKV" "$REG_TARGET" "$LLS_LIVE"; do
   w25_umount "$T"
 done
 # configd caches the folded-in layer values; drop the cache and let it re-read the
@@ -135,7 +137,7 @@ REG_OK=0
 # under a surviving bind. Same precondition as w25_stock_registry() in
 # init_dts25.sh.
 BINDS_LEFT=0
-for T in "$LGLIBAV" "$DMX_ISO" "$DMX_TSD"; do
+for T in "$LGLIBAV" "$DMX_ISO" "$DMX_TSD" "$DMX_MKV"; do
   grep -q " $T " /proc/mounts 2>/dev/null && BINDS_LEFT=1
 done
 CLEAN_REG=/tmp/gst_clean_reg.bin

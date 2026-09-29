@@ -1,5 +1,6 @@
 Patched container demuxers for the webOS 25 profile:
   libgstisomp4.so       — qtdemux with dts_support default TRUE (mp4 DTS)
   libgstmpegtsdemux.so  — tsdemux with dts_support default TRUE (ts/m2ts DTS)
+  libgstmatroska.so     — matroskademux signalling Dolby Vision profile 7 (MKV)
 Built from LG's webOS-25 GStreamer 1.24 source (see ../../restore/build-demux.sh).
 Bind-mounted over LG's demuxers by the app's enable mechanism (fully reversible).

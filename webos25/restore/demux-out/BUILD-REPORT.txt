@@ -1,4 +1,5 @@
-Container-demuxer rebuild — DTS re-enabled for mp4/ts/m2ts, plus TrueHD in ts/m2ts
+Container-demuxer rebuild — DTS re-enabled for mp4/ts/m2ts, TrueHD in ts/m2ts,
+and Dolby Vision profile 7 in MKV
 ==================================================================================
 
 Source: LG webOS-25 GStreamer 1.24 monorepo (lgstreamer/gstreamer-webos-25).
@@ -40,7 +41,41 @@ are missing afterwards, or if the preprocessor is left unbalanced.
 Only tsdemux changed: libgstisomp4.so rebuilt BYTE-IDENTICAL (same md5) to the
 previous artifact, which also confirms the build is reproducible.
 
-ABI (both artifacts, stripped) — must match the C5 GStreamer userspace
+Why libgstmatroska.so is now rebuilt too (Dolby Vision profile 7)
+-----------------------------------------------------------------
+LG's matroska-demux.c returns early for dv_profile == 7 ("Dolby Vision profile 7
+is not supported, but can play as HDR10."), so UHD-BD P7 MKVs never got Dolby
+Vision caps. Three changes:
+
+  gst-plugins-good/gst/matroska/matroska-demux.c
+    1. `if (dv_profile == 7) { ...HDR10...; return TRUE; } else if (dv_profile < 7)`
+       -> `if (dv_profile <= 7)`: P7 needs a dvcC box and reaches "Set as Dolby
+       Vision".
+    2. BlockAdditionMapping: remember each mapping's BlockAddIDType and parse
+       BlockAddIDExtraData as a DOVI config only for dvcC (1685480259) / dvvC
+       (1685485123). UHD-BD P7 MKVs carry a second hvcE mapping (the EL's HEVC
+       config); its bytes overwrote dv_profile with 16 and killed playback.
+    3. `demux->dts_support = FALSE` -> TRUE, as in the other two demuxers. With
+       it FALSE this build drops A_DTS tracks (no pad, silent DTS MKVs), where
+       LG's stock binary re-tags them for dtsdec. Now emits audio/x-dts.
+
+Built with -Dmatroska=enabled -Dbz2=enabled (libbz2-dev:armel). Debian's bz2
+soname is libbz2.so.1.0 but the C5 only has libbz2.so.1 (-> libbz2.so.1.0.8), and
+LG's stock libgstmatroska.so NEEDs libbz2.so.1, so build-demux.sh rewrites the
+NEEDED entry with patchelf 0.19.1.0 and fails the build if it did not land.
+
+A FEL title (P7_FEL GIJoe) showed a green tint on some plays, both with a
+byte-patched stock libgstmatroska.so and with this build (same file, same
+binary, normal colours on other plays), only once the TV had been up for hours
+(load ~15, 436 MB swapped, audiod restarted). After a fresh reboot every P7 clip,
+incl. FEL with DTS or TrueHD audio, had correct colours and sound.
+
+This rebuild left libgstisomp4.so (md5 ee47bee841f5baff9f34e2f6f9b01792) and
+libgstmpegtsdemux.so (md5 8a490733c61c7ad0bdb5c9cb78d3547e) BYTE-IDENTICAL to the
+previous artifacts. libgstmatroska.so: md5 03b28878b5201ddf68e8f38e49bf0f92,
+sha1 dd7b9e4f020d1337d0622be67e8bdf1228161e2a -- the binary verified on the C5.
+
+ABI (all three artifacts, stripped) — must match the C5 GStreamer userspace
 ---------------------------------------------------------------------
   file        : ELF 32-bit LSB shared object, ARM, EABI5 (soft-float)
   e_flags     : 0x05000200   (od -An -tx4 -j36 -N4)
@@ -50,6 +85,9 @@ ABI (both artifacts, stripped) — must match the C5 GStreamer userspace
   strings     : audio/x-dts + "DTS audio" present
   strings     : audio/x-true-hd + "TRUE HD AC-3 audio" present (mpegtsdemux only;
                 the ONLY audio-caps difference vs the previous artifact)
+  NEEDED      : libgstmatroska.so -> libgstpbutils/video/audio/base/gstreamer-1.0,
+                libgobject/glib-2.0, libgstriff/tag-1.0, libz.so.1, libbz2.so.1,
+                libm.so.6, libc.so.6
 
 On-device validation (real LG C5, via the media registry)
 ---------------------------------------------------------
@@ -81,6 +119,20 @@ GST_REGISTRY), so the live bind-mounts were never touched:
   Regressions re-checked in the same run, both unchanged at channels=6/0x003f:
     DTS-HD MA in .ts   (188-byte stride)
     DTS-HD MA in .m2ts (192-byte BDAV stride)
+
+Dolby Vision profile 7 MKV validation (real LG C5, webOS 10.3.1, 2026-09-28)
+-----------------------------------------------------------------------------
+Installed with install.sh (bind + stock.fp libgstmatroska= + APPLIED=verified;
+uninstall.sh restores the stock md5 540b5548b90971b4698400c0e255f68a), then
+played in LG's Media Player:
+  P7 MEL MKV, P7 FEL MKV -> Dolby Vision badge, correct colours (stock: HDR10)
+  P8.1 MKV               -> Dolby Vision + Atmos
+  P5 MKV                 -> Dolby Vision + Atmos
+  TrueHD-5.1.mkv         -> sound
+  DTS in the P7 FEL MKV  -> sound (silent before change 3)
+The FEL residual layer is NOT decoded (one video decoder): DV comes from the base
+layer + RPU, the same result as a P7 -> P8.1 conversion. MP4 P7 is still HDR10 --
+qtdemux.c has the same gate, left unpatched because no MP4 P7 sample is verified.
 
 NOT covered: TrueHD in .mp4. qtdemux.c has no TrueHD/MLP codepath at all (no
 `mlpa` fourcc handling), so that needs new code, not a gate flip — still
