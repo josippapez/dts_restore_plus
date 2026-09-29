@@ -37,7 +37,7 @@ Provenance of the evidence used here:
 | **webOS 22 / B2-class** — Realtek (`k8hp`, `W22H`; B2, QNED8x, UQ7x/9x) | **ARM EABI5 soft-float** `[FIRMWARE]` | **1.18.2** `[FIRMWARE]` | **No registered DTS decoder** — no `omxdtsdec1`/`avdec_dca`; demuxers re-tag (`audio/x-unknown, codec-id=A_DTS`, `audio/x-gst-fourcc-dtsc`); `rtkalsasink` statically accepts framed `audio/x-dts` but RTINGS reports **no DTS/DTS:X passthrough** ([FIRMWARE] + product docs) | **No automatic profile.** Legacy 1.14.4 payload decodes under QEMU, but sink/capability declarations are misleading and the closed S32LE→S16LE path is unverified | No durable path — RootMyTV excludes webOS 7(22) `[ASSUMED` per issue-03] |
 | **webOS 23 / B3-class** — Realtek (`k8hpp`, `W23H`; B3, QNED8x, UR8x) | **ARM EABI5 soft-float** `[FIRMWARE]` | **1.18.5** `[FIRMWARE]` | Registers `omxdtsdec1` (configured rank 0) and supports product passthrough; capability JSON and `gstcool.conf` are byte-identical to B2, so those files are not sufficient discriminators `[FIRMWARE]` | **No restore recipe.** Local decode and the closed hardware path remain unverified even though the factory registers | No durable path — RootMyTV excludes webOS 8(23) `[ASSUMED` per issue-03] |
 | **webOS 24 / C4-class** — LG/LX (`o22n2`, `W24G`; C4; also G4/M4/T4 `o24`/`W24O`) | Not extracted `[UNKNOWN]` | Not extracted `[UNKNOWN]` | Not extracted `[UNKNOWN]` | **None — no recipe.** Product-doc only `[UNKNOWN]` | No durable path — webOS 9(24) release FW patched `[ASSUMED` per issue-03] |
-| **webOS 25 / C5** (`o22n3`, `W25G`, "webOS 10") | **32-bit ARM, EABI5 soft-float** — `ld-linux.so.3`, e_flags `0x05000200`, triplet `arm-webos-linux-gnueabi`, glibc 2.35, glib 2.72, on an **aarch64 kernel** `[VERIFIED` on-device] | **1.24.0** `[VERIFIED` on-device + firmware packages] | **Re-tag + no decoder** — `matroskademux` emits `audio/x-unknown, codec-id=(string)A_DTS` (raw DTS bytes preserved), and **no** `dts_audiodec`/`avdec_dca`/`dtsdec` is shipped `[VERIFIED` on-device] | **Inject patched `dtsdec` + `libdca`; fingerprint-gated overrides for TrueHD and MP4/TS DTS.** The current payload also shadows stock `libgstlibav.so`, `libgstisomp4.so`, and `libgstmpegtsdemux.so`; see `../README.md`. `[VERIFIED` on-device] | **faultmanager only**, factory FW pre-10.1 OTA — narrow window `[ASSUMED` per issue-03] |
+| **webOS 25 / C5** (`o22n3`, `W25G`, "webOS 10") | **32-bit ARM, EABI5 soft-float** — `ld-linux.so.3`, e_flags `0x05000200`, triplet `arm-webos-linux-gnueabi`, glibc 2.35, glib 2.72, on an **aarch64 kernel** `[VERIFIED` on-device] | **1.24.0** `[VERIFIED` on-device + firmware packages] | **Re-tag + no decoder** — `matroskademux` emits `audio/x-unknown, codec-id=(string)A_DTS` (raw DTS bytes preserved), and **no** `dts_audiodec`/`avdec_dca`/`dtsdec` is shipped `[VERIFIED` on-device] | **Inject patched `dtsdec` (ffmpeg `dca` linked in statically since webos25-2.43; libdca before); fingerprint-gated overrides for TrueHD and MP4/TS DTS.** The current payload also shadows stock `libgstlibav.so`, `libgstisomp4.so`, and `libgstmpegtsdemux.so`; see `../README.md`. `[VERIFIED` on-device] | **faultmanager only**, factory FW pre-10.1 OTA — narrow window `[ASSUMED` per issue-03] |
 | **webOS 25 / G5/M5** (`o24n`, `W25O`) | Same ARM EABI5 soft-float ABI as C5 `[FIRMWARE]` | **1.24.0** `[FIRMWARE]` | Extracted G5 firmware has byte-identical gated artifacts and common media-control binaries to the C5; runtime path not exercised `[FIRMWARE]` | **Strong candidate for the C5 payload, but hardware verification is still required.** Current hash-only logic would call it `verified`; the report recommends a separate firmware-match state. | Same webOS-25 rooting constraint `[ASSUMED]` |
 | **webOS 25 / B5 and higher LCD/QNED** (`k24n`, `W25H`, Realtek) | Same ARM EABI5 soft-float ABI as C5 `[FIRMWARE]` | **1.24.0** `[FIRMWARE]` | Common `decproxy`/`umediaserver` stack and MP4/TS demuxers match, but stock libav, configs, and the `rtkalsasink`/`omxlpcmdec` path differ `[FIRMWARE]` | **Experimental opt-in only pending a real B5/W25H test.** Static ABI compatibility is not sink/HAL proof. | Same webOS-25 rooting constraint `[ASSUMED]` |
 | **webOS 25 / lower LCD/QNED/NanoCell** (`k25lp`, `W25P`, Realtek) | Firmware metadata only; rootfs not inspected `[ASSUMED]` | webOS 10.3.1 images exist `[FIRMWARE]` | Unknown | **No automatic compatibility claim.** Extract separately; do not inherit the `k24n` result. | Same webOS-25 rooting constraint `[ASSUMED]` |
@@ -103,12 +103,14 @@ this element in the post-bind registry proof; other rows/profiles are unchanged 
 
 - **Build what:** a **single patched `dtsdec`** plugin (`libgstdtsdec.so`) from **gst-plugins-bad
   1.22** source (ABI-stable against the TV's 1.24 loader — verified on-device), with the sink caps
-  widened to also accept `audio/x-unknown, codec-id=A_DTS`. Bundle **`libdca.so.0`** (armel)
-  alongside it; bake `RPATH` to the payload libs dir. `[VERIFIED` build + on-device load]
-- **Toolchain:** **Debian armel cross** via Docker — `arm-linux-gnueabi-gcc` (soft-float EABI5),
-  `-DHAVE_ORC=0`. Constraint that made it work: **max referenced GLIBC symbol ≤ 2.4** (TV has
-  glibc 2.35, so any ≤ 2.35 is safe; the build stays well under). All other deps present on the TV
-  except `libdca`, which is bundled. `[VERIFIED` per EPIC]
+  widened to also accept `audio/x-unknown, codec-id=A_DTS`. Since webos25-2.43 ffmpeg n4.4.4's
+  `dca` decoder is linked in **statically** (DTS-HD MA lossless, up to 7.1; no bundled library, no
+  `RPATH`); before that, **`libdca.so.0`** (armel) was bundled with an `RPATH` to the payload libs
+  dir. `[VERIFIED` build + on-device load]
+- **Toolchain:** **Debian armel cross** via Docker — `arm-linux-gnueabi-gcc` (soft-float EABI5).
+  Constraint that made it work: **max referenced GLIBC symbol ≤ 2.35**, the TV's glibc (the libdca
+  build stayed ≤ 2.4; the ffmpeg build references 2.35). All deps are present on the TV.
+  `[VERIFIED` per EPIC]
   - **Not the meson `gstreamer-webos-25` route.** WEBOS25-DTS.md proposed building from
     `lgstreamer/gstreamer-webos-25` (Meson/Ninja, 1.24) with an aarch64 cross. That was based on the
     wrong ABI assumption (aarch64) and the wrong caps assumption. The **working** path is the Debian
@@ -294,7 +296,8 @@ share only the immutable packaged source files; their state and hooks are separa
   soft-float, but this project has not captured a stock CX loader path/e_flags on-device.
   `detect-target.sh` captures exactly these instead of inferring them from the toolchain triplet.
 - **Surround-at-output open question (C5):** RESOLVED that LG's sink is **integer-only** — `dtsdec`
-  now emits **S32LE** (up to 5.1), which the sink accepts (the earlier F32LE issue is fixed). The
+  now emits **S32LE** (up to 5.1; up to 7.1 since webos25-2.43), which the sink accepts (the
+  earlier F32LE issue is fixed). The
   remaining unknown is whether the TV **renders full surround** to speakers/eARC or downmixes to
   stereo (not independently measured). Bitstream passthrough is out of scope; the `experimental/`
   LPCM-converter route would only be needed if the sink turns out to downmix.

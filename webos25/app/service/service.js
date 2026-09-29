@@ -19,8 +19,8 @@
  *
  *   webos25-armel-gst124  (LG C5 etc.)  -- VERIFIED mechanism (DTS + TrueHD).
  *       "decoder-inject": stage TWO payloads --
- *         DTS:    patched libgstdtsdec.so (+ libdca.so.0, S32LE output) to
- *                 /var/lib/webosbrew/dts25.
+ *         DTS:    patched libgstdtsdec.so (FFmpeg dca linked in statically,
+ *                 S32LE output) to /var/lib/webosbrew/dts25.
  *         TrueHD: our libgstlibav.so (avdec_truehd/avdec_mlp) + minimal ffmpeg
  *                 libs to /var/lib/webosbrew/truehd.
  *       Then apply THREE bind-mounted overrides + regenerate the registry:
@@ -139,7 +139,7 @@ var APPBASE_PRELUDE =
   'APPBASE=/media/developer/apps/usr/palm/applications/' + APP_ID + '; ' +
   '[ -d "$APPBASE" ] || APPBASE=/usr/palm/applications/' + APP_ID;
 var APP_INSTALL  = "$APPBASE";
-var PAYLOAD_W25     = APP_INSTALL + "/payload/webos25";          // libgstdtsdec.so + libdca.so.0
+var PAYLOAD_W25     = APP_INSTALL + "/payload/webos25";          // libgstdtsdec.so + libgstadecswitch.so
 var PAYLOAD_W25_THD = APP_INSTALL + "/payload/webos25-truehd";   // libgstlibav.so + ffmpeg libs
 var PAYLOAD_W25_DMX = APP_INSTALL + "/payload/webos25-demux";    // patched isomp4 + mpegtsdemux + matroska
 var PAYLOAD_CX      = APP_INSTALL + "/payload/cx";               // CX demuxer/libav .so set
@@ -175,7 +175,6 @@ var PROFILE_B3  = "webos23-w23h-diagnostic";
  * (mirror webos25/install.sh + the canonical webos25/init_dts25.sh)
  * ===================================================================== */
 var W25_DEST        = "/var/lib/webosbrew/dts25";
-var W25_LIBS        = W25_DEST + "/libs";
 var W25_INIT_SCRIPT = W25_DEST + "/init_dts25.sh";
 /* State files the boot script owns. Spelled out here rather than reached for
  * through the shell variables W25_COMPAT_SH happens to define ($FP,
@@ -1998,7 +1997,6 @@ var DETECT_PROBE = [
   "  [ \"$pd_a\" = \"$pd_b\" ] || PD_DRIFT=\"$PD_DRIFT $3\"",
   "}",
   "w25_pd_cmp \"" + PAYLOAD_W25 + "/libgstdtsdec.so\" \"" + W25_DEST + "/libgstdtsdec.so\" libgstdtsdec.so",
-  "w25_pd_cmp \"" + PAYLOAD_W25 + "/libdca.so.0\" \"" + W25_LIBS + "/libdca.so.0\" libdca.so.0",
   "w25_pd_cmp \"" + PAYLOAD_W25 + "/libgstadecswitch.so\" \"" + W25_DEST + "/libgstadecswitch.so\" libgstadecswitch.so",
   "w25_pd_cmp \"" + PAYLOAD_W25_THD + "/libgstlibav.so\" \"" + W25_THD_DEST + "/libgstlibav.so\" libgstlibav.so",
   "w25_pd_cmp \"" + PAYLOAD_W25_DMX + "/libgstisomp4.so\" \"" + W25_DMX_DEST + "/libgstisomp4.so\" libgstisomp4.so",
@@ -2478,8 +2476,10 @@ function w25Enable(force) {
     '  log "refusal stand-down (a registry of ours was live: $WAS_OURS)"',
     '  echo "STOOD_DOWN=$WAS_OURS"',
     '}',
-    // 1. Stage the DTS payload.
-    'mkdir -p "' + W25_LIBS + '" || { log "FATAL: cannot create ' + W25_LIBS + '"; exit 0; }',
+    // 1. Stage the DTS payload. dtsdec links its decoder statically, so nothing
+    //    goes into dts25/libs/; a libdca.so.0 an older build left there is inert
+    //    and goes with the rest of dts25/ on Uninstall. Mirrors install.sh step 1.
+    'mkdir -p "' + W25_DEST + '" || { log "FATAL: cannot create ' + W25_DEST + '"; exit 0; }',
     // Claim ownership: the app is managing this install from now on. A leftover
     // .cli-install from an earlier SSH install would otherwise disable self-heal
     // forever for a user who has since switched to the app -- removing the app
@@ -2490,9 +2490,6 @@ function w25Enable(force) {
     'if [ -f "' + PAYLOAD_W25 + '/libgstdtsdec.so" ]; then',
     '  cp -f "' + PAYLOAD_W25 + '/libgstdtsdec.so" "' + W25_DEST + '/libgstdtsdec.so" && log "installed libgstdtsdec.so" || log "WARN: copy libgstdtsdec.so failed"',
     'else log "WARN: ' + PAYLOAD_W25 + '/libgstdtsdec.so not found (populate payload before packaging)"; fi',
-    'if [ -f "' + PAYLOAD_W25 + '/libdca.so.0" ]; then',
-    '  cp -f "' + PAYLOAD_W25 + '/libdca.so.0" "' + W25_LIBS + '/libdca.so.0" && log "installed libdca.so.0" || log "WARN: copy libdca.so.0 failed"',
-    'else log "WARN: ' + PAYLOAD_W25 + '/libdca.so.0 not found (populate payload before packaging)"; fi',
     // 1b. Stage the adecswitch payload (track A: same-family stream-switch bin,
     //     compiled rank 320) -- CORE, like dtsdec/libav (init_dts25.sh
     //     w25_core_staged). Mirrors install.sh step 1b.
@@ -2713,12 +2710,12 @@ function w25SelfTest() {
     'LOG=' + LOG,
     'REG=' + W25_REG_TARGET,
     'OUT=/tmp/dtsenabler_selftest.wav',
-    'export LD_LIBRARY_PATH=' + W25_LIBS + ':' + W25_THD_LIBS,
+    'export LD_LIBRARY_PATH=' + W25_THD_LIBS,
     '# GST_REGISTRY_FORK=no per CLAUDE.md rule 4: without it a plugin-scanner fork can hold the'
     + '' ,
     '# HBC exec pipe open past gst-launch itself. timeout 60 (was 25): the FIRST case pays the'
     ,
-    '# whole cold-start cost (registry + dtsdec + libdca load); 25s was measured too tight under'
+    '# whole cold-start cost (registry + dtsdec load); 25s was measured too tight under'
     ,
     '# post-boot load on the real C5 (2026-08-18) while the decode itself was fine.'
     ,
@@ -2866,10 +2863,11 @@ function w25AbScript(saved, nameA, nameB) {
     'B="$DIR/' + nameB + '"',
     'AWKF=/tmp/dtsenabler_ab_level.awk',
     'MSG=/tmp/dtsenabler_ab_level.txt',
-    // dtsdec is NOT on the default plugin path, and libdca lives with our payload.
+    // dtsdec is NOT on the default plugin path, and the TrueHD ffmpeg libs live
+    // with our payload.
     // GST_REGISTRY_FORK=no keeps the plugin scanner in-process so it cannot hold
     // the HBC exec pipe open (see CLAUDE.md).
-    'export LD_LIBRARY_PATH=' + W25_LIBS + ':' + W25_THD_LIBS,
+    'export LD_LIBRARY_PATH=' + W25_THD_LIBS,
     'export GST_PLUGIN_PATH=' + W25_DEST,
     'export GST_REGISTRY_FORK=no',
     // --- config fingerprints BEFORE anything runs -------------------------

@@ -12,7 +12,7 @@ The single source of truth for the shipped binaries is:
 
 ```
 gst/                          four LG GStreamer 1.14.4 legacy plugins (CX/C2 app payload)
-webos25/restore/out/         libgstdtsdec.so, libdca.so.0        (DTS decoder)
+webos25/restore/out/         libgstdtsdec.so                     (DTS decoder, ffmpeg dca static)
 webos25/restore/truehd-out/  libgstlibav.so + libav*/libsw*      (TrueHD/MLP)
 webos25/restore/switch-out/  libgstadecswitch.so                 (track A stream-switch bin)
 webos25/restore/demux-out/   libgstisomp4.so, libgstmpegtsdemux.so (mp4/ts/m2ts DTS),
@@ -28,10 +28,11 @@ Never edit a generated `payload/**` binary.
 + re-commit them, then re-release.** "Affects those binaries" includes:
 
 - `webos25/restore/src/gstdtsdec.c` (the DTS patch)
-- the `dts_support` demuxer patch, the Dolby Vision profile 7 matroska patch, or their
-  version, in `webos25/restore/build-demux.sh`
+- the `dts_support` demuxer patch, the DTS-HD substream (0x72) tsdemux patch, the Dolby
+  Vision profile 7 matroska patch, or their version, in `webos25/restore/build-demux.sh`
 - `webos25/restore/build.sh`, `build-truehd.sh`, `build-demux.sh`, `build-switch.sh`
-  (toolchain, flags, pinned sources, ABI)
+  (toolchain, flags, pinned sources, ABI — for `build.sh` that includes the ffmpeg
+  `n4.4.4` tag, its configure flags and the pinned Debian snapshot)
 
 Editing `install.sh` / `init_dts25.sh` / the app JS/HTML does **not** require a
 rebuild — but still cut a new release so the tarball/`.ipk` carry the change.
@@ -98,24 +99,32 @@ fails instead of shipping mismatched boot scripts. Both scripts need only POSIX 
 `webos25/app/licenses/` (`GPL-2.0.txt`, `LGPL-2.1.txt`, `NOTICE.md`) is committed and is
 picked up automatically by `ares-package`, so a local `.ipk` build carries it too. The
 release workflow copies it into `restore/` before tarring so the CLI tarball ships the
-same texts; that copy is gitignored build output, never a second source. GPL-2.0 and
-LGPL-2.1 both require handing recipients a copy of the license, and the DTS decoder
-(`libgstdtsdec.so` + `libdca.so.0`) is GPL-2.0-or-later — see the per-artifact table in
-the root `README.md`.
+same texts; that copy is gitignored build output, never a second source. LGPL-2.1
+requires handing recipients a copy of the license and the source offer, and
+`libgstdtsdec.so` links ffmpeg statically, so that offer (the source + `build.sh`) is also
+what lets a recipient relink it — see the per-artifact table in the root `README.md`.
+Since libdca was dropped (webos25-2.43) no artifact in that table is GPL; `GPL-2.0.txt` is
+still shipped, but nothing listed there requires it.
 
 ## Rebuild + verify (only when the binaries are affected)
 
 ```sh
 cd webos25/restore
-./build.sh          # -> out/libgstdtsdec.so, out/libdca.so.0
+./build.sh          # -> out/libgstdtsdec.so
 ./build-truehd.sh   # -> truehd-out/libgstlibav.so + libav*/libsw*
 ./build-demux.sh    # -> demux-out/libgst{isomp4,mpegtsdemux,matroska}.so
 ```
 
 Each build prints an ABI report — **confirm ARM EABI5 soft-float
 (`e_flags 0x05000200`), interpreter `ld-linux.so.3`, max GLIBC ≤ 2.35** before
-trusting the output. Then **verify on a real webOS-25 TV** (install, play a DTS
+trusting the output (`build.sh` also fails unless it exports **0 ffmpeg symbols**).
+Then **verify on a real webOS-25 TV** (install, play a DTS
 MKV + an mp4/ts/m2ts DTS file; a TrueHD MKV **and** a TrueHD `.ts`/`.m2ts`).
+If `libgstdtsdec.so` or `libgstmpegtsdemux.so` changed, also confirm that a DTS-HD MA 7.1
+file decodes to **8 channels**, and that DTS-HD in `.ts`/`.m2ts` decodes **lossless**
+(tsdemux passes substream 0x72): its decoded PCM matches a desktop `ffmpeg` decode of the
+same file bit for bit, after GStreamer's 40 ms segment clip at the start. A core-only
+decode does not match.
 If `libgstmatroska.so` changed, also play a Dolby Vision profile 7 MKV (MEL and FEL) in
 LG's Media Player: it must show the **Dolby Vision** badge with correct colours (stock
 plays it as HDR10), a P8.1/P5 MKV must still show Dolby Vision, and a DTS MKV must have
@@ -155,7 +164,8 @@ straight disc copy.
 ```sh
 cd webos25/app
 # populate payloads from committed source-of-truth binaries (generated files are ignored)
-cp -f  ../restore/out/libgstdtsdec.so ../restore/out/libdca.so.0        payload/webos25/
+rm -f  payload/webos25/libdca.so.0     # left by pre-2.43 builds; would be packaged unused
+cp -f  ../restore/out/libgstdtsdec.so                                    payload/webos25/
 cp -f  ../restore/switch-out/libgstadecswitch.so                        payload/webos25/
 cp -Pf ../restore/truehd-out/libgstlibav.so ../restore/truehd-out/libav*.so* \
        ../restore/truehd-out/libsw*.so*                                 payload/webos25-truehd/
@@ -175,7 +185,11 @@ All four root `gst/` files are required for packaging even though C2 binds
 
 - [ ] Binaries in `webos25/restore/**` current (rebuilt + on-device-verified if affected)
 - [ ] Four tracked root `gst/*.so` files copied into generated `payload/cx/`
-- [ ] `webos25/restore/demux-out/BUILD-REPORT.txt` reflects the current build
+- [ ] `webos25/restore/out/BUILD-REPORT.txt` and `webos25/restore/demux-out/BUILD-REPORT.txt`
+      reflect the current build
+- [ ] A DTS-HD MA 7.1 file decodes to 8 channels (if `libgstdtsdec.so` changed)
+- [ ] DTS-HD in `.ts`/`.m2ts` decodes lossless — tsdemux passes substream 0x72, output
+      bit-exact against desktop `ffmpeg` (if `libgstdtsdec.so` or `libgstmpegtsdemux.so` changed)
 - [ ] A Dolby Vision profile 7 MKV shows the Dolby Vision badge on a real webOS-25 TV
       (if `libgstmatroska.so` changed)
 - [ ] `sh webos25/restore/check-init-sync.sh` passes (the release workflow also runs it)

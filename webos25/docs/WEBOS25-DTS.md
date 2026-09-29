@@ -48,10 +48,12 @@ Two viable decoders (build ONE):
 
 > **Status: background note from the initial investigation.** The shipping solution and current,
 > accurate status are in [`../README.md`](../README.md) — the C5 is 32-bit **soft-float armel**
-> (not aarch64 as early drafts assumed), and the shipped `dtsdec` emits **S32LE, up to 5.1** (LG's
-> sink is integer-only). Whether the TV renders full surround at the output vs downmixes to stereo
-> is the remaining open question; bitstream passthrough needs the proprietary sink path (see
-> `experimental/` for the DTS→BluRay-LPCM converter sketch).
+> (not aarch64 as early drafts assumed), and the shipped `dtsdec` emits **S32LE** (LG's sink is
+> integer-only), up to 7.1 since webos25-2.43, when it moved from libdca to a statically linked
+> ffmpeg `dca` decoder that also decodes DTS-HD MA lossless. Whether the TV renders full
+> surround at the output vs downmixes to stereo is the remaining open question; bitstream
+> passthrough needs the proprietary sink path (see `experimental/` for the DTS→BluRay-LPCM
+> converter sketch).
 
 ## Toolchain
 

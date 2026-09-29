@@ -1,7 +1,7 @@
 Small DTS container samples used by the app's "Test patch" self-check and
 play-by-ear. Each decodes to real DTS PCM when the patch is active:
   DTS-in-mp4.mp4      H.264 video + DTS 5.1 (dtsc)      -> qtdemux
-  DTS-HD-MA-5.1.ts    real DTS-HD MA (core) 5.1         -> tsdemux, 188-byte stride
+  DTS-HD-MA-5.1.ts    real DTS-HD MA 5.1 (core + XLL)   -> tsdemux, 188-byte stride
   DTS-HD-MA-5.1.m2ts  same ES, real BDAV wrapping       -> tsdemux, 192-byte stride
 All three are the FULL-LENGTH sources, identical to ../../restore/testfiles/:
   DTS-in-mp4.mp4      3.837s   2.7 MB

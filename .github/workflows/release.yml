@@ -57,7 +57,7 @@ jobs:
         run: |
           set -e
           cd webos25/restore
-          for f in out/libgstdtsdec.so out/libdca.so.0 \
+          for f in out/libgstdtsdec.so \
                    truehd-out/libgstlibav.so \
                    switch-out/libgstadecswitch.so \
                    demux-out/libgstisomp4.so demux-out/libgstmpegtsdemux.so \
@@ -96,9 +96,9 @@ jobs:
           cd webos25
           # License texts + the per-artifact NOTICE live once, in app/licenses/, so a
           # local `ares-package` build carries them too. Copy them into restore/ so the
-          # CLI tarball ships the same texts: GPL-2.0 and LGPL-2.1 both require handing
-          # recipients a copy of the license along with the program, and the DTS decoder
-          # (libgstdtsdec.so + libdca.so.0) is GPL-2.0-or-later.
+          # CLI tarball ships the same texts: LGPL-2.1 requires handing recipients a
+          # copy of the license and the source offer, and libgstdtsdec.so links ffmpeg
+          # statically.
           cp -r app/licenses restore/licenses
           # Excludes are defensive: dts2lpcm/ is the archived Path-A investigation
           # record (refuted on hardware, never shipped) and has no place in an
@@ -114,7 +114,7 @@ jobs:
       - name: Populate app payloads from the committed restore/ binaries
         run: |
           cd webos25/app
-          cp -f  ../restore/out/libgstdtsdec.so ../restore/out/libdca.so.0        payload/webos25/
+          cp -f  ../restore/out/libgstdtsdec.so                                   payload/webos25/
           cp -f  ../restore/switch-out/libgstadecswitch.so                        payload/webos25/
           cp -Pf ../restore/truehd-out/libgstlibav.so                             payload/webos25-truehd/
           cp -Pf ../restore/truehd-out/libav*.so* ../restore/truehd-out/libsw*.so* payload/webos25-truehd/
@@ -176,8 +176,8 @@ jobs:
 
             ## What works (verified on a real LG C5)
             - **DTS** — MKV **and** `.mp4` / `.ts` / `.m2ts` (patched demuxers with
-              `dts_support` enabled). Decodes to native **discrete 5.1** S32LE, matching a
-              reference decoder within ~0.1–0.2 dB per channel — **no stereo downmix**.
+              `dts_support` enabled). DTS and DTS-HD MA (lossless, **up to 7.1**) decode
+              to discrete S32LE, bit-exact against desktop ffmpeg — **no stereo downmix**.
             - **Dolby TrueHD / MLP** — in MKV.
             - Audio-only patch: **Dolby Vision / HDR video is unaffected**.
             - No firmware modified — everything is bind-mounts, reverted by uninstall/reboot.

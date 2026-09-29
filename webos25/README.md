@@ -102,7 +102,8 @@ LG ships webOS 25 with **no DTS decoder and no TrueHD decoder**, and:
 **silently dropped** (no audio, no error). Both fixes therefore produce/keep
 **S32LE**:
 
-- `dtsdec` is patched to convert libdca's float output to **S32LE** (clamped).
+- `dtsdec` is patched to convert its decoder's output to **S32LE** (clamped). Since
+  webos25-2.43 that decoder is ffmpeg's `dca`, linked in statically, not libdca.
 - `avdec_truehd` already emits native **S32** PCM, so it works as-is.
 
 ## Target ABI (the other crux)
@@ -121,9 +122,9 @@ Everything below is applied at boot by the canonical `init_dts25.sh` (installed
 verbatim and symlinked from `/var/lib/webosbrew/init.d/restore_dts25`):
 
 1. **DTS decoder** — the patched `dtsdec` (sink caps widened to also accept
-   `audio/x-unknown, codec-id=A_DTS`; output S32LE) + bundled `libdca.so.0` are
-   staged in `/var/lib/webosbrew/dts25/{,libs/}`. `decodebin`/`decproxy` autoplug
-   it directly onto LG's retagged stream.
+   `audio/x-unknown, codec-id=A_DTS`; output S32LE; ffmpeg's `dca` decoder linked in
+   statically, so nothing else is bundled) is staged in `/var/lib/webosbrew/dts25/`.
+   `decodebin`/`decproxy` autoplug it directly onto LG's retagged stream.
 
 2. **TrueHD decoder** — our `libgstlibav.so` (with `avdec_truehd`/`avdec_mlp`)
    + minimal ffmpeg libs are staged in `/var/lib/webosbrew/truehd/{,libs/}`, and
@@ -500,7 +501,7 @@ own live `/etc` files (see below) — this package **ships no LG config file**.
 
 | Codec        | Element        | Output | Status on LG C5                 |
 |--------------|----------------|--------|---------------------------------|
-| DTS / DTS-HD | `dtsdec` (patched) | S32LE 5.1 | **Verified, persistent** |
+| DTS / DTS-HD | `dtsdec` (patched) | S32LE (up to 7.1) | **Verified, persistent** |
 | TrueHD       | `avdec_truehd` | S32LE (up to 7.1) | **Verified, persistent** |
 | MLP          | `avdec_mlp`    | S32LE  | Enabled alongside TrueHD        |
 
@@ -512,7 +513,9 @@ and `.ts` DTS didn't route. The fix rebuilds those two demuxers from LG's webOS-
 (`qtdemux.c` / `tsdemux.c`), staged in `restore/demux-out/` and bind-mounted by the boot hook.
 Verified on the C5 against **real Blu-ray DTS-HD MA content**: a 5.1 `.ts` sample decodes to
 `audio/x-raw, S32LE, 6 channels (FL FR FC LFE RL RR), 48000 Hz`, an `.mp4` (dtsc) decodes to PCM,
-and normal AAC mp4 playback is unaffected.
+and normal AAC mp4 playback is unaffected. Since webos25-2.43 `tsdemux` also passes PES
+substream **0x72** (the DTS-HD extension) instead of only the 0x71 core, so DTS-HD MA in
+`.ts`/`.m2ts` decodes lossless: bit-exact against desktop ffmpeg on the C5.
 
 **TrueHD containers:** **MKV and `.ts`/`.m2ts` are supported; `.mp4` is not.** TrueHD in
 MPEG-TS needed its own fix: separately from DTS, LG wraps the BluRay TrueHD stream-type case
@@ -533,7 +536,8 @@ unchanged. **`.mp4` TrueHD remains unsupported** — `qtdemux.c` has no TrueHD/M
 **Caveats (honest):**
 - **Discrete 5.1 reaches LG's sink — confirmed in real playback, no downmix in the pipeline.**
   Measured on a real C5: `dtsdec` emits native discrete 5.1 (6 channels of distinct content) as
-  S32LE/48 kHz, matching a reference DTS core decoder within ~0.1–0.2 dB per channel. During actual
+  S32LE/48 kHz — with libdca, within ~0.1–0.2 dB per channel of a reference core decoder; since
+  webos25-2.43 (ffmpeg `dca`), bit-exact against desktop ffmpeg. During actual
   Media-Player playback the GStreamer debug log shows LG's `audiosink` negotiating
   `audio/x-raw, S32LE, 48000, channels=6` (its sink pad advertises `channels=[1,10]`), so full 5.1
   PCM is delivered end-to-end to LG's audio HAL — there is **no stereo downmix anywhere in the
@@ -544,10 +548,11 @@ unchanged. **`.mp4` TrueHD remains unsupported** — `qtdemux.c` has no TrueHD/M
   two-channel PCM link, so it cannot carry 5.1 from a decode-to-PCM path at all — eARC is the only
   multichannel route out. Confirm 5.1 on an AVR's input display; this half is the TV's routing, not
   something this project measures.
-- **DTS-HD:** the shipped `dtsdec`/`libdca` decodes the DTS **core** only — not the DTS-HD MA
-  lossless (XLL) extension, and not the DTS:X extension substream. (ffmpeg's XLL-capable `dca`
-  decoder is deliberately not built; see `build-demux.sh`/`build-truehd.sh`.) So a DTS:X or
-  DTS-HD MA 7.1 title decodes as its 5.1 core.
+- **DTS-HD:** since webos25-2.43 `dtsdec` uses ffmpeg's `dca` decoder, which decodes DTS-HD MA
+  **lossless** (XLL), DTS-HD HRA (XBR/X96), 7.1, 96/192 kHz and DTS Express, not just the 5.1
+  core. Verified on a C5: DTS-HD MA 5.1 in `.mp4`/`.ts`/`.m2ts` and a DTS-HD MA 7.1 MKV
+  (8 channels) decode bit-exact against desktop ffmpeg. DTS:X objects are not rendered (see
+  the badge caveat below). Before 2.43, libdca decoded the core only.
 - **TrueHD Atmos:** the **full base bed decodes** — measured on a C5, a real
   `Dolby TrueHD + Dolby Atmos` 7.1 MKV yields `audio/x-raw, S32LE, 48000, channels=8`
   (`channel-mask=0x0c3f`) with no substream or downmix warnings. Only the **object layer** is
@@ -586,7 +591,7 @@ Both builds are reproducible Docker / cross-builds and print an ABI report
 soft-float `0x05000200` before deploying.
 
 ```sh
-./build.sh          # -> out/libgstdtsdec.so, out/libdca.so.0     (patched dtsdec)
+./build.sh          # -> out/libgstdtsdec.so                      (patched dtsdec + static ffmpeg dca)
 ./build-truehd.sh   # -> truehd-out/libgstlibav.so + libav*/libsw* (gst-libav + ffmpeg n4.4.4)
 ./build-demux.sh    # -> demux-out/libgst{isomp4,mpegtsdemux,matroska}.so   (DTS demux, dts_support=TRUE; MKV DV7)
 ```

@@ -157,7 +157,7 @@ must be kept in sync, on a real TV, in the same change.
    verification below, but a red run means don't bother cross-building yet.
 1. **Rebuild both binaries:**
    ```sh
-   ./build.sh          # -> out/libgstdtsdec.so, out/libdca.so.0
+   ./build.sh          # -> out/libgstdtsdec.so
    ./build-truehd.sh   # -> truehd-out/libgstlibav.so + libav*/libsw* (applies the mlpdec gain patch)
    ```
 2. **Check each build's `BUILD-REPORT.txt`** (`out/BUILD-REPORT.txt`,

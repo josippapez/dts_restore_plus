@@ -106,6 +106,28 @@ fi
 echo "=== TrueHD patch OK (audio/x-true-hd exposed, substream 0x72, balanced) ==="
 
 # ---------------------------------------------------------------------------
+# DTS-HD-IN-MPEG-TS PATCH: for the BD DTS stream types, tsdemux keeps only PES
+# substream 0x71 (the DTS core) and drops 0x72, the DTS-HD extension substream
+# that carries XLL/XBR/X96. dtsdec now decodes the extension (FFmpeg dca), so
+# both substreams are passed on; dtsdec's parser joins core + extension back
+# into one frame.
+# ---------------------------------------------------------------------------
+perl - "$TSDEMUX" <<'DTSHD_PL'
+use strict; use warnings;
+local $/; my $f = shift; open my $fh, '<', $f or die "$f: $!"; my $s = <$fh>; close $fh;
+my $n = ($s =~ s{
+      (caps\ =\ gst_caps_new_empty_simple\ \("audio/x-dts"\);\n)
+      \ {10}stream->target_pes_substream\ =\ 0x71;\n
+}{$1}xs);
+die "DTS-HD PATCH FAILED: expected 1 core-only substream filter in $f, got $n\n" if $n != 1;
+open my $out, '>', $f or die "$f: $!"; print $out $s; close $out;
+DTSHD_PL
+if grep -n 'target_pes_substream = 0x71' "$TSDEMUX"; then
+  echo "PATCH FAILED: DTS core-only substream filter still present in $TSDEMUX"; exit 1
+fi
+echo "=== DTS-HD patch OK (both BD DTS substreams passed on) ==="
+
+# ---------------------------------------------------------------------------
 # DOLBY VISION PROFILE 7 (MKV) PATCHES -- two changes to matroska-demux.c:
 #
 # 1. LG returns early for dv_profile == 7 ("not supported, but can play as

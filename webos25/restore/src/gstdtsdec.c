@@ -19,7 +19,7 @@
  */
 
 /* ==========================================================================
- * webOS 25 DTS-restore patch (three functional changes vs. upstream)
+ * webOS 25 DTS-restore patch (four functional changes vs. upstream)
  * --------------------------------------------------------------------------
  * Vendored from gst-plugins-bad 1.22.0 (ext/dts/gstdtsdec.c). Functional
  * changes from upstream:
@@ -38,9 +38,7 @@
  * "audio/x-unknown, codec-id=(string)A_DTS" with the raw DTS bytes preserved.
  * By widening the sink caps to also advertise that exact media type,
  * decodebin/decproxy will autoplug THIS dtsdec directly onto LG's retagged
- * stream — no need to patch matroskademux or any LG library. The decoder
- * body is unchanged: it still parses/decodes the raw DTS elementary stream
- * via libdca and emits audio/x-raw.
+ * stream — no need to patch matroskademux or any LG library.
  *
  * 2. A user-tunable "makeup-gain-db" property (float, default 0.0 dB =
  *    unity = exact no-op) applied in the float->S32 output conversion loop,
@@ -69,6 +67,16 @@
  * evidence base (LG kernel driver parameter model) and the binding DSP
  * contract. The DSP math lives in the self-contained "DRC CORE" block below;
  * the TrueHD decoder (ffmpeg mlpdec.c) carries a byte-for-byte port of it.
+ *
+ * 4. The decode backend is FFmpeg's dca decoder (libavcodec n4.4.4, linked
+ *    statically by build.sh) instead of libdca, and parse() frames the core
+ *    AND the DTS-HD extension substream (EXSS) that follows it.
+ *
+ * WHY: libdca decodes only the lossy 5.1 core; the EXSS bytes were dropped as
+ * unsynced garbage. FFmpeg's decoder also handles XLL (DTS-HD MA lossless),
+ * XBR/X96/XXCH (DTS-HD HRA, 96 kHz, 7.1) and LBR (DTS Express). Output is
+ * still S32LE, now up to 8 channels and 192 kHz; lossless streams stay
+ * bit-exact through the unity-gain path (24-bit samples are exact in float).
  * ========================================================================== */
 
 /**
@@ -103,62 +111,19 @@
 #include <gst/gst.h>
 #include <gst/audio/audio.h>
 
-#ifndef DTS_OLD
-#include <dca.h>
-#else
-#include <dts.h>
-
-typedef struct dts_state_s dca_state_t;
-#define DCA_MONO DTS_MONO
-#define DCA_CHANNEL DTS_CHANNEL
-#define DCA_STEREO DTS_STEREO
-#define DCA_STEREO_SUMDIFF DTS_STEREO_SUMDIFF
-#define DCA_STEREO_TOTAL DTS_STEREO_TOTAL
-#define DCA_3F DTS_3F
-#define DCA_2F1R DTS_2F1R
-#define DCA_3F1R DTS_3F1R
-#define DCA_2F2R DTS_2F2R
-#define DCA_3F2R DTS_3F2R
-#define DCA_4F2R DTS_4F2R
-#define DCA_DOLBY DTS_DOLBY
-#define DCA_CHANNEL_MAX DTS_CHANNEL_MAX
-#define DCA_CHANNEL_BITS DTS_CHANNEL_BITS
-#define DCA_CHANNEL_MASK DTS_CHANNEL_MASK
-#define DCA_LFE DTS_LFE
-#define DCA_ADJUST_LEVEL DTS_ADJUST_LEVEL
-
-#define dca_init dts_init
-#define dca_syncinfo dts_syncinfo
-#define dca_frame dts_frame
-#define dca_dynrng dts_dynrng
-#define dca_blocks_num dts_blocks_num
-#define dca_block dts_block
-#define dca_samples dts_samples
-#define dca_free dts_free
-#endif
+#include <libavcodec/avcodec.h>
+#include <libavutil/channel_layout.h>
+#include <libavutil/log.h>
+#include <libavutil/mem.h>
 
 #include "gstdtsdec.h"
 
-#if HAVE_ORC
-#include <orc/orc.h>
-#endif
-
-#if defined(LIBDTS_FIXED) || defined(LIBDCA_FIXED)
-#define SAMPLE_WIDTH 16
-#define SAMPLE_FORMAT GST_AUDIO_NE(S16)
-#define SAMPLE_TYPE GST_AUDIO_FORMAT_S16
-#elif defined (LIBDTS_DOUBLE) || defined(LIBDCA_DOUBLE)
-#define SAMPLE_WIDTH 64
-#define SAMPLE_FORMAT GST_AUDIO_NE(F64)
-#define SAMPLE_TYPE GST_AUDIO_FORMAT_F64
-#else
-/* webOS: LG's audiosink accepts only integer PCM (no F32/F64). libdca decodes
- * to float; we emit S32LE (native-endian S32 on the LE TV) by converting in the
- * output loop below. Width stays 32 bits, so buffer sizing is unchanged. */
+/* webOS: LG's audiosink accepts only integer PCM (no F32/F64). Every FFmpeg
+ * output format is converted to float per DRC block, then to S32LE
+ * (native-endian S32 on the LE TV) in the output loop below. */
 #define SAMPLE_WIDTH 32
 #define SAMPLE_FORMAT GST_AUDIO_NE(S32)
 #define SAMPLE_TYPE GST_AUDIO_FORMAT_S32
-#endif
 
 GST_DEBUG_CATEGORY_STATIC (dtsdec_debug);
 #define GST_CAT_DEFAULT (dtsdec_debug)
@@ -183,15 +148,6 @@ enum
  * means GLib's g_ascii_strtod(); the host unit test and the ffmpeg port
  * substitute the C library's strtod() in the "C" locale. */
 #define DTS_DRC_STRTOD(nptr, endptr) g_ascii_strtod ((nptr), (endptr))
-
-/* The DRC detector reads libdca's planar output buffer through
- * dts_drc_sum_squares (const float *). libdca's default sample_t IS float;
- * the fixed-point and double builds are not part of the webOS 25 build
- * (build.sh defines neither macro). Fail loudly rather than misread samples. */
-#if defined(LIBDTS_FIXED) || defined(LIBDCA_FIXED) || \
-    defined(LIBDTS_DOUBLE) || defined(LIBDCA_DOUBLE)
-#error "webOS 25 dtsdec DRC requires the default libdca build (sample_t == float)"
-#endif
 
 /*<<<DRC-CORE-BEGIN>>>*/
 /* ==========================================================================
@@ -748,7 +704,7 @@ static GstStaticPadTemplate src_factory = GST_STATIC_PAD_TEMPLATE ("src",
     GST_STATIC_CAPS ("audio/x-raw, "
         "format = (string) " SAMPLE_FORMAT ", "
         "layout = (string) interleaved, "
-        "rate = (int) [ 4000, 96000 ], " "channels = (int) [ 1, 6 ]")
+        "rate = (int) [ 4000, 192000 ], " "channels = (int) [ 1, 16 ]")
     );
 
 
@@ -787,7 +743,6 @@ gst_dtsdec_class_init (GstDtsDecClass * klass)
   GObjectClass *gobject_class;
   GstElementClass *gstelement_class;
   GstAudioDecoderClass *gstbase_class;
-  guint cpuflags;
 
   gobject_class = (GObjectClass *) klass;
   gstelement_class = (GstElementClass *) klass;
@@ -817,6 +772,9 @@ gst_dtsdec_class_init (GstDtsDecClass * klass)
    * to the audio stream. Dynamic range compression makes loud sounds
    * softer and soft sounds louder, so you can more easily listen
    * to the stream without disturbing other people.
+   *
+   * webOS 25 patch: accepted but has no effect. It drove libdca's in-stream
+   * DRC; FFmpeg's dca decoder does not apply that metadata. Use drc-mode.
    */
   g_object_class_install_property (G_OBJECT_CLASS (klass), PROP_DRC,
       g_param_spec_boolean ("drc", "Dynamic Range Compression",
@@ -848,8 +806,8 @@ gst_dtsdec_class_init (GstDtsDecClass * klass)
    * "off". Defaults come from /var/lib/webosbrew/dts25/gain.conf ("drc=");
    * setting this property overrides the file value.
    *
-   * Note this is distinct from #GstDtsDec:drc, which only toggles libdca's
-   * own in-stream dynamic-range metadata.
+   * Note this is distinct from #GstDtsDec:drc, which used to toggle libdca's
+   * own in-stream dynamic-range metadata and is now a no-op.
    */
   g_object_class_install_property (G_OBJECT_CLASS (klass), PROP_DRC_MODE,
       g_param_spec_string ("drc-mode", "DRC Mode",
@@ -900,22 +858,6 @@ gst_dtsdec_class_init (GstDtsDecClass * klass)
           DTS_DRC_DEFAULT_CENTER_DB,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
-  klass->dts_cpuflags = 0;
-
-#if HAVE_ORC
-  cpuflags = orc_target_get_default_flags (orc_target_get_by_name ("mmx"));
-  if (cpuflags & ORC_TARGET_MMX_MMX)
-    klass->dts_cpuflags |= MM_ACCEL_X86_MMX;
-  if (cpuflags & ORC_TARGET_MMX_3DNOW)
-    klass->dts_cpuflags |= MM_ACCEL_X86_3DNOW;
-  if (cpuflags & ORC_TARGET_MMX_MMXEXT)
-    klass->dts_cpuflags |= MM_ACCEL_X86_MMXEXT;
-#else
-  cpuflags = 0;
-  klass->dts_cpuflags = 0;
-#endif
-
-  GST_LOG ("CPU flags: dts=%08x, orc=%08x", klass->dts_cpuflags, cpuflags);
 }
 
 /* webOS 25 patch: clamp + cache the linear multiplier for a dB gain value.
@@ -989,7 +931,6 @@ gst_dtsdec_init (GstDtsDec * dtsdec)
 {
   DtsDrcConfig cfg;
 
-  dtsdec->request_channels = DCA_CHANNEL;
   dtsdec->dynamic_range_compression = FALSE;
 
   /* webOS 25 patch: defaults for make-up gain, DRC and centre boost come from
@@ -1030,20 +971,30 @@ static gboolean
 gst_dtsdec_start (GstAudioDecoder * dec)
 {
   GstDtsDec *dts = GST_DTSDEC (dec);
-  GstDtsDecClass *klass;
+  const AVCodec *codec;
 
   GST_DEBUG_OBJECT (dec, "start");
 
-  klass = GST_DTSDEC_CLASS (G_OBJECT_GET_CLASS (dts));
-  dts->state = dca_init (klass->dts_cpuflags);
-  dts->samples = dca_samples (dts->state);
+  codec = avcodec_find_decoder (AV_CODEC_ID_DTS);
+  if (codec == NULL) {
+    GST_ELEMENT_ERROR (dts, LIBRARY, INIT, (NULL),
+        ("FFmpeg was built without the dca decoder"));
+    return FALSE;
+  }
+  dts->avctx = avcodec_alloc_context3 (codec);
+  dts->frame = av_frame_alloc ();
+  dts->pkt = av_packet_alloc ();
+  if (dts->avctx == NULL || dts->frame == NULL || dts->pkt == NULL
+      || avcodec_open2 (dts->avctx, codec, NULL) < 0) {
+    GST_ELEMENT_ERROR (dts, LIBRARY, INIT, (NULL),
+        ("could not open FFmpeg's dca decoder"));
+    return FALSE;
+  }
+
   dts->bit_rate = -1;
   dts->sample_rate = -1;
-  dts->stream_channels = DCA_CHANNEL;
-  dts->using_channels = DCA_CHANNEL;
-  dts->level = 1;
-  dts->bias = 0;
-  dts->flag_update = TRUE;
+  dts->channels = 0;
+  dts->channel_layout = 0;
 
   /* webOS 25 patch: a new stream starts with the compressor at unity. */
   gst_dtsdec_drc_reset (dts);
@@ -1061,13 +1012,126 @@ gst_dtsdec_stop (GstAudioDecoder * dec)
 
   GST_DEBUG_OBJECT (dec, "stop");
 
-  dts->samples = NULL;
-  if (dts->state) {
-    dca_free (dts->state);
-    dts->state = NULL;
-  }
+  avcodec_free_context (&dts->avctx);
+  av_frame_free (&dts->frame);
+  av_packet_free (&dts->pkt);
+  av_freep (&dts->pktbuf);
+  dts->pktbuf_size = 0;
 
   return TRUE;
+}
+
+/* webOS 25 patch: frame sizing without libdca.
+ *
+ * A DTS frame is a core frame, optionally followed by one DTS-HD extension
+ * substream (EXSS) that carries XLL/XBR/X96/XXCH/LBR, or an EXSS on its own
+ * (DTS Express). Both parts must reach the decoder as one packet; libdca's
+ * syncinfo sized only the core, which is why the extension was lost.
+ *
+ * Returns the frame length at data[0], 0 if there is no frame start there,
+ * or -1 if more bytes are needed to tell. Sizes come straight from the
+ * headers, so the last frame of a stream is not held back waiting for the
+ * next sync. The core checks mirror FFmpeg's dca_parser (the 16-bit forms
+ * also require FTYPE=1 / SHORT=31, as it does), the 14-bit size matches what
+ * libdca returned. */
+#define DTS_SYNC_CORE_BE      0x7FFE8001u
+#define DTS_SYNC_CORE_LE      0xFE7F0180u
+#define DTS_SYNC_CORE_14B_BE  0x1FFFE800u
+#define DTS_SYNC_CORE_14B_LE  0xFF1F00E8u
+#define DTS_SYNC_EXSS         0x64582025u
+#define DTS_MIN_CORE_SIZE     96
+
+static guint
+dts_read_be16 (const guint8 * d, gboolean le)
+{
+  return le ? (guint) (d[1] << 8 | d[0]) : (guint) (d[0] << 8 | d[1]);
+}
+
+/* Core FSIZE+1 in 16-bit-format bytes; -1 more data, 0 not a core header. */
+static gint
+dts_core_size (const guint8 * d, gint avail)
+{
+  guint32 sync;
+  gint fsize;
+
+  if (avail < 16)
+    return -1;
+  sync = GST_READ_UINT32_BE (d);
+
+  if (sync == DTS_SYNC_CORE_BE || sync == DTS_SYNC_CORE_LE) {
+    gboolean le = (sync == DTS_SYNC_CORE_LE);
+    guint w2 = dts_read_be16 (d + 4, le), w3 = dts_read_be16 (d + 6, le);
+
+    if ((w2 & 0xFC00) != 0xFC00)
+      return 0;
+    fsize = (gint) (((w2 & 0x3) << 12) | (w3 >> 4)) + 1;
+    return fsize < DTS_MIN_CORE_SIZE ? 0 : fsize;
+  }
+
+  if (sync == DTS_SYNC_CORE_14B_BE || sync == DTS_SYNC_CORE_14B_LE) {
+    gboolean le = (sync == DTS_SYNC_CORE_14B_LE);
+    guint64 bits = 0;
+    gint i;
+
+    /* Pack the 14 payload bits of words 2..5: packed stream bits 28..83,
+     * counted from the start of the sync, land at value bits 55..0. Bits
+     * 28..31 end the sync (0001), bit 32 is FTYPE, 33..37 SHORT, and FSIZE
+     * is bits 46..59, i.e. value bits 37..24. */
+    for (i = 2; i < 6; i++)
+      bits = (bits << 14) | (dts_read_be16 (d + 2 * i, le) & 0x3FFF);
+    if (((bits >> 46) & 0x3FF) != 0x7F)
+      return 0;
+    fsize = (gint) ((bits >> 24) & 0x3FFF) + 1;
+    if (fsize < DTS_MIN_CORE_SIZE)
+      return 0;
+    return fsize * 8 / 14 * 2;
+  }
+
+  return 0;
+}
+
+/* EXSS nuExtSSFsize+1; -1 more data, 0 not an EXSS header. */
+static gint
+dts_exss_size (const guint8 * d, gint avail)
+{
+  guint64 v;
+  gint i;
+
+  if (avail < 4)
+    return -1;
+  if (GST_READ_UINT32_BE (d) != DTS_SYNC_EXSS)
+    return 0;
+  if (avail < 10)
+    return -1;
+
+  /* 48 bits after the sync: UserDefinedBits(8) nExtSSIndex(2)
+   * bHeaderSizeType(1) nuExtSSHeaderSize(8|12) nuExtSSFsize(16|20) */
+  for (v = 0, i = 4; i < 10; i++)
+    v = (v << 8) | d[i];
+  if (v & ((guint64) 1 << 37))
+    return (gint) ((v >> 5) & 0xFFFFF) + 1;
+  return (gint) ((v >> 13) & 0xFFFF) + 1;
+}
+
+static gint
+dts_frame_size (const guint8 * d, gint avail)
+{
+  gint core = dts_core_size (d, avail), ext;
+
+  if (core == -1 && avail >= 4 && GST_READ_UINT32_BE (d) == DTS_SYNC_EXSS)
+    core = 0;                   /* too short to rule out a core, but it's EXSS */
+  if (core < 0)
+    return -1;
+  if (core == 0) {
+    ext = dts_exss_size (d, avail);
+    return ext;
+  }
+  if (avail < core + 4)
+    return -1;                  /* can't see yet whether an EXSS follows */
+  ext = dts_exss_size (d + core, avail - core);
+  if (ext < 0)
+    return -1;
+  return core + ext;
 }
 
 static GstFlowReturn
@@ -1077,7 +1141,7 @@ gst_dtsdec_parse (GstAudioDecoder * bdec, GstAdapter * adapter,
   GstDtsDec *dts;
   guint8 *data;
   gint av, size;
-  gint length = 0, flags, sample_rate, bit_rate, frame_length;
+  gint length = 0;
   GstFlowReturn result = GST_FLOW_EOS;
 
   dts = GST_DTSDEC (bdec);
@@ -1086,18 +1150,14 @@ gst_dtsdec_parse (GstAudioDecoder * bdec, GstAdapter * adapter,
   data = (guint8 *) gst_adapter_map (adapter, av);
 
   /* find and read header */
-  bit_rate = dts->bit_rate;
-  sample_rate = dts->sample_rate;
-  flags = 0;
-  while (size >= 7) {
-    length = dca_syncinfo (dts->state, data, &flags,
-        &sample_rate, &bit_rate, &frame_length);
+  while (size >= 4) {
+    length = dts_frame_size (data, size);
 
     if (length == 0) {
       /* shift window to re-find sync */
       data++;
       size--;
-    } else if (length <= size) {
+    } else if (length > 0 && length <= size) {
       GST_LOG_OBJECT (dts, "Sync: frame size %d", length);
       result = GST_FLOW_OK;
       break;
@@ -1115,131 +1175,85 @@ gst_dtsdec_parse (GstAudioDecoder * bdec, GstAdapter * adapter,
   return result;
 }
 
-static gint
-gst_dtsdec_channels (uint32_t flags, GstAudioChannelPosition * pos)
+/* webOS 25 patch: FFmpeg AV_CH_* bit -> GStreamer position. The decoder's
+ * planes come in ascending bit order (its default channel_order). */
+static const struct
 {
-  gint chans = 0;
+  guint64 av;
+  GstAudioChannelPosition gst;
+} dts_channel_map[] = {
+  {AV_CH_FRONT_LEFT, GST_AUDIO_CHANNEL_POSITION_FRONT_LEFT},
+  {AV_CH_FRONT_RIGHT, GST_AUDIO_CHANNEL_POSITION_FRONT_RIGHT},
+  {AV_CH_FRONT_CENTER, GST_AUDIO_CHANNEL_POSITION_FRONT_CENTER},
+  {AV_CH_LOW_FREQUENCY, GST_AUDIO_CHANNEL_POSITION_LFE1},
+  {AV_CH_BACK_LEFT, GST_AUDIO_CHANNEL_POSITION_REAR_LEFT},
+  {AV_CH_BACK_RIGHT, GST_AUDIO_CHANNEL_POSITION_REAR_RIGHT},
+  {AV_CH_FRONT_LEFT_OF_CENTER, GST_AUDIO_CHANNEL_POSITION_FRONT_LEFT_OF_CENTER},
+  {AV_CH_FRONT_RIGHT_OF_CENTER,
+      GST_AUDIO_CHANNEL_POSITION_FRONT_RIGHT_OF_CENTER},
+  {AV_CH_BACK_CENTER, GST_AUDIO_CHANNEL_POSITION_REAR_CENTER},
+  {AV_CH_SIDE_LEFT, GST_AUDIO_CHANNEL_POSITION_SIDE_LEFT},
+  {AV_CH_SIDE_RIGHT, GST_AUDIO_CHANNEL_POSITION_SIDE_RIGHT},
+  {AV_CH_TOP_CENTER, GST_AUDIO_CHANNEL_POSITION_TOP_CENTER},
+  {AV_CH_TOP_FRONT_LEFT, GST_AUDIO_CHANNEL_POSITION_TOP_FRONT_LEFT},
+  {AV_CH_TOP_FRONT_CENTER, GST_AUDIO_CHANNEL_POSITION_TOP_FRONT_CENTER},
+  {AV_CH_TOP_FRONT_RIGHT, GST_AUDIO_CHANNEL_POSITION_TOP_FRONT_RIGHT},
+  {AV_CH_TOP_BACK_LEFT, GST_AUDIO_CHANNEL_POSITION_TOP_REAR_LEFT},
+  {AV_CH_TOP_BACK_CENTER, GST_AUDIO_CHANNEL_POSITION_TOP_REAR_CENTER},
+  {AV_CH_TOP_BACK_RIGHT, GST_AUDIO_CHANNEL_POSITION_TOP_REAR_RIGHT},
+  {AV_CH_WIDE_LEFT, GST_AUDIO_CHANNEL_POSITION_WIDE_LEFT},
+  {AV_CH_WIDE_RIGHT, GST_AUDIO_CHANNEL_POSITION_WIDE_RIGHT},
+  {AV_CH_SURROUND_DIRECT_LEFT, GST_AUDIO_CHANNEL_POSITION_SURROUND_LEFT},
+  {AV_CH_SURROUND_DIRECT_RIGHT, GST_AUDIO_CHANNEL_POSITION_SURROUND_RIGHT},
+  {AV_CH_LOW_FREQUENCY_2, GST_AUDIO_CHANNEL_POSITION_LFE2},
+};
 
-  switch (flags & DCA_CHANNEL_MASK) {
-    case DCA_MONO:
-      chans = 1;
-      if (pos) {
-        pos[0] = GST_AUDIO_CHANNEL_POSITION_MONO;
-      }
-      break;
-      /* case DCA_CHANNEL: */
-    case DCA_STEREO:
-    case DCA_STEREO_SUMDIFF:
-    case DCA_STEREO_TOTAL:
-    case DCA_DOLBY:
-      chans = 2;
-      if (pos) {
-        pos[0] = GST_AUDIO_CHANNEL_POSITION_FRONT_LEFT;
-        pos[1] = GST_AUDIO_CHANNEL_POSITION_FRONT_RIGHT;
-      }
-      break;
-    case DCA_3F:
-      chans = 3;
-      if (pos) {
-        pos[0] = GST_AUDIO_CHANNEL_POSITION_FRONT_CENTER;
-        pos[1] = GST_AUDIO_CHANNEL_POSITION_FRONT_LEFT;
-        pos[2] = GST_AUDIO_CHANNEL_POSITION_FRONT_RIGHT;
-      }
-      break;
-    case DCA_2F1R:
-      chans = 3;
-      if (pos) {
-        pos[0] = GST_AUDIO_CHANNEL_POSITION_FRONT_LEFT;
-        pos[1] = GST_AUDIO_CHANNEL_POSITION_FRONT_RIGHT;
-        pos[2] = GST_AUDIO_CHANNEL_POSITION_REAR_CENTER;
-      }
-      break;
-    case DCA_3F1R:
-      chans = 4;
-      if (pos) {
-        pos[0] = GST_AUDIO_CHANNEL_POSITION_FRONT_CENTER;
-        pos[1] = GST_AUDIO_CHANNEL_POSITION_FRONT_LEFT;
-        pos[2] = GST_AUDIO_CHANNEL_POSITION_FRONT_RIGHT;
-        pos[3] = GST_AUDIO_CHANNEL_POSITION_REAR_CENTER;
-      }
-      break;
-    case DCA_2F2R:
-      chans = 4;
-      if (pos) {
-        pos[0] = GST_AUDIO_CHANNEL_POSITION_FRONT_LEFT;
-        pos[1] = GST_AUDIO_CHANNEL_POSITION_FRONT_RIGHT;
-        pos[2] = GST_AUDIO_CHANNEL_POSITION_REAR_LEFT;
-        pos[3] = GST_AUDIO_CHANNEL_POSITION_REAR_RIGHT;
-      }
-      break;
-    case DCA_3F2R:
-      chans = 5;
-      if (pos) {
-        pos[0] = GST_AUDIO_CHANNEL_POSITION_FRONT_CENTER;
-        pos[1] = GST_AUDIO_CHANNEL_POSITION_FRONT_LEFT;
-        pos[2] = GST_AUDIO_CHANNEL_POSITION_FRONT_RIGHT;
-        pos[3] = GST_AUDIO_CHANNEL_POSITION_REAR_LEFT;
-        pos[4] = GST_AUDIO_CHANNEL_POSITION_REAR_RIGHT;
-      }
-      break;
-    case DCA_4F2R:
-      chans = 6;
-      if (pos) {
-        pos[0] = GST_AUDIO_CHANNEL_POSITION_FRONT_LEFT_OF_CENTER;
-        pos[1] = GST_AUDIO_CHANNEL_POSITION_FRONT_RIGHT_OF_CENTER;
-        pos[2] = GST_AUDIO_CHANNEL_POSITION_FRONT_LEFT;
-        pos[3] = GST_AUDIO_CHANNEL_POSITION_FRONT_RIGHT;
-        pos[4] = GST_AUDIO_CHANNEL_POSITION_REAR_LEFT;
-        pos[5] = GST_AUDIO_CHANNEL_POSITION_REAR_RIGHT;
-      }
-      break;
-    default:
-      g_warning ("dtsdec: invalid flags 0x%x", flags);
-      return 0;
-  }
-  if (flags & DCA_LFE) {
-    if (pos) {
-      pos[chans] = GST_AUDIO_CHANNEL_POSITION_LFE1;
-    }
-    chans += 1;
-  }
+/* Fill pos[] for `channels` planes of `layout`; FALSE if they don't agree. */
+static gboolean
+gst_dtsdec_positions (guint64 layout, gint channels,
+    GstAudioChannelPosition * pos)
+{
+  gint n = 0;
+  guint i;
 
-  return chans;
+  if (channels == 1 && (layout == 0 || layout == AV_CH_LAYOUT_MONO)) {
+    pos[0] = GST_AUDIO_CHANNEL_POSITION_MONO;
+    return TRUE;
+  }
+  for (i = 0; i < G_N_ELEMENTS (dts_channel_map); i++) {
+    if (!(layout & dts_channel_map[i].av))
+      continue;
+    if (n == channels)
+      return FALSE;
+    pos[n++] = dts_channel_map[i].gst;
+  }
+  return n == channels;
 }
 
 static gboolean
 gst_dtsdec_renegotiate (GstDtsDec * dts)
 {
-  gint channels;
-  gboolean result = FALSE;
-  GstAudioChannelPosition from[7], to[7];
+  gint channels = dts->channels;
+  GstAudioChannelPosition to[GST_DTSDEC_MAX_CHANNELS];
   GstAudioInfo info;
 
-  channels = gst_dtsdec_channels (dts->using_channels, from);
+  if (channels <= 0 || channels > GST_DTSDEC_MAX_CHANNELS)
+    return FALSE;
 
-  if (channels <= 0 || channels > 7)
-    goto done;
+  GST_INFO_OBJECT (dts, "dtsdec renegotiate, channels=%d, rate=%d, "
+      "layout=0x%" G_GINT64_MODIFIER "x", channels, dts->sample_rate,
+      dts->channel_layout);
 
-  GST_INFO_OBJECT (dts, "dtsdec renegotiate, channels=%d, rate=%d",
-      channels, dts->sample_rate);
-
-  memcpy (to, from, sizeof (GstAudioChannelPosition) * channels);
+  memcpy (to, dts->chan_pos, sizeof (GstAudioChannelPosition) * channels);
   gst_audio_channel_positions_to_valid_order (to, channels);
-  gst_audio_get_channel_reorder_map (channels, from, to,
+  gst_audio_get_channel_reorder_map (channels, dts->chan_pos, to,
       dts->channel_reorder_map);
-
 
   gst_audio_info_init (&info);
   gst_audio_info_set_format (&info,
       SAMPLE_TYPE, dts->sample_rate, channels, (channels > 1 ? to : NULL));
 
-  if (!gst_audio_decoder_set_output_format (GST_AUDIO_DECODER (dts), &info))
-    goto done;
-
-  result = TRUE;
-
-done:
-  return result;
+  return gst_audio_decoder_set_output_format (GST_AUDIO_DECODER (dts), &info);
 }
 
 static void
@@ -1249,7 +1263,6 @@ gst_dtsdec_update_streaminfo (GstDtsDec * dts)
 
   if (dts->bit_rate > 3) {
     taglist = gst_tag_list_new_empty ();
-    /* 1 => open bitrate, 2 => variable bitrate, 3 => lossless */
     gst_tag_list_add (taglist, GST_TAG_MERGE_APPEND, GST_TAG_BITRATE,
         (guint) dts->bit_rate, NULL);
     gst_audio_decoder_merge_tags (GST_AUDIO_DECODER (dts), taglist,
@@ -1259,178 +1272,100 @@ gst_dtsdec_update_streaminfo (GstDtsDec * dts)
   }
 }
 
-static GstFlowReturn
-gst_dtsdec_handle_frame (GstAudioDecoder * bdec, GstBuffer * buffer)
+/* webOS 25 patch: copy `bs` samples starting at `off` of every plane into the
+ * float DRC block (stride bs). S32P carries <= 24 significant bits and S16P
+ * 16, so both convert to float exactly; FLTP is the lossy core / LBR. */
+static void
+gst_dtsdec_fill_block (GstDtsDec * dts, const AVFrame * frame, gint chans,
+    gint off, gint bs)
 {
-  GstDtsDec *dts;
-  gint channels, i, num_blocks;
-  gboolean need_renegotiation = FALSE;
-  guint8 *data;
-  GstMapInfo map;
-  gint chans;
-#ifndef G_DISABLE_ASSERT
-  gsize size;
-  gint length;
-#endif
-  gint flags, sample_rate, bit_rate, frame_length;
+  gint c, n;
+
+  for (c = 0; c < chans; c++) {
+    gfloat *dst = dts->samples + c * bs;
+
+    switch (frame->format) {
+      case AV_SAMPLE_FMT_FLTP:{
+        const float *src = (const float *) frame->extended_data[c] + off;
+        for (n = 0; n < bs; n++)
+          dst[n] = src[n];
+        break;
+      }
+      case AV_SAMPLE_FMT_S32P:{
+        const int32_t *src = (const int32_t *) frame->extended_data[c] + off;
+        for (n = 0; n < bs; n++)
+          dst[n] = (gfloat) src[n] * (1.0f / 2147483648.0f);
+        break;
+      }
+      case AV_SAMPLE_FMT_S16P:{
+        const int16_t *src = (const int16_t *) frame->extended_data[c] + off;
+        for (n = 0; n < bs; n++)
+          dst[n] = (gfloat) src[n] * (1.0f / 32768.0f);
+        break;
+      }
+      default:
+        memset (dst, 0, sizeof (gfloat) * bs);
+        break;
+    }
+  }
+}
+
+static GstFlowReturn
+gst_dtsdec_output_frame (GstDtsDec * dts, const AVFrame * frame)
+{
+  GstAudioDecoder *bdec = GST_AUDIO_DECODER (dts);
+  gint chans = frame->channels, i, num_blocks, nb = frame->nb_samples;
+  guint64 layout = frame->channel_layout;
   GstFlowReturn result = GST_FLOW_OK;
   GstBuffer *outbuf;
+  GstMapInfo map;
+  guint8 *data;
   /* webOS 25 patch: DRC/centre-boost per-frame setup. */
-  GstAudioChannelPosition chan_pos[7];
   gint center_idx = -1, lfe_idx = -1, ci;
   gboolean gain_only;
 
-  dts = GST_DTSDEC (bdec);
+  if (layout == 0)
+    layout = av_get_default_channel_layout (chans);
 
-  /* no fancy draining */
-  if (G_UNLIKELY (!buffer))
-    return GST_FLOW_OK;
-
-  /* parsed stuff already, so this should work out fine */
-  gst_buffer_map (buffer, &map, GST_MAP_READ);
-  data = map.data;
-
-#ifndef G_DISABLE_ASSERT
-  size = map.size;
-  g_assert (size >= 7);
-#endif
-
-  bit_rate = dts->bit_rate;
-  sample_rate = dts->sample_rate;
-  flags = 0;
-
-#ifndef G_DISABLE_ASSERT
-  length = dca_syncinfo (dts->state, data, &flags, &sample_rate, &bit_rate,
-      &frame_length);
-  g_assert (length == size);
-#else
-  (void) dca_syncinfo (dts->state, data, &flags, &sample_rate, &bit_rate,
-      &frame_length);
-#endif
-
-  if (flags != dts->prev_flags) {
-    dts->prev_flags = flags;
-    dts->flag_update = TRUE;
-  }
+  if (frame->format != AV_SAMPLE_FMT_FLTP && frame->format != AV_SAMPLE_FMT_S32P
+      && frame->format != AV_SAMPLE_FMT_S16P)
+    goto invalid_format;
 
   /* go over stream properties, renegotiate or update streaminfo if needed */
-  if (dts->sample_rate != sample_rate) {
-    need_renegotiation = TRUE;
-    dts->sample_rate = sample_rate;
-  }
-
-  if (flags) {
-    dts->stream_channels = flags & (DCA_CHANNEL_MASK | DCA_LFE);
-  }
-
-  if (bit_rate != dts->bit_rate) {
-    dts->bit_rate = bit_rate;
-    gst_dtsdec_update_streaminfo (dts);
-  }
-
-  /* If we haven't had an explicit number of channels chosen through properties
-   * at this point, choose what to downmix to now, based on what the peer will
-   * accept - this allows a52dec to do downmixing in preference to a
-   * downstream element such as audioconvert.
-   * FIXME: Add the property back in for forcing output channels.
-   */
-  if (dts->request_channels != DCA_CHANNEL) {
-    flags = dts->request_channels;
-  } else if (dts->flag_update) {
-    GstCaps *caps;
-
-    dts->flag_update = FALSE;
-
-    caps = gst_pad_get_allowed_caps (GST_AUDIO_DECODER_SRC_PAD (dts));
-    if (caps && gst_caps_get_size (caps) > 0) {
-      GstCaps *copy = gst_caps_copy_nth (caps, 0);
-      GstStructure *structure = gst_caps_get_structure (copy, 0);
-      gint channels;
-      const int dts_channels[6] = {
-        DCA_MONO,
-        DCA_STEREO,
-        DCA_STEREO | DCA_LFE,
-        DCA_2F2R,
-        DCA_2F2R | DCA_LFE,
-        DCA_3F2R | DCA_LFE,
-      };
-
-      /* Prefer the original number of channels, but fixate to something
-       * preferred (first in the caps) downstream if possible.
-       */
-      gst_structure_fixate_field_nearest_int (structure, "channels",
-          flags ? gst_dtsdec_channels (flags, NULL) : 6);
-      gst_structure_get_int (structure, "channels", &channels);
-      if (channels <= 6)
-        flags = dts_channels[channels - 1];
-      else
-        flags = dts_channels[5];
-
-      gst_caps_unref (copy);
-    } else if (flags) {
-      flags = dts->stream_channels;
-    } else {
-      flags = DCA_3F2R | DCA_LFE;
-    }
-
-    if (caps)
-      gst_caps_unref (caps);
-  } else {
-    flags = dts->using_channels;
-  }
-
-  /* process */
-  flags |= DCA_ADJUST_LEVEL;
-  dts->level = 1;
-  if (dca_frame (dts->state, data, &flags, &dts->level, dts->bias)) {
-    gst_buffer_unmap (buffer, &map);
-    GST_AUDIO_DECODER_ERROR (dts, 1, STREAM, DECODE, (NULL),
-        ("dts_frame error"), result);
-    goto exit;
-  }
-  gst_buffer_unmap (buffer, &map);
-
-  channels = flags & (DCA_CHANNEL_MASK | DCA_LFE);
-  if (dts->using_channels != channels) {
-    need_renegotiation = TRUE;
-    dts->using_channels = channels;
-  }
-
-  /* negotiate if required */
-  if (need_renegotiation) {
-    GST_DEBUG_OBJECT (dts,
-        "dtsdec: sample_rate:%d stream_chans:0x%x using_chans:0x%x",
-        dts->sample_rate, dts->stream_channels, dts->using_channels);
+  if (dts->sample_rate != frame->sample_rate || dts->channels != chans
+      || dts->channel_layout != layout) {
+    if (chans <= 0 || chans > GST_DTSDEC_MAX_CHANNELS
+        || !gst_dtsdec_positions (layout, chans, dts->chan_pos))
+      goto invalid_layout;
+    dts->sample_rate = frame->sample_rate;
+    dts->channels = chans;
+    dts->channel_layout = layout;
+    GST_DEBUG_OBJECT (dts, "dtsdec: sample_rate:%d channels:%d format:%s",
+        dts->sample_rate, chans,
+        av_get_sample_fmt_name ((enum AVSampleFormat) frame->format));
     if (!gst_dtsdec_renegotiate (dts))
       goto failed_negotiation;
   }
 
-  if (dts->dynamic_range_compression == FALSE) {
-    dca_dynrng (dts->state, NULL, NULL);
+  if (dts->avctx->bit_rate != dts->bit_rate) {
+    dts->bit_rate = (gint) dts->avctx->bit_rate;
+    gst_dtsdec_update_streaminfo (dts);
   }
 
-  flags &= (DCA_CHANNEL_MASK | DCA_LFE);
-  chans = gst_dtsdec_channels (flags, chan_pos);
-  if (!chans)
-    goto invalid_flags;
-
   /* webOS 25 patch: locate the front-centre channel (the dialogue lift target)
-   * and the LFE (excluded from the DRC level detector) in libdca's planar
-   * output order — chan_pos[i] describes dts->samples[i * 256 ...]. Layouts
-   * without a discrete centre (mono, stereo, 2F2R) simply get no lift. */
+   * and the LFE (excluded from the DRC level detector) in the decoder's
+   * planar order. Layouts without a discrete centre simply get no lift. */
   for (ci = 0; ci < chans; ci++) {
-    if (chan_pos[ci] == GST_AUDIO_CHANNEL_POSITION_FRONT_CENTER)
+    if (dts->chan_pos[ci] == GST_AUDIO_CHANNEL_POSITION_FRONT_CENTER)
       center_idx = ci;
-    else if (chan_pos[ci] == GST_AUDIO_CHANNEL_POSITION_LFE1)
+    else if (dts->chan_pos[ci] == GST_AUDIO_CHANNEL_POSITION_LFE1)
       lfe_idx = ci;
   }
 
   /* webOS 25 patch: with no DRC and no centre boost there is nothing to do
-   * beyond the make-up gain, so we run the previously shipped output loop
-   * verbatim. That keeps output bit-identical to the shipped build for ANY
-   * make-up gain value, and at 0.0 dB the multiply is by an exact 1.0f — i.e.
-   * the epic's "drc=off, center=0, gain=0 is a bit-exact no-op" guarantee,
-   * with no added multiply on that path. */
+   * beyond the make-up gain, so the output loop is the plain gain + convert.
+   * At 0.0 dB the multiply is by an exact 1.0f, so drc=off, center=0,
+   * gain=0 is a bit-exact no-op on the decoder's output. */
   gain_only = (dts->drc_mode == DTS_DRC_MODE_OFF
       && dts->center_boost_db == 0.0f);
 
@@ -1438,35 +1373,32 @@ gst_dtsdec_handle_frame (GstAudioDecoder * bdec, GstBuffer * buffer)
           || dts->drc_coef_mode != dts->drc_mode))
     gst_dtsdec_drc_update_coefs (dts);
 
-  /* handle decoded data, one block is 256 samples */
-  num_blocks = dca_blocks_num (dts->state);
-  outbuf =
-      gst_buffer_new_and_alloc (256 * chans * (SAMPLE_WIDTH / 8) * num_blocks);
+  /* handle decoded data in DRC blocks of up to 256 samples */
+  num_blocks = (nb + GST_DTSDEC_BLOCK_SAMPLES - 1) / GST_DTSDEC_BLOCK_SAMPLES;
+  outbuf = gst_buffer_new_and_alloc ((gsize) nb * chans * (SAMPLE_WIDTH / 8));
 
   gst_buffer_map (outbuf, &map, GST_MAP_WRITE);
   data = map.data;
   {
     guint8 *ptr = data;
     for (i = 0; i < num_blocks; i++) {
-      if (dca_block (dts->state)) {
-        /* also marks discont */
-        GST_AUDIO_DECODER_ERROR (dts, 1, STREAM, DECODE, (NULL),
-            ("error decoding block %d", i), result);
-        if (result != GST_FLOW_OK)
-          goto exit;
-      } else if (gain_only) {
+      gint bs = MIN (GST_DTSDEC_BLOCK_SAMPLES, nb - i * GST_DTSDEC_BLOCK_SAMPLES);
+
+      gst_dtsdec_fill_block (dts, frame, chans, i * GST_DTSDEC_BLOCK_SAMPLES,
+          bs);
+      if (gain_only) {
         gint n, c;
         gint *reorder_map = dts->channel_reorder_map;
 
-        for (n = 0; n < 256; n++) {
+        for (n = 0; n < bs; n++) {
           for (c = 0; c < chans; c++) {
             {
-              /* webOS: convert libdca's normalized float (~[-1,1]) to S32LE
+              /* webOS: convert the normalized float (~[-1,1]) to S32LE
                * with clamping, so LG's integer-only audiosink accepts it.
                * webOS 25 patch: apply the user-tunable make-up gain (linear;
                * default 1.0 = exact no-op) BEFORE the scale/clamp below, so
                * the existing clipping guard still protects the output. */
-              gdouble sample = (gdouble) dts->samples[c * 256 + n] *
+              gdouble sample = (gdouble) dts->samples[c * bs + n] *
                   (gdouble) dts->makeup_gain_linear;
               gdouble s = sample * 2147483648.0;
               if (s > 2147483647.0)
@@ -1491,7 +1423,7 @@ gst_dtsdec_handle_frame (GstAudioDecoder * bdec, GstBuffer * buffer)
 
           /* detector: block RMS over the full-range channels only */
           sum_sq = dts_drc_sum_squares ((const gfloat *) dts->samples, chans,
-              256, lfe_idx, &count);
+              bs, lfe_idx, &count);
           level_db = dts_drc_level_dbfs (sum_sq, count);
           target_db = dts_drc_scale_gain_db (dts_drc_target_gain_db
               (dts->drc_mode, level_db), dts->drc_boost_pct,
@@ -1521,11 +1453,11 @@ gst_dtsdec_handle_frame (GstAudioDecoder * bdec, GstBuffer * buffer)
           gfloat chan_scale =
               (c == center_idx) ? dts->center_boost_linear : 1.0f;
           gfloat g = from * chan_scale;
-          gfloat step = (to - from) * chan_scale * (1.0f / 256.0f);
-          const sample_t *in = dts->samples + c * 256;
+          gfloat step = (to - from) * chan_scale * (1.0f / (gfloat) bs);
+          const gfloat *in = dts->samples + c * bs;
           gint32 *out = ((gint32 *) ptr) + reorder_map[c];
 
-          for (n = 0; n < 256; n++) {
+          for (n = 0; n < bs; n++) {
             gdouble s;
 
             g += step;
@@ -1539,28 +1471,88 @@ gst_dtsdec_handle_frame (GstAudioDecoder * bdec, GstBuffer * buffer)
         }
         /* END DRC per-sample apply */
       }
-      ptr += 256 * chans * (SAMPLE_WIDTH / 8);
+      ptr += (gsize) bs * chans * (SAMPLE_WIDTH / 8);
     }
   }
   gst_buffer_unmap (outbuf, &map);
 
   result = gst_audio_decoder_finish_frame (bdec, outbuf, 1);
-
-exit:
   return result;
 
   /* ERRORS */
+invalid_format:
+  {
+    GST_ELEMENT_ERROR (dts, STREAM, DECODE, (NULL),
+        ("unexpected sample format %d", frame->format));
+    return GST_FLOW_ERROR;
+  }
+invalid_layout:
+  {
+    GST_ELEMENT_ERROR (dts, STREAM, DECODE, (NULL),
+        ("unsupported channel layout 0x%" G_GINT64_MODIFIER "x (%d channels)",
+            layout, chans));
+    return GST_FLOW_ERROR;
+  }
 failed_negotiation:
   {
     GST_ELEMENT_ERROR (dts, CORE, NEGOTIATION, (NULL), (NULL));
     return GST_FLOW_ERROR;
   }
-invalid_flags:
-  {
-    GST_ELEMENT_ERROR (GST_ELEMENT (dts), STREAM, DECODE, (NULL),
-        ("Invalid channel flags: %d", flags));
+}
+
+static GstFlowReturn
+gst_dtsdec_handle_frame (GstAudioDecoder * bdec, GstBuffer * buffer)
+{
+  GstDtsDec *dts = GST_DTSDEC (bdec);
+  GstFlowReturn result = GST_FLOW_OK;
+  GstMapInfo map;
+  gsize need;
+  gint ret;
+
+  /* no fancy draining */
+  if (G_UNLIKELY (!buffer))
+    return GST_FLOW_OK;
+
+  /* FFmpeg reads up to AV_INPUT_BUFFER_PADDING_SIZE past the end, which must
+   * be zero, so the frame goes through a padded copy. */
+  gst_buffer_map (buffer, &map, GST_MAP_READ);
+  need = map.size + AV_INPUT_BUFFER_PADDING_SIZE;
+  if (dts->pktbuf_size < need) {
+    av_freep (&dts->pktbuf);
+    dts->pktbuf = av_malloc (need);
+    dts->pktbuf_size = dts->pktbuf ? need : 0;
+  }
+  if (dts->pktbuf == NULL) {
+    gst_buffer_unmap (buffer, &map);
     return GST_FLOW_ERROR;
   }
+  memcpy (dts->pktbuf, map.data, map.size);
+  memset (dts->pktbuf + map.size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+  dts->pkt->data = dts->pktbuf;
+  dts->pkt->size = (int) map.size;
+  gst_buffer_unmap (buffer, &map);
+
+  ret = avcodec_send_packet (dts->avctx, dts->pkt);
+  av_packet_unref (dts->pkt);
+  if (ret < 0) {
+    /* also marks discont */
+    GST_AUDIO_DECODER_ERROR (dts, 1, STREAM, DECODE, (NULL),
+        ("dts_frame error %d", ret), result);
+    return result;
+  }
+
+  ret = avcodec_receive_frame (dts->avctx, dts->frame);
+  if (ret == AVERROR (EAGAIN))
+    return gst_audio_decoder_finish_frame (bdec, NULL, 1);
+  if (ret < 0) {
+    GST_AUDIO_DECODER_ERROR (dts, 1, STREAM, DECODE, (NULL),
+        ("error decoding frame %d", ret), result);
+    return result;
+  }
+
+  result = gst_dtsdec_output_frame (dts, dts->frame);
+  av_frame_unref (dts->frame);
+  return result;
 }
 
 static gboolean
@@ -1730,9 +1722,9 @@ dtsdec_element_init (GstPlugin * plugin)
 {
   GST_DEBUG_CATEGORY_INIT (dtsdec_debug, "dtsdec", 0, "DTS/DCA audio decoder");
 
-#if HAVE_ORC
-  orc_init ();
-#endif
+  /* The static FFmpeg is private to this plugin, so this only quiets it: it
+   * warns "not compiled with thread support" on every avcodec_open2(). */
+  av_log_set_level (AV_LOG_ERROR);
 
   return gst_element_register (plugin, "dtsdec", GST_RANK_PRIMARY,
       GST_TYPE_DTSDEC);

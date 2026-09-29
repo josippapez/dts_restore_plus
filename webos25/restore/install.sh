@@ -5,8 +5,8 @@
 #
 # Run as root ON THE TV, from this restore/ directory (copied via scp), which
 # must contain:
-#     out/libgstdtsdec.so        patched dtsdec (S32LE, accepts A_DTS)   [build.sh]
-#     out/libdca.so.0            DTS decode library (armel)              [build.sh]
+#     out/libgstdtsdec.so        patched dtsdec (S32LE, accepts A_DTS;   [build.sh]
+#                                FFmpeg's dca decoder linked in statically)
 #     truehd-out/libgstlibav.so  gst-libav with avdec_truehd/avdec_mlp   [build-truehd.sh]
 #     truehd-out/libav*.so*      minimal ffmpeg n4.4.4 libs (+symlinks)  [build-truehd.sh]
 #     truehd-out/libsw*.so*      libswresample (+symlinks)               [build-truehd.sh]
@@ -26,7 +26,7 @@
 #   sh install.sh
 #
 # What it does (idempotent, guarded, logged to /tmp/dts25.log, always exit 0):
-#   1. Stages the DTS payload  -> /var/lib/webosbrew/dts25/{,libs/}
+#   1. Stages the DTS payload  -> /var/lib/webosbrew/dts25/
 #   2. Stages the TrueHD payload-> /var/lib/webosbrew/truehd/{,libs/}
 #   2c. Stages the container demuxers (if demux-out/ present)
 #        -> /var/lib/webosbrew/demux25/ (mp4/ts/m2ts DTS, MKV Dolby Vision P7;
@@ -72,7 +72,6 @@ FORCE=${FORCE:-0}
 
 LOG=/tmp/dts25.log
 DTS_DEST=/var/lib/webosbrew/dts25
-DTS_LIBS=$DTS_DEST/libs
 THD_DEST=/var/lib/webosbrew/truehd
 THD_LIBS=$THD_DEST/libs
 INITD=/var/lib/webosbrew/init.d
@@ -120,7 +119,10 @@ w25_umount() {
 log "=== unified DTS+TrueHD install start ==="
 
 # --- 1. Stage DTS payload --------------------------------------------------
-mkdir -p "$DTS_LIBS" || { log "FATAL: cannot create $DTS_LIBS"; exit 0; }
+# dtsdec links its decoder statically, so nothing goes into dts25/libs/ any
+# more. A libdca.so.0 left there by an older install is inert (nothing NEEDS
+# it) and is removed with the rest of dts25/ by uninstall.sh.
+mkdir -p "$DTS_DEST" || { log "FATAL: cannot create $DTS_DEST"; exit 0; }
 
 # Mark this as an SSH/CLI install BEFORE anything can run the boot script: its
 # self-heal reverts an install that no longer has an owner (app dir gone), and
@@ -133,12 +135,6 @@ if [ -f "$SELF_DIR/out/libgstdtsdec.so" ]; then
     && log "installed libgstdtsdec.so -> $DTS_DEST/" || log "WARN: copy libgstdtsdec.so failed"
 else
   log "WARN: $SELF_DIR/out/libgstdtsdec.so not found (run build.sh first)"
-fi
-if [ -f "$SELF_DIR/out/libdca.so.0" ]; then
-  cp -f "$SELF_DIR/out/libdca.so.0" "$DTS_LIBS/libdca.so.0" \
-    && log "installed libdca.so.0 -> $DTS_LIBS/" || log "WARN: copy libdca.so.0 failed"
-else
-  log "WARN: $SELF_DIR/out/libdca.so.0 not found (run build.sh first)"
 fi
 
 # --- 1b. Stage the adecswitch payload (track A: same-family stream-switch bin,

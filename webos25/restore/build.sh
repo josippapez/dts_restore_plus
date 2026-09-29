@@ -8,8 +8,15 @@
 #   `arm-linux-gnueabi-gcc` (soft-float) — NOT `arm-linux-gnueabihf` (hard-float).
 #
 # What this produces in webos25/out/:
-#   - libgstdtsdec.so   the patched decoder plugin (armel soft-float)
-#   - libdca.so.0       the DTS decode library (armel), bundled for the TV
+#   - libgstdtsdec.so   the patched decoder plugin (armel soft-float), with
+#                       FFmpeg n4.4.4's dca decoder linked in statically
+#
+# The decoder is FFmpeg's dca (core + DTS-HD XLL/XBR/X96/XXCH + LBR), not
+# libdca (core only). It is built here as a static libavcodec/libavutil with
+# every other codec disabled and linked with --exclude-libs,ALL, so none of
+# its symbols are exported: libgstlibav loads its own shared libavcodec
+# (build-truehd.sh) into the same media process, and the two must not bind to
+# each other's functions.
 #
 # The plugin's sink caps are already patched in src/gstdtsdec.c to accept LG's
 # retagged raw DTS ("audio/x-unknown, codec-id=(string)A_DTS"), so this script
@@ -23,7 +30,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-OUT="$HERE/out"
+OUT="${OUT:-$HERE/out}"
 mkdir -p "$OUT"
 
 echo "=== dtsdec webOS25 cross-build ==="
@@ -44,24 +51,46 @@ docker run --rm -i --platform linux/arm64 \
     # enabled `libgstreamer1.0-dev:armel` is unsatisfiable: libglib2.0-0:armel,
     # libpcre2-dev:armel, libpcre2-posix3:armel and libselinux1:armel all report
     # "libpcre2-8-0:armel ... not going to be installed".
+    # The suite is a pinned snapshot, and the image's own packages are moved to
+    # it: newer debian:12-slim images already ship security-updated arm64 libs
+    # (liblzma5, libpcre2, libselinux1) that no armel counterpart matches.
+    SNAPSHOT=20250601T000000Z
     rm -f /etc/apt/sources.list.d/debian.sources
-    printf 'deb http://deb.debian.org/debian bookworm main\n' > /etc/apt/sources.list
+    printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/%s bookworm main\n' \
+      "$SNAPSHOT" > /etc/apt/sources.list
+    printf 'Package: *\nPin: origin "snapshot.debian.org"\nPin-Priority: 1001\n' \
+      > /etc/apt/preferences.d/snapshot
 
     # Enable the armel (32-bit soft-float ARM) foreign architecture.
     dpkg --add-architecture armel
     apt-get update -qq >/dev/null 2>&1
+    apt-get -y -qq --allow-downgrades dist-upgrade >/dev/null 2>&1
 
     # Cross toolchain + helpers (host arch: arm64).
     apt-get install -y -qq --no-install-recommends \
-      gcc-arm-linux-gnueabi pkg-config file patchelf binutils >/dev/null 2>&1
+      gcc-arm-linux-gnueabi pkg-config file patchelf binutils \
+      git ca-certificates make >/dev/null 2>&1
 
-    # armel dev packages: GStreamer core, plugins-base (audio/base libs),
-    # libdca (the DTS decoder), and glib.
+    # armel dev packages: GStreamer core, plugins-base (audio/base libs), glib.
     apt-get install -y -qq --no-install-recommends \
       libgstreamer1.0-dev:armel \
       libgstreamer-plugins-base1.0-dev:armel \
-      libdca-dev:armel \
       libglib2.0-dev:armel >/dev/null 2>&1
+
+    # Static FFmpeg with only the dca decoder. Same tag and the same no-asm
+    # soft-float settings as build-truehd.sh's shared build.
+    git clone -q --depth 1 -b n4.4.4 https://git.ffmpeg.org/ffmpeg.git /tmp/ffmpeg
+    ( cd /tmp/ffmpeg && ./configure --cross-prefix=arm-linux-gnueabi- \
+        --enable-cross-compile --arch=arm --target-os=linux --prefix=/tmp/ffdca \
+        --disable-everything --enable-decoder=dca \
+        --disable-avformat --disable-avfilter --disable-swresample \
+        --disable-swscale --disable-avdevice --disable-postproc \
+        --disable-network --disable-programs --disable-doc --disable-autodetect \
+        --disable-pthreads --disable-asm \
+        --enable-static --disable-shared --enable-pic >/dev/null \
+      && make -j"$(nproc)" install >/dev/null )
+    grep -q "CONFIG_DCA_DECODER 1" /tmp/ffmpeg/config.h \
+      || { echo "ERROR: FFmpeg configured without the dca decoder"; exit 1; }
 
     # Work on a writable copy (source mount is read-only).
     cp /work/gstdtsdec.c /work/gstdtsdec.h /tmp/
@@ -77,29 +106,18 @@ docker run --rm -i --platform linux/arm64 \
     LB=$(pkg-config --libs   gstreamer-1.0 gstreamer-audio-1.0 gstreamer-base-1.0)
 
     # Compile. Key flags:
-    #   -include stdint.h -include inttypes.h : libdca headers use int types
-    #        without always including these; force-include avoids build breaks.
-    #   -DHAVE_ORC=0 : no Orc SIMD runtime on the TV; disable that code path.
     #   -shared -fPIC -O2 : a normal optimized shared plugin.
     #   VERSION / PACKAGE / GST_PACKAGE_* : plugin identity metadata.
-    #   -ldca : link the DTS decode library.
-    #   -Wl,-rpath,... : bake the on-TV libs dir so libdca.so.0 is found there.
-    arm-linux-gnueabi-gcc -shared -fPIC -O2 -o /out/libgstdtsdec.so gstdtsdec.c \
-      -include stdint.h -include inttypes.h \
-      -DHAVE_ORC=0 \
+    #   libavcodec.a libavutil.a + --exclude-libs,ALL : the static decoder,
+    #        with none of its symbols exported (see the header comment).
+    arm-linux-gnueabi-gcc -shared -fPIC -O2 -Wall -o /out/libgstdtsdec.so gstdtsdec.c \
+      -I/tmp/ffdca/include \
       -DVERSION='"1.22.0-webosdts"' \
       -DPACKAGE='"gst-plugins-bad"' \
       -DGST_PACKAGE_NAME='"WebOS DTS restore"' \
       -DGST_PACKAGE_ORIGIN='"https://github.com/josippapez/dts_restore"' \
-      $CF $LB -ldca \
-      -Wl,-rpath,/var/lib/webosbrew/dts25/libs
-
-    # Bundle the armel libdca.so.0 for deployment onto the TV.
-    DCA_SO=$(find / -name "libdca.so.0*" -path "*arm-linux-gnueabi*" 2>/dev/null | head -1)
-    if [ -z "$DCA_SO" ]; then
-      echo "ERROR: could not locate armel libdca.so.0"; exit 1
-    fi
-    cp -L "$DCA_SO" /out/libdca.so.0
+      $CF /tmp/ffdca/lib/libavcodec.a /tmp/ffdca/lib/libavutil.a $LB -lm \
+      -Wl,--exclude-libs,ALL -Wl,--no-undefined
 
     echo "=== BUILT ==="
     file -b /out/libgstdtsdec.so | cut -d, -f1-4
@@ -108,8 +126,9 @@ docker run --rm -i --platform linux/arm64 \
     readelf -d /out/libgstdtsdec.so | grep -E "NEEDED|RUNPATH|RPATH" | grep -oE "\[.*\]"
     echo "=== max GLIBC (must be <= 2.35) ==="
     objdump -T /out/libgstdtsdec.so 2>/dev/null | grep -oE "GLIBC_[0-9.]+" | sort -V | tail -1
-    echo "=== libdca ==="
-    file -b /out/libdca.so.0 | cut -d, -f1-4
+    echo "=== exported FFmpeg symbols (must be 0) ==="
+    n=$(objdump -T /out/libgstdtsdec.so | grep -cE " (av|ff|avpriv|avcodec|swr)_" || true)
+    echo "$n"; [ "$n" = 0 ] || { echo "ERROR: FFmpeg symbols leak from the plugin"; exit 1; }
 CONTAINER_EOF
 
 echo ""

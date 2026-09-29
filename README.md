@@ -144,8 +144,8 @@ can still install (the installer just warns first), using the same binaries.
 ## Tuning the stereo downmix
 
 > **CX / webOS 3–6 only.** This applies to the CX tool's binaries, whose gst-libav forces a
-> stereo downmix. The **webOS 25** build does **not** downmix — it decodes native discrete 5.1
-> (verified on a C5), so there is no `downmix.conf` there. See
+> stereo downmix. The **webOS 25** build does **not** downmix — it decodes native discrete
+> channels, up to 7.1 (verified on a C5), so there is no `downmix.conf` there. See
 > [`webos25/README.md`](webos25/README.md).
 
 DTS is decoded and **downmixed to 2.0 PCM** (see [Limitations](#limitations)). The mix is
@@ -192,12 +192,13 @@ The flag is checked at each playback start (no reboot needed) but **resets on re
 ## Limitations
 
 > These limitations describe the **CX / webOS 3–6** tool (the binaries in `gst/`). The
-> **webOS 25** build is different — it decodes **discrete 5.1 (no downmix)**; see its own
+> **webOS 25** build is different — it decodes **discrete channels up to 7.1 (no downmix)**; see its own
 > [limitations/caveats](webos25/README.md#per-codec-status).
 
 - **Stereo (2.0) downmix only *(CX tool)*** — the CX gst-libav forces a 2.0 downmix; it does
   not reach LG's multichannel sink. (This does **not** apply to the webOS 25 build, which emits
-  discrete 5.1 — measured on a C5 to match a reference decoder within ~0.1–0.2 dB per channel.)
+  discrete channels up to 7.1 — since webos25-2.43 bit-exact against desktop ffmpeg on a C5,
+  DTS-HD MA lossless included.)
   Bitstream passthrough to an AVR is out of scope on either platform (decode-to-PCM only).
 - **Root required.**
 - **4K content cannot 2× fast-forward** — a stock LG limitation that also applies to AC3/AAC.
@@ -242,8 +243,7 @@ This fork adds two work-in-progress components alongside the core tool:
 ## License
 
 This project's own code (installer scripts, the app, the service) is **GNU LGPL v2.1 or later**,
-same as GStreamer and its plugins. The shipped binary payload is **mixed**, because one component
-links a GPL library:
+same as GStreamer and its plugins. So is every shipped binary below; each keeps its own license:
 
 | Shipped artifact | License | Why |
 |---|---|---|
@@ -251,11 +251,11 @@ links a GPL library:
 | Legacy `gst/libgst{matroska,isomp4,isomp4_1_8,libav}.so` (packaged in `payload/cx/`) | LGPL-2.1-or-later | LG GStreamer 1.14.4 sources; shared by the inherited CX mechanism and experimental C2 profile |
 | `webos25/restore/demux-out/libgst{isomp4,mpegtsdemux,matroska}.so` | LGPL-2.1-or-later | built from gst-plugins-good / -bad |
 | `webos25/restore/truehd-out/libgstlibav.so`, `libav*.so*`, `libsw*.so*` | LGPL-2.1-or-later | ffmpeg 4.4 configured **without** `--enable-gpl` / `--enable-version3` (see `webos25/restore/build-truehd.sh`) |
-| `libgstdtsdec.so`, `libdca.so.0` | **GPL-2.0-or-later** | the plugin source is LGPL, but it links **libdca**, which is GPL-2.0-or-later — the resulting binary is a combined work |
+| `webos25/restore/out/libgstdtsdec.so` | LGPL-2.1-or-later | gst-plugins-bad `ext/dts` (LGPL) with ffmpeg n4.4.4's `dca` decoder linked in **statically**, configured **without** `--enable-gpl` / `--enable-version3` / `--enable-nonfree` (see `webos25/restore/build.sh`). Before webos25-2.43 it linked libdca and was GPL-2.0-or-later |
 
-Each component keeps its own license; because the DTS decoder pair is GPL-2.0-or-later, any
-distributed `.ipk` or tarball contains GPL-2.0-or-later code, and the corresponding-source offer
-must cover it. The webOS-25 build scripts and patched sources are in `webos25/restore/`; provenance
+Because `libgstdtsdec.so` links ffmpeg statically, LGPL-2.1 section 6 applies: the published
+plugin source and `webos25/restore/build.sh` let anyone rebuild ffmpeg, modify it and relink the
+plugin. The webOS-25 build scripts and patched sources are in `webos25/restore/`; provenance
 for the separately packaged legacy LG 1.14.4 files is listed above and in
 `webos25/app/payload/cx/README`.
 

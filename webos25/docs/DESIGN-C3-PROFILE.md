@@ -41,7 +41,8 @@ strictly better:
   machinery this project needs on webOS 25 is **not needed here at all** (see
   [`MULTI-MODEL.md` §2.6](MULTI-MODEL.md))
 - DSP-offloaded decode rather than CPU software decode
-- Potentially DTS-HD MA / DTS:X rather than the 5.1 core `libdca` gives us
+- Potentially DTS:X (our `dtsdec` has decoded DTS-HD MA lossless since webos25-2.43, via
+  ffmpeg `dca`, but renders no DTS:X objects; before that libdca gave only the 5.1 core)
 - No decoder payload at all, so no ABI, soft-float, GStreamer-version or
   `DT_NEEDED` matching to get wrong
 

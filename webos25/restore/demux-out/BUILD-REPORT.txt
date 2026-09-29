@@ -1,5 +1,5 @@
-Container-demuxer rebuild — DTS re-enabled for mp4/ts/m2ts, TrueHD in ts/m2ts,
-and Dolby Vision profile 7 in MKV
+Container-demuxer rebuild — DTS re-enabled for mp4/ts/m2ts (with the DTS-HD
+extension in ts/m2ts), TrueHD in ts/m2ts, and Dolby Vision profile 7 in MKV
 ==================================================================================
 
 Source: LG webOS-25 GStreamer 1.24 monorepo (lgstreamer/gstreamer-webos-25).
@@ -70,10 +70,36 @@ binary, normal colours on other plays), only once the TV had been up for hours
 (load ~15, 436 MB swapped, audiod restarted). After a fresh reboot every P7 clip,
 incl. FEL with DTS or TrueHD audio, had correct colours and sound.
 
-This rebuild left libgstisomp4.so (md5 ee47bee841f5baff9f34e2f6f9b01792) and
-libgstmpegtsdemux.so (md5 8a490733c61c7ad0bdb5c9cb78d3547e) BYTE-IDENTICAL to the
-previous artifacts. libgstmatroska.so: md5 03b28878b5201ddf68e8f38e49bf0f92,
+The Dolby Vision rebuild left libgstisomp4.so (md5 ee47bee841f5baff9f34e2f6f9b01792)
+and libgstmpegtsdemux.so (md5 8a490733c61c7ad0bdb5c9cb78d3547e, since replaced -- see
+the DTS-HD section below) BYTE-IDENTICAL to the previous artifacts. libgstmatroska.so: md5 03b28878b5201ddf68e8f38e49bf0f92,
 sha1 dd7b9e4f020d1337d0622be67e8bdf1228161e2a -- the binary verified on the C5.
+
+Why tsdemux was rebuilt again (DTS-HD extension substream, webos25-2.43)
+------------------------------------------------------------------------
+For the BD DTS stream types tsdemux kept only PES substream 0x71 (the DTS core)
+and dropped 0x72, the DTS-HD extension substream that carries XLL/XBR/X96. That
+did not matter while dtsdec (libdca) decoded the core only. dtsdec now decodes
+the extension (ffmpeg dca, see ../out/BUILD-REPORT.txt), so the filter is
+removed and both substreams reach dtsdec, whose parser joins core + extension
+back into one frame:
+
+  gst-plugins-bad/gst/mpegtsdemux/tsdemux.c   caps = ...("audio/x-dts");
+                                              stream->target_pes_substream = 0x71;  -> removed
+
+build-demux.sh fails the build unless exactly one such line is removed and none
+is left afterwards ("DTS-HD patch OK").
+
+  libgstmpegtsdemux.so : md5 6261cdabb6cac0432283b6f51c4915f0
+                         sha1 112565206a8a9b726c2faf4ef0ff2769c7b9a11a
+                         (was 8a490733c61c7ad0bdb5c9cb78d3547e)
+  libgstisomp4.so      : md5 ee47bee841f5baff9f34e2f6f9b01792  (rebuilt byte-identical)
+  libgstmatroska.so    : md5 03b28878b5201ddf68e8f38e49bf0f92  (rebuilt byte-identical)
+
+Verified on a real LG C5 (webOS 10.3.1) with the new dtsdec: DTS-HD MA 5.1 in
+.ts and in .m2ts decodes bit-exact against desktop ffmpeg 8.1 (after GStreamer's
+normal 40 ms segment clip at the start), i.e. the lossless XLL decode, not the
+core.
 
 ABI (all three artifacts, stripped) — must match the C5 GStreamer userspace
 ---------------------------------------------------------------------

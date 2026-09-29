@@ -137,11 +137,11 @@ ABI. LG removed DTS from the 2025 line for licensing, so the decoder is genuinel
 shipped, not merely disabled.
 
 **Consequence, and it is the useful one:** software decode (this project's
-`dtsdec`/`libdca` and ffmpeg path) is not a workaround for a lever we failed to find
+`dtsdec` and ffmpeg path) is not a workaround for a lever we failed to find
 — it is the only available mechanism on webOS 25. What native decode would have
-bought, and what is therefore permanently out of reach here: DTS-HD MA lossless and
-DTS:X rather than the 5.1 core, DSP-offloaded decoding, and the DTS:X badge with DAP
-object rendering.
+bought, and what is therefore permanently out of reach here: DSP-offloaded decoding,
+and the DTS:X badge with DAP object rendering. (DTS-HD MA lossless was on this list
+until webos25-2.43; `dtsdec` now decodes it in software.)
 
 There *is* a real signalling mechanism, and it is a dead end for us: LG's demuxers
 and parsers set an **`immersive=ATMOS` caps field** (`tsdemux.c:3031/3156/3742/3786`
@@ -155,8 +155,10 @@ has no object awareness either.
 What our path *does* deliver, measured: a real `Dolby TrueHD + Dolby Atmos` 7.1 MKV
 decodes to the **full 8-channel bed** (`S32LE 48000 channels=8 mask=0x0c3f`), with no
 substream or downmix warnings. Only the object layer is lost — which no open decoder
-renders. DTS is weaker: `libdca` decodes the 5.1 **core** only, and ffmpeg's
-XLL-capable `dca` decoder is not built, so DTS:X titles also lose bed channels.
+renders. DTS matches that since webos25-2.43: `dtsdec` uses ffmpeg's XLL-capable `dca`
+decoder (before, libdca decoded the 5.1 **core** only), and a DTS-HD MA 7.1 MKV decodes
+to 8 channels, bit-exact against desktop ffmpeg on the C5. DTS:X objects are not
+rendered; what a DTS:X title's bed decodes to has not been measured.
 
 **Output stage note:** on this TV `/proc/aaudio/instances/03250001`
 (`output_speaker`) reports `output-channels=4`, and with no AVR the live audio graph

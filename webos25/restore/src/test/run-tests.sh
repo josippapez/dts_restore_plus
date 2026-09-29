@@ -91,7 +91,9 @@ extract_convert () {
   # `q` after the terminator keeps this to the FIRST range: the worktree now
   # has a second `for (n = 0; ...)` in the DRC branch, and without the quit sed
   # would restart the range there and run to EOF.
-  sed -n "/for (n = 0; n < 256; n++) {/,/reorder_map\[c\]\] = (gint32) s;/{p;/reorder_map\[c\]\] = (gint32) s;/q;}" \
+  # The loop runs over `bs` samples since the FFmpeg backend (DRC blocks can be
+  # shorter than 256 at a frame's end); before that it was a literal 256.
+  sed -n "/for (n = 0; n < bs; n++) {/,/reorder_map\[c\]\] = (gint32) s;/{p;/reorder_map\[c\]\] = (gint32) s;/q;}" \
     | sed 's/^[[:space:]]*//'
 }
 if git -C "$HERE" rev-parse --is-inside-work-tree >/dev/null 2>&1; then

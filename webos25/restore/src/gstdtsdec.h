@@ -17,9 +17,9 @@
  * Boston, MA 02110-1301, USA.
  */
 
-/* Vendored from gst-plugins-bad 1.22.0 (ext/dts/gstdtsdec.h). Only changes
- * from upstream are the make-up-gain and DRC/center-boost fields below
- * (webOS 25 patch).
+/* Vendored from gst-plugins-bad 1.22.0 (ext/dts/gstdtsdec.h). webOS 25
+ * changes: the decode state is FFmpeg's dca decoder instead of libdca, plus
+ * the make-up-gain and DRC/center-boost fields below.
  * See gstdtsdec.c file header for the full list of functional changes. */
 
 #ifndef __GST_DTSDEC_H__
@@ -27,6 +27,17 @@
 
 #include <gst/gst.h>
 #include <gst/audio/gstaudiodecoder.h>
+
+/* Largest channel count handled (the scratch block and reorder map are sized
+ * by it). FFmpeg's dca decoder emits at most 8 for DTS-HD MA 7.1; LG's
+ * audiosink accepts up to 10. */
+#define GST_DTSDEC_MAX_CHANNELS 16
+/* One DRC block: the detector/smoother period, in samples per channel. */
+#define GST_DTSDEC_BLOCK_SAMPLES 256
+
+struct AVCodecContext;
+struct AVFrame;
+struct AVPacket;
 
 G_BEGIN_DECLS
 
@@ -50,22 +61,18 @@ struct _GstDtsDec {
   GstPadChainFunction base_chain;
 
   gboolean       dvdmode;
-  gboolean       flag_update;
-  gboolean       prev_flags;
 
-  /* stream properties */
+  /* stream properties, as last negotiated */
   gint 	         bit_rate;
   gint 	         sample_rate;
-  gint 	         stream_channels;
-  gint 	         request_channels;
-  gint 	         using_channels;
+  gint 	         channels;
+  guint64        channel_layout;	/* FFmpeg AV_CH_* mask */
 
-  gint           channel_reorder_map[6];
+  GstAudioChannelPosition chan_pos[GST_DTSDEC_MAX_CHANNELS];	/* per plane */
+  gint           channel_reorder_map[GST_DTSDEC_MAX_CHANNELS];
 
   /* decoding properties */
-  sample_t 	 level;
-  sample_t 	 bias;
-  gboolean 	 dynamic_range_compression;
+  gboolean 	 dynamic_range_compression;	/* accepted, no effect (libdca only) */
 
   /* webOS 25 patch: user-tunable make-up gain. makeup_gain_db is the
    * clamped [-20,+20] dB value (also the get-property value);
@@ -92,18 +99,18 @@ struct _GstDtsDec {
   gint  	 drc_coef_rate;	    /* sample rate the coefs were built for  */
   gint  	 drc_coef_mode;	    /* drc_mode the coefs were built for     */
 
-  sample_t 	*samples;
-#ifndef DTS_OLD
-  dca_state_t   *state;
-#else
-  dts_state_t 	*state;
-#endif
+  /* One DRC block of planar float samples, stride = the block's length. */
+  gfloat 	 samples[GST_DTSDEC_MAX_CHANNELS * GST_DTSDEC_BLOCK_SAMPLES];
+
+  struct AVCodecContext *avctx;
+  struct AVFrame *frame;
+  struct AVPacket *pkt;
+  guint8        *pktbuf;	/* input copy with FFmpeg's zeroed padding */
+  gsize          pktbuf_size;
 };
 
 struct _GstDtsDecClass {
   GstAudioDecoderClass parent_class;
-
-  guint32 dts_cpuflags;
 };
 
 GType gst_dtsdec_get_type(void);

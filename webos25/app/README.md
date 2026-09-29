@@ -74,7 +74,7 @@ diagnostic B2/C3/B3 profiles are deliberately non-forceable.
 │         ▼                                                     │
 │  Homebrew Channel exec service  (runs as ROOT)              │
 │         ▼                                                     │
-│  webOS 25: stage dtsdec+libdca, regen+bind media registry   │
+│  webOS 25: stage dtsdec+libav, regen+bind media registry    │
 │  C2/G2:    exact-gated legacy libs, dedicated owned state   │
 │  CX:       bind-mount demuxer libs, bump avdec_dca, gstcool │
 └──────────────────────────────────────────────────────────────┘
@@ -97,7 +97,7 @@ not supported — `qtdemux` has no TrueHD codepath)**.
 - **Enable:** re-detect, then run the same **compatibility gate** the CLI boot hook
   runs (see below) — refuse unless the TV's stock plugins match a verified set, or
   the caller opted into `force`. If the gate passes, stage the payloads — DTS
-  (`libgstdtsdec.so` + `libdca.so.0` → `/var/lib/webosbrew/dts25/`), the same-family
+  (`libgstdtsdec.so` → `/var/lib/webosbrew/dts25/`), the same-family
   stream-switch bin (`libgstadecswitch.so`, compiled rank 320, also →
   `/var/lib/webosbrew/dts25/` — see `../README.md`), TrueHD (`libgstlibav.so` +
   ffmpeg libs → `/var/lib/webosbrew/truehd/`), and the container demuxers (patched
@@ -161,7 +161,7 @@ so the detect probe md5s them against each other — no hash has to be embedded 
 It reports `payloadStale`, `payloadStaleReason` and `payloadStaleFiles`, naming the files
 that differ, and the UI shows a note asking the user to press Enable.
 
-Eight files are compared: `libgstdtsdec.so` and `libdca.so.0` (DTS), `libgstadecswitch.so`,
+Seven files are compared: `libgstdtsdec.so` (DTS), `libgstadecswitch.so`,
 `libgstlibav.so` plus `libavcodec.so.58` as the representative of the ffmpeg set — those libs
 move together, so one is enough to catch a TrueHD payload swap without hashing a dozen files —
 and `libgstisomp4.so` + `libgstmpegtsdemux.so` + `libgstmatroska.so` (container demuxers). A file this build ships
@@ -460,7 +460,7 @@ webos25/app/
 │   ├── services.json         # Luna service + method registration
 │   └── service.js            # detect + per-profile mechanism builders + exec
 ├── payload/
-│   ├── webos25/              # <- drop libgstdtsdec.so + libdca.so.0 + libgstadecswitch.so (see README)
+│   ├── webos25/              # <- drop libgstdtsdec.so + libgstadecswitch.so (see README)
 │   │   ├── .gitkeep
 │   │   └── README
 │   └── cx/                   # <- shared immutable CX/C2 legacy .so set
@@ -480,7 +480,8 @@ want to support.
 
 ```sh
 # 1. Populate the payloads (see payload/*/README for provenance)
-cp ../restore/out/libgstdtsdec.so ../restore/out/libdca.so.0   payload/webos25/
+rm -f payload/webos25/libdca.so.0     # left by pre-2.43 builds; would be packaged unused
+cp ../restore/out/libgstdtsdec.so                              payload/webos25/
 cp ../restore/switch-out/libgstadecswitch.so                   payload/webos25/
 cp ../restore/truehd-out/libgstlibav.so ../restore/truehd-out/libav*.so* \
    ../restore/truehd-out/libsw*.so*                            payload/webos25-truehd/
@@ -537,7 +538,7 @@ Current app and service version: **2.6.0**.
 
 | Profile | TV family | Mechanism | Status |
 |---|---|---|---|
-| `webos25-armel-gst124` | LG C5 / G5 (webOS 25, GStreamer 1.24, armel soft-float) | decoder-inject (patched dtsdec + libdca) + TrueHD (avdec_truehd) | **Mechanism VERIFIED playing on a real C5** (via the `restore/` CLI install): both DTS and TrueHD decode and play, LG's sink receives `audio/x-raw, S32LE` (5.1 for DTS, and 8ch/7.1 for a TrueHD Atmos title — its full base bed), persistent across reboot. NOTE: the exec-bridge **role/permission manifest is now shipped** (service `*.role.json` with `outbound:["*"]` + api/perm files — see "Exec-bridge permissions"), so the app's detect/enable/test should reach the Homebrew Channel; **on-device confirmation (auto-discovery vs. the `/var/luna-service2-dev/` fallback) is pending**. The `restore/install.sh` CLI path remains the verified route. The app now also stages the **container demuxers** and includes a **self-test + play-by-ear** for mp4/ts/m2ts. |
+| `webos25-armel-gst124` | LG C5 / G5 (webOS 25, GStreamer 1.24, armel soft-float) | decoder-inject (patched dtsdec, FFmpeg dca) + TrueHD (avdec_truehd) | **Mechanism VERIFIED playing on a real C5** (via the `restore/` CLI install): both DTS and TrueHD decode and play, LG's sink receives `audio/x-raw, S32LE` (5.1 for DTS, and 8ch/7.1 for a TrueHD Atmos title — its full base bed), persistent across reboot. NOTE: the exec-bridge **role/permission manifest is now shipped** (service `*.role.json` with `outbound:["*"]` + api/perm files — see "Exec-bridge permissions"), so the app's detect/enable/test should reach the Homebrew Channel; **on-device confirmation (auto-discovery vs. the `/var/luna-service2-dev/` fallback) is pending**. The `restore/install.sh` CLI path remains the verified route. The app now also stages the **container demuxers** and includes a **self-test + play-by-ear** for mp4/ts/m2ts. |
 | `webos22-o22-gst118` | Exact global OLED C2/G2/CS `W22O`, firmware `04.40.93`/`04.40.93.01` (webOS `7.4.0`, GStreamer `1.18.2`) or `23.25.55`/`23.25.55.01` (webOS `9.2.2`, GStreamer `1.18.5`), soft-float | exact-gated legacy libav/Matroska/isomp4 override + `avdec_dca` rank | **EXPERIMENTAL; hardware verification NO.** Requires exact identity plus the three stock SHA-256 values and a two-step opt-in. Firmware inspection, QEMU plugin load/decode, and community reports support a tester path, but no rooted C2/G2 ran Enable, playback, reboot, Disable, or Uninstall. MP4 self-test only; MKV/MP4 capability, no TS/M2TS/TrueHD/gain/A-B. |
 | `cx-armv7-gst114` | OLED CX / BX / C1 / NanoCell (webOS 3–6, GStreamer 1.14) | demuxer-override (rebuilt LG libs + `avdec_dca` rank) | **Carried over, UNVERIFIED by this project** — no CX hardware. The payload itself is measured ELF32 ARM EABI5 soft-float; the stock CX loader/e_flags were not captured on-device. Confirm the target with `detect` before trusting field compatibility. |
 | C3/G3/M3 (`W23O`) | webOS 23, GStreamer 1.18.5 | **none needed** | **Native DTS — LG restored it in 2023.** `dts_audiodec` is registered and `gstcool.conf` raises it to rank 290. Only local **MKV** is gated (`enable-dts` defaults false). Owner-reported working via upstream `dts_restore`. The current `webos23-w23o-diagnostic` refusal is **wrong and pending removal** — see [`../docs/FIRMWARE-COMPATIBILITY.md`](../docs/FIRMWARE-COMPATIBILITY.md). |
@@ -547,7 +548,7 @@ Current app and service version: **2.6.0**.
 | Other C2/G2 firmware; anything else | — | none | Exact C2 mismatches receive a C2 diagnostic refusal; unrecognized targets remain unsupported/unknown. |
 | anything else | — | none | Detector emits `unknown-*`; app refuses. |
 
-Open questions: DTS decodes to **S32LE, up to 5.1**, and TrueHD to **S32LE** —
+Open questions: DTS decodes to **S32LE, up to 7.1** (DTS-HD MA lossless included), and TrueHD to **S32LE** —
 LG's integer-only sink accepts these (confirmed on-device; the earlier F32LE issue
 was fixed by converting dtsdec's output to S32LE). The remaining unknown is whether
 the TV **renders full surround** to speakers/eARC or downmixes to stereo (not
@@ -557,9 +558,9 @@ independently measured). Bitstream **passthrough** to an AVR is out of scope
 ## License
 
 App code: LGPL-2.1-or-later. The vendored `.so` payloads (not committed here) are
-**not uniformly LGPL** — `libgstisomp4.so`, `libgstmpegtsdemux.so`, `libgstlibav.so`
-and the bundled `libav*`/`libsw*` are LGPL-2.1-or-later (ffmpeg is configured without
-`--enable-gpl`), but `libgstdtsdec.so` links **libdca** and is therefore
-**GPL-2.0-or-later**, as is the bundled `libdca.so.0`. So a distributed `.ipk`
-contains GPL-2.0-or-later code; ship the corresponding-source offer covering it.
-Full table in the [root README](../../README.md#license).
+LGPL-2.1-or-later too: ffmpeg is configured without `--enable-gpl`, and since
+webos25-2.43 `libgstdtsdec.so` links ffmpeg's `dca` decoder statically instead of the
+GPL libdca. A distributed `.ipk` must keep the corresponding-source offer in
+`licenses/NOTICE.md`; for that static ffmpeg, the source plus `restore/build.sh` are
+also what let anyone relink the plugin (LGPL-2.1 section 6). Full table in the
+[root README](../../README.md#license).

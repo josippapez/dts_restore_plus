@@ -8,31 +8,33 @@ packaging the .ipk:
 
     payload/webos25/libgstdtsdec.so     patched dtsdec (gst-plugins-bad 1.22,
                                         sink caps widened to also accept
-                                        audio/x-unknown, codec-id=A_DTS)
-    payload/webos25/libdca.so.0         bundled DTS decode library (armel)
+                                        audio/x-unknown, codec-id=A_DTS), with
+                                        FFmpeg n4.4.4's dca decoder linked in
+                                        statically (DTS core, DTS-HD MA/HRA,
+                                        DTS Express; up to 7.1, S32LE)
+    payload/webos25/libgstadecswitch.so same-family stream-switch bin
 
 Where they come from
 --------------------
-Build them with the reproducible Docker cross-build in the repo:
+They are the committed, on-device-verified binaries in webos25/restore/:
 
-    cd ../../../webos25
-    ./build.sh                 # -> webos25/out/libgstdtsdec.so
-                               #    webos25/out/libdca.so.0
-    cp out/libgstdtsdec.so out/libdca.so.0 \
-       ../dts-enabler-universal/payload/webos25/
+    cp ../../../restore/out/libgstdtsdec.so \
+       ../../../restore/switch-out/libgstadecswitch.so  .
 
-At enable time the JS service copies these to:
-    /var/lib/webosbrew/dts25/libgstdtsdec.so
-    /var/lib/webosbrew/dts25/libs/libdca.so.0
-(libgstdtsdec.so has RPATH baked to /var/lib/webosbrew/dts25/libs), then
-regenerates the media GStreamer registry including dtsdec and bind-mounts it
-over /mnt/flash/data/gst_1_0_registry.arm.bin. No LG library is overridden.
+(rebuild with restore/build.sh and restore/build-switch.sh; see RELEASING.md).
+
+At enable time the JS service copies both to /var/lib/webosbrew/dts25/, then
+regenerates the media GStreamer registry including dtsdec. libgstdtsdec.so
+needs nothing but GStreamer, GLib and libc from the TV: no bundled library and
+no RPATH. (Builds before webos25-2.43 also shipped libdca.so.0 into
+/var/lib/webosbrew/dts25/libs/; a copy left there is unused.)
 
 ABI constraints (must hold or the plugin will not load on the C5)
 -----------------------------------------------------------------
   - 32-bit ARM, EABI5 soft-float  (loader ld-linux.so.3, e_flags 0x05000200)
-  - max referenced GLIBC symbol <= 2.4  (TV has glibc 2.35)
+  - max referenced GLIBC symbol <= 2.35  (TV has glibc 2.35)
   - GStreamer 1.22 plugin ABI (loads in the TV's 1.24 -- verified on-device)
 
-These .so files are NOT committed (see ../../.gitignore). They are LGPL-2.1+;
-ship the corresponding source offer with any distributed .ipk.
+These .so files are NOT committed here (see ../../.gitignore). They are
+LGPL-2.1-or-later; ship ../../licenses/ (NOTICE.md has the source offer) with
+any distributed .ipk.

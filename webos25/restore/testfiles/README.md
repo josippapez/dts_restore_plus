@@ -11,13 +11,17 @@ You should hear audio; before the patch these containers played silent.
 | `DTS-in-mp4.mp4`     | ISO-BMFF | H.264 video + **DTS 5.1** (dtsc)| `qtdemux` (.mp4) |
 
 Notes:
-- The `.ts`/`.m2ts` audio is DTS-HD MA; the open decoder plays its DTS **core**
-  (5.1), not the lossless MA extension — expected.
+- The audio in all three files is DTS-HD MA 5.1: every frame is a DTS core plus
+  an extension substream carrying XLL. Since webos25-2.43 all three decode
+  **lossless** (ffmpeg `dca` in dtsdec, and tsdemux passes PES substream 0x72);
+  before that the open decoder (libdca) played the 5.1 core only.
 - Provenance: audio/`.ts` from samples.ffmpeg.org (A-codecs/DTS); the `.mp4` is
-  that DTS core re-muxed with an H.264 video track via GPAC/MP4Box.
-- Decode is verified accurate on a real C5: native discrete 5.1 (6 distinct
-  channels), matching a reference DTS decoder within ~0.1–0.2 dB per channel.
-  No stereo downmix (unlike the CX/upstream tool).
+  that DTS-HD MA stream re-muxed (under the `dtsc` fourcc) with an H.264 video
+  track via GPAC/MP4Box.
+- Decode is verified on a real C5: native discrete 5.1 (6 distinct channels),
+  bit-exact against desktop ffmpeg since 2.43 (the libdca build matched a
+  reference core decoder within ~0.1–0.2 dB per channel). No stereo downmix
+  (unlike the CX/upstream tool).
 
 ## The `.m2ts` is a real BDAV stream, not a renamed `.ts`
 

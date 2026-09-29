@@ -126,7 +126,9 @@ working stereo path rather than breaking a profile that now demonstrably works.
 2. **Loudness.** A decoder without LG's downmix also has no dialnorm or DRC, so
    output may be quiet — the same problem `MULTI-MODEL.md` §2.6 records for C1/C2.
 3. **DTS-HD MA vs core.** Upstream ffmpeg decodes the DTS core of an MA track; it is
-   not a lossless MA decode.
+   not a lossless MA decode. (Measured since, on the C5 in webos25-2.43: ffmpeg n4.4.4's
+   `dca` does decode MA losslessly, bit-exact against desktop ffmpeg. Whether the ffmpeg
+   in the C2 build does is not known.)
 4. ~~**Does the failing playback even reach our decoder?**~~ **Answered
    2026-08-24: multichannel is not the playback blocker.** All three bundled samples
    are 6-channel DTS-HD MA by `ffprobe`, and `DTS-in-mp4.mp4` plays on the C2 while
@@ -192,7 +194,8 @@ negotiates 2 channels is the decoder the culprit.
 
 ## A second build option this doc originally missed
 
-Retarget **this project's own `gstdtsdec` + libdca** to 1.18, rather than building
+Retarget **this project's own `gstdtsdec`** (libdca when this was written; ffmpeg `dca`,
+linked statically, since webos25-2.43) to 1.18, rather than building
 gst-libav against upstream ffmpeg. It swaps one decoder element instead of the whole
 libav plugin (which carries every `avdec_*` on the TV, including the AC3/AAC paths
 that work today), and it keeps the make-up-gain/DRC work, avoiding the loudness

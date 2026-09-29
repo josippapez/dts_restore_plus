@@ -1,0 +1,80 @@
+DTS decoder plugin (dtsdec) for LG C5 / webOS 25 -- BUILD REPORT
+=================================================================
+
+Since webos25-2.43 (app 2.7.38) out/ holds ONE file, libgstdtsdec.so. The
+decoder is ffmpeg's dca linked in statically; libdca.so.0 is no longer built or
+shipped.
+
+Built reproducibly by build.sh:
+  host        : debian:12-slim --platform linux/arm64, apt pinned to the Debian
+                snapshot 20250601T000000Z (Pin-Priority 1001 + dist-upgrade
+                --allow-downgrades, so the arm64 base libs match their armel
+                counterparts), armel foreign architecture
+  toolchain   : arm-linux-gnueabi-gcc (Debian bookworm, soft-float EABI5)
+  plugin      : src/gstdtsdec.c, vendored from gst-plugins-bad 1.22.0 ext/dts,
+                VERSION "1.22.0-webosdts"
+  ffmpeg      : n4.4.4 from https://git.ffmpeg.org/ffmpeg.git, static
+                libavcodec.a + libavutil.a only:
+                  --disable-everything --enable-decoder=dca
+                  --disable-avformat --disable-avfilter --disable-swresample
+                  --disable-swscale --disable-avdevice --disable-postproc
+                  --disable-network --disable-programs --disable-doc
+                  --disable-autodetect --disable-pthreads --disable-asm
+                  --enable-static --disable-shared --enable-pic
+                no --enable-gpl / --enable-version3 / --enable-nonfree, so the
+                result is LGPL-2.1-or-later (see ../../app/licenses/NOTICE.md)
+  link        : -Wl,--exclude-libs,ALL -Wl,--no-undefined -- no ffmpeg symbol is
+                exported, so it cannot bind to (or be bound by) the shared
+                libavcodec.so.58 that libgstlibav loads into the same process
+
+What it decodes
+---------------
+DTS core, DTS-HD Master Audio lossless (XLL), DTS-HD High Resolution (XBR/X96),
+7.1 (XXCH/XLL) and DTS Express (LBR). parse() frames the core together with its
+extension substream (EXSS) so both reach the decoder as one packet. Output is
+S32LE, up to 8 channels and 192 kHz (src caps channels [1,16], rate
+[4000,192000]). The
+make-up gain / DRC / centre boost (gain.conf, drc-mode, makeup-gain-db,
+center-boost-db) are unchanged; the `drc` boolean property is accepted but is a
+no-op (it drove libdca's in-stream DRC).
+
+libgstdtsdec.so
+---------------
+  file        : ELF 32-bit LSB shared object, ARM, EABI5 version 1 (SYSV),
+                not stripped (with debug_info)
+  e_flags     : 0x05000200   [EABI5 soft-float]
+  interpreter : none (shared object, no PT_INTERP); loader on the TV is
+                /lib/ld-linux.so.3
+  max GLIBC   : GLIBC_2.35   [<= 2.35, the C5's glibc]
+  NEEDED      : libgstaudio-1.0.so.0 libgstbase-1.0.so.0 libgstreamer-1.0.so.0
+                libgobject-2.0.so.0 libglib-2.0.so.0 libm.so.6 libc.so.6
+  RPATH       : none (RUNPATH none)
+  exported    : 0 ffmpeg symbols (av_/ff_/avpriv_/avcodec_/swr_); the only
+                exported text symbols are gst_dtsdec_get_type,
+                gst_element_register_dtsdec, gst_plugin_dtsdec_register,
+                gst_plugin_dtsdec_get_desc
+  size        : 2560416 bytes
+  md5         : 959d60fee50a265859d9f93c0619fbb0
+  sha1        : 7b8cdb9c466f6a7d383f437584fc56740938e4ac
+
+Replaces libgstdtsdec.so md5 41742e9ec2ce0754724b4d260c9fc09e (NEEDED
+libdca.so.0, RUNPATH /var/lib/webosbrew/dts25/libs) + libdca.so.0 md5
+d43ca613d6d2ca9ae5c336cb39bffd9f.
+
+On-device verification (real LG C5, webOS 10.3.1)
+-------------------------------------------------
+Output compared against desktop ffmpeg 8.1 decoding the same file:
+  DTS-HD MA 5.1 in .mp4            bit-exact, whole file
+  DTS-HD MA 5.1 in .ts / .m2ts     bit-exact after GStreamer's normal 40 ms
+                                   segment clip at the start (needs the
+                                   substream-0x72 tsdemux in ../demux-out/)
+  DTS-HD MA 7.1 MKV, 258 s         md5 of the whole decoded stream identical
+                                   (73f18659444c14ce83fa664f876b467d),
+                                   8 channels, layout 0x63f
+Loudness on the 5 main channels is within 0.002 dB of the old libdca decoder
+(LFE +1 dB), so the +5 dB default in gain.conf still holds.
+CPU: a 3.8 s 5.1 MA file takes 0.37 s user (libdca build: 2.40 s); the 258 s
+7.1 MA file decodes in 15.5 s user (~6% of one core).
+
+This report is maintained by hand: update it whenever out/libgstdtsdec.so is
+rebuilt (build.sh prints the ABI values above).
