@@ -100,7 +100,7 @@
 
   function mechLabel(profile, mech) {
     if (profile === "webos25-armel-gst124") return "decoder-inject (patched dtsdec)";
-    if (profile === "cx-armv7-gst114") return "demuxer-override (rebuilt LG libs)";
+    if (profile === "cx-armv7-gst114" || profile === "webos6-armel-gst116") return "demuxer-override (rebuilt LG libs)";
     if (profile === "webos22-o22-gst118") return "experimental legacy payload (C2/G2)";
     return mech || "none";
   }

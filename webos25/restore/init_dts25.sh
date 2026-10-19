@@ -94,7 +94,7 @@ EXPECT_GST=1.24
 #   27 shadows libgstmatroska.so too (optional demuxer, Dolby Vision profile 7):
 #      bound in APPLY 2c, unbound by w25_drop_binds, fingerprinted in stock.fp and
 #      drift-checked like the /etc keys, so an older stock.fp without it is not drift.
-W25_GATE_VERSION=27
+W25_GATE_VERSION=28
 FP=/var/lib/webosbrew/dts25/stock.fp
 # Where the installed copy of THIS script lives, and the boot hook that symlinks
 # to it. Named here, in the shared block, so the read-only probe can fingerprint
@@ -396,6 +396,10 @@ w25_verdict() {
 # alongside, so no compatibility track could decode in its place. DTS came from
 # all three self-test containers.
 1.24|0fd6d65ac9e3a78b393a615eaff8ac0b|cf4d9bb9e3c3ad83f1a75a399d2f0b93|772fb3b29e224423035eec9e93615b23|OLED*C2*|LG C2 OLED55C21LA (webOS 10.3.1, GStreamer 1.24.0)
+# UR7500: owner-reported DTS and TrueHD playing (TrueHD with Plex direct play forced).
+# Hashes read from the 33.31.61 K8LPN/W23P image: the demuxers match the o22 set,
+# libav is its own build.
+1.24|73e01f3d1ed9d9feb95f1260bfdda2f9|cf4d9bb9e3c3ad83f1a75a399d2f0b93|772fb3b29e224423035eec9e93615b23|*UR75*|LG UR7500 43UR7500PSC (webOS 10.3.1, GStreamer 1.24.0)
 W25_SETS
   [ "$VERDICT" = verified ] && return 0
   # A hash match on an untested model leaves VERDICT=unverified + CANFORCE=1 and must

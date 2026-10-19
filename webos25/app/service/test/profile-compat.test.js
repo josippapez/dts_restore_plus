@@ -410,6 +410,29 @@ test("dts_audiodec override yields to an exact C2 match but still fires elsewher
     "a near-miss C2 must keep its diagnostic profile, not become native-dts-gated");
 });
 
+/* Issue #3: a C1 on GStreamer 1.16.2 was refused as unknown, while upstream
+ * dts_restore 2.0 (byte-identical to payload/cx) works there. */
+test("a soft-float GStreamer 1.16 C1 selects the CX-payload profile", function () {
+  var probe = service.DETECT_PROBE;
+  var block = probe.slice(probe.indexOf("# --- PROFILE SELECTION ---"), probe.indexOf('echo "PROFILE=$PROFILE"'));
+  function profileFor(loader, abi) {
+    var pre = [
+      "set -u", "GST_VERSION=1.16.2", 'GST_MM=$(printf "%s" "$GST_VERSION" | cut -d. -f1-2)',
+      "HARDWARE_ID=HE_DTV_W21O_AFABATAA", "PRODUCT_ID=OLED55C11LB", "BOARD_TYPE=O20_DVB",
+      "WEBOS_RELEASE=6.5.0", "WEBOS_MANUFACTURING_VERSION=03.51.16",
+      "LOADER=" + loader, "FLOAT_ABI=" + abi, "HAS_DTS_AUDIODEC=no", "DCA_RANK=0"
+    ].join("\n");
+    var r = sh(pre + "\n" + block + '\nprintf "%s" "$PROFILE"');
+    assert.strictEqual(r.status, 0, "selection block failed: " + r.stderr);
+    var lines = r.stdout.trim().split("\n");
+    return lines[lines.length - 1].trim();
+  }
+  assert.strictEqual(profileFor("ld-linux.so.3", "soft"), "webos6-armel-gst116");
+  assert.strictEqual(profileFor("ld-linux-armhf.so.3", "hard"), "unknown-gst1.16-ld-linux-armhf.so.3");
+  assert.ok(service.isKnownProfile("webos6-armel-gst116"));
+  assert.strictEqual(service.compatVerdict("webos6-armel-gst116", {}), null);
+});
+
 /* The generated script must resolve $APPBASE, not carry it as a literal.
  *
  * Regression for issue #1's actual cause: c2Q() single-quotes every config value,

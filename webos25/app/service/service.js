@@ -46,6 +46,11 @@
  *       avdec_dca 0->290 (+ [downmix]) in gstcool.conf. Mirrors the
  *       repo-root install.sh / init_dts.sh.
  *
+ *   webos6-armel-gst116   (OLED C1 class, GStreamer 1.16) -- UNVERIFIED by this
+ *       project. Same demuxer-override mechanism and payload as CX. Upstream
+ *       dts_restore 2.0, whose four plugins are byte-identical to payload/cx,
+ *       was field-reported working on a C1 running 1.16.2 (issue #3).
+ *
  *   unknown / unknown-*   -- REFUSE. We never apply an ABI-mismatched
  *       mechanism (applying CX 1.14 libs on a 1.24 TV would break MKV/MP4
  *       playback -- see MULTI-MODEL.md sec 3.1).
@@ -153,6 +158,7 @@ var LOG = "/tmp/dtsenabler.log";
 /* ---- Profile names (fixed allowlist) ---------------------------------- */
 var PROFILE_W25 = "webos25-armel-gst124";
 var PROFILE_CX  = "cx-armv7-gst114";
+var PROFILE_C1  = "webos6-armel-gst116";
 var PROFILE_C2  = "webos22-o22-gst118";
 var PROFILE_B2  = "webos22-w22h-diagnostic";
 var PROFILE_C3  = "webos23-w23o-diagnostic";
@@ -342,7 +348,7 @@ var W25_COMPAT_SH = [
   "#   27 shadows libgstmatroska.so too (optional demuxer, Dolby Vision profile 7):",
   "#      bound in APPLY 2c, unbound by w25_drop_binds, fingerprinted in stock.fp and",
   "#      drift-checked like the /etc keys, so an older stock.fp without it is not drift.",
-  "W25_GATE_VERSION=27",
+  "W25_GATE_VERSION=28",
   "FP=/var/lib/webosbrew/dts25/stock.fp",
   "# Where the installed copy of THIS script lives, and the boot hook that symlinks",
   "# to it. Named here, in the shared block, so the read-only probe can fingerprint",
@@ -644,6 +650,10 @@ var W25_COMPAT_SH = [
   "# alongside, so no compatibility track could decode in its place. DTS came from",
   "# all three self-test containers.",
   "1.24|0fd6d65ac9e3a78b393a615eaff8ac0b|cf4d9bb9e3c3ad83f1a75a399d2f0b93|772fb3b29e224423035eec9e93615b23|OLED*C2*|LG C2 OLED55C21LA (webOS 10.3.1, GStreamer 1.24.0)",
+  "# UR7500: owner-reported DTS and TrueHD playing (TrueHD with Plex direct play forced).",
+  "# Hashes read from the 33.31.61 K8LPN/W23P image: the demuxers match the o22 set,",
+  "# libav is its own build.",
+  "1.24|73e01f3d1ed9d9feb95f1260bfdda2f9|cf4d9bb9e3c3ad83f1a75a399d2f0b93|772fb3b29e224423035eec9e93615b23|*UR75*|LG UR7500 43UR7500PSC (webOS 10.3.1, GStreamer 1.24.0)",
   "W25_SETS",
   "  [ \"$VERDICT\" = verified ] && return 0",
   "  # A hash match on an untested model leaves VERDICT=unverified + CANFORCE=1 and must",
@@ -1833,6 +1843,9 @@ var DETECT_PROBE = [
   'PROFILE=unknown',
   'case "$GST_MM" in',
   '  1.14) PROFILE=cx-armv7-gst114 ;;',
+  '  1.16)',
+  '    if [ "$LOADER" = "ld-linux.so.3" ] && [ "$FLOAT_ABI" = "soft" ]; then PROFILE=webos6-armel-gst116',
+  '    else PROFILE="unknown-gst${GST_MM}-${LOADER}"; fi ;;',
   '  1.24)',
   '    if [ "$LOADER" = "ld-linux.so.3" ] && [ "$FLOAT_ABI" = "soft" ]; then PROFILE=webos25-armel-gst124',
   '    else PROFILE="webos25-${LOADER}-${FLOAT_ABI}"; fi ;;',
@@ -2028,7 +2041,12 @@ function detectProfile() {
 
 /** True for a profile we have a real, matched mechanism for. */
 function isKnownProfile(profile) {
-  return profile === PROFILE_W25 || profile === PROFILE_CX || profile === PROFILE_C2;
+  return profile === PROFILE_W25 || isCxPayloadProfile(profile) || profile === PROFILE_C2;
+}
+
+/** Profiles that run the CX demuxer-override mechanism and payload. */
+function isCxPayloadProfile(profile) {
+  return profile === PROFILE_CX || profile === PROFILE_C1;
 }
 
 /**
@@ -2345,7 +2363,7 @@ function compatVerdict(profile, kv) {
       measured: { libgstlibav: kv.C2_LIBAV_SHA256 || null, libgstisomp4: kv.C2_ISOMP4_SHA256 || null, libgstmatroska: kv.C2_MATROSKA_SHA256 || null }
     };
   }
-  if (profile === PROFILE_CX) return null;
+  if (isCxPayloadProfile(profile)) return null;
   /* Native DTS is good news, not a refusal. Reporting "refused" here was actively
    * misleading: it told C3/G3/M3 and C4/G4/M4/T4 owners their TV was unsupported
    * when in fact LG never took DTS away from them. There is nothing to enable, so
@@ -3606,7 +3624,7 @@ service.register("status", function (message) {
       });
     }
 
-    if (profile === PROFILE_CX && p.C2_OWNED !== "1") {
+    if (isCxPayloadProfile(profile) && p.C2_OWNED !== "1") {
       return rootExec(cxStatusProbe()).then(function (r) {
         var kv = parseKv(r.stdout);
         var hook = kv.HOOK === "1";
@@ -4116,7 +4134,7 @@ function runMechanism(message, action) {
       } else {
         builder = { disable: w25Disable, uninstall: w25Uninstall }[action];
       }
-    } else if (profile === PROFILE_CX) {
+    } else if (isCxPayloadProfile(profile)) {
       builder = { enable: cxEnable, disable: cxDisable, uninstall: cxUninstall }[action];
     } else if (profile === PROFILE_C2) {
       if (action === "enable") {

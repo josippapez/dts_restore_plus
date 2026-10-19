@@ -213,6 +213,8 @@ PROBE_DOC
 # PROFILE SELECTION. Combine the axes into a suggested profile name.
 #   Known:
 #     cx-armv7-gst114        GStreamer 1.14.x, armv7 (float ABI to be confirmed)
+#     webos6-armel-gst116    GStreamer 1.16.x, soft-float, ld-linux.so.3 (C1 class,
+#                            CX payload)
 #     webos25-armel-gst124   GStreamer 1.24.x, 32-bit soft-float, ld-linux.so.3,
 #                            re-tag + no decoder
 #   Anything else -> unknown-<gstmajmin>-<arch> (installer should refuse).
@@ -222,6 +224,13 @@ case "$GST_MM" in
   1.14)
     # CX-class. armv7; float ABI reported separately so the build can be picked.
     PROFILE="cx-armv7-gst114"
+    ;;
+  1.16)
+    if [ "$LOADER" = "ld-linux.so.3" ] && [ "$FLOAT_ABI" = "soft" ]; then
+      PROFILE="webos6-armel-gst116"
+    else
+      PROFILE="unknown-gst${GST_MM}-${LOADER}"
+    fi
     ;;
   1.24)
     if [ "$LOADER" = "ld-linux.so.3" ] && [ "$FLOAT_ABI" = "soft" ]; then
@@ -266,6 +275,6 @@ emit PROFILE "$PROFILE"
 
 # Exit 1 on an unknown profile so `detect-target.sh || refuse` works in install.sh.
 case "$PROFILE" in
-  cx-armv7-gst114|webos25-armel-gst124|webos22-o22-gst118) exit 0 ;;
+  cx-armv7-gst114|webos6-armel-gst116|webos25-armel-gst124|webos22-o22-gst118) exit 0 ;;
   *) exit 1 ;;
 esac

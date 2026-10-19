@@ -20,7 +20,7 @@ hash_of() { # $1=algo(md5|sha256) $2=file
 }
 
 echo "=== dts_restore_plus TV report ==="
-echo "report_version=2"
+echo "report_version=3"
 
 echo
 echo "--- loader / ABI ---"
@@ -106,8 +106,14 @@ done
 echo
 echo "--- stock plugin hashes ---"
 G=/usr/lib/gstreamer-1.0
+FP=/var/lib/webosbrew/dts25/stock.fp
 for f in libgstlibav libgstisomp4 libgstmatroska libgstmpegtsdemux; do
-  if [ -e "$G/$f.so" ]; then
+  if grep -q " $G/$f.so " /proc/mounts 2>/dev/null; then
+    # A bind mount means this file is ours, so the stock hash comes from the
+    # fingerprint recorded before the patch was applied.
+    echo "$f.so=patched"
+    echo "$f.so.stock_md5=$(sed -n "s/^$f=//p" "$FP" 2>/dev/null | head -n1)"
+  elif [ -e "$G/$f.so" ]; then
     echo "$f.so.md5=$(hash_of md5 "$G/$f.so")"
     echo "$f.so.sha256=$(hash_of sha256 "$G/$f.so")"
   else
@@ -163,6 +169,9 @@ PROFILE=unknown
 C2_GATE_FAIL=
 case "$GST_MM" in
   1.14) PROFILE=cx-armv7-gst114 ;;
+  1.16)
+    if [ "$LOADER" = "ld-linux.so.3" ] && [ "$FLOAT_ABI" = "soft" ]; then PROFILE=webos6-armel-gst116
+    else PROFILE="unknown-gst${GST_MM}-${LOADER}"; fi ;;
   1.24)
     if [ "$LOADER" = "ld-linux.so.3" ] && [ "$FLOAT_ABI" = "soft" ]; then PROFILE=webos25-armel-gst124
     else PROFILE="webos25-${LOADER}-${FLOAT_ABI}"; fi ;;
