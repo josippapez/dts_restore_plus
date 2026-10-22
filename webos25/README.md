@@ -193,7 +193,8 @@ over `luna://com.webos.service.config`), and Kodi uses the same key for
 `SupportsDTS()`. On a C5 it reads `TrueHD`, so DTS tracks never appear even with
 the patch active and working.
 
-The app's **Show DTS tracks in apps** card flips it to `TrueHD+dts`. It is
+The app's **Show DTS tracks in apps** card flips it to `TrueHD+dts`, or to `ac3+dts` on
+sets that report `ac3` (a UR7500 does). It is
 deliberately **not** part of Enable and defaults to off, because `arccontroller`
 builds the EDID SADs the TV advertises over eARC from the same value and
 `extinput` gates HDMI-input DTS on it — so it also changes what a connected

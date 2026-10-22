@@ -20,7 +20,7 @@ function loadService() {
     "c2Config: c2Config, c2InitScriptBody: c2InitScriptBody," +
     "c2Enable: c2Enable, c2Disable: c2Disable, c2StatusProbe: c2StatusProbe," +
     "c2StatusBindsComplete: c2StatusBindsComplete, c2SelfTest: c2SelfTest," +
-    "DETECT_PROBE: DETECT_PROBE, constants: {C2: PROFILE_C2," +
+    "DETECT_PROBE: DETECT_PROBE, w25EdidTarget: w25EdidTarget, w25InitScriptBody: w25InitScriptBody, constants: {C2: PROFILE_C2," +
     "sets: C2_EXPECTED_SETS, matchSet: c2MatchSet," +
     "libav: C2_EXPECTED_SETS[0].libav, iso: C2_EXPECTED_SETS[0].iso, mkv: C2_EXPECTED_SETS[0].mkv}};";
   var FakeService = function () { this.register = function () {}; };
@@ -431,6 +431,41 @@ test("a soft-float GStreamer 1.16 C1 selects the CX-payload profile", function (
   assert.strictEqual(profileFor("ld-linux-armhf.so.3", "hard"), "unknown-gst1.16-ld-linux-armhf.so.3");
   assert.ok(service.isKnownProfile("webos6-armel-gst116"));
   assert.strictEqual(service.compatVerdict("webos6-armel-gst116", {}), null);
+});
+
+/* Issue #7: a UR7500 reports edidType "ac3", and the opt-in only knew "TrueHD", so it
+ * changed nothing. A hand edit there also left "ac3+dts+truehd" in configd's cache. */
+test("the DTS-tracks opt-in maps ac3 to ac3+dts and replaces any cached value", function () {
+  assert.strictEqual(service.w25EdidTarget("TrueHD", true), "TrueHD+dts");
+  assert.strictEqual(service.w25EdidTarget("ac3", true), "ac3+dts");
+  assert.strictEqual(service.w25EdidTarget("ac3+dts+truehd", true), "ac3+dts");
+  assert.strictEqual(service.w25EdidTarget("ac3+dts", false), "ac3");
+  assert.strictEqual(service.w25EdidTarget("TrueHD+dts", false), "TrueHD");
+  assert.strictEqual(service.w25EdidTarget("ac3", false), "ac3");
+
+  var body = service.w25InitScriptBody().split("\n");
+  var fn = body.slice(body.indexOf("w25_appdts_target() {"));
+  fn = fn.slice(0, fn.indexOf("}") + 1);
+  function line(re) { var l = body.filter(function (x) { return re.test(x); }); assert.strictEqual(l.length, 1, String(re)); return l[0]; }
+  var getStock = line(/^\s*EDID_STOCK=\$\(grep/);
+  var getDts = line(/^\s*EDID_DTS=\$\(w25_appdts_target/);
+  var patchCache = line(/sed -i .*\[\^\\"\]\*.*\$EDID_DTS.*CONFIGD_DB/).replace(/^\s*if /, "").replace(/ &&\s*$/, "");
+  // The TV's busybox sed takes GNU-style -i; BSD sed needs an explicit empty suffix.
+  if (process.platform === "darwin") patchCache = patchCache.replace("sed -i ", "sed -i '' ");
+  function run(stockValue, cached) {
+    var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dts-edid-"));
+    var lls = path.join(dir, "factorydb.json"), db = path.join(dir, "configd_db.json");
+    write(lls, '{"tv.model":{"edidType":"' + stockValue + '","oledCPC":1}}');
+    write(db, '{"tv.model": {"edidType" : "' + cached + '", "oledCPC": 1}}');
+    var r = sh(["set -u", "LOG=/dev/null", "LLS=" + lls, "CONFIGD_DB=" + db].concat(fn, [getStock, getDts, patchCache, 'printf "%s" "$EDID_DTS"']).join("\n"));
+    assert.strictEqual(r.status, 0, r.stderr);
+    return { target: r.stdout, db: fs.readFileSync(db, "utf8") };
+  }
+  var ur = run("ac3", "ac3+dts+truehd");
+  assert.strictEqual(ur.target, "ac3+dts");
+  assert.strictEqual(ur.db, '{"tv.model": {"edidType" : "ac3+dts", "oledCPC": 1}}');
+  assert.strictEqual(run("TrueHD", "TrueHD").target, "TrueHD+dts");
+  assert.strictEqual(run("eac3", "eac3").target, "");
 });
 
 /* The generated script must resolve $APPBASE, not carry it as a literal.

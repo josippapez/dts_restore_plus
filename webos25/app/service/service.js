@@ -348,7 +348,7 @@ var W25_COMPAT_SH = [
   "#   27 shadows libgstmatroska.so too (optional demuxer, Dolby Vision profile 7):",
   "#      bound in APPLY 2c, unbound by w25_drop_binds, fingerprinted in stock.fp and",
   "#      drift-checked like the /etc keys, so an older stock.fp without it is not drift.",
-  "W25_GATE_VERSION=28",
+  "W25_GATE_VERSION=29",
   "FP=/var/lib/webosbrew/dts25/stock.fp",
   "# Where the installed copy of THIS script lives, and the boot hook that symlinks",
   "# to it. Named here, in the shared block, so the read-only probe can fingerprint",
@@ -1097,6 +1097,15 @@ var W25_INIT_MAIN = [
   "  toast \"DTS Enabler: $2\"",
   "}",
   "",
+  "# The value to advertise for a stock edidType, or nothing when there is no safe one.",
+  "# Only strings LG's own code knows are used: libextinput-service lists TrueHD,",
+  "# TrueHD+dts and ac3+dts. A UR7500 reports ac3, not TrueHD.",
+  "w25_appdts_target() {",
+  "  case \"$1\" in",
+  "    TrueHD) echo \"TrueHD+dts\" ;;",
+  "    ac3) echo \"ac3+dts\" ;;",
+  "  esac",
+  "}",
   "w25_appdts_apply() {",
   "  # Never from inside Enable. Enable writes this script AND runs it while the app",
   "  # blocks on the result, so a configd restart in that path is a core service",
@@ -1182,8 +1191,11 @@ var W25_INIT_MAIN = [
   "  # Not $$: in the detached subshell that is the boot hook's pid, which exits",
   "  # long before this does and would make a live lock look stale.",
   "  sh -c 'echo $PPID' > \"$APPDTS_LOCK/pid\" 2>/dev/null",
-  "  if sed 's/\"edidType\":\"TrueHD\"/\"edidType\":\"TrueHD+dts\"/' \"$LLS\" > \"$MYLLS\" 2>>$LOG &&",
-  "     grep -q '\"edidType\":\"TrueHD+dts\"' \"$MYLLS\" 2>/dev/null; then",
+  "  EDID_STOCK=$(grep -o '\"edidType\":\"[^\"]*\"' \"$LLS\" 2>/dev/null | head -n1 | sed 's/.*:\"//; s/\"$//')",
+  "  EDID_DTS=$(w25_appdts_target \"$EDID_STOCK\")",
+  "  if [ -n \"$EDID_DTS\" ] &&",
+  "     sed \"s/\\\"edidType\\\":\\\"$EDID_STOCK\\\"/\\\"edidType\\\":\\\"$EDID_DTS\\\"/\" \"$LLS\" > \"$MYLLS\" 2>>$LOG &&",
+  "     grep -q \"\\\"edidType\\\":\\\"$EDID_DTS\\\"\" \"$MYLLS\" 2>/dev/null; then",
   "    if mount -n --bind \"$MYLLS\" \"$LLS\" 2>>$LOG; then",
   "      # PATCH the cache, do NOT delete it. Deleting it makes configd rebuild its",
   "      # whole configuration from the layer dirs and republish every value -- and",
@@ -1198,8 +1210,10 @@ var W25_INIT_MAIN = [
   "      #",
   "      # The bind above still matters: it is what the NEXT boot reads before this",
   "      # runs, and it keeps the file and the cache telling the same story.",
-  "      if sed -i 's/\"edidType\"\\([[:space:]]*\\):\\([[:space:]]*\\)\"TrueHD\"/\"edidType\"\\1:\\2\"TrueHD+dts\"/' \"$CONFIGD_DB\" 2>>$LOG &&",
-  "         grep -q '\"edidType\"[[:space:]]*:[[:space:]]*\"[^\"]*dts' \"$CONFIGD_DB\" 2>/dev/null; then",
+  "      # Whatever the cache holds, not just the stock value: a hand-edited script",
+  "      # left \"ac3+dts+truehd\" there on a UR7500, and a stock-only match kept it.",
+  "      if sed -i \"s/\\\"edidType\\\"\\([[:space:]]*\\):\\([[:space:]]*\\)\\\"[^\\\"]*\\\"/\\\"edidType\\\"\\1:\\2\\\"$EDID_DTS\\\"/\" \"$CONFIGD_DB\" 2>>$LOG &&",
+  "         grep -q \"\\\"edidType\\\"[[:space:]]*:[[:space:]]*\\\"$EDID_DTS\\\"\" \"$CONFIGD_DB\" 2>/dev/null; then",
   "        # Restart configd WITHOUT its dependents, and without the 90s stop timeout.",
   "        #",
   "        # Ten units Requires= configd -- pqcontroller (picture), videooutputd,",
@@ -1224,7 +1238,7 @@ var W25_INIT_MAIN = [
   "        # reverting was never visible to anything.",
   "        if ! w25_appdts_audio_idle; then",
   "          w25_log \"app-dts: main audio came back before the restart -- skipped this boot\"",
-  "          sed -i 's/\"edidType\"\\([[:space:]]*\\):\\([[:space:]]*\\)\"TrueHD+dts\"/\"edidType\"\\1:\\2\"TrueHD\"/' \"$CONFIGD_DB\" 2>>$LOG",
+  "          sed -i \"s/\\\"edidType\\\"\\([[:space:]]*\\):\\([[:space:]]*\\)\\\"$EDID_DTS\\\"/\\\"edidType\\\"\\1:\\2\\\"$EDID_STOCK\\\"/\" \"$CONFIGD_DB\" 2>>$LOG",
   "          umount \"$LLS\" 2>/dev/null || umount -l \"$LLS\" 2>/dev/null",
   "          w25_appdts_report skipped \"DTS tracks are off this time: audio started just before the switch, and enabling them during playback would cost the TV its sound. Restart the TV to try again.\"",
   "          rm -rf \"$APPDTS_LOCK\" 2>/dev/null",
@@ -1253,7 +1267,7 @@ var W25_INIT_MAIN = [
   "        # from still carries the value, since that file is what apps get.",
   "        if systemctl is-active configd.service >/dev/null 2>&1; then",
   "          if grep -q '\"edidType\"[[:space:]]*:[[:space:]]*\"[^\"]*dts' \"$CONFIGD_DB\" 2>/dev/null; then",
-  "            w25_log \"app-dts: edidType -> TrueHD+dts (cache patched; configd back in $(( $(date +%s) - T0 ))s)\"",
+  "            w25_log \"app-dts: edidType -> $EDID_DTS (cache patched; configd back in $(( $(date +%s) - T0 ))s)\"",
   "            w25_appdts_report on \"DTS tracks are on for apps. Reopen Stremio or Kodi if it was already open.\"",
   "          else",
   "            w25_appdts_report failed \"DTS tracks are off: the TV's settings service came back without the change. Restart the TV to try again.\"",
@@ -1276,7 +1290,7 @@ var W25_INIT_MAIN = [
   "    # Fail closed and leave no half-written copy: an unmatched sed would bind an",
   "    # unchanged file and look like configd refusing the override.",
   "    rm -f \"$MYLLS\" 2>/dev/null",
-  "    w25_appdts_report failed \"DTS tracks are off: this TV does not report TrueHD in $LLS, so there was nothing to change.\"",
+  "    w25_appdts_report failed \"DTS tracks are off: this TV reports '${EDID_STOCK:-nothing}' in $LLS, which has no known DTS form, so there was nothing to change.\"",
   "  fi",
   "  # rm -rf, NOT rmdir: the lock dir holds a pid file, so rmdir always failed and",
   "  # every run leaked the lock. The stale-owner takeover above hid it -- the next",
@@ -3780,7 +3794,7 @@ service.register("testfiles", function (message) {
  * ---------------------------------------------------------------------
  * Apps that gate on the TV's declared capability -- Stremio and Kodi both
  * read `tv.model.edidType` -- hide DTS tracks outright when it does not
- * mention dts. This flips it to "TrueHD+dts" so those tracks are offered.
+ * mention dts. This flips it to "TrueHD+dts" (or "ac3+dts") so those tracks are offered.
  *
  * Deliberately NOT part of Enable. edidType also feeds the EDID SADs the TV
  * advertises over eARC (arccontroller) and gates HDMI-input DTS (extinput),
@@ -3790,10 +3804,17 @@ service.register("testfiles", function (message) {
  * bind on every boot when it is present, because /var/run is tmpfs.
  * ===================================================================== */
 var W25_APPDTS_FLAG = W25_DEST + "/appdts.enabled";
-// The two values this toggle moves between. Kept as constants so the live
-// setConfigs path and the shell that edits the factory file cannot drift.
-var W25_EDID_DTS   = "TrueHD+dts";
-var W25_EDID_STOCK = "TrueHD";
+// The values this toggle moves between, matching w25_appdts_target in the boot
+// script. Most sets report TrueHD; a UR7500 reports ac3.
+var W25_EDID_DTS = { "TrueHD": "TrueHD+dts", "ac3": "ac3+dts" };
+
+/** The edidType to set, from the value configd reports now. */
+function w25EdidTarget(current, want) {
+  if (!want && current && current.indexOf("dts") === -1) return current;
+  var stock = current.replace(/\+dts.*$/, "");
+  if (!W25_EDID_DTS[stock]) stock = "TrueHD";
+  return want ? W25_EDID_DTS[stock] : stock;
+}
 
 function w25AppDtsSteps(on) {
   var lines = ["set -u", 'FLAG=' + W25_APPDTS_FLAG];
@@ -3875,7 +3896,7 @@ service.register("setAppDts", function (message) {
       // disturb the picture settings. If configd refuses (it is behind the
       // configd.internal group) this falls back to the reboot, which is exactly
       // the behaviour before this path existed.
-      var target = want ? W25_EDID_DTS : (stock && stock.indexOf("dts") === -1 ? stock : W25_EDID_STOCK);
+      var target = w25EdidTarget(stock, want);
       return w25SetEdidTypeLive(target).then(function (live) {
         // Record which path actually worked. Whether configd grants setConfigs to
         // a homebrew service is the one fact that decides whether this feature can
