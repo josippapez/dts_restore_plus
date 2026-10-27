@@ -468,6 +468,60 @@ test("the DTS-tracks opt-in maps ac3 to ac3+dts and replaces any cached value", 
   assert.strictEqual(run("eac3", "eac3").target, "");
 });
 
+function initFn(name) {
+  var body = service.w25InitScriptBody().split("\n");
+  var fn = body.slice(body.indexOf(name + "() {"));
+  return fn.slice(0, fn.indexOf("}") + 1).join("\n");
+}
+
+/* Issues #5 and #10: on webOS 11.2 (43.21.77) the driver logs its completions at
+ * lines 3491/3727 instead of 3410/3644, and the persisted log starts 0.5s after
+ * audiooutputd. The old check missed a held port on the first and refused every
+ * boot on the second. */
+test("the audio-idle check reads webOS 11.2 logs", function () {
+  var fn = initFn("w25_appdts_audio_idle");
+  function line(ts, fnName, n, text) {
+    return "2026-10-25T20:21:34.148484Z [" + ts + "] kern.notice kernel alsasndout NOT (03107:03382) " +
+      fnName + "           " + n + ": " + text;
+  }
+  var connect = [line("3.279607580", "pmlog", 1, "boot"),
+    line("18.6", "sndout_connect", 3305, "Start Connect output 0x1 input 0x1 port 1."),
+    line("18.7", "sndout_connect", 3491, "output 0x1 input 0x1 port 1 .")];
+  var disconnect = [line("40.1", "sndout_disconnect", 3569, "Start Disconnect output 0x1 input 0x1 port 1 ."),
+    line("40.2", "sndout_disconnect", 3727, "output 0x1 input 0x1 port 1 .")];
+  function idle(lines, aodUs) {
+    var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dts-idle-"));
+    var log = path.join(dir, "legacy-log");
+    write(log, lines.join("\n") + "\n");
+    var r = sh(["systemctl() { echo " + aodUs + "; }", fn.split("/var/log/legacy-log").join(log), "w25_appdts_audio_idle"].join("\n"));
+    return r.status === 0;
+  }
+  assert.strictEqual(idle(connect.concat(disconnect), 2777195), true, "freed port, log 0.5s after audiooutputd");
+  assert.strictEqual(idle(connect, 2777195), false, "held port, log 0.5s after audiooutputd");
+  assert.strictEqual(idle(connect, 3000000), false, "held port, 11.2 line numbers");
+  assert.strictEqual(idle(connect.concat(disconnect), 279607), false, "log starts 3s after audiooutputd");
+});
+
+/* Issue #10: webOS 11 refuses the service's Homebrew Channel calls ("Message not
+ * processed") until org.webosbrew.hbchannel.service.group is in its client permissions. */
+test("the boot hook adds the Homebrew Channel group to the service's permissions", function () {
+  var fn = initFn("w25_hb_permission");
+  if (process.platform === "darwin") fn = fn.replace("sed -i ", "sed -i '' ");
+  function run(content) {
+    var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dts-perm-"));
+    var f = path.join(dir, "perm.json");
+    write(f, content);
+    var r = sh(["w25_log() { :; }", "HB_GROUP=org.webosbrew.hbchannel.service.group", "HB_PERM=" + f, fn, "w25_hb_permission"].join("\n"));
+    assert.strictEqual(r.status, 0, r.stderr);
+    return fs.readFileSync(f, "utf8");
+  }
+  var added = '{"io.github.josippapez.dtsenabler.service*":["public","org.webosbrew.hbchannel.service.group"]}';
+  assert.strictEqual(run('{"io.github.josippapez.dtsenabler.service*":["public"]}'), added);
+  assert.strictEqual(run(added), added);
+  var other = '{"io.github.josippapez.dtsenabler.service*":["public"],"other":["x"]}';
+  assert.strictEqual(run(other), other);
+});
+
 /* The generated script must resolve $APPBASE, not carry it as a literal.
  *
  * Regression for issue #1's actual cause: c2Q() single-quotes every config value,

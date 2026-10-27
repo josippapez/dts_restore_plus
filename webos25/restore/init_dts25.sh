@@ -94,7 +94,7 @@ EXPECT_GST=1.24
 #   27 shadows libgstmatroska.so too (optional demuxer, Dolby Vision profile 7):
 #      bound in APPLY 2c, unbound by w25_drop_binds, fingerprinted in stock.fp and
 #      drift-checked like the /etc keys, so an older stock.fp without it is not drift.
-W25_GATE_VERSION=31
+W25_GATE_VERSION=33
 FP=/var/lib/webosbrew/dts25/stock.fp
 # Where the installed copy of THIS script lives, and the boot hook that symlinks
 # to it. Named here, in the shared block, so the read-only probe can fingerprint
@@ -679,6 +679,32 @@ if w25_unowned; then
   if w25_self_heal; then echo "HEALED=$HEAL_WHY"; else echo "HEAL_DEFERRED=$HEAL_WHY"; fi
   exit 0
 fi
+# --- G1) let the app's service call the Homebrew Channel ---------------------
+# webOS 11 only lets a client call luna://org.webosbrew.hbchannel.service/exec
+# with the org.webosbrew.hbchannel.service.group group; "public" no longer covers
+# it (it still does on 10.3.1). The app installer writes our service's client
+# permissions with "public" only, whatever the package asks for, and writes them
+# again on every app install or update -- so every app call fails with "Message
+# not processed" until the group is added back. Re-checked on every run for that
+# reason. Only the one shape the installer is known to write is edited.
+HB_GROUP=org.webosbrew.hbchannel.service.group
+HB_PERM=/var/luna-service2-dev/client-permissions.d/io.github.josippapez.dtsenabler.service.service.json
+w25_hb_permission() {
+  [ -f "$HB_PERM" ] || return 0
+  grep -q "$HB_GROUP" "$HB_PERM" 2>/dev/null && return 0
+  if ! grep -Eqx '\{"io\.github\.josippapez\.dtsenabler\.service\*":\[[^]]*\]\}' "$HB_PERM" 2>/dev/null; then
+    w25_log "hb-permission: unexpected format in $HB_PERM; left as is"
+    return 0
+  fi
+  sed -i "s/\]}\$/,\"$HB_GROUP\"]}/" "$HB_PERM" 2>/dev/null
+  if grep -q "$HB_GROUP" "$HB_PERM" 2>/dev/null; then
+    /usr/sbin/ls-control scan-services >/dev/null 2>&1
+    w25_log "hb-permission: added $HB_GROUP to the app service's client permissions"
+  else
+    w25_log "hb-permission: could not add $HB_GROUP to $HB_PERM"
+  fi
+}
+w25_hb_permission
 # --- G2) owned, but the CORE payload is incomplete ---------------------------
 # Recoverable, so nothing is deleted and the hook stays: re-opening the app or
 # re-running install.sh restages the payload and the next boot applies normally.
@@ -810,8 +836,14 @@ esac
 # boot but still rotates on size, and a rotation before this runs would leave the
 # connects in legacy-log.0.gz and the live file starting mid-boot -- "no events,
 # so idle", the misread again. So read one rotation back, and require the log to
-# reach back past the moment audiooutputd started, since nothing could have
-# connected before that. If it does not, refuse rather than guess.
+# reach back to within 2s of the moment audiooutputd started, since nothing could
+# have connected before that. If it does not, refuse rather than guess.
+#
+# Why 2s and not 0: on webOS 11.2 (43.21.77) the persisted log starts 0.5s AFTER
+# audiooutputd (2.78s vs 3.28s, owner report), so a strict check rejected every
+# boot and the opt-in always gave up after 20 minutes. audiooutputd does not touch
+# the driver that early: on a C5 its first alsasndout line of any kind came 15.5s
+# after it started (3.07s vs 18.63s), so 2s still covers every connect.
 w25_appdts_audio_idle() {
   AOD_US=$(systemctl show -p ExecMainStartTimestampMonotonic --value audiooutputd.service 2>/dev/null)
   # 0 means systemd has no start time for it (never started, or mid-restart) and
@@ -833,7 +865,7 @@ w25_appdts_audio_idle() {
       held[out "/" p] = st
     }
     END {
-      if (first == "" || first > aod / 1000000) exit 1
+      if (first == "" || first > aod / 1000000 + 2) exit 1
       n = 0; for (k in held) if (held[k]) n++
       exit (n > 0)
     }
