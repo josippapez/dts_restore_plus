@@ -876,7 +876,7 @@ gst_dtsdec_class_init (GstDtsDecClass * klass)
    *
    * webOS 25 patch: 0 = always decode, 1 (default) = pass the DTS core through
    * as IEC 61937 when the opt-in marker exists and the TV sends sound to an
-   * ARC/eARC receiver in Pass Through, 2 = always pass through (testing only:
+   * ARC/eARC receiver (Pass Through or Auto), 2 = always pass through (testing only:
    * on speakers it is loud noise).
    */
   g_object_class_install_property (G_OBJECT_CLASS (klass), PROP_PASSTHROUGH,
@@ -1590,7 +1590,11 @@ dts_iec61937_pack (const guint8 * d, gsize size, guint8 * out, gint out_size)
 
 /* webOS 25 patch: TRUE when the boot hook's watcher, still alive, last saw the
  * TV sending sound to an ARC/eARC receiver with Digital Sound Out on Pass
- * Through. Anything else, a missing file included, is FALSE. */
+ * Through or Auto. Anything else, a missing file included, is FALSE.
+ * Auto counts because the settings service reports "auto" even with Pass
+ * Through selected until playback starts (owner-measured on a G2: the real
+ * value arrived 0.6s after the first video had already chosen to decode), and
+ * LG sends non-Dolby PCM down the same 2-channel bypass under both. */
 static gboolean
 dts_sound_output_is_receiver (void)
 {
@@ -1607,7 +1611,7 @@ dts_sound_output_is_receiver (void)
   g_snprintf (proc, sizeof (proc), "/proc/%d", pid);
   return g_file_test (proc, G_FILE_TEST_IS_DIR)
       && strcmp (out, "external_arc") == 0
-      && strcmp (digital, "passThrough") == 0;
+      && (strcmp (digital, "passThrough") == 0 || strcmp (digital, "auto") == 0);
 }
 
 static gboolean
