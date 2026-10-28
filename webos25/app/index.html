@@ -25,6 +25,15 @@
           The app probes this TV at runtime and picks the matching DTS-restore
           mechanism. Nothing is applied until you press <strong>Enable</strong>.
         </p>
+        <div id="permBlock" class="muted note-warn" hidden>
+          <p>
+            The TV refused this app's call to the Homebrew Channel. Right after a restart
+            that can happen once, so try again first. If it keeps happening (webOS 11, after
+            updating from 2.7.42 or older), run this once over SSH, then press
+            <strong>Enable</strong>:
+          </p>
+          <pre><code>F=/var/luna-service2-dev/client-permissions.d/io.github.josippapez.dtsenabler.service.service.json; grep -q hbchannel.service.group $F || sed -i 's/"\]}$/","org.webosbrew.hbchannel.service.group"]}/' $F; ls-control scan-services</code></pre>
+        </div>
         <dl class="status">
           <dt>Profile</dt><dd id="stProfile">&mdash;</dd>
           <dt>Mechanism</dt><dd id="stMech">&mdash;</dd>

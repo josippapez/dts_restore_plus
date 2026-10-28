@@ -77,7 +77,12 @@
 
   function errText(err) {
     if (!err) return "unknown error";
-    return err.errorText || err.stderr || err.message || JSON.stringify(err);
+    var text = err.errorText || err.stderr || err.message || JSON.stringify(err);
+    // webOS 11 refuses the Homebrew Channel call until the boot hook has added its
+    // permission group, and an app update from <= 2.7.42 cannot run Enable to install
+    // that hook. The toast is gone in 5s, so the fix stays on screen instead.
+    if (/Message not processed|Denied method call/.test(text)) $("permBlock").hidden = false;
+    return text;
   }
 
   /* ---------------------------------------------------------------------- */
