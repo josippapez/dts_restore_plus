@@ -153,7 +153,7 @@ enum
  * <soundOutputDigital>". A bitstream played on speakers is loud noise, so a
  * missing file, a dead watcher or any other output means decode as usual. */
 #define DTS_PASSTHROUGH_MARKER "/var/lib/webosbrew/dts25/passthrough"
-#define DTS_SOUND_OUTPUT_FILE "/tmp/dts25/sound-output"
+#define DTS_SOUND_OUTPUT_FILE "/run/dts25/sound-output"
 #define DTS_PASSTHROUGH_RECHECK_US (G_USEC_PER_SEC)
 
 /* webOS 25 patch: the DRC CORE parses ASCII floats through this hook so it
