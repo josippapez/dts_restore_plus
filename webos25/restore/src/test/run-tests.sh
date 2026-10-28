@@ -249,5 +249,18 @@ $CC -std=c99 -O2 -Wall -Wextra -Werror -I"$WORK" \
 "$WORK/test-window"
 
 echo
+echo "=== 10. DTS passthrough: IEC 61937 bursts vs ffmpeg's spdif muxer ==="
+{
+  sed -n '/^#define DTS_SYNC_CORE_BE/,/^#define DTS_MIN_CORE_SIZE/p' "$SRC"
+  for f in dts_read_be16 dts_core_size dts_exss_size dts_frame_size dts_iec61937_pack; do
+    awk -v f="$f" 'prev ~ /^static/ && $0 ~ "^" f " \\(" { p = 1; print prev }
+                   p { print } p && /^}/ { p = 0 } { prev = $0 }' "$SRC"
+  done
+} > "$WORK/iec61937.inc"
+$CC -std=c99 -O2 -Wall -Wextra -Werror -Wno-unused-function -I"$WORK" \
+    -o "$WORK/test-iec61937" "$HERE/test-iec61937.c"
+"$WORK/test-iec61937" "$HERE"
+
+echo
 echo "=== ALL CHECKS PASSED ==="
 exit 0

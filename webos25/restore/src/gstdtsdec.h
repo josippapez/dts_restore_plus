@@ -35,6 +35,11 @@
 /* One DRC block: the detector/smoother period, in samples per channel. */
 #define GST_DTSDEC_BLOCK_SAMPLES 256
 
+/* webOS 25 patch: values of the "passthrough" property */
+#define GST_DTSDEC_PASSTHROUGH_OFF    0
+#define GST_DTSDEC_PASSTHROUGH_AUTO   1
+#define GST_DTSDEC_PASSTHROUGH_ALWAYS 2
+
 struct AVCodecContext;
 struct AVFrame;
 struct AVPacket;
@@ -101,6 +106,16 @@ struct _GstDtsDec {
 
   /* One DRC block of planar float samples, stride = the block's length. */
   gfloat 	 samples[GST_DTSDEC_MAX_CHANNELS * GST_DTSDEC_BLOCK_SAMPLES];
+
+  /* webOS 25 patch: DTS core passthrough as IEC 61937 (see gstdtsdec.c).
+   * passthrough is a GST_DTSDEC_PASSTHROUGH_* mode; the rest is per stream. */
+  gint           passthrough;
+  gboolean       pt_decided;	/* first frame seen: pt_active is final */
+  gboolean       pt_active;	/* output IEC 61937 bursts, not PCM      */
+  gint           pt_period;	/* burst length in bytes                 */
+  gint           pt_skipped;	/* frames dropped while waiting for core */
+  gboolean       pt_output_ok;	/* last sound-output check passed        */
+  gint64         pt_checked;	/* monotonic time of that check, us      */
 
   struct AVCodecContext *avctx;
   struct AVFrame *frame;

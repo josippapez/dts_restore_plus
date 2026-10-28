@@ -136,12 +136,25 @@ enum
   PROP_DRC_MODE,
   PROP_DRC_BOOST,
   PROP_DRC_CUT,
-  PROP_CENTER_BOOST_DB
+  PROP_CENTER_BOOST_DB,
+  PROP_PASSTHROUGH
 };
 
 /* webOS 25 patch: on-device config file (host-specific, so it deliberately
  * lives OUTSIDE the portable DRC CORE block below). */
 #define DTS_MAKEUP_GAIN_CONF_PATH "/var/lib/webosbrew/dts25/gain.conf"
+
+/* webOS 25 patch: DTS core passthrough. LG sends every non-Dolby PCM stream to
+ * an eARC/ARC receiver as a 2-channel 16-bit copy, so a decoded 5.1 track
+ * arrives as stereo. Packed as IEC 61937 into that 16-bit stereo stream, the
+ * DTS core gets through bit-exact for video playback (owner-tested on a G2 with
+ * a Denon receiver: the receiver showed DTS). Opt-in by the marker file; the
+ * boot hook's watcher keeps SOUND_OUTPUT as "<watcher pid> <soundOutput>
+ * <soundOutputDigital>". A bitstream played on speakers is loud noise, so a
+ * missing file, a dead watcher or any other output means decode as usual. */
+#define DTS_PASSTHROUGH_MARKER "/var/lib/webosbrew/dts25/passthrough"
+#define DTS_SOUND_OUTPUT_FILE "/tmp/dts25/sound-output"
+#define DTS_PASSTHROUGH_RECHECK_US (G_USEC_PER_SEC)
 
 /* webOS 25 patch: the DRC CORE parses ASCII floats through this hook so it
  * stays locale-independent without depending on GLib. Inside the plugin that
@@ -702,7 +715,7 @@ static GstStaticPadTemplate src_factory = GST_STATIC_PAD_TEMPLATE ("src",
     GST_PAD_SRC,
     GST_PAD_ALWAYS,
     GST_STATIC_CAPS ("audio/x-raw, "
-        "format = (string) " SAMPLE_FORMAT ", "
+        "format = (string) { " SAMPLE_FORMAT ", " GST_AUDIO_NE (S16) " }, "
         "layout = (string) interleaved, "
         "rate = (int) [ 4000, 192000 ], " "channels = (int) [ 1, 16 ]")
     );
@@ -858,6 +871,20 @@ gst_dtsdec_class_init (GstDtsDecClass * klass)
           DTS_DRC_DEFAULT_CENTER_DB,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
+  /**
+   * GstDtsDec::passthrough
+   *
+   * webOS 25 patch: 0 = always decode, 1 (default) = pass the DTS core through
+   * as IEC 61937 when the opt-in marker exists and the TV sends sound to an
+   * ARC/eARC receiver in Pass Through, 2 = always pass through (testing only:
+   * on speakers it is loud noise).
+   */
+  g_object_class_install_property (G_OBJECT_CLASS (klass), PROP_PASSTHROUGH,
+      g_param_spec_int ("passthrough", "DTS passthrough",
+          "0 = decode, 1 = pass through to an ARC/eARC receiver when opted in, "
+          "2 = always pass through", GST_DTSDEC_PASSTHROUGH_OFF,
+          GST_DTSDEC_PASSTHROUGH_ALWAYS, GST_DTSDEC_PASSTHROUGH_AUTO,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 }
 
 /* webOS 25 patch: clamp + cache the linear multiplier for a dB gain value.
@@ -946,6 +973,7 @@ gst_dtsdec_init (GstDtsDec * dtsdec)
   dtsdec->drc_cut_pct =
       dts_drc_clampf (cfg.drc_cut_pct, DTS_DRC_PCT_MIN, DTS_DRC_PCT_MAX);
   gst_dtsdec_drc_reset (dtsdec);
+  dtsdec->passthrough = GST_DTSDEC_PASSTHROUGH_AUTO;
 
   GST_INFO_OBJECT (dtsdec,
       "config at init: makeup-gain-db %.2f dB (linear %.4f), drc-mode %s, "
@@ -998,6 +1026,9 @@ gst_dtsdec_start (GstAudioDecoder * dec)
 
   /* webOS 25 patch: a new stream starts with the compressor at unity. */
   gst_dtsdec_drc_reset (dts);
+  dts->pt_decided = FALSE;
+  dts->pt_active = FALSE;
+  dts->pt_skipped = 0;
 
   /* call upon legacy upstream byte support (e.g. seeking) */
   gst_audio_decoder_set_estimate_rate (dec, TRUE);
@@ -1500,6 +1531,168 @@ failed_negotiation:
   }
 }
 
+/* webOS 25 patch: IEC 61937 framing of a DTS core, byte for byte what FFmpeg's
+ * spdif muxer writes in its default (little-endian, core-only) mode: an 8-byte
+ * burst preamble, the 16-bit big-endian core byte-swapped, zeros to the end of
+ * the period. Only the 16-bit big-endian 48 kHz core, the form every DTS track
+ * in MKV/MP4/TS carries. Returns the period in bytes (512, 1024 or 2048
+ * samples x 2 channels x 2 bytes), or 0 if this frame cannot be sent. */
+static gint
+dts_iec61937_pack (const guint8 * d, gsize size, guint8 * out, gint out_size)
+{
+  guint blocks, type;
+  gint core, period, length, i;
+
+  if (size < 9 || GST_READ_UINT32_BE (d) != DTS_SYNC_CORE_BE)
+    return 0;
+  blocks = ((GST_READ_UINT16_BE (d + 4) >> 2) & 0x7f) + 1;
+  core = (gint) ((GST_READ_UINT24_BE (d + 5) >> 4) & 0x3fff) + 1;
+  if (((d[8] >> 2) & 0x0f) != 13)       /* SFREQ 13 = 48 kHz */
+    return 0;
+  switch (blocks) {
+    case 16:
+      type = 0x0B;
+      break;
+    case 32:
+      type = 0x0C;
+      break;
+    case 64:
+      type = 0x0D;
+      break;
+    default:
+      return 0;
+  }
+  period = (gint) blocks << 7;
+  if ((gsize) core > size || core + (core & 1) > period - 8)
+    return 0;
+  if (out == NULL)
+    return period;
+  if (out_size != period)
+    return 0;
+
+  /* FFmpeg sizes a core followed by a DTS-HD extension as the core alone, and
+   * a frame that is only a core rounded up to whole 16-bit words. */
+  length = ((gsize) core < size ? core : (core + 1) & ~1) << 3;
+
+  memset (out, 0, period);
+  GST_WRITE_UINT16_LE (out, 0xF872);
+  GST_WRITE_UINT16_LE (out + 2, 0x4E1F);
+  GST_WRITE_UINT16_LE (out + 4, type);
+  GST_WRITE_UINT16_LE (out + 6, length);
+  for (i = 0; i + 1 < core; i += 2) {
+    out[8 + i] = d[i + 1];
+    out[8 + i + 1] = d[i];
+  }
+  if (core & 1)
+    out[8 + core] = d[core - 1];        /* a lone last byte goes MSB-aligned */
+  return period;
+}
+
+/* webOS 25 patch: TRUE when the boot hook's watcher, still alive, last saw the
+ * TV sending sound to an ARC/eARC receiver with Digital Sound Out on Pass
+ * Through. Anything else, a missing file included, is FALSE. */
+static gboolean
+dts_sound_output_is_receiver (void)
+{
+  gchar *text = NULL, out[64] = "", digital[64] = "", proc[32];
+  gint pid = 0;
+  gboolean ok;
+
+  if (!g_file_get_contents (DTS_SOUND_OUTPUT_FILE, &text, NULL, NULL))
+    return FALSE;
+  ok = sscanf (text, "%d %63s %63s", &pid, out, digital) == 3;
+  g_free (text);
+  if (!ok || pid <= 0)
+    return FALSE;
+  g_snprintf (proc, sizeof (proc), "/proc/%d", pid);
+  return g_file_test (proc, G_FILE_TEST_IS_DIR)
+      && strcmp (out, "external_arc") == 0
+      && strcmp (digital, "passThrough") == 0;
+}
+
+static gboolean
+gst_dtsdec_passthrough_allowed (GstDtsDec * dts)
+{
+  if (dts->passthrough == GST_DTSDEC_PASSTHROUGH_ALWAYS)
+    return TRUE;
+  if (dts->passthrough != GST_DTSDEC_PASSTHROUGH_AUTO)
+    return FALSE;
+  return g_file_test (DTS_PASSTHROUGH_MARKER, G_FILE_TEST_EXISTS)
+      && dts_sound_output_is_receiver ();
+}
+
+/* Decides once per stream, on its first frame that starts with a core: a
+ * DTS-HD stream can open with a stray extension-only frame, which is dropped
+ * while waiting (at most 8). Returns TRUE when this frame must be dropped. */
+static gboolean
+gst_dtsdec_passthrough_decide (GstDtsDec * dts, const guint8 * d, gsize size)
+{
+  GstAudioInfo info;
+  GstAudioChannelPosition pos[2] = { GST_AUDIO_CHANNEL_POSITION_FRONT_LEFT,
+    GST_AUDIO_CHANNEL_POSITION_FRONT_RIGHT
+  };
+  gint period;
+
+  if (!gst_dtsdec_passthrough_allowed (dts)) {
+    dts->pt_decided = TRUE;
+    return FALSE;
+  }
+  if (dts_core_size (d, (gint) size) <= 0 && dts->pt_skipped < 8) {
+    dts->pt_skipped++;
+    return TRUE;
+  }
+  dts->pt_decided = TRUE;
+  period = dts_iec61937_pack (d, size, NULL, 0);
+  if (period == 0) {
+    GST_INFO_OBJECT (dts, "passthrough: not a 48 kHz DTS core, decoding");
+    return FALSE;
+  }
+
+  gst_audio_info_init (&info);
+  gst_audio_info_set_format (&info, GST_AUDIO_FORMAT_S16LE, 48000, 2, pos);
+  if (!gst_audio_decoder_set_output_format (GST_AUDIO_DECODER (dts), &info)) {
+    GST_WARNING_OBJECT (dts, "passthrough: S16LE stereo refused, decoding");
+    return FALSE;
+  }
+  dts->pt_active = TRUE;
+  dts->pt_period = period;
+  dts->pt_output_ok = TRUE;
+  dts->pt_checked = g_get_monotonic_time ();
+  GST_INFO_OBJECT (dts, "passthrough: sending the DTS core as IEC 61937, "
+      "%d-byte bursts", period);
+  return FALSE;
+}
+
+/* One burst per frame. If the sound output stops being a receiver mid-stream
+ * the bursts turn to silence rather than noise; the next stream decodes. */
+static GstFlowReturn
+gst_dtsdec_passthrough_frame (GstDtsDec * dts, const guint8 * d, gsize size)
+{
+  GstBuffer *outbuf;
+  GstMapInfo omap;
+  gint64 now;
+
+  if (dts->passthrough == GST_DTSDEC_PASSTHROUGH_AUTO) {
+    now = g_get_monotonic_time ();
+    if (dts->pt_output_ok && now - dts->pt_checked >= DTS_PASSTHROUGH_RECHECK_US) {
+      dts->pt_checked = now;
+      dts->pt_output_ok = gst_dtsdec_passthrough_allowed (dts);
+      if (!dts->pt_output_ok)
+        GST_WARNING_OBJECT (dts, "passthrough: sound output changed, muting "
+            "the rest of this stream");
+    }
+  }
+
+  outbuf = gst_audio_decoder_allocate_output_buffer (GST_AUDIO_DECODER (dts),
+      dts->pt_period);
+  gst_buffer_map (outbuf, &omap, GST_MAP_WRITE);
+  if (!dts->pt_output_ok
+      || dts_iec61937_pack (d, size, omap.data, dts->pt_period) == 0)
+    memset (omap.data, 0, dts->pt_period);
+  gst_buffer_unmap (outbuf, &omap);
+  return gst_audio_decoder_finish_frame (GST_AUDIO_DECODER (dts), outbuf, 1);
+}
+
 static GstFlowReturn
 gst_dtsdec_handle_frame (GstAudioDecoder * bdec, GstBuffer * buffer)
 {
@@ -1512,6 +1705,21 @@ gst_dtsdec_handle_frame (GstAudioDecoder * bdec, GstBuffer * buffer)
   /* no fancy draining */
   if (G_UNLIKELY (!buffer))
     return GST_FLOW_OK;
+
+  if (!dts->pt_decided || dts->pt_active) {
+    gboolean drop = FALSE;
+
+    gst_buffer_map (buffer, &map, GST_MAP_READ);
+    if (!dts->pt_decided)
+      drop = gst_dtsdec_passthrough_decide (dts, map.data, map.size);
+    if (drop)
+      result = gst_audio_decoder_finish_frame (bdec, NULL, 1);
+    else if (dts->pt_active)
+      result = gst_dtsdec_passthrough_frame (dts, map.data, map.size);
+    gst_buffer_unmap (buffer, &map);
+    if (drop || dts->pt_active)
+      return result;
+  }
 
   /* FFmpeg reads up to AV_INPUT_BUFFER_PADDING_SIZE past the end, which must
    * be zero, so the frame goes through a padded copy. */
@@ -1679,6 +1887,9 @@ gst_dtsdec_set_property (GObject * object, guint prop_id, const GValue * value,
     case PROP_CENTER_BOOST_DB:
       gst_dtsdec_apply_center_boost_db (dts, g_value_get_float (value));
       break;
+    case PROP_PASSTHROUGH:
+      dts->passthrough = g_value_get_int (value);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -1710,6 +1921,9 @@ gst_dtsdec_get_property (GObject * object, guint prop_id, GValue * value,
       break;
     case PROP_CENTER_BOOST_DB:
       g_value_set_float (value, dts->center_boost_db);
+      break;
+    case PROP_PASSTHROUGH:
+      g_value_set_int (value, dts->passthrough);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
