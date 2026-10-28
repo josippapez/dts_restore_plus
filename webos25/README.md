@@ -348,6 +348,36 @@ Two things measured on a real C5 that are easy to get wrong:
 
 This only changes which tracks apps offer. It is not a decoder change.
 
+## Send DTS to a receiver (passthrough, opt-in)
+
+LG sends any non-Dolby PCM to an ARC/eARC receiver as a 2-channel 16-bit copy, so
+decoded DTS 5.1 reaches a receiver as stereo. Turning on **Send DTS to a receiver** in
+the app makes `dtsdec` send the DTS core as IEC 61937 inside that 16-bit stereo stream
+instead of decoding it, and the receiver decodes real DTS 5.1. Tested on a G2 with a
+Denon AVC-X3800H over eARC: the receiver showed DTS in Plex Direct Play and in the
+Media Player, through seeking, pausing and volume changes.
+
+- **Only to a receiver.** `dtsdec` passes through only while the TV sends sound to
+  `external_arc` with Digital Sound Out on Pass Through or Auto. On the speakers, or any
+  other output, it decodes as before. If the output changes during a video, the rest of
+  that video is silent rather than noise.
+- **Core only.** DTS-HD MA and DTS:X tracks send their DTS 5.1 core. The 2-channel
+  16-bit stream has no room for more.
+- **Videos only.** LG applies −3 dB / +3 dB to audio-only files (music), which breaks
+  the bitstream, so an audio-only DTS file can come out as loud noise.
+- **48 kHz, 16-bit DTS core** (every DTS track in MKV, MP4 and TS). Anything else is
+  decoded.
+
+How it works: the marker `/var/lib/webosbrew/dts25/passthrough` turns it on. A watcher
+started by the boot hook (and by the app's toggle) keeps
+`/run/dts25/sound-output` as `<pid> <soundOutput> <soundOutputDigital>` from a
+`getSystemSettings` subscription. `dtsdec` reads it when a stream starts and once a
+second after that, and treats a missing file or a dead watcher as "not a receiver".
+`/run` is root-only, so nothing else can claim a receiver is attached. The settings
+service reports Digital Sound Out as `auto` until playback starts even when Pass
+Through is selected, which is why Auto counts too. The bursts match
+`ffmpeg -c:a copy -f spdif` byte for byte (`src/test/test-iec61937.c`).
+
 ## Compatibility gate, reversibility, and self-heal
 
 **Verified TV sets.** Before binding anything, both the boot hook and Enable check the

@@ -22,6 +22,9 @@
 #                 installers call when their preflight refuses AFTER they have
 #                 already detached the binds, so "nothing is applied" is true
 #                 rather than merely intended.
+#   W25_PT=start|stop
+#                 only start or stop the DTS passthrough sound-output watcher
+#                 (the app's toggle), then exit.
 #   FORCE=1       explicit opt-in on a TV that is not in the verified table.
 #
 # Always exits 0: a non-zero webosbrew init script trips the failsafe that
@@ -612,6 +615,70 @@ if [ "${W25_CHECK:-0}" = 1 ]; then
   echo "SCRIPT_MD5=$SELF_MD5"
   exit 0
 fi
+# --- DTS passthrough opt-in: keep the sound output where dtsdec can read it.
+# dtsdec sends the DTS core to an ARC/eARC receiver as IEC 61937 only while
+# PT_OUT says so ("<watcher pid> <soundOutput> <soundOutputDigital>") and that
+# pid is alive; on speakers the bitstream would be loud noise, so a missing
+# file or a dead watcher means decode. The pid is read from /proc/self/stat
+# because $$ in a subshell is the parent's, and the parent (this hook) exits.
+# /run, not /tmp: only root can write there, so nothing else can plant a
+# symlink for these root writes or a file that claims a receiver is attached.
+PT_FLAG=/var/lib/webosbrew/dts25/passthrough
+PT_RUN=/run/dts25
+PT_OUT=$PT_RUN/sound-output
+PT_PID=$PT_RUN/watcher.pid
+w25_pt_watch() {
+  read -r WPID _ < /proc/self/stat
+  echo "$WPID" > "$PT_PID"
+  while [ -f "$PT_FLAG" ]; do
+    luna-send -i luna://com.webos.settingsservice/getSystemSettings \
+      '{"category":"sound","keys":["soundOutput","soundOutputDigital"],"subscribe":true}' \
+      </dev/null 2>/dev/null | {
+      out=
+      digital=
+      while read -r line; do
+        [ -f "$PT_FLAG" ] || break
+        v=$(echo "$line" | sed -n 's/.*"soundOutput" *: *"\([^"]*\)".*/\1/p')
+        [ -n "$v" ] && out=$v
+        v=$(echo "$line" | sed -n 's/.*"soundOutputDigital" *: *"\([^"]*\)".*/\1/p')
+        [ -n "$v" ] && digital=$v
+        [ -n "$out" ] && [ -n "$digital" ] || continue
+        echo "$WPID $out $digital" > "$PT_OUT.tmp" && mv -f "$PT_OUT.tmp" "$PT_OUT"
+      done
+    }
+    # the subscription ended: decode until it is back
+    rm -f "$PT_OUT"
+    sleep 5
+  done
+  rm -f "$PT_OUT" "$PT_PID"
+}
+w25_pt_start() {
+  [ -f "$PT_FLAG" ] || return 0
+  mkdir -p "$PT_RUN"
+  P=$(cat "$PT_PID" 2>/dev/null)
+  [ -n "$P" ] && [ -d "/proc/$P" ] && return 0
+  ( w25_pt_watch ) </dev/null >/dev/null 2>&1 &
+}
+# Stops the watcher and its luna-send, and drops the file, so dtsdec decodes.
+w25_pt_stop() {
+  P=$(cat "$PT_PID" 2>/dev/null)
+  if [ -n "$P" ] && [ -d "/proc/$P" ]; then
+    for c in /proc/[0-9]*; do
+      [ "$(cut -d' ' -f4 "$c/stat" 2>/dev/null)" = "$P" ] && kill "${c#/proc/}" 2>/dev/null
+    done
+    kill "$P" 2>/dev/null
+  fi
+  rm -f "$PT_OUT" "$PT_PID"
+}
+# W25_PT=start|stop: only start or stop the watcher, for the app's toggle, so
+# turning passthrough on or off takes effect without a restart.
+if [ -n "${W25_PT:-}" ]; then
+  case $W25_PT in
+    start) w25_pt_start ;;
+    stop) w25_pt_stop ;;
+  esac
+  exit 0
+fi
 # W25_STAND_DOWN=1: revert to stock and exit. Deliberately a mode of its own
 # rather than "just run the script and let it refuse": a mode cannot accidentally
 # APPLY if the gate's inputs changed between the caller's preflight and this call.
@@ -1098,50 +1165,6 @@ w25_appdts_start() {
   ( w25_appdts_apply ) </dev/null >/dev/null 2>&1 &
 }
 w25_appdts_start
-# --- DTS passthrough opt-in: keep the sound output where dtsdec can read it.
-# dtsdec sends the DTS core to an ARC/eARC receiver as IEC 61937 only while
-# PT_OUT says so ("<watcher pid> <soundOutput> <soundOutputDigital>") and that
-# pid is alive; on speakers the bitstream would be loud noise, so a missing
-# file or a dead watcher means decode. The pid is read from /proc/self/stat
-# because $$ in a subshell is the parent's, and the parent (this hook) exits.
-# /run, not /tmp: only root can write there, so nothing else can plant a
-# symlink for these root writes or a file that claims a receiver is attached.
-PT_FLAG=/var/lib/webosbrew/dts25/passthrough
-PT_RUN=/run/dts25
-PT_OUT=$PT_RUN/sound-output
-PT_PID=$PT_RUN/watcher.pid
-w25_pt_watch() {
-  read -r WPID _ < /proc/self/stat
-  echo "$WPID" > "$PT_PID"
-  while [ -f "$PT_FLAG" ]; do
-    luna-send -i luna://com.webos.settingsservice/getSystemSettings \
-      '{"category":"sound","keys":["soundOutput","soundOutputDigital"],"subscribe":true}' \
-      </dev/null 2>/dev/null | {
-      out=
-      digital=
-      while read -r line; do
-        [ -f "$PT_FLAG" ] || break
-        v=$(echo "$line" | sed -n 's/.*"soundOutput" *: *"\([^"]*\)".*/\1/p')
-        [ -n "$v" ] && out=$v
-        v=$(echo "$line" | sed -n 's/.*"soundOutputDigital" *: *"\([^"]*\)".*/\1/p')
-        [ -n "$v" ] && digital=$v
-        [ -n "$out" ] && [ -n "$digital" ] || continue
-        echo "$WPID $out $digital" > "$PT_OUT.tmp" && mv -f "$PT_OUT.tmp" "$PT_OUT"
-      done
-    }
-    # the subscription ended: decode until it is back
-    rm -f "$PT_OUT"
-    sleep 5
-  done
-  rm -f "$PT_OUT" "$PT_PID"
-}
-w25_pt_start() {
-  [ -f "$PT_FLAG" ] || return 0
-  mkdir -p "$PT_RUN"
-  P=$(cat "$PT_PID" 2>/dev/null)
-  [ -n "$P" ] && [ -d "/proc/$P" ] && return 0
-  ( w25_pt_watch ) </dev/null >/dev/null 2>&1 &
-}
 w25_pt_start
 # --- APPLY 2c) container demuxers with DTS re-enabled (mp4/ts/m2ts DTS -> audio/x-dts).
 #         Patched isomp4/mpegtsdemux default dts_support=TRUE; patched matroska

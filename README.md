@@ -189,7 +189,7 @@ The flag is checked at each playback start (no reboot needed) but **resets on re
 - **webOS 11: the app says "Message not processed" or "Denied method call"** — the TV
   refuses the app's Homebrew Channel calls until its permission file has the Homebrew group.
   The boot hook adds it from 2.7.43 on, but an update from 2.7.42 or older can't run Enable to
-  install that hook. Run this once over SSH, then press Enable:
+  install that hook. Run this once over SSH or telnet, then press Enable:
   `F=/var/luna-service2-dev/client-permissions.d/io.github.josippapez.dtsenabler.service.service.json; grep -q hbchannel.service.group $F || sed -i 's/"\]}$/","org.webosbrew.hbchannel.service.group"]}/' $F; ls-control scan-services`
 
 ---

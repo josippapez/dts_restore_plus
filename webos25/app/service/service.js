@@ -273,6 +273,9 @@ var W25_INIT_HEAD = [
   "#                 installers call when their preflight refuses AFTER they have",
   "#                 already detached the binds, so \"nothing is applied\" is true",
   "#                 rather than merely intended.",
+  "#   W25_PT=start|stop",
+  "#                 only start or stop the DTS passthrough sound-output watcher",
+  "#                 (the app's toggle), then exit.",
   "#   FORCE=1       explicit opt-in on a TV that is not in the verified table.",
   "#",
   "# Always exits 0: a non-zero webosbrew init script trips the failsafe that",
@@ -869,6 +872,70 @@ var W25_INIT_MAIN = [
   "  echo \"SCRIPT_MD5=$SELF_MD5\"",
   "  exit 0",
   "fi",
+  "# --- DTS passthrough opt-in: keep the sound output where dtsdec can read it.",
+  "# dtsdec sends the DTS core to an ARC/eARC receiver as IEC 61937 only while",
+  "# PT_OUT says so (\"<watcher pid> <soundOutput> <soundOutputDigital>\") and that",
+  "# pid is alive; on speakers the bitstream would be loud noise, so a missing",
+  "# file or a dead watcher means decode. The pid is read from /proc/self/stat",
+  "# because $$ in a subshell is the parent's, and the parent (this hook) exits.",
+  "# /run, not /tmp: only root can write there, so nothing else can plant a",
+  "# symlink for these root writes or a file that claims a receiver is attached.",
+  "PT_FLAG=/var/lib/webosbrew/dts25/passthrough",
+  "PT_RUN=/run/dts25",
+  "PT_OUT=$PT_RUN/sound-output",
+  "PT_PID=$PT_RUN/watcher.pid",
+  "w25_pt_watch() {",
+  "  read -r WPID _ < /proc/self/stat",
+  "  echo \"$WPID\" > \"$PT_PID\"",
+  "  while [ -f \"$PT_FLAG\" ]; do",
+  "    luna-send -i luna://com.webos.settingsservice/getSystemSettings \\",
+  "      '{\"category\":\"sound\",\"keys\":[\"soundOutput\",\"soundOutputDigital\"],\"subscribe\":true}' \\",
+  "      </dev/null 2>/dev/null | {",
+  "      out=",
+  "      digital=",
+  "      while read -r line; do",
+  "        [ -f \"$PT_FLAG\" ] || break",
+  "        v=$(echo \"$line\" | sed -n 's/.*\"soundOutput\" *: *\"\\([^\"]*\\)\".*/\\1/p')",
+  "        [ -n \"$v\" ] && out=$v",
+  "        v=$(echo \"$line\" | sed -n 's/.*\"soundOutputDigital\" *: *\"\\([^\"]*\\)\".*/\\1/p')",
+  "        [ -n \"$v\" ] && digital=$v",
+  "        [ -n \"$out\" ] && [ -n \"$digital\" ] || continue",
+  "        echo \"$WPID $out $digital\" > \"$PT_OUT.tmp\" && mv -f \"$PT_OUT.tmp\" \"$PT_OUT\"",
+  "      done",
+  "    }",
+  "    # the subscription ended: decode until it is back",
+  "    rm -f \"$PT_OUT\"",
+  "    sleep 5",
+  "  done",
+  "  rm -f \"$PT_OUT\" \"$PT_PID\"",
+  "}",
+  "w25_pt_start() {",
+  "  [ -f \"$PT_FLAG\" ] || return 0",
+  "  mkdir -p \"$PT_RUN\"",
+  "  P=$(cat \"$PT_PID\" 2>/dev/null)",
+  "  [ -n \"$P\" ] && [ -d \"/proc/$P\" ] && return 0",
+  "  ( w25_pt_watch ) </dev/null >/dev/null 2>&1 &",
+  "}",
+  "# Stops the watcher and its luna-send, and drops the file, so dtsdec decodes.",
+  "w25_pt_stop() {",
+  "  P=$(cat \"$PT_PID\" 2>/dev/null)",
+  "  if [ -n \"$P\" ] && [ -d \"/proc/$P\" ]; then",
+  "    for c in /proc/[0-9]*; do",
+  "      [ \"$(cut -d' ' -f4 \"$c/stat\" 2>/dev/null)\" = \"$P\" ] && kill \"${c#/proc/}\" 2>/dev/null",
+  "    done",
+  "    kill \"$P\" 2>/dev/null",
+  "  fi",
+  "  rm -f \"$PT_OUT\" \"$PT_PID\"",
+  "}",
+  "# W25_PT=start|stop: only start or stop the watcher, for the app's toggle, so",
+  "# turning passthrough on or off takes effect without a restart.",
+  "if [ -n \"${W25_PT:-}\" ]; then",
+  "  case $W25_PT in",
+  "    start) w25_pt_start ;;",
+  "    stop) w25_pt_stop ;;",
+  "  esac",
+  "  exit 0",
+  "fi",
   "# W25_STAND_DOWN=1: revert to stock and exit. Deliberately a mode of its own",
   "# rather than \"just run the script and let it refuse\": a mode cannot accidentally",
   "# APPLY if the gate's inputs changed between the caller's preflight and this call.",
@@ -1355,50 +1422,6 @@ var W25_INIT_MAIN = [
   "  ( w25_appdts_apply ) </dev/null >/dev/null 2>&1 &",
   "}",
   "w25_appdts_start",
-  "# --- DTS passthrough opt-in: keep the sound output where dtsdec can read it.",
-  "# dtsdec sends the DTS core to an ARC/eARC receiver as IEC 61937 only while",
-  "# PT_OUT says so (\"<watcher pid> <soundOutput> <soundOutputDigital>\") and that",
-  "# pid is alive; on speakers the bitstream would be loud noise, so a missing",
-  "# file or a dead watcher means decode. The pid is read from /proc/self/stat",
-  "# because $$ in a subshell is the parent's, and the parent (this hook) exits.",
-  "# /run, not /tmp: only root can write there, so nothing else can plant a",
-  "# symlink for these root writes or a file that claims a receiver is attached.",
-  "PT_FLAG=/var/lib/webosbrew/dts25/passthrough",
-  "PT_RUN=/run/dts25",
-  "PT_OUT=$PT_RUN/sound-output",
-  "PT_PID=$PT_RUN/watcher.pid",
-  "w25_pt_watch() {",
-  "  read -r WPID _ < /proc/self/stat",
-  "  echo \"$WPID\" > \"$PT_PID\"",
-  "  while [ -f \"$PT_FLAG\" ]; do",
-  "    luna-send -i luna://com.webos.settingsservice/getSystemSettings \\",
-  "      '{\"category\":\"sound\",\"keys\":[\"soundOutput\",\"soundOutputDigital\"],\"subscribe\":true}' \\",
-  "      </dev/null 2>/dev/null | {",
-  "      out=",
-  "      digital=",
-  "      while read -r line; do",
-  "        [ -f \"$PT_FLAG\" ] || break",
-  "        v=$(echo \"$line\" | sed -n 's/.*\"soundOutput\" *: *\"\\([^\"]*\\)\".*/\\1/p')",
-  "        [ -n \"$v\" ] && out=$v",
-  "        v=$(echo \"$line\" | sed -n 's/.*\"soundOutputDigital\" *: *\"\\([^\"]*\\)\".*/\\1/p')",
-  "        [ -n \"$v\" ] && digital=$v",
-  "        [ -n \"$out\" ] && [ -n \"$digital\" ] || continue",
-  "        echo \"$WPID $out $digital\" > \"$PT_OUT.tmp\" && mv -f \"$PT_OUT.tmp\" \"$PT_OUT\"",
-  "      done",
-  "    }",
-  "    # the subscription ended: decode until it is back",
-  "    rm -f \"$PT_OUT\"",
-  "    sleep 5",
-  "  done",
-  "  rm -f \"$PT_OUT\" \"$PT_PID\"",
-  "}",
-  "w25_pt_start() {",
-  "  [ -f \"$PT_FLAG\" ] || return 0",
-  "  mkdir -p \"$PT_RUN\"",
-  "  P=$(cat \"$PT_PID\" 2>/dev/null)",
-  "  [ -n \"$P\" ] && [ -d \"/proc/$P\" ] && return 0",
-  "  ( w25_pt_watch ) </dev/null >/dev/null 2>&1 &",
-  "}",
   "w25_pt_start",
   "# --- APPLY 2c) container demuxers with DTS re-enabled (mp4/ts/m2ts DTS -> audio/x-dts).",
   "#         Patched isomp4/mpegtsdemux default dts_support=TRUE; patched matroska",
@@ -3508,6 +3531,9 @@ function w25StatusProbe() {
     // App-DTS opt-in: the marker is the intent, the live edidType is the effect.
     // Report both so the UI can tell "asked for, not applied yet" from "on".
     'echo "APPDTS_FLAG=$([ -f ' + W25_APPDTS_FLAG + ' ] && echo 1 || echo 0)"',
+    'echo "PT_FLAG=$([ -f ' + W25_PT_FLAG + ' ] && echo 1 || echo 0)"',
+    // Only while the watcher is alive: dtsdec ignores the file otherwise too.
+    'P=$(cat ' + W25_PT_RUN + '/watcher.pid 2>/dev/null); echo "PT_OUT=$([ -n "$P" ] && [ -d /proc/$P ] && cut -d" " -f2- ' + W25_PT_RUN + '/sound-output 2>/dev/null)"',
     // The boot hook's last apply outcome: "<epoch> <on|skipped|failed> <message>".
     'echo "APPDTS_LAST=$(head -n1 ' + W25_DEST + '/appdts.last 2>/dev/null)"',
     'echo "EDIDTYPE=$(grep -o \'"edidType"[[:space:]]*:[[:space:]]*"[^"]*"\' /var/preferences/configd_db.json 2>/dev/null | head -n1 | sed \'s/.*:[[:space:]]*"//; s/"$//\')"'
@@ -3720,6 +3746,9 @@ service.register("status", function (message) {
         // on a real C5 (decode + autoplug), but that only transfers to a TV whose
         // stock plugin fingerprints match the verified-sets table. Saying "yes"
         // on a forced/unverified TV would contradict the verdict beside it.
+        base.passthroughRequested = kv.PT_FLAG === "1";
+        base.passthroughOutput = kv.PT_OUT || "";
+        base.passthroughToReceiver = base.passthroughRequested && w25PtReceiver(kv.PT_OUT);
         base.appDtsRequested = kv.APPDTS_FLAG === "1";
         base.edidType = kv.EDIDTYPE || "";
         // The effect, not the intent: apps read this string, so it is what decides
@@ -3950,6 +3979,81 @@ function w25AppDtsSteps(on) {
   lines.push("exit 0");
   return lines.join("\n");
 }
+
+/* =======================================================================
+ * DTS passthrough opt-in
+ * ---------------------------------------------------------------------
+ * LG sends non-Dolby PCM to an ARC/eARC receiver as a 2-channel 16-bit copy,
+ * so decoded DTS 5.1 arrives as stereo. With this on, dtsdec sends the DTS core
+ * as IEC 61937 inside that stereo stream instead, and the receiver decodes real
+ * DTS 5.1 (owner-tested on a G2 with a Denon receiver: Plex and the Media
+ * Player). dtsdec only does it while the boot script's watcher reports
+ * external_arc with Pass Through or Auto; on speakers it decodes as usual.
+ * The marker is the whole state. The toggle starts or stops the watcher right
+ * away through the boot script's W25_PT mode, so no restart is needed.
+ * ===================================================================== */
+var W25_PT_FLAG = W25_DEST + "/passthrough";
+var W25_PT_RUN = "/run/dts25";
+
+function w25PassthroughSteps(on) {
+  var lines = ["set -u", 'FLAG=' + W25_PT_FLAG];
+  // The current boot script carries the W25_PT mode; an older installed one
+  // would ignore W25_PT and run a full apply instead.
+  lines.push('base64 -d > "' + W25_INIT_SCRIPT + '" <<\'B64EOF\'');
+  lines.push(Buffer.from(w25InitScriptBody(), "utf8").toString("base64"));
+  lines.push('B64EOF');
+  lines.push('chmod 0755 "' + W25_INIT_SCRIPT + '"');
+  if (on) {
+    lines.push('mkdir -p "$(dirname "$FLAG")" 2>/dev/null');
+    lines.push(': > "$FLAG"');
+    // setsid + no stdio: the watcher outlives this exec call, and the bridge
+    // must not wait on its pipes.
+    lines.push('setsid sh -c \'W25_PT=start sh "' + W25_INIT_SCRIPT + '"\' </dev/null >/dev/null 2>&1 &');
+    lines.push('i=0; while [ "$i" -lt 10 ] && [ ! -s ' + W25_PT_RUN + '/sound-output ]; do sleep 1; i=$((i + 1)); done');
+  } else {
+    lines.push('rm -f "$FLAG"');
+    lines.push('W25_PT=stop sh "' + W25_INIT_SCRIPT + '" </dev/null >/dev/null 2>&1');
+  }
+  lines.push('echo "PT_OUT=$(cut -d" " -f2- ' + W25_PT_RUN + '/sound-output 2>/dev/null)"');
+  lines.push('echo OK');
+  lines.push("exit 0");
+  return lines.join("\n");
+}
+
+/** "external_arc auto" -> true: the output dtsdec passes through to. */
+function w25PtReceiver(out) {
+  return /^external_arc (passThrough|auto)$/.test(out || "");
+}
+
+service.register("setPassthrough", function (message) {
+  var want = !!(message.payload && message.payload.enabled);
+  detectProfile().then(function (d) {
+    if (d.profile !== PROFILE_W25) {
+      message.respond({
+        returnValue: false, profile: d.profile, supported: false,
+        errorText: "DTS passthrough is only available on the webOS 25 profile (found '" + d.profile + "')."
+      });
+      return;
+    }
+    return rootExec(w25PassthroughSteps(want)).then(function (r) {
+      var kv = parseKv(r.stdout);
+      var out = kv.PT_OUT || "";
+      logActionResult("passthrough", d.profile, want ? "on" : "off", "soundOutput=" + out);
+      message.respond({
+        returnValue: true,
+        profile: d.profile,
+        enabled: want,
+        soundOutput: out,
+        receiver: w25PtReceiver(out),
+        summary: !want ? "Passthrough off: DTS is decoded again."
+          : w25PtReceiver(out) ? "Passthrough on: DTS goes to your receiver from the next video."
+          : "Passthrough on. It starts once the TV sends sound to an ARC/eARC receiver."
+      });
+    });
+  }).catch(function (e) {
+    message.respond({ returnValue: false, errorText: e.errorText || e.message || String(e) });
+  });
+});
 
 /* setAppDts: {enabled:boolean}. webOS 25 only -- the C2/G2 payload has no
  * TrueHD decoder and its own gate is a different mechanism entirely. */

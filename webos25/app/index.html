@@ -29,7 +29,7 @@
           <p>
             The TV refused this app's call to the Homebrew Channel. Right after a restart
             that can happen once, so try again first. If it keeps happening (webOS 11, after
-            updating from 2.7.42 or older), run this once over SSH, then press
+            updating from 2.7.42 or older), run this once over SSH or telnet, then press
             <strong>Enable</strong>:
           </p>
           <pre><code>F=/var/luna-service2-dev/client-permissions.d/io.github.josippapez.dtsenabler.service.service.json; grep -q hbchannel.service.group $F || sed -i 's/"\]}$/","org.webosbrew.hbchannel.service.group"]}/' $F; ls-control scan-services</code></pre>
@@ -264,6 +264,30 @@
           <dt>Tracks shown in apps</dt><dd id="sAppDts">&mdash;</dd>
           <dt>Reported as</dt><dd id="sEdidType">&mdash;</dd>
           <dt>Last attempt</dt><dd id="sAppDtsLast">&mdash;</dd>
+        </dl>
+      </section>
+
+      <section class="card" id="cardPassthrough" hidden>
+        <h2>Send DTS to a receiver (experimental)</h2>
+        <p class="muted">
+          The TV sends decoded DTS to an ARC/eARC receiver or soundbar as stereo only.
+          Turning this on sends the DTS stream itself instead, so a receiver that
+          decodes DTS plays it in 5.1.
+        </p>
+        <p class="muted note-warn">
+          Only with a receiver or soundbar that decodes DTS, connected over HDMI ARC/eARC
+          with Digital Sound Out on <strong>Pass Through</strong> or <strong>Auto</strong>.
+          It sends the DTS core (DTS 5.1, not DTS-HD MA or DTS:X), and only works for
+          videos: an audio-only file can come out as loud noise. On the TV speakers or
+          any other output, DTS is decoded as usual.
+        </p>
+        <div class="row">
+          <button id="btnPtOn"  class="btn focusable" data-nav disabled>Turn on</button>
+          <button id="btnPtOff" class="btn focusable" data-nav disabled>Turn off</button>
+        </div>
+        <dl class="status">
+          <dt>Passthrough</dt><dd id="sPt">&mdash;</dd>
+          <dt>Sound output</dt><dd id="sPtOut">&mdash;</dd>
         </dl>
       </section>
 

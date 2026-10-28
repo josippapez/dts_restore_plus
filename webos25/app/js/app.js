@@ -267,6 +267,15 @@
     setVal("sAppDtsLast", last
       ? new Date(last.at * 1000).toLocaleString() + ": " + last.message
       : "—", last ? (last.result === "on" ? "ok" : "warn") : null);
+    // DTS passthrough: also webOS 25 only, since it lives in the webOS 25 dtsdec.
+    $("cardPassthrough").hidden = !canW25Test;
+    $("btnPtOn").disabled  = !canW25Test || s.passthroughRequested === true;
+    $("btnPtOff").disabled = !canW25Test || s.passthroughRequested !== true;
+    setVal("sPt", !s.passthroughRequested ? "off"
+      : s.passthroughToReceiver ? "on — DTS goes to the receiver"
+      : "on — waiting for an ARC/eARC receiver",
+      s.passthroughToReceiver ? "ok" : (s.passthroughRequested ? "warn" : null));
+    setVal("sPtOut", s.passthroughOutput || "—");
     // A/B compare renders through the patched dtsdec, so it needs the same profile.
     $("btnAb").disabled = !canW25Test;
     Array.prototype.slice.call(document.querySelectorAll("[data-gain], [data-preset], [data-center]"))
@@ -464,6 +473,14 @@
     toast(on ? "Turning on…" : "Turning off…", "busy");
     callService("setAppDts", { enabled: on }).then(function (res) {
       toast(res.summary || (on ? "Saved" : "Turned off"), res.returnValue ? "ok" : "err");
+      return refreshStatus();
+    }).catch(function (e) { toast("Could not change it: " + errText(e), "err"); });
+  }
+
+  function doPassthrough(on) {
+    toast(on ? "Turning on…" : "Turning off…", "busy");
+    callService("setPassthrough", { enabled: on }).then(function (res) {
+      toast(res.summary || (on ? "Turned on" : "Turned off"), res.returnValue ? "ok" : "err");
       return refreshStatus();
     }).catch(function (e) { toast("Could not change it: " + errText(e), "err"); });
   }
@@ -843,6 +860,8 @@
     $("btnAppDtsOn").addEventListener("click", function () { doAppDts(true); });
     $("btnAppDtsOff").addEventListener("click", function () { doAppDts(false); });
     $("btnAppDtsReboot").addEventListener("click", doAppDtsReboot);
+    $("btnPtOn").addEventListener("click", function () { doPassthrough(true); });
+    $("btnPtOff").addEventListener("click", function () { doPassthrough(false); });
     $("btnSaveGain").addEventListener("click", doSaveGain);
     $("btnAb").addEventListener("click", doAbRender);
     $("btnAbA").addEventListener("click", function () { doAbPlay("a"); });

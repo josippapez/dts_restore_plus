@@ -20,7 +20,8 @@ function loadService() {
     "c2Config: c2Config, c2InitScriptBody: c2InitScriptBody," +
     "c2Enable: c2Enable, c2Disable: c2Disable, c2StatusProbe: c2StatusProbe," +
     "c2StatusBindsComplete: c2StatusBindsComplete, c2SelfTest: c2SelfTest," +
-    "DETECT_PROBE: DETECT_PROBE, w25EdidTarget: w25EdidTarget, w25InitScriptBody: w25InitScriptBody, constants: {C2: PROFILE_C2," +
+    "DETECT_PROBE: DETECT_PROBE, w25EdidTarget: w25EdidTarget, w25InitScriptBody: w25InitScriptBody," +
+    "w25PtReceiver: w25PtReceiver, w25PassthroughSteps: w25PassthroughSteps, constants: {C2: PROFILE_C2," +
     "sets: C2_EXPECTED_SETS, matchSet: c2MatchSet," +
     "libav: C2_EXPECTED_SETS[0].libav, iso: C2_EXPECTED_SETS[0].iso, mkv: C2_EXPECTED_SETS[0].mkv}};";
   var FakeService = function () { this.register = function () {}; };
@@ -520,6 +521,27 @@ test("the boot hook adds the Homebrew Channel group to the service's permissions
   assert.strictEqual(run(added), added);
   var other = '{"io.github.josippapez.dtsenabler.service*":["public"],"other":["x"]}';
   assert.strictEqual(run(other), other);
+});
+
+/* Issue #12: the passthrough toggle. dtsdec only sends the bitstream to
+ * external_arc with Pass Through or Auto; on speakers it would be loud noise. */
+test("the passthrough toggle only reports a receiver for external_arc", function () {
+  assert.strictEqual(service.w25PtReceiver("external_arc passThrough"), true);
+  assert.strictEqual(service.w25PtReceiver("external_arc auto"), true);
+  assert.strictEqual(service.w25PtReceiver("external_arc pcm"), false);
+  assert.strictEqual(service.w25PtReceiver("tv_external_speaker auto"), false);
+  assert.strictEqual(service.w25PtReceiver(""), false);
+  [true, false].forEach(function (on) {
+    var script = service.w25PassthroughSteps(on);
+    var r = spawnSync("sh", ["-n"], { input: script, encoding: "utf8" });
+    assert.strictEqual(r.status, 0, "generated script is not valid sh: " + r.stderr);
+    assert.ok(script.indexOf("W25_PT=" + (on ? "start" : "stop")) !== -1);
+  });
+  // The boot script must handle that mode before it gets anywhere near applying.
+  var body = service.w25InitScriptBody();
+  var mode = body.indexOf('if [ -n "${W25_PT:-}" ]; then');
+  assert.ok(mode !== -1 && mode < body.indexOf("# --- G) self-heal"),
+    "W25_PT mode must exit before the apply path");
 });
 
 /* The generated script must resolve $APPBASE, not carry it as a literal.
