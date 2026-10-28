@@ -24,13 +24,14 @@
 # half-writing a file.
 #
 # Also refuses (same "write nothing" guarantee) if the canonical script's body
-# changed since the last sync but its hand-maintained W25_GATE_VERSION stamp
+# changed since the last release but its hand-maintained W25_GATE_VERSION stamp
 # did not: that stamp is what lets the app notice a boot script it installed is
 # stale, so a body change with no version bump would make that detection go
 # quiet. This is a convenience check, not a safety net -- the app separately
-# md5-cross-checks what it would write -- so it is a simple before/after
-# string compare against install.sh's CURRENT (pre-regen) blob, done once per
-# run; no cache or persisted state.
+# md5-cross-checks what it would write. "The last release" is the script at the
+# newest webos25-* tag, so one bump covers every edit until the next release.
+# Without git or a tag it falls back to install.sh's CURRENT (pre-regen) blob,
+# which demands a bump on every sync that changes the body.
 #
 # Requires: POSIX sh, node. Runs on macOS and Linux (both are present in the
 # release workflow image).
@@ -51,11 +52,19 @@ for f in "$CANONICAL" "$INSTALL_SH" "$SERVICE_JS"; do
   fi
 done
 
+RELEASED_INIT=$(mktemp)
+trap 'rm -f "$RELEASED_INIT"' EXIT
+RELEASE_TAG=$(git -C "$REPO_ROOT" describe --tags --abbrev=0 --match 'webos25-*' 2>/dev/null || true)
+if [ -n "$RELEASE_TAG" ]; then
+  git -C "$REPO_ROOT" show "$RELEASE_TAG:webos25/restore/init_dts25.sh" > "$RELEASED_INIT" 2>/dev/null || : > "$RELEASED_INIT"
+fi
+
 node -e '
   var fs = require("fs");
   var canonicalPath = process.argv[1];
   var installPath = process.argv[2];
   var servicePath = process.argv[3];
+  var releasedPath = process.argv[4];
 
   function fail(msg) {
     console.error("sync-init: " + msg);
@@ -130,11 +139,10 @@ node -e '
   }
 
   // ---- W25_GATE_VERSION staleness-stamp check ------------------------------
-  // Compare the canonical body (minus the stamp line) against what install.sh
-  // CURRENTLY decodes to (i.e. the body before this run regenerates anything):
-  // if the body actually changed but the stamp is identical on both sides,
-  // someone edited the boot script and forgot to bump it. A single in-memory
-  // string compare -- no cache, no persisted state.
+  // Compare the canonical body (minus the stamp line) against the last released
+  // script, or against what install.sh CURRENTLY decodes to when there is no
+  // release to read: if the body actually changed but the stamp is identical on
+  // both sides, someone edited the boot script and forgot to bump it.
   function extractGateVersion(text) {
     var m = /^W25_GATE_VERSION=(.*)$/m.exec(text);
     return m ? m[1] : null;
@@ -142,7 +150,8 @@ node -e '
   function stripGateVersionLine(text) {
     return text.replace(/^W25_GATE_VERSION=.*\n/m, "");
   }
-  var oldBody = Buffer.from(installLines[blobIdx], "base64").toString("utf8");
+  var released = fs.readFileSync(releasedPath, "utf8");
+  var oldBody = released || Buffer.from(installLines[blobIdx], "base64").toString("utf8");
   var canonicalGateVersion = extractGateVersion(canonical);
   var oldGateVersion = extractGateVersion(oldBody);
   if (canonicalGateVersion !== null && oldGateVersion !== null && canonicalGateVersion === oldGateVersion) {
@@ -197,4 +206,4 @@ node -e '
   } else {
     writes.forEach(function (w) { console.log("sync-init: updated " + w.label); });
   }
-' "$CANONICAL" "$INSTALL_SH" "$SERVICE_JS"
+' "$CANONICAL" "$INSTALL_SH" "$SERVICE_JS" "$RELEASED_INIT"
