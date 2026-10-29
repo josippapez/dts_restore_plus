@@ -21,7 +21,8 @@ function loadService() {
     "c2Enable: c2Enable, c2Disable: c2Disable, c2StatusProbe: c2StatusProbe," +
     "c2StatusBindsComplete: c2StatusBindsComplete, c2SelfTest: c2SelfTest," +
     "DETECT_PROBE: DETECT_PROBE, w25EdidTarget: w25EdidTarget, w25InitScriptBody: w25InitScriptBody," +
-    "w25PtReceiver: w25PtReceiver, w25PassthroughSteps: w25PassthroughSteps, constants: {C2: PROFILE_C2," +
+    "w25PtReceiver: w25PtReceiver, w25PassthroughSteps: w25PassthroughSteps, w25Enable: w25Enable," +
+    "constants: {C2: PROFILE_C2," +
     "sets: C2_EXPECTED_SETS, matchSet: c2MatchSet," +
     "libav: C2_EXPECTED_SETS[0].libav, iso: C2_EXPECTED_SETS[0].iso, mkv: C2_EXPECTED_SETS[0].mkv}};";
   var FakeService = function () { this.register = function () {}; };
@@ -542,6 +543,26 @@ test("the passthrough toggle only reports a receiver for external_arc", function
   var mode = body.indexOf('if [ -n "${W25_PT:-}" ]; then');
   assert.ok(mode !== -1 && mode < body.indexOf("# --- G) self-heal"),
     "W25_PT mode must exit before the apply path");
+});
+
+/* Issue #13: the luna hub drops any message over 128 KiB and the app only sees
+ * "Message not processed". 2.7.45's Enable script was 133,818 bytes, so Enable
+ * failed on every TV. It must stay under the limit with room to grow, and the
+ * boot script it writes must still come out byte for byte. */
+test("the Enable call fits a luna message and writes the exact boot script", function () {
+  var script = service.w25Enable(false);
+  var size = Buffer.byteLength(JSON.stringify({ command: script }));
+  assert.ok(size < 110 * 1024, "Enable exec payload is " + size + " bytes; the hub drops anything over 131072");
+  var lines = script.split("\n");
+  var start = lines.findIndex(function (l) { return /^base64 -d <<'B64EOF' \| gzip -dc > /.test(l); });
+  assert.ok(start !== -1, "boot script heredoc not found");
+  var end = lines.indexOf("B64EOF", start);
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dts-enable-"));
+  var out = path.join(dir, "init.sh");
+  var block = [lines[start].replace(/> "[^"]*"$/, '> "' + out + '"')].concat(lines.slice(start + 1, end + 1));
+  var r = sh(block.join("\n"));
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.strictEqual(fs.readFileSync(out, "utf8"), service.w25InitScriptBody());
 });
 
 /* The generated script must resolve $APPBASE, not carry it as a literal.

@@ -2601,7 +2601,10 @@ function w25ExpectedInitMd5() {
  *  branches therefore stand the TV down and report STOOD_DOWN, so the outcome is
  *  "reverted to stock", not "half-way". */
 function w25Enable(force) {
-  var b64init = Buffer.from(w25InitScriptBody(), "utf8").toString("base64");
+  // Gzipped: the luna hub drops any message over 128 KiB, and the reply is just
+  // "Message not processed". With the boot script as plain base64 this whole
+  // script crossed that at 2.7.45 (133,818 bytes) and Enable failed on every TV.
+  var b64init = require("zlib").gzipSync(Buffer.from(w25InitScriptBody(), "utf8")).toString("base64");
   var b64cap  = Buffer.from(W25_CAP_AWK, "utf8").toString("base64");
   var b64gc   = Buffer.from(W25_GC_AWK, "utf8").toString("base64");
   return [
@@ -2683,8 +2686,8 @@ function w25Enable(force) {
     '  else awk -f /tmp/dts25_gc.awk "' + W25_GC_LIVE + '" > "' + W25_GC_OVR + '" && log "generated gstcool override (avdec_truehd/mlp=310)" || log "WARN: gstcool override failed"; fi',
     'else log "WARN: ' + W25_GC_LIVE + ' not present"; fi',
     'rm -f /tmp/dts25_cap.awk /tmp/dts25_gc.awk 2>/dev/null',
-    // 4. Write the canonical boot init script (base64 heredoc) + hook.
-    'base64 -d > "' + W25_INIT_SCRIPT + '" <<\'B64EOF\'',
+    // 4. Write the canonical boot init script (gzip + base64 heredoc) + hook.
+    'base64 -d <<\'B64EOF\' | gzip -dc > "' + W25_INIT_SCRIPT + '"',
     b64init,
     "B64EOF",
     'chmod 0755 "' + W25_INIT_SCRIPT + '" && log "wrote ' + W25_INIT_SCRIPT + '"',
