@@ -761,9 +761,11 @@
 
   var KEY = { LEFT: 37, UP: 38, RIGHT: 39, DOWN: 40, ENTER: 13, BACK: 461 };
 
+  // A hidden element has no client rects; its rect would sit at 0,0 and pull
+  // the D-pad there.
   function focusables() {
     return Array.prototype.slice.call(document.querySelectorAll("[data-nav]"))
-      .filter(function (el) { return !el.disabled; });
+      .filter(function (el) { return !el.disabled && el.getClientRects().length > 0; });
   }
 
   function currentFocusIndex(list) {
@@ -779,7 +781,17 @@
     if (!el) return;
     el.classList.add("is-focused");
     if (typeof el.focus === "function") { try { el.focus(); } catch (e) {} }
+    // Show the card's text and status with its buttons, not just the button.
+    var card = el.closest ? el.closest(".card") : null;
+    if (card) card.scrollIntoView({ block: "nearest" });
     el.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
+
+  // Nothing focusable that way (e.g. the status card at the top has no
+  // buttons): scroll instead, so the D-pad alone reaches the whole page.
+  function scrollPage(dir) {
+    var grid = document.querySelector(".grid");
+    if (grid) grid.scrollTop += (dir === KEY.UP ? -1 : 1) * Math.round(grid.clientHeight * 0.6);
   }
 
   /* Geometry-based nearest-neighbour navigation. */
@@ -812,6 +824,7 @@
       if (score < bestScore) { bestScore = score; best = el; }
     });
     if (best) setFocus(best);
+    else if (dir === KEY.UP || dir === KEY.DOWN) scrollPage(dir);
   }
 
   function activate(el) { if (el) el.click(); }
@@ -848,6 +861,13 @@
     $("btnDisable").addEventListener("click", doDisable);
     $("btnUninstall").addEventListener("click", doUninstall);
     $("btnRefresh").addEventListener("click", refreshStatus);
+    $("btnDetails").addEventListener("click", function () {
+      var show = this.getAttribute("aria-expanded") !== "true";
+      Array.prototype.slice.call(document.querySelectorAll(".details"))
+        .forEach(function (el) { el.hidden = !show; });
+      this.setAttribute("aria-expanded", show ? "true" : "false");
+      this.textContent = show ? "Hide details" : "Show details";
+    });
     $("btnForce").addEventListener("click", doForceEnable);
     // Navigation away from the armed button (without a re-detect) also
     // disarms it -- a misclick elsewhere must never leave it primed.

@@ -19,6 +19,8 @@
 }
 
 * { box-sizing: border-box; }
+/* .status and friends set display, which would otherwise beat the attribute. */
+[hidden] { display: none !important; }
 
 html, body {
   margin: 0;

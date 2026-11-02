@@ -18,35 +18,34 @@
 
     <main class="grid">
 
-      <!-- ===== Detected target / status panel ===== -->
+      <!-- ===== This TV ===== -->
       <section class="card card--wide" aria-labelledby="h-status">
-        <h2 id="h-status">Detected target</h2>
-        <p class="muted">
-          The app probes this TV at runtime and picks the matching DTS-restore
-          mechanism. Nothing is applied until you press <strong>Enable</strong>.
-        </p>
+        <h2 id="h-status">This TV</h2>
         <div id="permBlock" class="muted note-warn" hidden>
           <p>
-            The TV refused this app's call to the Homebrew Channel. Right after a restart
-            that can happen once, so try again first. If it keeps happening (webOS 11, after
-            updating from 2.7.42 or older), run this once over SSH or telnet, then press
-            <strong>Enable</strong>:
+            The TV blocked this app's call to the Homebrew Channel. Try again once. If it
+            keeps happening, run this over SSH, then press <strong>Enable</strong>:
           </p>
           <pre><code>F=/var/luna-service2-dev/client-permissions.d/io.github.josippapez.dtsenabler.service.service.json; grep -q hbchannel.service.group $F || sed -i 's/"\]}$/","org.webosbrew.hbchannel.service.group"]}/' $F; ls-control scan-services</code></pre>
         </div>
         <dl class="status">
+          <dt>Model</dt><dd id="stModel">&mdash;</dd>
+          <dt>Firmware</dt><dd id="stFirmware">&mdash;</dd>
+          <dt>Patch active</dt><dd id="stActive">&mdash;</dd>
+          <dt>Verified on hardware</dt><dd id="stVerified">&mdash;</dd>
+        </dl>
+        <div class="row">
+          <button id="btnDetails" class="btn focusable" data-nav aria-expanded="false">Show details</button>
+        </div>
+        <dl class="status details" hidden>
           <dt>Profile</dt><dd id="stProfile">&mdash;</dd>
           <dt>Mechanism</dt><dd id="stMech">&mdash;</dd>
-          <dt>Model</dt><dd id="stModel">&mdash;</dd>
           <dt>OTA / hardware ID</dt><dd id="stOta">&mdash;</dd>
-          <dt>Firmware</dt><dd id="stFirmware">&mdash;</dd>
           <dt>webOS</dt><dd id="stWebos">&mdash;</dd>
           <dt>GStreamer</dt><dd id="stGst">&mdash;</dd>
           <dt>Float ABI</dt><dd id="stAbi">&mdash;</dd>
           <dt>DTS disabled by</dt><dd id="stDisable">&mdash;</dd>
-          <dt>Patch active</dt><dd id="stActive">&mdash;</dd>
           <dt>Extra containers</dt><dd id="stContainers">&mdash;</dd>
-          <dt>Verified on hardware</dt><dd id="stVerified">&mdash;</dd>
         </dl>
       </section>
 
@@ -54,42 +53,35 @@
       <section class="card card--wide" aria-labelledby="h-actions">
         <h2 id="h-actions">Actions</h2>
         <p class="muted">
-          <strong>Enable</strong> stages the payload and installs the boot hook for the
-          detected profile (applied now, no reboot). <strong>Disable</strong> removes the
-          boot hook and unmounts the overrides; no stock file is modified in place, and the
-          one persistent write &mdash; the GStreamer plugin registry &mdash; is reverted by
-          regenerating a clean stock one. A bind that is busy is detached lazily and clears
-          fully on reboot. <strong>Uninstall</strong> also removes all on-device state.
+          <strong>Enable</strong> turns DTS and TrueHD on, and it stays on after a restart.
+          <strong>Disable</strong> turns it off. <strong>Uninstall</strong> also removes
+          everything the app put on the TV.
         </p>
         <div class="row">
           <button id="btnEnable"    class="btn btn--primary focusable" data-nav disabled>Enable</button>
           <button id="btnDisable"   class="btn btn--danger  focusable" data-nav disabled>Disable</button>
           <button id="btnUninstall" class="btn btn--danger  focusable" data-nav disabled>Uninstall</button>
-          <button id="btnRefresh"   class="btn             focusable" data-nav>Refresh / re-detect</button>
+          <button id="btnRefresh"   class="btn             focusable" data-nav>Refresh</button>
         </div>
         <p id="hookStaleNote" class="muted note-warn" hidden>
-          The boot script installed on this TV is older than the one this app version ships,
-          so a reboot would still apply the older compatibility gate.
-          Press <strong>Enable</strong> to refresh it. Nothing is rewritten until you do.
+          The startup script on this TV is older than this app's. Press
+          <strong>Enable</strong> to update it.
         </p>
         <p id="payloadStaleNote" class="muted note-warn" hidden>
           <span id="payloadStaleReason">&mdash;</span>
-          Nothing is re-staged until you press <strong>Enable</strong>.
+          Press <strong>Enable</strong> to update it.
         </p>
         <div id="verdictBlock" class="muted note-warn" hidden>
           <p id="verdictReason">&mdash;</p>
           <pre><code id="verdictReport">&mdash;</code></pre>
           <p>
-            Report this at
-            <code>https://github.com/josippapez/dts_restore_plus/issues</code>
-            to get your set added.
+            Report this at <code>github.com/josippapez/dts_restore_plus/issues</code>
+            to get your TV added.
           </p>
           <p id="forceWarning" hidden>
-            &ldquo;Try anyway&rdquo; replaces system-wide media plugins on a TV this payload
-            has never been verified against. The experimental C2/G2 profile supplies
-            DTS in MP4 only (not TS/M2TS or webOS-25 TrueHD/gain controls). If
-            playback misbehaves afterward, use <strong>Disable</strong> &mdash; a reboot
-            does <em>not</em> clear it, because a boot hook re-applies it.
+            &ldquo;Try anyway&rdquo; replaces system media plugins on a TV nobody has tested
+            yet. The C2/G2 profile only adds DTS in MP4. If playback breaks, press
+            <strong>Disable</strong>. A restart won't undo it.
           </p>
           <button id="btnForce" class="btn btn--danger focusable" data-nav hidden disabled>Try anyway (experimental)</button>
         </div>
@@ -101,14 +93,10 @@
            On C3/C4-era sets LG's native decoder handles loudness itself, so these
            controls could never do anything. See docs/MULTI-MODEL.md section 2.6. -->
       <section class="card card--wide" id="cardGain" aria-labelledby="h-gain">
-        <h2 id="h-gain">Make-up gain &amp; dynamic range</h2>
+        <h2 id="h-gain">Volume and dynamic range</h2>
         <p class="muted">
-          The custom DTS and TrueHD decoders play quieter than LG's native codecs, and
-          neither applies any dynamic range compression by default (unlike LG's own
-          Dolby/DTS decoders). Tune a per-codec make-up gain (dB), a DRC preset
-          (Off/Light/Medium/Night) and a dialogue (center-channel) boost here &mdash; no
-          SSH or rebuild needed. Values are written on-device and take effect on the
-          <strong>next playback</strong> (decoder init), not the current one.
+          DTS and TrueHD play quieter than Dolby. Set a volume boost, compression and
+          dialogue boost for each. Changes apply from the next video.
         </p>
         <div class="codec-group">
           <span class="codec-group__title">DTS</span>
@@ -121,12 +109,12 @@
                     aria-label="Increase DTS gain">+</button>
           </div>
           <div class="stepper" role="group" aria-labelledby="lblPresetDts">
-            <span class="stepper__label" id="lblPresetDts">DRC preset</span>
+            <span class="stepper__label" id="lblPresetDts">Compression</span>
             <button class="btn btn--step focusable" data-nav data-preset="dts" data-pdir="-1"
-                    aria-label="Previous DTS DRC preset">&minus;</button>
+                    aria-label="Previous DTS compression preset">&minus;</button>
             <output class="stepper__val" id="presetDts" for="lblPresetDts" aria-live="polite">Off</output>
             <button class="btn btn--step focusable" data-nav data-preset="dts" data-pdir="1"
-                    aria-label="Next DTS DRC preset">+</button>
+                    aria-label="Next DTS compression preset">+</button>
           </div>
           <div class="stepper" role="group" aria-labelledby="lblCenterDts">
             <span class="stepper__label" id="lblCenterDts">Dialogue boost</span>
@@ -148,12 +136,12 @@
                     aria-label="Increase TrueHD gain">+</button>
           </div>
           <div class="stepper" role="group" aria-labelledby="lblPresetThd">
-            <span class="stepper__label" id="lblPresetThd">DRC preset</span>
+            <span class="stepper__label" id="lblPresetThd">Compression</span>
             <button class="btn btn--step focusable" data-nav data-preset="truehd" data-pdir="-1"
-                    aria-label="Previous TrueHD DRC preset">&minus;</button>
+                    aria-label="Previous TrueHD compression preset">&minus;</button>
             <output class="stepper__val" id="presetTruehd" for="lblPresetThd" aria-live="polite">Off</output>
             <button class="btn btn--step focusable" data-nav data-preset="truehd" data-pdir="1"
-                    aria-label="Next TrueHD DRC preset">+</button>
+                    aria-label="Next TrueHD compression preset">+</button>
           </div>
           <div class="stepper" role="group" aria-labelledby="lblCenterThd">
             <span class="stepper__label" id="lblCenterThd">Dialogue boost</span>
@@ -169,33 +157,24 @@
         </div>
 
         <!-- A/B compare: same clip, DRC off vs the saved settings -->
-        <div class="ab" role="group" aria-labelledby="h-ab">
+        <div class="ab details" role="group" aria-labelledby="h-ab" hidden>
           <h3 id="h-ab" class="ab__title">A/B compare</h3>
           <p class="muted">
-            Renders the bundled clip twice on this TV &mdash; <strong>A</strong> with DRC
-            off and 0&nbsp;dB gain/dialogue, <strong>B</strong> with your
-            <strong>saved</strong> settings &mdash; then lets you play each, so you hear the
-            difference on identical content. It drives the decoder directly, so your saved
-            settings are never touched (the hashes below prove it). The bundled samples are
-            <strong>DTS</strong>, so this exercises the DTS path only, not TrueHD.
+            Plays the bundled DTS clip with compression off (<strong>A</strong>) and with
+            your saved settings (<strong>B</strong>), so you can hear the difference.
           </p>
           <div class="row">
             <button id="btnAb"  class="btn btn--primary focusable" data-nav disabled>Render A/B</button>
-            <button id="btnAbA" class="btn focusable" data-nav disabled>Play&nbsp;A (DRC off)</button>
+            <button id="btnAbA" class="btn focusable" data-nav disabled>Play&nbsp;A (off)</button>
             <button id="btnAbB" class="btn focusable" data-nav disabled>Play&nbsp;B (saved)</button>
           </div>
           <dl class="status">
-            <dt>A &mdash; DRC off, 0 dB</dt><dd id="abA">&mdash;</dd>
+            <dt>A &mdash; off, 0 dB</dt><dd id="abA">&mdash;</dd>
             <dt>B &mdash; saved settings</dt><dd id="abB">&mdash;</dd>
             <dt>Difference (B &minus; A)</dt><dd id="abDelta">&mdash;</dd>
             <dt>Your saved config</dt><dd id="abConf">&mdash;</dd>
           </dl>
           <audio id="abPlayer" class="testvideo" controls preload="auto" hidden></audio>
-          <p class="muted note-warn">
-            Rendered clips are 16-bit stereo so the in-app player has the best chance with
-            them; both variants use the same downmix, so the difference is unaffected. If the
-            player refuses them, the measured numbers above are still valid.
-          </p>
         </div>
       </section>
 
@@ -205,11 +184,8 @@
       <section class="card card--wide" id="cardTest" aria-labelledby="h-test">
         <h2 id="h-test">Test the patch</h2>
         <p class="muted">
-          <strong>Run self-test</strong> decodes bundled DTS samples through the TV's
-          media pipeline and reports PASS/FAIL. C2/G2 tests MP4 through
-          <code>avdec_dca</code> only; webOS 25 additionally tests TS/M2TS and TrueHD &mdash; an
-          objective check that the patch works, no speakers needed. <strong>Play</strong>
-          plays a sample so you can confirm by ear.
+          <strong>Run self-test</strong> checks that DTS and TrueHD decode on this TV, no
+          speakers needed. The play buttons play a short sample.
         </p>
         <div class="row">
           <button id="btnTest" class="btn btn--primary focusable" data-nav disabled>Run self-test</button>
@@ -219,41 +195,25 @@
           <button id="btnPlayTrueHd" class="btn focusable" data-nav disabled>Play&nbsp;TrueHD</button>
         </div>
         <dl class="status">
-          <dt>mp4 (qtdemux)</dt><dd id="tRmp4">&mdash;</dd>
-          <dt>ts (tsdemux)</dt><dd id="tRts">&mdash;</dd>
-          <dt>m2ts (tsdemux)</dt><dd id="tRm2ts">&mdash;</dd>
-          <dt>TrueHD mkv (avdec_truehd)</dt><dd id="tRtruehd">&mdash;</dd>
+          <dt>DTS in MP4</dt><dd id="tRmp4">&mdash;</dd>
+          <dt>DTS in TS</dt><dd id="tRts">&mdash;</dd>
+          <dt>DTS in M2TS</dt><dd id="tRm2ts">&mdash;</dd>
+          <dt>TrueHD in MKV</dt><dd id="tRtruehd">&mdash;</dd>
         </dl>
         <video id="testVideo" class="testvideo" controls playsinline hidden></video>
-        <p class="muted note-warn">
-          Play-by-ear runs the sample in-app; <code>.mp4</code> is the most reliable there.
-          If <code>.ts</code>/<code>.m2ts</code> won't play in-app, use the full files from a
-          USB stick in the Media Player &mdash; the self-test already covers all three.
+        <p class="muted">
+          If a sample won't play here, try a file from USB in the Media Player.
         </p>
       </section>
 
       <section class="card" id="cardAppDts" hidden>
-        <h2>Show DTS tracks in apps</h2>
+        <h2>Show DTS tracks in apps (experimental)</h2>
         <p class="muted">
-          Some apps hide DTS tracks before they ever reach the TV's decoder &mdash;
-          Stremio and Kodi both decide from a capability string this TV reports.
-          Turning this on changes that string so the tracks are offered.
+          Makes Stremio and Kodi offer DTS tracks. Takes effect after a restart.
         </p>
         <p class="muted note-warn">
-          Takes effect after you <strong>restart the TV</strong>. It also changes what
-          the TV tells a connected receiver it accepts on its own inputs, which is why
-          it is separate from Enable. Turn it off to put everything back.
-        </p>
-        <p class="muted note-warn">
-          <strong>Known issue.</strong> Applying this restarts a TV service that
-          audio and the on-screen menus depend on, and anything that service was in the
-          middle of can be left broken until the next restart: playback silent on new
-          streams, volume buttons not responding, the volume bar not appearing, or on
-          some models the Home and Mute buttons. To avoid it the TV now waits at boot
-          for the audio to be idle before applying this, and <strong>skips it for that
-          boot</strong> if the wait runs out, so you may occasionally start up without
-          DTS tracks. A notification tells you when that happens. DTS playback itself is
-          never affected.
+          Sometimes it leaves the volume or Home button unresponsive until the next
+          restart. It also changes which formats the TV tells a receiver it accepts.
         </p>
         <div class="row">
           <button id="btnAppDtsOn"  class="btn focusable" data-nav disabled>Turn on</button>
@@ -262,29 +222,21 @@
         </div>
         <dl class="status">
           <dt>Tracks shown in apps</dt><dd id="sAppDts">&mdash;</dd>
-          <dt>Reported as</dt><dd id="sEdidType">&mdash;</dd>
           <dt>Last attempt</dt><dd id="sAppDtsLast">&mdash;</dd>
+        </dl>
+        <dl class="status details" hidden>
+          <dt>Reported as</dt><dd id="sEdidType">&mdash;</dd>
         </dl>
       </section>
 
       <section class="card" id="cardPassthrough" hidden>
         <h2>Send DTS to a receiver (experimental)</h2>
         <p class="muted">
-          The TV sends decoded DTS to an ARC/eARC receiver or soundbar as stereo only.
-          Turning this on sends the DTS stream itself instead, so a receiver that
-          decodes DTS plays it in 5.1.
+          Sends DTS to a receiver or soundbar as 5.1 (the DTS core, not DTS-HD MA or
+          DTS:X). Needs HDMI ARC/eARC with Digital Sound Out on Pass Through or Auto.
         </p>
         <p class="muted note-warn">
-          Only with a receiver or soundbar that decodes DTS, connected over HDMI ARC/eARC
-          with Digital Sound Out on <strong>Pass Through</strong> or <strong>Auto</strong>.
-          It sends the DTS core (DTS 5.1, not DTS-HD MA or DTS:X), and only works for
-          videos: an audio-only file can come out as loud noise. On the TV speakers or
-          any other output, DTS is decoded as usual.
-        </p>
-        <p class="muted">
-          Have a receiver or soundbar on eARC? Help test lossless DTS-HD MA, DTS:X and
-          TrueHD to a receiver:
-          <code>github.com/josippapez/dts_restore_plus/discussions/17</code>
+          Videos only. An audio-only DTS file can come out as loud noise.
         </p>
         <div class="row">
           <button id="btnPtOn"  class="btn focusable" data-nav disabled>Turn on</button>
@@ -294,13 +246,16 @@
           <dt>Passthrough</dt><dd id="sPt">&mdash;</dd>
           <dt>Sound output</dt><dd id="sPtOut">&mdash;</dd>
         </dl>
+        <p class="muted">
+          Have a receiver? Help test lossless DTS-HD MA, DTS:X and TrueHD:
+          <code>github.com/josippapez/dts_restore_plus/discussions/17</code>
+        </p>
       </section>
-
 
     </main>
 
     <footer class="footbar muted">
-      <span>Delegates root work to the Homebrew Channel exec service. Requires a rooted TV with the Homebrew Channel installed.</span>
+      <span>Needs a rooted TV with the Homebrew Channel.</span>
     </footer>
   </div>
 
