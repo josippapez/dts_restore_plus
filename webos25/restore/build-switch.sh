@@ -46,6 +46,15 @@ docker run --rm -i --platform linux/arm64 \
     dpkg --add-architecture armel
     apt-get update -qq >/dev/null 2>&1
 
+    # debian:12-slim (12.15) ships arm64 liblzma5 and libpcre2-8-0 from
+    # bookworm-security, newer than the armel builds in bookworm main, and the
+    # armel dev packages need the same version on both architectures. Step the
+    # arm64 copies back to main's version.
+    for p in liblzma5 libpcre2-8-0; do
+      v=$(apt-cache madison "$p:armel" | awk 'NR==1{print $3}')
+      apt-get install -y -qq --allow-downgrades "$p=$v" >/dev/null 2>&1
+    done
+
     apt-get install -y -qq --no-install-recommends \
       gcc-arm-linux-gnueabi pkg-config file binutils >/dev/null 2>&1
 

@@ -97,7 +97,7 @@ EXPECT_GST=1.24
 #   27 shadows libgstmatroska.so too (optional demuxer, Dolby Vision profile 7):
 #      bound in APPLY 2c, unbound by w25_drop_binds, fingerprinted in stock.fp and
 #      drift-checked like the /etc keys, so an older stock.fp without it is not drift.
-W25_GATE_VERSION=35
+W25_GATE_VERSION=36
 FP=/var/lib/webosbrew/dts25/stock.fp
 # Where the installed copy of THIS script lives, and the boot hook that symlinks
 # to it. Named here, in the shared block, so the read-only probe can fingerprint
@@ -624,20 +624,23 @@ fi
 # /run, not /tmp: only root can write there, so nothing else can plant a
 # symlink for these root writes or a file that claims a receiver is attached.
 PT_FLAG=/var/lib/webosbrew/dts25/passthrough
+# adecswitch reads the same file for the multichannel-PCM opt-in.
+MC_FLAG=/var/lib/webosbrew/dts25/multich
+w25_pt_wanted() { [ -f "$PT_FLAG" ] || [ -f "$MC_FLAG" ]; }
 PT_RUN=/run/dts25
 PT_OUT=$PT_RUN/sound-output
 PT_PID=$PT_RUN/watcher.pid
 w25_pt_watch() {
   read -r WPID _ < /proc/self/stat
   echo "$WPID" > "$PT_PID"
-  while [ -f "$PT_FLAG" ]; do
+  while w25_pt_wanted; do
     luna-send -i luna://com.webos.settingsservice/getSystemSettings \
       '{"category":"sound","keys":["soundOutput","soundOutputDigital"],"subscribe":true}' \
       </dev/null 2>/dev/null | {
       out=
       digital=
       while read -r line; do
-        [ -f "$PT_FLAG" ] || break
+        w25_pt_wanted || break
         v=$(echo "$line" | sed -n 's/.*"soundOutput" *: *"\([^"]*\)".*/\1/p')
         [ -n "$v" ] && out=$v
         v=$(echo "$line" | sed -n 's/.*"soundOutputDigital" *: *"\([^"]*\)".*/\1/p')
@@ -653,7 +656,7 @@ w25_pt_watch() {
   rm -f "$PT_OUT" "$PT_PID"
 }
 w25_pt_start() {
-  [ -f "$PT_FLAG" ] || return 0
+  w25_pt_wanted || return 0
   mkdir -p "$PT_RUN"
   P=$(cat "$PT_PID" 2>/dev/null)
   [ -n "$P" ] && [ -d "/proc/$P" ] && return 0

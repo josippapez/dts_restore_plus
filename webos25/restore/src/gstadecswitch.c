@@ -38,6 +38,9 @@
 
 #include "gstadecswitch.h"
 
+#include <stdio.h>
+#include <string.h>
+
 GST_DEBUG_CATEGORY_STATIC (adecswitch_debug);
 #define GST_CAT_DEFAULT adecswitch_debug
 
@@ -53,6 +56,17 @@ GST_DEBUG_CATEGORY_STATIC (adecswitch_debug);
 #define ADECSWITCH_MAX_SEEK_HOLD_US (500 * G_TIME_SPAN_MILLISECOND)
 
 #define DECPROXY_FACTORY "decproxy"
+
+/* Multichannel PCM to a receiver. LG sends non-Dolby PCM to an ARC/eARC
+ * receiver as a 2-channel 16-bit copy, so our decoded 5.1/7.1 arrives as
+ * stereo. LG's own sink property pcm-multi-ch (set by LG's DirectMediaPlayer
+ * for Netflix multichannel PCM) skips that copy: measured on a C5, lgao then
+ * logs "pcm_bypass or pcm_multi_ch" with acmod 7 and builds no BYPASS stream.
+ * Opt-in by the marker; only while the boot hook's watcher reports
+ * external_arc, so TV speakers keep LG's normal path. */
+#define MULTICH_MARKER "/var/lib/webosbrew/dts25/multich"
+#define SOUND_OUTPUT_FILE "/run/dts25/sound-output"
+#define LG_AUDIOSINK_FACTORY "audiosink"
 
 enum
 {
@@ -184,6 +198,128 @@ gst_adecswitch_is_decproxy (GstElement * element)
 
   return factory != NULL
       && !g_strcmp0 (GST_OBJECT_NAME (factory), DECPROXY_FACTORY);
+}
+
+/* TRUE when the boot hook's watcher, still alive, last saw the TV sending
+ * sound to an ARC/eARC receiver ("<pid> <soundOutput> <soundOutputDigital>",
+ * the same file dtsdec's passthrough reads). A missing file is FALSE. */
+static gboolean
+gst_adecswitch_receiver_attached (void)
+{
+  gchar *text = NULL, out[64] = "", proc[32];
+  gint pid = 0;
+  gboolean ok;
+
+  if (!g_file_get_contents (SOUND_OUTPUT_FILE, &text, NULL, NULL))
+    return FALSE;
+  ok = sscanf (text, "%d %63s", &pid, out) == 2;
+  g_free (text);
+  if (!ok || pid <= 0)
+    return FALSE;
+  g_snprintf (proc, sizeof (proc), "/proc/%d", pid);
+  return g_file_test (proc, G_FILE_TEST_IS_DIR)
+      && strcmp (out, "external_arc") == 0;
+}
+
+/* LG's audio sink in the pipeline we are in, or NULL unless there is exactly
+ * one. Returns a ref. */
+static GstElement *
+gst_adecswitch_find_audiosink (GstAdecSwitch * self)
+{
+  GstObject *top = gst_object_ref (GST_OBJECT_CAST (self)), *parent;
+  GstElement *found = NULL;
+  GValue item = G_VALUE_INIT;
+  GstIterator *it;
+  gboolean done = FALSE;
+  guint count = 0;
+
+  while ((parent = gst_object_get_parent (top)) != NULL) {
+    gst_object_unref (top);
+    top = parent;
+  }
+  if (!GST_IS_BIN (top)) {
+    gst_object_unref (top);
+    return NULL;
+  }
+
+  it = gst_bin_iterate_recurse (GST_BIN_CAST (top));
+  while (!done) {
+    switch (gst_iterator_next (it, &item)) {
+      case GST_ITERATOR_OK:{
+        GstElement *e = g_value_get_object (&item);
+        GstElementFactory *f = gst_element_get_factory (e);
+
+        if (f != NULL && !g_strcmp0 (GST_OBJECT_NAME (f), LG_AUDIOSINK_FACTORY)
+            && g_object_class_find_property (G_OBJECT_GET_CLASS (e),
+                "pcm-multi-ch")) {
+          if (count++ == 0)
+            found = gst_object_ref (e);
+        }
+        g_value_reset (&item);
+        break;
+      }
+      case GST_ITERATOR_RESYNC:
+        gst_iterator_resync (it);
+        gst_clear_object (&found);
+        count = 0;
+        break;
+      default:
+        done = TRUE;
+        break;
+    }
+  }
+  g_value_unset (&item);
+  gst_iterator_free (it);
+  gst_object_unref (top);
+
+  if (count != 1) {
+    GST_WARNING_OBJECT (self, "found %u LG audio sinks, need exactly one",
+        count);
+    gst_clear_object (&found);
+  }
+  return found;
+}
+
+/* Downstream CAPS on the src ghost pad, before they reach LG's sink, which
+ * builds its renderer from them. Sets pcm-multi-ch for multichannel PCM from
+ * our software decoders and clears it again for anything else (decproxy's
+ * output, dtsdec's 2-channel IEC 61937 passthrough). */
+static GstPadProbeReturn
+gst_adecswitch_src_caps_probe (GstPad * pad, GstPadProbeInfo * info,
+    gpointer user_data)
+{
+  GstAdecSwitch *self = GST_ADECSWITCH (user_data);
+  GstEvent *event = GST_PAD_PROBE_INFO_EVENT (info);
+  const GstStructure *s;
+  GstCaps *caps;
+  gint channels = 0;
+  gboolean want;
+
+  if (GST_EVENT_TYPE (event) != GST_EVENT_CAPS)
+    return GST_PAD_PROBE_OK;
+
+  gst_event_parse_caps (event, &caps);
+  s = gst_caps_get_structure (caps, 0);
+  want = gst_structure_has_name (s, "audio/x-raw")
+      && gst_structure_get_int (s, "channels", &channels) && channels >= 3
+      && self->decoder != NULL && !gst_adecswitch_is_decproxy (self->decoder)
+      && g_file_test (MULTICH_MARKER, G_FILE_TEST_EXISTS)
+      && gst_adecswitch_receiver_attached ();
+
+  if (want == self->multich_on)
+    return GST_PAD_PROBE_OK;
+  if (self->multich_sink == NULL)
+    self->multich_sink = gst_adecswitch_find_audiosink (self);
+  if (self->multich_sink == NULL)
+    return GST_PAD_PROBE_OK;
+
+  g_object_set (self->multich_sink, "pcm-multi-ch", want, NULL);
+  self->multich_on = want;
+  GST_INFO_OBJECT (self, "pcm-multi-ch %s on %s for %d channels from %s",
+      want ? "on" : "off", GST_OBJECT_NAME (self->multich_sink), channels,
+      self->decoder_factory ? self->decoder_factory : "(none)");
+
+  return GST_PAD_PROBE_OK;
 }
 
 /* CAPS and ACCEPT_CAPS are answered from the static template, NEVER from the
@@ -586,6 +722,12 @@ gst_adecswitch_dispose (GObject * object)
   self->decoder_factory = NULL;
   gst_event_replace (&self->resource_event, NULL);
 
+  /* decodebin3 can replace us with another decoder while the sink stays. */
+  if (self->multich_sink != NULL && self->multich_on)
+    g_object_set (self->multich_sink, "pcm-multi-ch", FALSE, NULL);
+  self->multich_on = FALSE;
+  gst_clear_object (&self->multich_sink);
+
   G_OBJECT_CLASS (gst_adecswitch_parent_class)->dispose (object);
 }
 
@@ -654,6 +796,8 @@ gst_adecswitch_init (GstAdecSwitch * self)
   gst_object_unref (tmpl);
   gst_pad_add_probe (self->srcpad, GST_PAD_PROBE_TYPE_EVENT_UPSTREAM,
       gst_adecswitch_src_event_probe, self, NULL);
+  gst_pad_add_probe (self->srcpad, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM,
+      gst_adecswitch_src_caps_probe, self, NULL);
   gst_element_add_pad (GST_ELEMENT_CAST (self), self->srcpad);
 }
 

@@ -52,6 +52,12 @@ struct _GstAdecSwitch
    * Written and read on the event/streaming threads under `lock`. */
   GstEvent *resource_event;
 
+  /* Multichannel PCM to a receiver (opt-in): LG's audio sink in this pipeline,
+   * found on first use, and whether we last set its pcm-multi-ch to TRUE.
+   * Only touched from the streaming thread (src CAPS probe) and dispose. */
+  GstElement *multich_sink;
+  gboolean multich_on;
+
   /* Properties */
   guint grace_ms;               /* hw-teardown-grace-ms */
   gboolean post_changing_decoder;
