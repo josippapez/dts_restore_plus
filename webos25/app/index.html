@@ -252,6 +252,25 @@
         </p>
       </section>
 
+      <section class="card" id="cardMultich" hidden>
+        <h2>5.1 / 7.1 to a receiver (experimental)</h2>
+        <p class="muted">
+          The TV sends decoded DTS-HD MA and TrueHD to an ARC/eARC receiver as stereo.
+          Turning this on asks it to send the decoded 5.1 / 7.1 channels as PCM instead.
+        </p>
+        <p class="muted note-warn">
+          Only over HDMI ARC/eARC; no Atmos or DTS:X objects, just the channels. Runs a small
+          watcher in the background while on. On the TV speakers nothing changes.
+        </p>
+        <div class="row">
+          <button id="btnMcOn"  class="btn focusable" data-nav disabled>Turn on</button>
+          <button id="btnMcOff" class="btn focusable" data-nav disabled>Turn off</button>
+        </div>
+        <dl class="status">
+          <dt>Multichannel</dt><dd id="sMc">&mdash;</dd>
+        </dl>
+      </section>
+
     </main>
 
     <footer class="footbar muted">

@@ -351,7 +351,7 @@ var W25_COMPAT_SH = [
   "#   27 shadows libgstmatroska.so too (optional demuxer, Dolby Vision profile 7):",
   "#      bound in APPLY 2c, unbound by w25_drop_binds, fingerprinted in stock.fp and",
   "#      drift-checked like the /etc keys, so an older stock.fp without it is not drift.",
-  "W25_GATE_VERSION=36",
+  "W25_GATE_VERSION=37",
   "FP=/var/lib/webosbrew/dts25/stock.fp",
   "# Where the installed copy of THIS script lives, and the boot hook that symlinks",
   "# to it. Named here, in the shared block, so the read-only probe can fingerprint",
@@ -912,9 +912,82 @@ var W25_INIT_MAIN = [
   "  done",
   "  rm -f \"$PT_OUT\" \"$PT_PID\"",
   "}",
+  "# --- Multichannel PCM relabel (opt-in: the multich file, see MC_FLAG above).",
+  "# pcm-multi-ch (adecswitch) alone still leaves the receiver at 2 channels: LG's",
+  "# own audio-output call (audio -> audiooutput setQualityAttribute,",
+  "# setAudioInputInfo) names the decoder's codec (\"true-hd\", \"dts\"), and the",
+  "# output follows that label. This watcher sees LG's call and re-sends it with",
+  "# codec \"pcm\", channel kept. Only for a pipeline whose adecswitch wrote",
+  "# $PT_RUN/mc-<pipelineId> (\"<pid> <channels>\", pid alive): with the DTS core",
+  "# passthrough dtsdec sends a 2-channel IEC bitstream and its \"dts\" label must",
+  "# stay. Our own re-send has sender com.webos.lunasend-<pid>, so the sender",
+  "# filter stops a loop. adecswitch writes the marker before LG's call arrives;",
+  "# the poll only covers the other order.",
+  "MC_PID=$PT_RUN/mc-watcher.pid",
+  "MC_AUDIOOUT=luna://com.webos.service.audiooutput/quality/setQualityAttribute",
+  "w25_mc_relabel() {",
+  "  for k in '\"transport\":\"TX\"' '\"sender\":\"com.webos.service.audio\"' \\",
+  "    '\"method\":\"setQualityAttribute\"' '\"requestType\":\"setAudioInputInfo\"' \\",
+  "    '\"reset\":false' '\"activeState\":true'; do",
+  "    case $1 in *\"$k\"*) ;; *) return 0 ;; esac",
+  "  done",
+  "  codec=$(echo \"$1\" | sed -n 's/.*\"codec\":\"\\([^\"]*\\)\".*/\\1/p')",
+  "  case $codec in ''|pcm) return 0 ;; esac",
+  "  id=$(echo \"$1\" | sed -n 's/.*\"pipelineId\":\"\\([^\"]*\\)\".*/\\1/p')",
+  "  case $id in ''|*[!A-Za-z0-9_.-]*) return 0 ;; esac",
+  "  [ -f \"$MC_FLAG\" ] || return 0",
+  "  [ -f \"$PT_OUT\" ] && read -r spid sout _ < \"$PT_OUT\"",
+  "  [ \"$sout\" = external_arc ] && [ -n \"$spid\" ] && [ -d \"/proc/$spid\" ] || return 0",
+  "  n=0",
+  "  mpid=",
+  "  while [ \"$n\" -lt 25 ]; do",
+  "    ch=",
+  "    [ -f \"$PT_RUN/mc-$id\" ] && read -r mpid ch _ < \"$PT_RUN/mc-$id\"",
+  "    [ -n \"$mpid\" ] && [ -d \"/proc/$mpid\" ] && break",
+  "    mpid=",
+  "    sleep 0.2",
+  "    n=$((n + 1))",
+  "  done",
+  "  [ -n \"$mpid\" ] || return 0",
+  "  [ -f \"$MC_FLAG\" ] || return 0",
+  "  payload=$(echo \"$1\" | sed -n 's/.*\"payload\":\\({.*}\\)}$/\\1/p')",
+  "  [ -n \"$payload\" ] || return 0",
+  "  payload=$(echo \"$payload\" | sed 's/\"codec\":\"[^\"]*\"/\"codec\":\"pcm\"/')",
+  "  r=$(luna-send -n 1 -w 5000 \"$MC_AUDIOOUT\" \"$payload\" </dev/null 2>/dev/null)",
+  "  rc=$(echo \"$r\" | sed -n 's/.*\"returnValue\" *: *\\([a-z]*\\).*/\\1/p')",
+  "  w25_log \"multich: relabel $id $codec->pcm ch=$ch rc=${rc:-none}\"",
+  "}",
+  "w25_mc_watch() {",
+  "  read -r WPID _ < /proc/self/stat",
+  "  echo \"$WPID\" > \"$MC_PID\"",
+  "  ls-monitor -j -f com.webos.service.audiooutput </dev/null 2>/dev/null | {",
+  "    while read -r line; do",
+  "      [ -f \"$MC_FLAG\" ] || break",
+  "      w25_mc_relabel \"$line\"",
+  "    done",
+  "  }",
+  "  rm -f \"$MC_PID\"",
+  "}",
+  "w25_mc_start() {",
+  "  [ -f \"$MC_FLAG\" ] || return 0",
+  "  P=$(cat \"$MC_PID\" 2>/dev/null)",
+  "  [ -n \"$P\" ] && [ -d \"/proc/$P\" ] && return 0",
+  "  ( w25_mc_watch ) </dev/null >/dev/null 2>&1 &",
+  "}",
+  "w25_mc_stop() {",
+  "  P=$(cat \"$MC_PID\" 2>/dev/null)",
+  "  if [ -n \"$P\" ] && [ -d \"/proc/$P\" ]; then",
+  "    for c in /proc/[0-9]*; do",
+  "      [ \"$(cut -d' ' -f4 \"$c/stat\" 2>/dev/null)\" = \"$P\" ] && kill \"${c#/proc/}\" 2>/dev/null",
+  "    done",
+  "    kill \"$P\" 2>/dev/null",
+  "  fi",
+  "  rm -f \"$MC_PID\"",
+  "}",
   "w25_pt_start() {",
   "  w25_pt_wanted || return 0",
   "  mkdir -p \"$PT_RUN\"",
+  "  w25_mc_start",
   "  P=$(cat \"$PT_PID\" 2>/dev/null)",
   "  [ -n \"$P\" ] && [ -d \"/proc/$P\" ] && return 0",
   "  ( w25_pt_watch ) </dev/null >/dev/null 2>&1 &",
@@ -929,6 +1002,7 @@ var W25_INIT_MAIN = [
   "    kill \"$P\" 2>/dev/null",
   "  fi",
   "  rm -f \"$PT_OUT\" \"$PT_PID\"",
+  "  w25_mc_stop",
   "}",
   "# W25_PT=start|stop: only start or stop the watcher, for the app's toggle, so",
   "# turning passthrough on or off takes effect without a restart.",
@@ -3538,6 +3612,7 @@ function w25StatusProbe() {
     // Report both so the UI can tell "asked for, not applied yet" from "on".
     'echo "APPDTS_FLAG=$([ -f ' + W25_APPDTS_FLAG + ' ] && echo 1 || echo 0)"',
     'echo "PT_FLAG=$([ -f ' + W25_PT_FLAG + ' ] && echo 1 || echo 0)"',
+    'echo "MC_FLAG=$([ -f ' + W25_MC_FLAG + ' ] && echo 1 || echo 0)"',
     // Only while the watcher is alive: dtsdec ignores the file otherwise too.
     'P=$(cat ' + W25_PT_RUN + '/watcher.pid 2>/dev/null); echo "PT_OUT=$([ -n "$P" ] && [ -d /proc/$P ] && cut -d" " -f2- ' + W25_PT_RUN + '/sound-output 2>/dev/null)"',
     // The boot hook's last apply outcome: "<epoch> <on|skipped|failed> <message>".
@@ -3754,6 +3829,8 @@ service.register("status", function (message) {
         // on a forced/unverified TV would contradict the verdict beside it.
         base.passthroughRequested = kv.PT_FLAG === "1";
         base.passthroughOutput = kv.PT_OUT || "";
+        base.multichRequested = kv.MC_FLAG === "1";
+        base.multichToReceiver = base.multichRequested && /^external_arc /.test(kv.PT_OUT || "");
         base.passthroughToReceiver = base.passthroughRequested && w25PtReceiver(kv.PT_OUT);
         base.appDtsRequested = kv.APPDTS_FLAG === "1";
         base.edidType = kv.EDIDTYPE || "";
@@ -4000,9 +4077,14 @@ function w25AppDtsSteps(on) {
  * ===================================================================== */
 var W25_PT_FLAG = W25_DEST + "/passthrough";
 var W25_PT_RUN = "/run/dts25";
+// Multichannel PCM opt-in: adecswitch reads this marker, and the boot script's
+// watcher (the same W25_PT start/stop) relabels LG's audio-output call for it.
+var W25_MC_FLAG = W25_DEST + "/multich";
 
-function w25PassthroughSteps(on) {
-  var lines = ["set -u", 'FLAG=' + W25_PT_FLAG];
+// flag: the marker this toggle owns. Both markers share one watcher, so turning
+// one off must leave it running while the other is still on.
+function w25PassthroughSteps(on, flag) {
+  var lines = ["set -u", 'FLAG=' + (flag || W25_PT_FLAG)];
   // The current boot script carries the W25_PT mode; an older installed one
   // would ignore W25_PT and run a full apply instead.
   lines.push('base64 -d > "' + W25_INIT_SCRIPT + '" <<\'B64EOF\'');
@@ -4019,6 +4101,9 @@ function w25PassthroughSteps(on) {
   } else {
     lines.push('rm -f "$FLAG"');
     lines.push('W25_PT=stop sh "' + W25_INIT_SCRIPT + '" </dev/null >/dev/null 2>&1');
+    lines.push('if [ -f "' + W25_PT_FLAG + '" ] || [ -f "' + W25_MC_FLAG + '" ]; then');
+    lines.push('  setsid sh -c \'W25_PT=start sh "' + W25_INIT_SCRIPT + '"\' </dev/null >/dev/null 2>&1 &');
+    lines.push('fi');
   }
   lines.push('echo "PT_OUT=$(cut -d" " -f2- ' + W25_PT_RUN + '/sound-output 2>/dev/null)"');
   lines.push('echo OK');
@@ -4054,6 +4139,37 @@ service.register("setPassthrough", function (message) {
         summary: !want ? "Passthrough off: DTS is decoded again."
           : w25PtReceiver(out) ? "Passthrough on: DTS goes to your receiver from the next video."
           : "Passthrough on. It starts once the TV sends sound to an ARC/eARC receiver."
+      });
+    });
+  }).catch(function (e) {
+    message.respond({ returnValue: false, errorText: e.errorText || e.message || String(e) });
+  });
+});
+
+/* setMultichannel: {enabled:boolean}. Same watcher as the passthrough toggle. */
+service.register("setMultichannel", function (message) {
+  var want = !!(message.payload && message.payload.enabled);
+  detectProfile().then(function (d) {
+    if (d.profile !== PROFILE_W25) {
+      message.respond({
+        returnValue: false, profile: d.profile, supported: false,
+        errorText: "Multichannel PCM is only available on the webOS 25 profile (found '" + d.profile + "')."
+      });
+      return;
+    }
+    return rootExec(w25PassthroughSteps(want, W25_MC_FLAG)).then(function (r) {
+      var kv = parseKv(r.stdout);
+      var out = kv.PT_OUT || "";
+      logActionResult("multichannel", d.profile, want ? "on" : "off", "soundOutput=" + out);
+      message.respond({
+        returnValue: true,
+        profile: d.profile,
+        enabled: want,
+        soundOutput: out,
+        receiver: /^external_arc /.test(out),
+        summary: !want ? "Multichannel PCM off: DTS-HD MA and TrueHD are stereo to a receiver again."
+          : /^external_arc /.test(out) ? "Multichannel PCM on: applies from the next video."
+          : "Multichannel PCM on. It starts once the TV sends sound to an ARC/eARC receiver."
       });
     });
   }).catch(function (e) {

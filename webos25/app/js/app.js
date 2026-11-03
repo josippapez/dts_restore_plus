@@ -276,6 +276,13 @@
       : "on — waiting for an ARC/eARC receiver",
       s.passthroughToReceiver ? "ok" : (s.passthroughRequested ? "warn" : null));
     setVal("sPtOut", s.passthroughOutput || "—");
+    $("cardMultich").hidden = !canW25Test;
+    $("btnMcOn").disabled  = !canW25Test || s.multichRequested === true;
+    $("btnMcOff").disabled = !canW25Test || s.multichRequested !== true;
+    setVal("sMc", !s.multichRequested ? "off"
+      : s.multichToReceiver ? "on — 5.1 / 7.1 goes to the receiver"
+      : "on — waiting for an ARC/eARC receiver",
+      s.multichToReceiver ? "ok" : (s.multichRequested ? "warn" : null));
     // A/B compare renders through the patched dtsdec, so it needs the same profile.
     $("btnAb").disabled = !canW25Test;
     Array.prototype.slice.call(document.querySelectorAll("[data-gain], [data-preset], [data-center]"))
@@ -480,6 +487,14 @@
   function doPassthrough(on) {
     toast(on ? "Turning on…" : "Turning off…", "busy");
     callService("setPassthrough", { enabled: on }).then(function (res) {
+      toast(res.summary || (on ? "Turned on" : "Turned off"), res.returnValue ? "ok" : "err");
+      return refreshStatus();
+    }).catch(function (e) { toast("Could not change it: " + errText(e), "err"); });
+  }
+
+  function doMultich(on) {
+    toast(on ? "Turning on…" : "Turning off…", "busy");
+    callService("setMultichannel", { enabled: on }).then(function (res) {
       toast(res.summary || (on ? "Turned on" : "Turned off"), res.returnValue ? "ok" : "err");
       return refreshStatus();
     }).catch(function (e) { toast("Could not change it: " + errText(e), "err"); });
@@ -882,6 +897,8 @@
     $("btnAppDtsReboot").addEventListener("click", doAppDtsReboot);
     $("btnPtOn").addEventListener("click", function () { doPassthrough(true); });
     $("btnPtOff").addEventListener("click", function () { doPassthrough(false); });
+    $("btnMcOn").addEventListener("click", function () { doMultich(true); });
+    $("btnMcOff").addEventListener("click", function () { doMultich(false); });
     $("btnSaveGain").addEventListener("click", doSaveGain);
     $("btnAb").addEventListener("click", doAbRender);
     $("btnAbA").addEventListener("click", function () { doAbPlay("a"); });

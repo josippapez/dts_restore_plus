@@ -97,7 +97,7 @@ EXPECT_GST=1.24
 #   27 shadows libgstmatroska.so too (optional demuxer, Dolby Vision profile 7):
 #      bound in APPLY 2c, unbound by w25_drop_binds, fingerprinted in stock.fp and
 #      drift-checked like the /etc keys, so an older stock.fp without it is not drift.
-W25_GATE_VERSION=36
+W25_GATE_VERSION=37
 FP=/var/lib/webosbrew/dts25/stock.fp
 # Where the installed copy of THIS script lives, and the boot hook that symlinks
 # to it. Named here, in the shared block, so the read-only probe can fingerprint
@@ -655,9 +655,82 @@ w25_pt_watch() {
   done
   rm -f "$PT_OUT" "$PT_PID"
 }
+# --- Multichannel PCM relabel (opt-in: the multich file, see MC_FLAG above).
+# pcm-multi-ch (adecswitch) alone still leaves the receiver at 2 channels: LG's
+# own audio-output call (audio -> audiooutput setQualityAttribute,
+# setAudioInputInfo) names the decoder's codec ("true-hd", "dts"), and the
+# output follows that label. This watcher sees LG's call and re-sends it with
+# codec "pcm", channel kept. Only for a pipeline whose adecswitch wrote
+# $PT_RUN/mc-<pipelineId> ("<pid> <channels>", pid alive): with the DTS core
+# passthrough dtsdec sends a 2-channel IEC bitstream and its "dts" label must
+# stay. Our own re-send has sender com.webos.lunasend-<pid>, so the sender
+# filter stops a loop. adecswitch writes the marker before LG's call arrives;
+# the poll only covers the other order.
+MC_PID=$PT_RUN/mc-watcher.pid
+MC_AUDIOOUT=luna://com.webos.service.audiooutput/quality/setQualityAttribute
+w25_mc_relabel() {
+  for k in '"transport":"TX"' '"sender":"com.webos.service.audio"' \
+    '"method":"setQualityAttribute"' '"requestType":"setAudioInputInfo"' \
+    '"reset":false' '"activeState":true'; do
+    case $1 in *"$k"*) ;; *) return 0 ;; esac
+  done
+  codec=$(echo "$1" | sed -n 's/.*"codec":"\([^"]*\)".*/\1/p')
+  case $codec in ''|pcm) return 0 ;; esac
+  id=$(echo "$1" | sed -n 's/.*"pipelineId":"\([^"]*\)".*/\1/p')
+  case $id in ''|*[!A-Za-z0-9_.-]*) return 0 ;; esac
+  [ -f "$MC_FLAG" ] || return 0
+  [ -f "$PT_OUT" ] && read -r spid sout _ < "$PT_OUT"
+  [ "$sout" = external_arc ] && [ -n "$spid" ] && [ -d "/proc/$spid" ] || return 0
+  n=0
+  mpid=
+  while [ "$n" -lt 25 ]; do
+    ch=
+    [ -f "$PT_RUN/mc-$id" ] && read -r mpid ch _ < "$PT_RUN/mc-$id"
+    [ -n "$mpid" ] && [ -d "/proc/$mpid" ] && break
+    mpid=
+    sleep 0.2
+    n=$((n + 1))
+  done
+  [ -n "$mpid" ] || return 0
+  [ -f "$MC_FLAG" ] || return 0
+  payload=$(echo "$1" | sed -n 's/.*"payload":\({.*}\)}$/\1/p')
+  [ -n "$payload" ] || return 0
+  payload=$(echo "$payload" | sed 's/"codec":"[^"]*"/"codec":"pcm"/')
+  r=$(luna-send -n 1 -w 5000 "$MC_AUDIOOUT" "$payload" </dev/null 2>/dev/null)
+  rc=$(echo "$r" | sed -n 's/.*"returnValue" *: *\([a-z]*\).*/\1/p')
+  w25_log "multich: relabel $id $codec->pcm ch=$ch rc=${rc:-none}"
+}
+w25_mc_watch() {
+  read -r WPID _ < /proc/self/stat
+  echo "$WPID" > "$MC_PID"
+  ls-monitor -j -f com.webos.service.audiooutput </dev/null 2>/dev/null | {
+    while read -r line; do
+      [ -f "$MC_FLAG" ] || break
+      w25_mc_relabel "$line"
+    done
+  }
+  rm -f "$MC_PID"
+}
+w25_mc_start() {
+  [ -f "$MC_FLAG" ] || return 0
+  P=$(cat "$MC_PID" 2>/dev/null)
+  [ -n "$P" ] && [ -d "/proc/$P" ] && return 0
+  ( w25_mc_watch ) </dev/null >/dev/null 2>&1 &
+}
+w25_mc_stop() {
+  P=$(cat "$MC_PID" 2>/dev/null)
+  if [ -n "$P" ] && [ -d "/proc/$P" ]; then
+    for c in /proc/[0-9]*; do
+      [ "$(cut -d' ' -f4 "$c/stat" 2>/dev/null)" = "$P" ] && kill "${c#/proc/}" 2>/dev/null
+    done
+    kill "$P" 2>/dev/null
+  fi
+  rm -f "$MC_PID"
+}
 w25_pt_start() {
   w25_pt_wanted || return 0
   mkdir -p "$PT_RUN"
+  w25_mc_start
   P=$(cat "$PT_PID" 2>/dev/null)
   [ -n "$P" ] && [ -d "/proc/$P" ] && return 0
   ( w25_pt_watch ) </dev/null >/dev/null 2>&1 &
@@ -672,6 +745,7 @@ w25_pt_stop() {
     kill "$P" 2>/dev/null
   fi
   rm -f "$PT_OUT" "$PT_PID"
+  w25_mc_stop
 }
 # W25_PT=start|stop: only start or stop the watcher, for the app's toggle, so
 # turning passthrough on or off takes effect without a restart.

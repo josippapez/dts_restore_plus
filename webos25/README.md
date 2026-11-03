@@ -378,6 +378,20 @@ service reports Digital Sound Out as `auto` until playback starts even when Pass
 Through is selected, which is why Auto counts too. The bursts match
 `ffmpeg -c:a copy -f spdif` byte for byte (`src/test/test-iec61937.c`).
 
+## 5.1 / 7.1 PCM to a receiver (multichannel, opt-in, test build)
+
+The marker `/var/lib/webosbrew/dts25/multich` (or **5.1 / 7.1 to a receiver** in the app)
+makes `adecswitch` set LG's `pcm-multi-ch` for 3+ channel PCM from `dtsdec`,
+`avdec_truehd` and `avdec_mlp`, but only while the TV sends sound to `external_arc`. LG
+still labels that stream with the decoder's codec in its audio-output call, so the boot
+hook runs a second watcher: `ls-monitor -j -f com.webos.service.audiooutput` as a
+permanent child while the marker exists. It re-sends LG's `setAudioInputInfo` with
+`codec` changed to `pcm`, only for a pipeline whose `adecswitch` wrote
+`/run/dts25/mc-<pipelineId>`. Each relabel logs a `multich:` line in `/tmp/dts25.log`.
+Measured on a C5: about 0.3% of one core, idle or playing.
+To turn it off: `rm /var/lib/webosbrew/dts25/multich; W25_PT=stop sh /var/lib/webosbrew/dts25/init_dts25.sh`
+(the app's Turn off does the same), then restart playback.
+
 ## Compatibility gate, reversibility, and self-heal
 
 **Verified TV sets.** Before binding anything, both the boot hook and Enable check the

@@ -545,6 +545,24 @@ test("the passthrough toggle only reports a receiver for external_arc", function
     "W25_PT mode must exit before the apply path");
 });
 
+/* Multichannel PCM opt-in: its own marker, the same watcher. Turning one opt-in
+ * off must not stop the watcher the other still needs, and the script has to
+ * fit a luna message (the hub drops anything over 128 KiB). */
+test("the multichannel toggle uses its own marker and keeps a shared watcher", function () {
+  [true, false].forEach(function (on) {
+    var script = service.w25PassthroughSteps(on, "/var/lib/webosbrew/dts25/multich");
+    var r = spawnSync("sh", ["-n"], { input: script, encoding: "utf8" });
+    assert.strictEqual(r.status, 0, "generated script is not valid sh: " + r.stderr);
+    assert.ok(script.indexOf("FLAG=/var/lib/webosbrew/dts25/multich") !== -1);
+    assert.ok(script.indexOf("W25_PT=" + (on ? "start" : "stop")) !== -1);
+    assert.ok(Buffer.byteLength(JSON.stringify({ command: script })) < 120 * 1024, "exec payload too big");
+  });
+  var off = service.w25PassthroughSteps(false, "/var/lib/webosbrew/dts25/multich");
+  assert.ok(off.indexOf("W25_PT=start") > off.indexOf("W25_PT=stop"), "off must restart for the other marker");
+  assert.ok(off.indexOf("/var/lib/webosbrew/dts25/passthrough") !== -1);
+  assert.ok(service.w25PassthroughSteps(true).indexOf("FLAG=/var/lib/webosbrew/dts25/passthrough") !== -1);
+});
+
 /* Issue #13: the luna hub drops any message over 128 KiB and the app only sees
  * "Message not processed". 2.7.45's Enable script was 133,818 bytes, so Enable
  * failed on every TV. It must stay under the limit with room to grow, and the

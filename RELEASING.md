@@ -94,6 +94,14 @@ The release workflow runs `check-init-sync.sh` before packaging, so a drifted re
 fails instead of shipping mismatched boot scripts. Both scripts need only POSIX `sh`,
 `node`, `base64` and `diff` — all present on macOS, Linux and the CI image.
 
+## Optional watchers in the boot script
+
+`init_dts25.sh` can start two background watchers for opt-in markers: the sound-output
+`luna-send` subscription (`passthrough` or `multich`) and, for `multich`, an `ls-monitor`
+on `com.webos.service.audiooutput` that relabels LG's audio-output call (see "5.1 / 7.1
+PCM to a receiver" in `webos25/README.md`). Both are stopped by
+`W25_PT=stop sh /var/lib/webosbrew/dts25/init_dts25.sh` and stay off without their markers.
+
 ## License texts ship inside both artifacts
 
 `webos25/app/licenses/` (`GPL-2.0.txt`, `LGPL-2.1.txt`, `NOTICE.md`) is committed and is
