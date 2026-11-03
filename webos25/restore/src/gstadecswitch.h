@@ -57,6 +57,7 @@ struct _GstAdecSwitch
    * Only touched from the streaming thread (src CAPS probe) and dispose. */
   GstElement *multich_sink;
   gboolean multich_on;
+  gchar *multich_mark;
 
   /* Properties */
   guint grace_ms;               /* hw-teardown-grace-ms */

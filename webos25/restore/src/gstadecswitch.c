@@ -40,6 +40,8 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
+#include <glib/gstdio.h>
 
 GST_DEBUG_CATEGORY_STATIC (adecswitch_debug);
 #define GST_CAT_DEFAULT adecswitch_debug
@@ -67,6 +69,13 @@ GST_DEBUG_CATEGORY_STATIC (adecswitch_debug);
 #define MULTICH_MARKER "/var/lib/webosbrew/dts25/multich"
 #define SOUND_OUTPUT_FILE "/run/dts25/sound-output"
 #define LG_AUDIOSINK_FACTORY "audiosink"
+/* Marker for the boot hook's watcher: /run/dts25/mc-<pipelineId> holds
+ * "<pid> <channels>" while this element has pcm-multi-ch on. The watcher
+ * relabels LG's own audio-info call for that pipeline from the codec name to
+ * "pcm" so the receiver sees 5.1/7.1 PCM. pipelineId is the argument after
+ * "-scom.webos.pipeline." in this process's command line (== the uMS mediaId). */
+#define MULTICH_MARK_DIR "/run/dts25"
+#define PIPELINE_ARG_PREFIX "-scom.webos.pipeline."
 
 enum
 {
@@ -280,6 +289,60 @@ gst_adecswitch_find_audiosink (GstAdecSwitch * self)
   return found;
 }
 
+static void
+gst_adecswitch_mark_remove (GstAdecSwitch * self)
+{
+  if (self->multich_mark != NULL) {
+    g_remove (self->multich_mark);
+    g_clear_pointer (&self->multich_mark, g_free);
+  }
+}
+
+static void
+gst_adecswitch_mark_write (GstAdecSwitch * self, gint channels)
+{
+  gchar *cmdline = NULL, *content, *path;
+  gsize len = 0, off;
+
+  gst_adecswitch_mark_remove (self);
+  if (!g_file_test (MULTICH_MARK_DIR, G_FILE_TEST_IS_DIR)) {
+    GST_INFO_OBJECT (self, "no %s, no multichannel marker", MULTICH_MARK_DIR);
+    return;
+  }
+  if (!g_file_get_contents ("/proc/self/cmdline", &cmdline, &len, NULL)) {
+    GST_INFO_OBJECT (self, "cannot read /proc/self/cmdline");
+    return;
+  }
+  /* NUL-separated arguments */
+  for (off = 0; off < len; off += strlen (cmdline + off) + 1) {
+    if (g_str_has_prefix (cmdline + off, PIPELINE_ARG_PREFIX)
+        && cmdline[off + strlen (PIPELINE_ARG_PREFIX)] != '\0')
+      break;
+  }
+  if (off >= len) {
+    GST_INFO_OBJECT (self, "no pipeline id in the command line, no marker");
+    g_free (cmdline);
+    return;
+  }
+  path = g_strdup_printf (MULTICH_MARK_DIR "/mc-%s",
+      cmdline + off + strlen (PIPELINE_ARG_PREFIX));
+  g_free (cmdline);
+  /* the id ends up in a file name: keep to what a mediaId looks like */
+  if (strchr (path + strlen (MULTICH_MARK_DIR "/mc-"), '/') != NULL) {
+    g_free (path);
+    return;
+  }
+  content = g_strdup_printf ("%d %d\n", (gint) getpid (), channels);
+  if (g_file_set_contents (path, content, -1, NULL)) {
+    self->multich_mark = path;
+    GST_INFO_OBJECT (self, "marker %s: %s", path, g_strstrip (content));
+  } else {
+    GST_INFO_OBJECT (self, "cannot write %s", path);
+    g_free (path);
+  }
+  g_free (content);
+}
+
 /* Downstream CAPS on the src ghost pad, before they reach LG's sink, which
  * builds its renderer from them. Sets pcm-multi-ch for multichannel PCM from
  * our software decoders and clears it again for anything else (decproxy's
@@ -315,6 +378,10 @@ gst_adecswitch_src_caps_probe (GstPad * pad, GstPadProbeInfo * info,
 
   g_object_set (self->multich_sink, "pcm-multi-ch", want, NULL);
   self->multich_on = want;
+  if (want)
+    gst_adecswitch_mark_write (self, channels);
+  else
+    gst_adecswitch_mark_remove (self);
   GST_INFO_OBJECT (self, "pcm-multi-ch %s on %s for %d channels from %s",
       want ? "on" : "off", GST_OBJECT_NAME (self->multich_sink), channels,
       self->decoder_factory ? self->decoder_factory : "(none)");
@@ -726,6 +793,7 @@ gst_adecswitch_dispose (GObject * object)
   if (self->multich_sink != NULL && self->multich_on)
     g_object_set (self->multich_sink, "pcm-multi-ch", FALSE, NULL);
   self->multich_on = FALSE;
+  gst_adecswitch_mark_remove (self);
   gst_clear_object (&self->multich_sink);
 
   G_OBJECT_CLASS (gst_adecswitch_parent_class)->dispose (object);
