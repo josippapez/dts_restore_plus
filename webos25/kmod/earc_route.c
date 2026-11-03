@@ -167,7 +167,7 @@ static int owns_route(void) {
 static int hd_format_matches(void) {
     u32 rate = 0, flag = 0;
     return !output_clock(&rate, &flag) && rate == 192000 && flag == original_clock_flag &&
-        WORD(nonpcm) == 1 && WORD(rate) == 192000 &&
+        WORD(nonpcm) == 1 && WORD(rate) == 192000 && WORD(channel_count) == 8 &&
         (WORD(control) & 7) == 6 && ((WORD(cs0) >> 24) & 15) == 9 && (WORD(cs0) & 2);
 }
 
