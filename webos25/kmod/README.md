@@ -120,8 +120,12 @@ oracle table keyed by that sha256, so an oracle never meets another image:
 For each oracle kernel it asserts every derived value, including the clock
 layout and the image link base. On the first oracle kernel of each generation
 it runs refusal tests that mutate one instruction (or the loader's
-`mutex_lock` address) and require a specific refusal; on 6.12 also: the channel
-callback load removed, the rate/channel store removed or moved onto the flag.
+`mutex_lock` address) and require a specific refusal, including an
+`output_set_earc_on` whose clock-call argument is unknown and never loaded
+from the output (the rate on 5.4, the channel count on 6.12: both sides
+unknown must not match); on 6.12 also: the channel callback load removed, the
+rate/channel store removed, moved onto the flag, or moved so the channel count
+reaches +0x80.
 Removing the `sub` of the 6.12 index scaling is not a refusal: the stride, the
 mutex and the entry loads then agree on 0x80, so the test asserts that the
 decoder follows the code to 0x80. It also checks that C5 and G5 differ exactly
