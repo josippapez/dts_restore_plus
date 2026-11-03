@@ -785,3 +785,45 @@ test("the C2 self-test handler maps every case its shell can emit", function () 
       "list it, so that result is silently discarded (this is the 2.7.14 bug)");
   });
 });
+
+/* The relabel watcher runs w25_mc_relabel for every ls-monitor line in one
+ * shell, so a variable read from the sound-output file on one call survives to
+ * the next. When the file is gone (the sound-output watcher died, or passthrough
+ * and multichannel were both turned off), the receiver check must fail rather
+ * than reuse the last reading: a relabel without a live watcher is exactly the
+ * "when in doubt, do nothing" case. Runs the real function against a line in the
+ * shape ls-monitor -j prints on a C5 (payload last, no spaces, nested object). */
+test("the relabel watcher re-reads the sound output on every call", function () {
+  var body = service.w25InitScriptBody().split("\n");
+  var from = body.indexOf("MC_PID=$PT_RUN/mc-watcher.pid"), to = body.indexOf("w25_mc_watch() {");
+  assert.ok(from > 0 && to > from, "could not find w25_mc_relabel in the boot script");
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dts-mc-")), bin = path.join(dir, "bin");
+  var run = path.join(dir, "run"), sent = path.join(dir, "sent"), proc = path.join(dir, "proc");
+  fs.mkdirSync(path.join(proc, String(process.pid)), {recursive: true});
+  fs.mkdirSync(run, {recursive: true});
+  // luna-send -n 1 -w 5000 <uri> <payload>: record the payload it was given.
+  exe(path.join(bin, "luna-send"), 'printf "%s\\n" "$6" >> "' + sent + '"; echo \'{"returnValue":true}\'');
+  var payload = {categoryInfo: {codec: "true-hd", channel: 8, immersive: "none"},
+    requestType: "setAudioInputInfo", categoryType: "audioInputInfo", activeState: true,
+    pipelineInfo: {pipelineId: "_mcTest1", sourceType: "MEDIA", reset: false, resource: "ADEC0"}};
+  var line = JSON.stringify({serial: 1, methodCategory: "/quality", transport: "TX",
+    method: "setQualityAttribute", sender: "com.webos.service.audio",
+    destination: "com.webos.service.audiooutput", type: "call", payload: payload});
+  fs.writeFileSync(path.join(run, "mc-_mcTest1"), process.pid + " 8\n");
+  fs.writeFileSync(path.join(dir, "multich"), "");
+  var script = ["PT_RUN=" + run, "PT_OUT=$PT_RUN/sound-output", "MC_FLAG=" + path.join(dir, "multich"),
+    "w25_log() { :; }"].concat(body.slice(from, to).map(function (l) {
+    return l.replace(/\/proc\//g, proc + "/");   // no /proc on macOS: live pids are fixture dirs
+  }), [
+    'echo "' + process.pid + ' external_arc auto" > "$PT_OUT"',
+    "w25_mc_relabel '" + line + "'",
+    'rm -f "$PT_OUT"',
+    "w25_mc_relabel '" + line + "'"]).join("\n");
+  var r = sh(script, {PATH: bin + ":" + process.env.PATH});
+  assert.strictEqual(r.status, 0, r.stderr);
+  var calls = fs.existsSync(sent) ? fs.readFileSync(sent, "utf8").trim().split("\n") : [];
+  assert.strictEqual(calls.length, 1, "one relabel with the receiver attached, none after the file went: " + calls.join(" | "));
+  var expected = JSON.parse(JSON.stringify(payload));
+  expected.categoryInfo.codec = "pcm";
+  assert.deepStrictEqual(JSON.parse(calls[0]), expected, "only categoryInfo.codec changes");
+});
