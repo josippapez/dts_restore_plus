@@ -1,0 +1,21 @@
+webos25/kmod -- eARC route kernel module for LG webOS 25 (5.4.268 kernels)
+
+Everything in this directory is licensed GPL-2.0-only; the full text is in
+LICENSE. The rest of this repository is LGPL-2.1-or-later, and nothing here
+relicenses it, nor does any other part of the repository link this code.
+
+earc_route.c is derived from Glasshouse's native-route.c, and build.py from its
+build-target.py (https://github.com/rorygallagher2024/glasshouse,
+native/dts-forwarding, GPL-2.0-only). Glasshouse designed and qualified the
+route: the producer lease, watchdog, DTS-HD mode, restore and hand-back paths
+are its work. This port replaces Glasshouse's exact-image addresses with
+earc_decode.h, which derives them from LG's code at load time, and adds the
+loader and the host test.
+
+The module contains no LG code. It calls LG's kernel functions at run time and
+reads their machine code to find the data they use. Kernel images, kallsyms
+captures and stock modules from LG TVs are LG's files: they stay outside this
+repository and are only read by the build and the tests.
+
+Not affiliated with, endorsed by or supported by LG Electronics. Provided
+"AS IS", without warranty of any kind. It runs in the TV's kernel.
