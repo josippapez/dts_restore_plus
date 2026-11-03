@@ -669,14 +669,22 @@ w25_pt_watch() {
 MC_PID=$PT_RUN/mc-watcher.pid
 MC_AUDIOOUT=luna://com.webos.service.audiooutput/quality/setQualityAttribute
 w25_mc_relabel() {
-  for k in '"transport":"TX"' '"sender":"com.webos.service.audio"' \
-    '"method":"setQualityAttribute"' '"requestType":"setAudioInputInfo"' \
-    '"reset":false' '"activeState":true'; do
-    case $1 in *"$k"*) ;; *) return 0 ;; esac
+  # The payload is the caller's data and the last key: match the sender and
+  # method only in the part before it, so a payload cannot pose as LG's call.
+  head=${1%%\"payload\":*}
+  [ "$head" != "$1" ] || return 0
+  payload=${1#*\"payload\":}
+  payload=${payload%\}}
+  for k in '"transport":"TX",' '"sender":"com.webos.service.audio",' \
+    '"method":"setQualityAttribute",'; do
+    case $head in *"$k"*) ;; *) return 0 ;; esac
   done
-  codec=$(echo "$1" | sed -n 's/.*"codec":"\([^"]*\)".*/\1/p')
+  for k in '"requestType":"setAudioInputInfo"' '"reset":false' '"activeState":true'; do
+    case $payload in *"$k"*) ;; *) return 0 ;; esac
+  done
+  codec=$(echo "$payload" | sed -n 's/.*"codec":"\([^"]*\)".*/\1/p')
   case $codec in ''|pcm) return 0 ;; esac
-  id=$(echo "$1" | sed -n 's/.*"pipelineId":"\([^"]*\)".*/\1/p')
+  id=$(echo "$payload" | sed -n 's/.*"pipelineId":"\([^"]*\)".*/\1/p')
   case $id in ''|*[!A-Za-z0-9_.-]*) return 0 ;; esac
   [ -f "$MC_FLAG" ] || return 0
   # one shell for every line: never keep the previous call's reading
@@ -696,8 +704,7 @@ w25_mc_relabel() {
   done
   [ -n "$mpid" ] || return 0
   [ -f "$MC_FLAG" ] || return 0
-  payload=$(echo "$1" | sed -n 's/.*"payload":\({.*}\)}$/\1/p')
-  [ -n "$payload" ] || return 0
+  case $payload in '{'*'}') ;; *) return 0 ;; esac
   payload=$(echo "$payload" | sed 's/"codec":"[^"]*"/"codec":"pcm"/')
   r=$(luna-send -n 1 -w 5000 "$MC_AUDIOOUT" "$payload" </dev/null 2>/dev/null)
   rc=$(echo "$r" | sed -n 's/.*"returnValue" *: *\([a-z]*\).*/\1/p')

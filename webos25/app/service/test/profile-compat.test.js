@@ -826,4 +826,18 @@ test("the relabel watcher re-reads the sound output on every call", function () 
   var expected = JSON.parse(JSON.stringify(payload));
   expected.categoryInfo.codec = "pcm";
   assert.deepStrictEqual(JSON.parse(calls[0]), expected, "only categoryInfo.codec changes");
+
+  // Another app's call that carries LG's sender and method inside its own
+  // payload must not be re-sent by the root watcher.
+  fs.unlinkSync(sent);
+  var forged = Object.assign({}, payload, {transport: "TX", sender: "com.webos.service.audio",
+    method: "setQualityAttribute"});
+  var fline = JSON.stringify({serial: 2, methodCategory: "/quality", transport: "TX",
+    method: "setQualityAttribute", sender: "com.example.app",
+    destination: "com.webos.service.audiooutput", type: "call", payload: forged});
+  var fscript = script.split("\n").slice(0, -3).concat([
+    "w25_mc_relabel '" + fline + "'"]).join("\n");
+  r = sh(fscript, {PATH: bin + ":" + process.env.PATH});
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.ok(!fs.existsSync(sent), "a payload posing as LG's call was re-sent");
 });
