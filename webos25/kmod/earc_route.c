@@ -433,8 +433,10 @@ static void audit(void) {
     unsigned int index;
     int clock = output_clock(&rate, &flag, &clock_channels), edge;
     printk("\0016earc_route: HAL mode-select=%u (1 selects mode 7, not 6)\n", WORD(mode_select));
+    /* entry+32 is Glasshouse's 5.4 observation, not derived; the read stays
+     * inside the entry on both generations (the stride is at least 0x38). */
     printk("\0016earc_route: clock3 ready=%u enabled=%u arc-callback=%d result=%d rate=%u channels=%u flag=%u\n",
-           entry[8], entry[9], *(void **)(entry + layout.clock_callback_offset) == CLOCK_CALLBACK, clock, rate,
+           entry[8], entry[9], *(void **)(entry + 32) == CLOCK_CALLBACK, clock, rate,
            clock_channels, flag);
     mutex_lock(BM_MUTEX);
     for (index = 0; index < 2; index++) {
