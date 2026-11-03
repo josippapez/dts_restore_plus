@@ -1670,7 +1670,8 @@ gst_dtsdec_passthrough_decide (GstDtsDec * dts, const guint8 * d, gsize size)
 /* One burst per frame. If the sound output stops being a receiver mid-stream
  * the bursts turn to silence rather than noise; the next stream decodes. */
 static GstFlowReturn
-gst_dtsdec_passthrough_frame (GstDtsDec * dts, const guint8 * d, gsize size)
+gst_dtsdec_passthrough_frame (GstDtsDec * dts, GstBuffer * buffer,
+    GstMapInfo * map)
 {
   GstBuffer *outbuf;
   GstMapInfo omap;
@@ -1691,9 +1692,12 @@ gst_dtsdec_passthrough_frame (GstDtsDec * dts, const guint8 * d, gsize size)
       dts->pt_period);
   gst_buffer_map (outbuf, &omap, GST_MAP_WRITE);
   if (!dts->pt_output_ok
-      || dts_iec61937_pack (d, size, omap.data, dts->pt_period) == 0)
+      || dts_iec61937_pack (map->data, map->size, omap.data,
+          dts->pt_period) == 0)
     memset (omap.data, 0, dts->pt_period);
   gst_buffer_unmap (outbuf, &omap);
+  /* finish_frame releases the input buffer, so it must be unmapped first */
+  gst_buffer_unmap (buffer, map);
   return gst_audio_decoder_finish_frame (GST_AUDIO_DECODER (dts), outbuf, 1);
 }
 
@@ -1716,13 +1720,13 @@ gst_dtsdec_handle_frame (GstAudioDecoder * bdec, GstBuffer * buffer)
     gst_buffer_map (buffer, &map, GST_MAP_READ);
     if (!dts->pt_decided)
       drop = gst_dtsdec_passthrough_decide (dts, map.data, map.size);
-    if (drop)
-      result = gst_audio_decoder_finish_frame (bdec, NULL, 1);
-    else if (dts->pt_active)
-      result = gst_dtsdec_passthrough_frame (dts, map.data, map.size);
+    if (drop) {
+      gst_buffer_unmap (buffer, &map);
+      return gst_audio_decoder_finish_frame (bdec, NULL, 1);
+    }
+    if (dts->pt_active)
+      return gst_dtsdec_passthrough_frame (dts, buffer, &map);
     gst_buffer_unmap (buffer, &map);
-    if (drop || dts->pt_active)
-      return result;
   }
 
   /* FFmpeg reads up to AV_INPUT_BUFFER_PADDING_SIZE past the end, which must
