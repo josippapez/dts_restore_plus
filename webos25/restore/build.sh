@@ -34,10 +34,6 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 OUT="${OUT:-$HERE/out}"
 mkdir -p "$OUT"
 
-echo "=== dtsdec webOS25 cross-build ==="
-echo "src: $HERE/src"
-echo "out: $OUT"
-
 docker build -t dts25-dtsdec-build - <<'DOCKERFILE_EOF'
 FROM debian:12-slim
 ENV DEBIAN_FRONTEND=noninteractive
@@ -61,8 +57,7 @@ RUN SNAPSHOT=20250601T000000Z \
  && apt-get update -qq \
  && apt-get -y -qq --allow-downgrades dist-upgrade \
  && apt-get install -y -qq --no-install-recommends \
-      gcc-arm-linux-gnueabi pkg-config file binutils \
-      git ca-certificates make \
+      gcc-arm-linux-gnueabi pkg-config git ca-certificates make \
       libgstreamer1.0-dev:armel \
       libgstreamer-plugins-base1.0-dev:armel \
       libglib2.0-dev:armel \
@@ -90,9 +85,7 @@ docker run --rm -i \
   -v "$HERE/src":/work:ro \
   -v "$OUT":/out \
   dts25-dtsdec-build /bin/bash -euo pipefail -s <<'CONTAINER_EOF'
-    # Work on a writable copy (source mount is read-only).
-    cp /work/gstdtsdec.c /work/gstdtsdec.h /tmp/
-    cd /tmp
+    cd /work
 
     # Sanity: confirm the caps patch is already present in the vendored source.
     echo "--- caps line (must include A_DTS) ---"
@@ -117,20 +110,14 @@ docker run --rm -i \
       $CF /tmp/ffdca/lib/libavcodec.a /tmp/ffdca/lib/libavutil.a $LB -lm \
       -Wl,--exclude-libs,ALL -Wl,--no-undefined
 
-    echo "=== BUILT ==="
-    file -b /out/libgstdtsdec.so | cut -d, -f1-4
-    echo -n "e_flags: "; od -An -tx4 -j36 -N4 /out/libgstdtsdec.so
-    echo "=== NEEDED ==="
-    readelf -d /out/libgstdtsdec.so | grep -E "NEEDED|RUNPATH|RPATH" | grep -oE "\[.*\]"
+    echo "=== BUILT (must be ARM, 0x5000200 soft-float) ==="
+    arm-linux-gnueabi-readelf -h /out/libgstdtsdec.so | grep -E "Machine|Flags"
+    arm-linux-gnueabi-readelf -d /out/libgstdtsdec.so | grep -E "NEEDED|RUNPATH|RPATH"
     echo "=== max GLIBC (must be <= 2.35) ==="
-    # The host objdump cannot read ARM objects; the cross one can.
     arm-linux-gnueabi-objdump -T /out/libgstdtsdec.so | grep -oE "GLIBC_[0-9.]+" | sort -V | tail -1
     echo "=== exported FFmpeg symbols (must be 0) ==="
     n=$(arm-linux-gnueabi-objdump -T /out/libgstdtsdec.so | grep -cE " (av|ff|avpriv|avcodec|swr)_" || true)
     echo "$n"; [ "$n" = 0 ] || { echo "ERROR: FFmpeg symbols leak from the plugin"; exit 1; }
 CONTAINER_EOF
 
-echo ""
-echo "=== DONE ==="
-echo "Artifacts in $OUT:"
 ls -la "$OUT"
