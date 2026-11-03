@@ -142,7 +142,9 @@ static int output_clock(u32 *rate, u32 *flag, u32 *channels) {
             *rate = *(u32 *)(object + layout.clock_object_rate);
             *flag = object[layout.clock_object_flag];
             if (layout.clock_takes_channels) *channels = *(u32 *)(object + layout.clock_object_channels);
-            if (valid_output_rate(*rate) && *flag <= 1) result = 0;
+            if (valid_output_rate(*rate) && *flag <= 1 &&
+                (!layout.clock_takes_channels || (*channels >= 1 && *channels <= 8)))
+                result = 0;
         }
     }
     mutex_unlock(entry + layout.clock_mutex_offset);
