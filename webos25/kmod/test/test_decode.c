@@ -382,6 +382,17 @@ static int move_rate_pair(ed_u32 *w, ed_u32 n, const struct earc_layout *l) {
         }
     return 0;
 }
+/* stp wA, wB, [xM, #object rate] -> the same pair at +0x7c: the rate stays
+ * inside +0x80, the channel count lands on it. */
+static int move_rate_pair_to_edge(ed_u32 *w, ed_u32 n, const struct earc_layout *l) {
+    ed_u32 i;
+    for (i = 0; i < n; i++)
+        if ((w[i] & 0xffc00000U) == 0x29000000U && ((w[i] >> 15) & 0x7f) * 4 == l->clock_object_rate) {
+            w[i] = (w[i] & ~(0x7fU << 15)) | ((0x7cU / 4) << 15);
+            return 1;
+        }
+    return 0;
+}
 
 /* A self-consistent change of the index scaling is not a layout the decoder can
  * call wrong: the stride, the mutex and the entry loads all move together, so it
@@ -433,6 +444,7 @@ static void refusal_tests(const struct kernel *k, const struct earc_layout *l, i
         refuse(k, EF_aud_clock_update_output, "channel callback load removed", "control+Y", drop_channel_callback_load, l);
         refuse(k, EF_aud_clock_update_output, "rate/channels store removed", "rate (argument 1)", drop_rate_pair, l);
         refuse(k, EF_aud_clock_update_output, "rate/channels store moved onto the flag", "overlap", move_rate_pair, l);
+        refuse(k, EF_aud_clock_update_output, "channels store moved to +0x80", "beyond +0x80", move_rate_pair_to_edge, l);
     }
     refuse(k, EF_audio_hal_earc_set_audio_mode, "branch leaves the function", "branch leaves", branch_out, l);
     /* A wrong mutex_lock address from the loader. */

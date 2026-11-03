@@ -887,7 +887,7 @@ static int ed_clock(const struct earc_code *fns, struct earc_layout *out) {
     flag_arg = out->clock_takes_channels ? 3 : 2;
     ED_CHECK(ed_unique_store(1, object, (unsigned int)flag_arg, 1, &out->clock_object_flag),
              "aud_clock_update_output: flag not stored once as a byte into the object");
-    ED_CHECK(out->clock_object_rate < 0x80 && out->clock_object_flag < 0x80 &&
+    ED_CHECK(out->clock_object_rate < 0x80 && out->clock_object_flag < 0x80 && out->clock_object_channels < 0x80 &&
              out->clock_object_rate != out->clock_object_channels && out->clock_object_rate != out->clock_object_flag &&
              out->clock_object_channels != out->clock_object_flag,
              "aud_clock_update_output: object field offsets overlap or lie beyond +0x80");
