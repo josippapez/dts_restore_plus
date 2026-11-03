@@ -713,12 +713,16 @@ w25_mc_relabel() {
 w25_mc_watch() {
   read -r WPID _ < /proc/self/stat
   echo "$WPID" > "$MC_PID"
-  ls-monitor -j -f com.webos.service.audiooutput </dev/null 2>/dev/null | {
-    while read -r line; do
-      [ -f "$MC_FLAG" ] || break
-      w25_mc_relabel "$line"
-    done
-  }
+  while [ -f "$MC_FLAG" ]; do
+    ls-monitor -j -f com.webos.service.audiooutput </dev/null 2>/dev/null | {
+      while read -r line; do
+        [ -f "$MC_FLAG" ] || break
+        w25_mc_relabel "$line"
+      done
+    }
+    # ls-monitor ended: start it again, like the sound-output watcher
+    sleep 5
+  done
   rm -f "$MC_PID"
 }
 w25_mc_start() {

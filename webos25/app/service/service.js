@@ -970,12 +970,16 @@ var W25_INIT_MAIN = [
   "w25_mc_watch() {",
   "  read -r WPID _ < /proc/self/stat",
   "  echo \"$WPID\" > \"$MC_PID\"",
-  "  ls-monitor -j -f com.webos.service.audiooutput </dev/null 2>/dev/null | {",
-  "    while read -r line; do",
-  "      [ -f \"$MC_FLAG\" ] || break",
-  "      w25_mc_relabel \"$line\"",
-  "    done",
-  "  }",
+  "  while [ -f \"$MC_FLAG\" ]; do",
+  "    ls-monitor -j -f com.webos.service.audiooutput </dev/null 2>/dev/null | {",
+  "      while read -r line; do",
+  "        [ -f \"$MC_FLAG\" ] || break",
+  "        w25_mc_relabel \"$line\"",
+  "      done",
+  "    }",
+  "    # ls-monitor ended: start it again, like the sound-output watcher",
+  "    sleep 5",
+  "  done",
   "  rm -f \"$MC_PID\"",
   "}",
   "w25_mc_start() {",
@@ -3597,6 +3601,10 @@ function cxUninstall() {
 /* =======================================================================
  * Per-profile active-state probe (used by status)
  * ===================================================================== */
+// "On" only while the relabel watcher runs: without it LG keeps 2 channels.
+function w25McReceiver(kv) {
+  return kv.MC_FLAG === "1" && kv.MC_LIVE === "1" && /^external_arc /.test(kv.PT_OUT || "");
+}
 function w25StatusProbe() {
   return [
     'echo "HOOK=$([ -e ' + W25_HOOK + ' ] && echo 1 || echo 0)"',
@@ -3623,6 +3631,7 @@ function w25StatusProbe() {
     'echo "APPDTS_FLAG=$([ -f ' + W25_APPDTS_FLAG + ' ] && echo 1 || echo 0)"',
     'echo "PT_FLAG=$([ -f ' + W25_PT_FLAG + ' ] && echo 1 || echo 0)"',
     'echo "MC_FLAG=$([ -f ' + W25_MC_FLAG + ' ] && echo 1 || echo 0)"',
+    'P=$(cat ' + W25_PT_RUN + '/mc-watcher.pid 2>/dev/null); echo "MC_LIVE=$([ -n "$P" ] && [ -d /proc/$P ] && echo 1 || echo 0)"',
     // Only while the watcher is alive: dtsdec ignores the file otherwise too.
     'P=$(cat ' + W25_PT_RUN + '/watcher.pid 2>/dev/null); echo "PT_OUT=$([ -n "$P" ] && [ -d /proc/$P ] && cut -d" " -f2- ' + W25_PT_RUN + '/sound-output 2>/dev/null)"',
     // The boot hook's last apply outcome: "<epoch> <on|skipped|failed> <message>".
@@ -3840,7 +3849,7 @@ service.register("status", function (message) {
         base.passthroughRequested = kv.PT_FLAG === "1";
         base.passthroughOutput = kv.PT_OUT || "";
         base.multichRequested = kv.MC_FLAG === "1";
-        base.multichToReceiver = base.multichRequested && /^external_arc /.test(kv.PT_OUT || "");
+        base.multichToReceiver = w25McReceiver(kv);
         base.passthroughToReceiver = base.passthroughRequested && w25PtReceiver(kv.PT_OUT);
         base.appDtsRequested = kv.APPDTS_FLAG === "1";
         base.edidType = kv.EDIDTYPE || "";

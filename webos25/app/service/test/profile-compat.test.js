@@ -21,7 +21,7 @@ function loadService() {
     "c2Enable: c2Enable, c2Disable: c2Disable, c2StatusProbe: c2StatusProbe," +
     "c2StatusBindsComplete: c2StatusBindsComplete, c2SelfTest: c2SelfTest," +
     "DETECT_PROBE: DETECT_PROBE, w25EdidTarget: w25EdidTarget, w25InitScriptBody: w25InitScriptBody," +
-    "w25PtReceiver: w25PtReceiver, w25PassthroughSteps: w25PassthroughSteps, w25Enable: w25Enable," +
+    "w25PtReceiver: w25PtReceiver, w25McReceiver: w25McReceiver, w25StatusProbe: w25StatusProbe, w25PassthroughSteps: w25PassthroughSteps, w25Enable: w25Enable," +
     "constants: {C2: PROFILE_C2," +
     "sets: C2_EXPECTED_SETS, matchSet: c2MatchSet," +
     "libav: C2_EXPECTED_SETS[0].libav, iso: C2_EXPECTED_SETS[0].iso, mkv: C2_EXPECTED_SETS[0].mkv}};";
@@ -840,4 +840,41 @@ test("the relabel watcher re-reads the sound output on every call", function () 
   r = sh(fscript, {PATH: bin + ":" + process.env.PATH});
   assert.strictEqual(r.status, 0, r.stderr);
   assert.ok(!fs.existsSync(sent), "a payload posing as LG's call was re-sent");
+});
+
+/* "5.1 / 7.1 goes to the receiver" needs the relabel watcher alive: without it
+ * LG keeps the receiver at 2 channels, so the status must not say "on". */
+test("multichannel status needs a live relabel watcher", function () {
+  var kv = {MC_FLAG: "1", MC_LIVE: "1", PT_OUT: "external_arc auto"};
+  assert.strictEqual(service.w25McReceiver(kv), true);
+  assert.strictEqual(service.w25McReceiver(Object.assign({}, kv, {MC_LIVE: "0"})), false);
+  assert.strictEqual(service.w25McReceiver(Object.assign({}, kv, {PT_OUT: "tv_speaker auto"})), false);
+  var probe = service.w25StatusProbe().split("\n").filter(function (l) { return /MC_LIVE=/.test(l); });
+  assert.strictEqual(probe.length, 1, "the status probe does not report MC_LIVE");
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dts-mclive-")), proc = path.join(dir, "proc");
+  fs.mkdirSync(path.join(proc, "4242"), {recursive: true});
+  var line = probe[0].split("/run/dts25").join(dir).replace(/\/proc\//g, proc + "/");
+  write(path.join(dir, "mc-watcher.pid"), "4242\n");
+  assert.strictEqual(sh(line).stdout.trim(), "MC_LIVE=1");
+  write(path.join(dir, "mc-watcher.pid"), "4243\n");
+  assert.strictEqual(sh(line).stdout.trim(), "MC_LIVE=0");
+});
+
+/* The sound-output watcher restarts its subscription when it ends; the relabel
+ * watcher must do the same, or one ls-monitor exit leaves stereo until reboot. */
+test("the relabel watcher restarts ls-monitor when it exits", function () {
+  var body = service.w25InitScriptBody().split("\n");
+  var from = body.indexOf("MC_PID=$PT_RUN/mc-watcher.pid"), to = body.indexOf("w25_mc_start() {");
+  assert.ok(from > 0 && to > from, "could not find w25_mc_watch in the boot script");
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dts-mcw-")), bin = path.join(dir, "bin");
+  var flag = path.join(dir, "multich"), runs = path.join(dir, "runs");
+  write(flag, "");
+  // second start: the user turned multichannel off, so the loop must end
+  exe(path.join(bin, "ls-monitor"), 'echo x >> "' + runs + '"; [ "$(wc -l < "' + runs + '")" -ge 2 ] && rm -f "' + flag + '"; exit 0');
+  exe(path.join(bin, "sleep"), "exit 0");
+  var script = ["PT_RUN=" + dir, "MC_FLAG=" + flag, "w25_log() { :; }"].concat(body.slice(from, to), ["w25_mc_watch"]).join("\n");
+  var r = sh(script.replace("read -r WPID _ < /proc/self/stat", "WPID=$$"), {PATH: bin + ":" + process.env.PATH});
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.strictEqual(fs.readFileSync(runs, "utf8").trim().split("\n").length, 2, "ls-monitor was not started again");
+  assert.ok(!fs.existsSync(path.join(dir, "mc-watcher.pid")), "the pid file outlived the watcher");
 });
