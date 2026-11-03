@@ -324,6 +324,29 @@ static int widen_mode_mask(ed_u32 *w, ed_u32 n, const struct earc_layout *l) {
     return 0;
 }
 
+/* output_set_earc_on, 5.4: ldr w1, [x19, #76] (the rate) -> cset w1, ne. The
+ * clock call's argument 1 is then unknown and nothing loads output+76; the
+ * check must not pass because both sides are unknown. */
+static int unknown_rate_argument(ed_u32 *w, ed_u32 n, const struct earc_layout *l) {
+    ed_u32 i;
+    (void)l;
+    for (i = 0; i < n; i++)
+        if (w[i] == 0xb9404e61U) { w[i] = 0x1a9f07e1U; return 1; }
+    return 0;
+}
+/* output_set_earc_on, 6.12: ldp w2, w1, [x19, #72] -> ldr w1, [x19, #76] (the
+ * rate alone) and cset w3, ne -> cset w2, ne: argument 2 is unknown and
+ * output+72 is never loaded. */
+static int unknown_channel_argument(ed_u32 *w, ed_u32 n, const struct earc_layout *l) {
+    ed_u32 i, ldp = 0, cset = 0;
+    (void)l;
+    for (i = 0; i < n; i++) {
+        if (w[i] == 0x29490662U) { w[i] = 0xb9404e61U; ldp = 1; }
+        else if (w[i] == 0x1a9f07e3U) { w[i] = 0x1a9f07e2U; cset = 1; }
+    }
+    return ldp && cset;
+}
+
 /* 6.12 only. sub xD, xN, xM (shifted register, no shift) -> nop: the index
  * scaling idx * 8 - idx * 1 loses its subtraction. */
 static int drop_index_sub(ed_u32 *w, ed_u32 n, const struct earc_layout *l) {
@@ -400,7 +423,12 @@ static void refusal_tests(const struct kernel *k, const struct earc_layout *l, i
     refuse(k, EF_audio_hal_earc_set_mute, "mute bit 18 moved to 19", "set_mute", move_mute_bit, l);
     refuse(k, EF_audio_hal_earc_set_audio_mode, "mode mask widened", "set_audio_mode", widen_mode_mask, l);
     refuse(k, EF_audio_hal_earc_set_channel, "RET turned into BR", "indirect branch", indirect_branch, l);
+    if (!generation)
+        refuse(k, EF_output_set_earc_on, "rate argument unknown and output+76 never loaded", "rate at output+76",
+               unknown_rate_argument, l);
     if (generation) {
+        refuse(k, EF_output_set_earc_on, "channel argument unknown and output+72 never loaded", "channel count at output+72",
+               unknown_channel_argument, l);
         follow_stride(k, l);
         refuse(k, EF_aud_clock_update_output, "channel callback load removed", "control+Y", drop_channel_callback_load, l);
         refuse(k, EF_aud_clock_update_output, "rate/channels store removed", "rate (argument 1)", drop_rate_pair, l);

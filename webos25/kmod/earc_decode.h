@@ -655,8 +655,13 @@ static ed_u16 ed_call_arg(ed_u64 pc, unsigned int n) {
     return value;
 }
 
+/* A call of target whose argument n is value. An unknown value matches
+ * nothing: ed_loaded returns ED_UNK for a missing load, and an argument the
+ * callee gets from an unmodelled instruction is ED_UNK too, so the two would
+ * otherwise agree about nothing. */
 static int ed_any_call_with_arg(ed_u64 target, unsigned int n, ed_u16 value) {
     unsigned int i;
+    if (value == ED_UNK) return 0;
     for (i = 0; i < ed_fact_count; i++)
         if (ed_facts[i].kind == FK_CALL && ed_facts[i].target == target && ed_facts[i].args[n] == value)
             return 1;
