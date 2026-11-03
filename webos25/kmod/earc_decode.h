@@ -83,6 +83,11 @@ struct earc_layout {
     ed_u64 nonpcm, cs0, cs2, mode_select, rate, channel_count, acmod, control;
     ed_u64 bm_mutex;
     ed_u64 clock_table, clock_stride, clock_entry3;
+    /* aud_clock_update_output: where the entry's mutex, the object's rate,
+     * channel count (only if the function takes one), flag and the callbacks
+     * (rate, and channel count if taken) are. */
+    ed_u64 clock_mutex_offset, clock_takes_channels, clock_object_rate, clock_object_channels;
+    ed_u64 clock_object_flag, clock_callback_offset, clock_channel_callback_offset;
 };
 
 /* The largest function decoded, in instructions. */
@@ -376,6 +381,11 @@ static void ed_step(ed_u32 op, ed_u64 pc, ed_u16 *r, ed_u64 *target, int *fall) 
             /* UBFM Xd, Xn, #(-s mod 64), #(63-s) is LSL Xd, Xn, #s. */
             if (sf && ((op >> 29) & 3) == 2 && ((op >> 22) & 1) && imms != 63 && imms + 1 == immr)
                 res = ed_shl(rn == 31 ? ED_ZERO : v[rn], 63 - imms);
+            /* UBFIZ Xd, Xn, #lsb, #32 is UBFM with imms 31 < immr: the zero-
+             * extended low word of Xn shifted left by 64 - immr. Other widths
+             * stay unknown. */
+            else if (sf && ((op >> 29) & 3) == 2 && ((op >> 22) & 1) && imms < immr && imms == 31)
+                res = ed_shl(rn == 31 ? ED_ZERO : ed_zx32(v[rn]), 64 - immr);
         }
         if (rd != 31) r[rd] = res;  /* rd 31 is SP or ZR here; SP is never tracked */
         return;
@@ -414,7 +424,10 @@ static void ed_step(ed_u32 op, ed_u64 pc, ed_u16 *r, ed_u64 *target, int *fall) 
         } else if ((op & 0xfffffc1f) == 0xd65f0000) {  /* RET */
             *fall = 0;
         } else if ((op & 0xfffffc1f) == 0xd63f0000) {  /* BLR */
-            ed_simple_fact(FK_ICALL, 0, v[rn], 0, 0, pc);
+            struct ed_fact f = {0};
+            f.kind = FK_ICALL; f.root = v[rn]; f.pc = pc;
+            for (i = 0; i < 3; i++) f.args[i] = r[i] == v[i] ? r[i] : ED_UNK;
+            ed_fact(&f);
             for (i = 0; i <= 18; i++) r[i] = ED_UNK;
             r[30] = ED_UNK;
         } else if ((op & 0xffe0001f) == 0xd4200000) {  /* BRK: BUG() */
@@ -786,41 +799,101 @@ static int ed_locked_wrapper(const struct earc_code *fns, enum earc_function wra
     return 0;
 }
 
-/* aud_clock_update_output(index, rate, flag), index <= 3: entry = table +
- * index * stride; reads entry[8], locks entry+0x38, reads entry[9] and the
- * object at entry+16, stores rate at object+12 and flag at object+16, and
- * calls *(*(object+128)+32). */
+/* The one offset of a store of width bytes into root whose value satisfies
+ * match(value, argument), counted by distinct offset. 0 if none or several. */
+static int ed_unique_store(ed_u8 width, ed_u16 root, unsigned int argument, int low8, ed_u64 *off) {
+    unsigned int i, found = 0;
+    for (i = 0; i < ed_fact_count; i++) {
+        const struct ed_fact *f = &ed_facts[i];
+        if (f->kind != FK_STORE || f->width != width || f->root != root) continue;
+        if (!(low8 ? ed_is_low8_arg(f->value, argument) : ed_is_arg(f->value, argument))) continue;
+        if (found && f->off != *off) return 0;
+        *off = f->off;
+        found = 1;
+    }
+    return found;
+}
+
+/* The one offset X such that a 64-bit load from root at X is the target of an
+ * indirect call whose first argument is argument. 0 if none or several. */
+static int ed_unique_callback(ed_u16 root, unsigned int argument, ed_u64 *off) {
+    unsigned int i, j, found = 0;
+    for (i = 0; i < ed_fact_count; i++) {
+        const struct ed_fact *f = &ed_facts[i];
+        int called = 0;
+        if (f->kind != FK_LOAD || f->width != 8 || f->root != root) continue;
+        for (j = 0; j < ed_fact_count; j++)
+            if (ed_facts[j].kind == FK_ICALL && ed_facts[j].root == f->value && ed_is_arg(ed_facts[j].args[0], argument))
+                called = 1;
+        if (!called) continue;
+        if (found && f->off != *off) return 0;
+        *off = f->off;
+        found = 1;
+    }
+    return found;
+}
+
+/* aud_clock_update_output(index, rate, [channels,] flag), index <= 3: entry =
+ * table + index * stride; reads entry[o] and entry[o+1], locks the entry's
+ * mutex, reads the object at entry[o+8], stores rate (and channels) and flag
+ * into the object, and calls through the object's +128 control. Nothing is
+ * assumed: the stride and the mutex come from the lock's argument, the table
+ * from the one pair of byte loads followed by a pointer load, the object
+ * offsets from the stores of the arguments, the callbacks from the indirect
+ * calls that pass them. */
 static int ed_clock(const struct earc_code *fns, struct earc_layout *out) {
-    ed_u64 lock = 0;
-    ed_u16 mutex, entry, object, control, callback;
+    ed_u64 lock = 0, o = 0, flag_arg, channels_off = 0;
+    ed_u16 mutex, entry, object, control;
     const struct ed_node *m;
-    unsigned int i, called = 0;
+    unsigned int i, pairs = 0;
     if (ed_analyse(&fns[EF_aud_clock_update_output])) return -1;
     ED_CHECK(ed_call_site(fns[EF_mutex_lock].address, &lock), "aud_clock_update_output: not one mutex_lock call");
     mutex = ed_call_arg(lock, 0);
     m = &ed_nodes[mutex];
-    ED_CHECK(m->kind == NK_AFF && m->arg == 0 && m->m && m->m <= 0x1000 && !(m->m & 7) && m->c >= 0x38,
+    ED_CHECK(m->kind == NK_AFF && m->arg == 0 && m->m && m->m <= 0x1000 && !(m->m & 7),
              "aud_clock_update_output: mutex is not table + index * stride + constant");
     ED_CHECK(ed_any_call_with_arg(fns[EF_mutex_unlock].address, 0, mutex),
              "aud_clock_update_output: mutex_unlock does not take the entry mutex");
     out->clock_stride = m->m;
-    out->clock_table = m->c - 0x38;
     entry = ed_aff(0, 0, m->m);
-    ED_CHECK(ed_loaded(1, entry, out->clock_table + 8) && ed_loaded(1, entry, out->clock_table + 9),
-             "aud_clock_update_output: entry+8 and entry+9 flags not read around mutex entry+0x38");
+    for (i = 0; i < ed_fact_count; i++) {
+        const struct ed_fact *f = &ed_facts[i];
+        if (f->kind != FK_LOAD || f->width != 1 || f->root != entry) continue;
+        if (!ed_find(FK_LOAD, 1, entry, f->off + 1) || !ed_find(FK_LOAD, 8, entry, f->off + 8)) continue;
+        if (pairs && f->off != o) { pairs = 2; break; }
+        o = f->off;
+        pairs = 1;
+    }
+    ED_CHECK(pairs == 1 && o >= 8,
+             "aud_clock_update_output: not exactly one pair of entry+8/entry+9 flag byte loads followed by an 8-byte load at entry+16");
+    out->clock_table = o - 8;
+    ED_CHECK(m->c >= out->clock_table && m->c - out->clock_table >= 0x18 && !((m->c - out->clock_table) & 7) &&
+             m->c - out->clock_table + 0x20 <= m->m,
+             "aud_clock_update_output: entry mutex offset is not an aligned 32-byte field inside the entry after +0x18");
+    out->clock_mutex_offset = m->c - out->clock_table;
     object = ed_loaded(8, entry, out->clock_table + 16);
     ED_CHECK(object, "aud_clock_update_output: no clock object pointer at entry+16");
     ED_CHECK(ed_has_compare(ed_raw(0), 3, 8) || ed_has_compare(ed_aff(0, 0, 1), 3, 8),
              "aud_clock_update_output: no index <= 3 bound check");
-    ED_CHECK(ed_find(FK_STORE, 4, object, 12) && ed_is_arg(ed_find(FK_STORE, 4, object, 12)->value, 1),
-             "aud_clock_update_output: rate (argument 1) not stored at object+12");
-    ED_CHECK(ed_find(FK_STORE, 1, object, 16) && ed_is_low8_arg(ed_find(FK_STORE, 1, object, 16)->value, 2),
-             "aud_clock_update_output: flag (argument 2) not stored at object+16");
+    ED_CHECK(ed_unique_store(4, object, 1, 0, &out->clock_object_rate),
+             "aud_clock_update_output: rate (argument 1) not stored once as a word into the object");
+    out->clock_takes_channels = ed_unique_store(4, object, 2, 0, &channels_off);
+    if (out->clock_takes_channels) out->clock_object_channels = channels_off;
+    flag_arg = out->clock_takes_channels ? 3 : 2;
+    ED_CHECK(ed_unique_store(1, object, (unsigned int)flag_arg, 1, &out->clock_object_flag),
+             "aud_clock_update_output: flag not stored once as a byte into the object");
+    ED_CHECK(out->clock_object_rate < 0x80 && out->clock_object_flag < 0x80 &&
+             out->clock_object_rate != out->clock_object_channels && out->clock_object_rate != out->clock_object_flag &&
+             out->clock_object_channels != out->clock_object_flag,
+             "aud_clock_update_output: object field offsets overlap or lie beyond +0x80");
     control = ed_loaded(8, object, 128);
-    callback = ed_loaded(8, control, 32);
-    for (i = 0; i < ed_fact_count && callback; i++)
-        if (ed_facts[i].kind == FK_ICALL && ed_facts[i].root == callback) called = 1;
-    ED_CHECK(called, "aud_clock_update_output: no call through *(*(object+128)+32)");
+    ED_CHECK(control, "aud_clock_update_output: no control pointer at object+128");
+    ED_CHECK(ed_unique_callback(control, 1, &out->clock_callback_offset),
+             "aud_clock_update_output: not exactly one call through control+X with the rate as argument 0");
+    if (out->clock_takes_channels)
+        ED_CHECK(ed_unique_callback(control, 2, &out->clock_channel_callback_offset) &&
+                 out->clock_channel_callback_offset != out->clock_callback_offset,
+                 "aud_clock_update_output: not exactly one distinct call through control+Y with the channels as argument 0");
     out->clock_entry3 = out->clock_table + 3 * out->clock_stride;
     return 0;
 }
@@ -881,7 +954,7 @@ static int ed_renderer(const struct earc_code *fns) {
 /* output_set_earc_on(output, on): output+44 is compared with 3, on is stored
  * at +129, aud_clock_update_output gets the rate at +76 (the flag comes from
  * +84), then audio_hal_earc_set_on(on). */
-static int ed_earc_on(const struct earc_code *fns) {
+static int ed_earc_on(const struct earc_code *fns, const struct earc_layout *layout) {
     const struct ed_fact *on;
     ed_u16 output;
     if (ed_analyse(&fns[EF_output_set_earc_on])) return -1;
@@ -893,6 +966,9 @@ static int ed_earc_on(const struct earc_code *fns) {
     ED_CHECK(ed_loaded(4, output, 84) &&
              ed_any_call_with_arg(fns[EF_aud_clock_update_output].address, 1, ed_loaded(4, output, 76)),
              "output_set_earc_on: aud_clock_update_output does not get the rate at output+76");
+    ED_CHECK(!layout->clock_takes_channels ||
+             ed_any_call_with_arg(fns[EF_aud_clock_update_output].address, 2, ed_loaded(4, output, 72)),
+             "output_set_earc_on: aud_clock_update_output does not get the channel count at output+72");
     ED_CHECK(ed_any_call_with_arg(fns[EF_audio_hal_earc_set_on].address, 0, on->value),
              "output_set_earc_on: does not call audio_hal_earc_set_on(on)");
     return 0;
@@ -908,7 +984,7 @@ static const char *earc_decode(const struct earc_code *fns, struct earc_layout *
     if (ed_output_format(fns, out) || ed_channel(fns, out) || ed_audio_mode(fns, out) || ed_mute(fns, out) ||
         ed_locked_wrapper(fns, EF_bm_connect_block, EF__bm_connect_block_locked, 3, &out->bm_mutex) ||
         ed_locked_wrapper(fns, EF_bm_disconnect_block, EF__bm_disconnect_block_locked, 2, &out->bm_mutex) ||
-        ed_clock(fns, out) || ed_disconnect(fns) || ed_block_info(fns) || ed_renderer(fns) || ed_earc_on(fns))
+        ed_clock(fns, out) || ed_disconnect(fns) || ed_block_info(fns) || ed_renderer(fns) || ed_earc_on(fns, out))
         return ed_error ? ed_error : "decoder failed";
     return 0;
 }

@@ -9,22 +9,35 @@
 # layout equal ours, and every symbol the module needs appears exactly once in
 # /proc/kallsyms with a non-zero address. The module then derives the rest from
 # LG's code and refuses itself on any mismatch. One insmod, never retried.
-# Prints one result line. earc_route.ko must sit next to this script.
+# Prints one result line. earc_route-5.4.ko and earc_route-6.12.ko must sit
+# next to this script; the release picks the one to load.
 set -eu
 
 HERE=$(cd "$(dirname "$0")" && pwd)
-KO="$HERE/earc_route.ko"
-RELEASES="5.4.268-329.ptl4tv.5"
 
 refuse() { echo "earc-route: REFUSED: $*"; exit 1; }
 
 [ "$(id -u)" = 0 ] || refuse "must run as root"
+# Allowlist: release -> module, stock module, struct module size, init and exit
+# offsets (the same values build.py checks). Anything else is refused.
 release=$(uname -r)
-case " $RELEASES " in *" $release "*) ;; *) refuse "kernel $release is not in the allowlist ($RELEASES)" ;; esac
+case "$release" in
+  5.4.268-329.ptl4tv.5)
+    KO="$HERE/earc_route-5.4.ko"
+    STOCK="/lib/modules/$release/kernel/aspectratiodrv.ko"
+    ABI="0x380 0x150 0x338" ;;
+  6.12.44-352)
+    KO="$HERE/earc_route-6.12.ko"
+    STOCK="/usr/lib/modules/$release/kernel/aspectratiodrv.ko"
+    ABI="0x4c0 0x138 0x480" ;;
+  *) refuse "kernel $release is not in the allowlist (5.4.268-329.ptl4tv.5, 6.12.44-352)" ;;
+esac
 [ -f "$KO" ] || refuse "$KO missing"
 [ ! -e /sys/module/earc_route ] || refuse "earc_route is already loaded"
-STOCK="/lib/modules/$release/kernel/aspectratiodrv.ko"
 [ -f "$STOCK" ] || refuse "stock module $STOCK missing"
+INSMOD=$(command -v insmod || true)
+if [ -z "$INSMOD" ] && [ -x /sbin/insmod ]; then INSMOD=/sbin/insmod; fi
+[ -n "$INSMOD" ] || refuse "insmod not found"
 
 options="mode=0"
 if [ $# -gt 0 ]; then
@@ -42,7 +55,7 @@ fi
 
 # Checks both modules' ELF and reads /proc/kallsyms; prints the fn_/sz_
 # parameters, or the reason for refusing.
-parameters=$(python3 -I - "$STOCK" "$KO" <<'PY'
+parameters=$(python3 -I - "$STOCK" "$KO" $ABI <<'PY'
 import struct
 import sys
 
@@ -100,8 +113,9 @@ def module_abi(path):
 
 
 stock, ours = module_abi(sys.argv[1]), module_abi(sys.argv[2])
-if stock[1:] != (0x380, 0x150, 0x338):
-    fail('stock module layout is not 0x380 bytes with init at 0x150 and exit at 0x338: ' + repr(stock))
+abi = tuple(int(value, 16) for value in sys.argv[3:6])
+if stock[1:] != abi:
+    fail('stock module layout is not %#x bytes with init at %#x and exit at %#x: %r' % (abi + (stock,)))
 if ours != stock:
     fail('module ABI ' + repr(ours) + ' differs from the stock module ' + repr(stock))
 
@@ -147,7 +161,7 @@ PY
 # The kernel's own refusal reasons are in dmesg; keep only lines from this run.
 before=$(dmesg | grep -c 'earc_route:' || true)
 # shellcheck disable=SC2086 # options and parameters are word lists
-if result=$(/sbin/insmod "$KO" $options $parameters 2>&1); then status=0; else status=$?; fi
+if result=$("$INSMOD" "$KO" $options $parameters 2>&1); then status=0; else status=$?; fi
 last=$(dmesg | grep 'earc_route:' | tail -n 1 || true)
 after=$(dmesg | grep -c 'earc_route:' || true)
 [ "$after" != "$before" ] || last="(no earc_route kernel messages)"

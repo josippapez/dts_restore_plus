@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* eARC route for rooted LG webOS 25 TVs on the 5.4.268 kernel generation.
+/* eARC route for rooted LG webOS 25 TVs, on the 5.4.268 and 6.12.44 kernel
+ * generations (one source, two builds: see the EARC_* macros below).
  *
  * Port of Glasshouse's native-route.c (github.com/rorygallagher2024/glasshouse,
  * native/dts-forwarding), written and qualified by Glasshouse on the G5. The
@@ -15,6 +16,22 @@
  * lease, as Glasshouse's apply build does. The struct module layout and
  * vermagic are those of the stock 5.4.268 modules and are checked against
  * them at build and load time. */
+/* Per-generation build parameters, set by build.py with -D; the defaults are
+ * the 5.4.268 generation. EARC_MODULE_SIZE, EARC_MODULE_INIT and EARC_MODULE_EXIT
+ * are sizeof(struct module) and the offsets of its init and exit pointers in the
+ * stock aspectratiodrv.ko of that generation; EARC_PRINTK_SYMBOL is the kernel's
+ * name for printk (_printk on 6.12). */
+#ifndef EARC_MODULE_SIZE
+#define EARC_MODULE_SIZE 0x380
+#define EARC_MODULE_INIT 0x150
+#define EARC_MODULE_EXIT 0x338
+#endif
+#ifndef EARC_VERMAGIC
+#define EARC_VERMAGIC "5.4.268 SMP preempt mod_unload aarch64"
+#endif
+#ifndef EARC_PRINTK_SYMBOL
+#define EARC_PRINTK_SYMBOL "printk"
+#endif
 #include "earc_decode.h"
 
 typedef unsigned long u64;
@@ -24,7 +41,7 @@ typedef void *(*block_fn)(const char *, unsigned int);
 typedef int (*connection_fn)(void *, unsigned int, void *, unsigned int);
 typedef int (*disconnect_fn)(void *, unsigned int);
 typedef void (*format_fn)(unsigned int, unsigned int);
-extern int printk(const char *format, ...);
+extern int printk(const char *format, ...) __asm__(EARC_PRINTK_SYMBOL);
 extern void *kthread_create_on_node(int (*function)(void *), void *data, int node, const char *name, ...);
 extern int wake_up_process(void *task);
 extern int kthread_stop(void *task);
@@ -74,7 +91,6 @@ static struct earc_layout layout;
 #define HAL_MUTE ((void (*)(u32))fn_audio_hal_earc_set_mute)
 #define HAL_AUDIO_MODE ((void (*)(u32))fn_audio_hal_earc_set_audio_mode)
 #define HAL_SET_ON ((void (*)(u32))fn_audio_hal_earc_set_on)
-#define UPDATE_CLOCK ((int (*)(u32, u32, u32))fn_aud_clock_update_output)
 #define SEND_COMMAND ((int (*)(void *, u32, u32, u32, void *, u32))fn_aimc_send_command)
 #define PCM_HEAD ((u32 (*)(void *))fn_renderer_get_uid_pcm_bypass_head)
 #define CLOCK_CALLBACK ((void *)fn_aud_hal_set_arc_sample_rate)
@@ -110,26 +126,35 @@ static int valid_output_rate(u32 rate) {
 }
 
 /* Output clock entry 3 (the static "arc" entry), with the field offsets
- * earc_decode checked in aud_clock_update_output: entry[8] says its mutex at
- * +0x38 is initialised, entry[9] that the output is enabled; the object at
- * +16 holds the rate at +12, the flag at +16 and the control at +128, whose
- * +32 is the callback. */
-static int output_clock(u32 *rate, u32 *flag) {
+ * earc_decode derived in aud_clock_update_output: entry[8] says its mutex is
+ * initialised, entry[9] that the output is enabled; the object at +16 holds
+ * the rate, the channel count (6.12 only), the flag and the control at +128,
+ * whose clock_callback_offset is the callback. */
+static int output_clock(u32 *rate, u32 *flag, u32 *channels) {
     u8 *entry = (u8 *)layout.clock_entry3, *object, *control;
     int result = -19;
     if (!entry[8]) return result;
-    mutex_lock(entry + 0x38);
+    mutex_lock(entry + layout.clock_mutex_offset);
     object = *(u8 **)(entry + 16);
     if (entry[9] && object) {
         control = *(u8 **)(object + 128);
-        if (control && *(void **)(control + 32) == CLOCK_CALLBACK) {
-            *rate = *(u32 *)(object + 12);
-            *flag = object[16];
+        if (control && *(void **)(control + layout.clock_callback_offset) == CLOCK_CALLBACK) {
+            *rate = *(u32 *)(object + layout.clock_object_rate);
+            *flag = object[layout.clock_object_flag];
+            if (layout.clock_takes_channels) *channels = *(u32 *)(object + layout.clock_object_channels);
             if (valid_output_rate(*rate) && *flag <= 1) result = 0;
         }
     }
-    mutex_unlock(entry + 0x38);
+    mutex_unlock(entry + layout.clock_mutex_offset);
     return result;
+}
+
+/* aud_clock_update_output(3, rate, flag) on 5.4, (3, rate, channels, flag) on
+ * 6.12, as earc_decode found its signature. */
+static int update_clock(u32 rate, u32 channels, u32 flag) {
+    if (layout.clock_takes_channels)
+        return ((int (*)(u32, u32, u32, u32))fn_aud_clock_update_output)(3, rate, channels, flag);
+    return ((int (*)(u32, u32, u32))fn_aud_clock_update_output)(3, rate, flag);
 }
 
 static void *source_block, *old_source_block, *output_block, *watchdog;
@@ -141,7 +166,7 @@ static u32 restore_pcm;
  * 192000 for the eight-channel DTS-HD (HBR) carrier. */
 static u32 carrier_rate = 48000;
 static u32 hd_ready;
-static u32 original_clock_rate, original_clock_flag, original_channels, original_acmod;
+static u32 original_clock_rate, original_clock_flag, original_clock_channels, original_channels, original_acmod;
 static u32 original_audio_mode, original_hal_mute, original_earc_on;
 static int hd_saved;
 
@@ -165,8 +190,9 @@ static int owns_route(void) {
 }
 
 static int hd_format_matches(void) {
-    u32 rate = 0, flag = 0;
-    return !output_clock(&rate, &flag) && rate == 192000 && flag == original_clock_flag &&
+    u32 rate = 0, flag = 0, clock_channels = 0;
+    return !output_clock(&rate, &flag, &clock_channels) && rate == 192000 && flag == original_clock_flag &&
+        (!layout.clock_takes_channels || clock_channels == 8) &&
         WORD(nonpcm) == 1 && WORD(rate) == 192000 && WORD(channel_count) == 8 &&
         (WORD(control) & 7) == 6 && ((WORD(cs0) >> 24) & 15) == 9 && (WORD(cs0) & 2);
 }
@@ -189,7 +215,7 @@ static int configure_hd(void) {
     if (result < 0) return result;
     msleep(100);
     if (!owns_route()) return -16;
-    result = UPDATE_CLOCK(3, 192000, original_clock_flag);
+    result = update_clock(192000, 8, original_clock_flag);
     if (result < 0 || !owns_route()) return result < 0 ? result : -16;
     HAL_MUTE(1);
     HAL_CHANNEL(8, 2);
@@ -252,15 +278,15 @@ static int foreign_output_state(struct output_state *state, int *foreign) {
  * like the old one; the foreign connection itself is never changed. */
 static void hand_back_output(void) {
     struct output_state state, current;
-    u32 rate = 0, flag = 0;
+    u32 rate = 0, flag = 0, clock_channels = 0;
     unsigned int attempt;
     int foreign = 0;
     for (attempt = 0; attempt < 3; attempt++) {
-        if (!foreign_output_state(&state, &foreign) || output_clock(&rate, &flag)) {
+        if (!foreign_output_state(&state, &foreign) || output_clock(&rate, &flag, &clock_channels)) {
             msleep(50);
             continue;
         }
-        UPDATE_CLOCK(3, state.rate, state.flag);
+        update_clock(state.rate, state.channels, state.flag);
         HAL_MUTE(1);
         HAL_CHANNEL(state.channels, state.acmod);
         HAL_FORMAT(state.codec != 0, state.rate);
@@ -310,7 +336,7 @@ static void restore_route(void) {
     }
     mutex_unlock(BM_MUTEX);
     if (restore_format && hd_saved) {
-        u32 rate = 0, flag = 0;
+        u32 rate = 0, flag = 0, clock_channels = 0;
         int still_owned, result;
         current_source = (void *)0;
         current_port = 0;
@@ -322,13 +348,13 @@ static void restore_route(void) {
             hand_back_output();
             return;
         }
-        result = UPDATE_CLOCK(3, original_clock_rate, original_clock_flag);
+        result = update_clock(original_clock_rate, original_clock_channels, original_clock_flag);
         HAL_MUTE(original_hal_mute);
         HAL_SET_ON(original_earc_on);
         msleep(100);
         printk("\0016earc_route: HD restore clock=%u flag=%u result=%d readback=%d\n",
                original_clock_rate, original_clock_flag, result,
-               !output_clock(&rate, &flag) && rate == original_clock_rate && flag == original_clock_flag);
+               !output_clock(&rate, &flag, &clock_channels) && rate == original_clock_rate && flag == original_clock_flag);
     } else if (hd_saved) {
         hand_back_output();
     }
@@ -356,10 +382,10 @@ static int watch_route(void *unused) {
             continue;
         }
         if (phase && !hd_format_matches()) {
-            u32 rate = 0, flag = 0;
+            u32 rate = 0, flag = 0, clock_channels = 0;
             HAL_MUTE(1);
             __atomic_store_n(&hd_ready, 0, __ATOMIC_RELEASE);
-            output_clock(&rate, &flag);
+            output_clock(&rate, &flag, &clock_channels);
             printk("\0016earc_route: HD format changed mode=%u CS0=%08x clock=%u flag=%u\n",
                    WORD(control) & 7, WORD(cs0), rate, flag);
             phase = stable = 0;
@@ -401,12 +427,13 @@ static int watch_route(void *unused) {
 static void audit(void) {
     u8 *entry = (u8 *)layout.clock_entry3, *bytes;
     void *source = (void *)0;
-    u32 rate = 0, flag = 0, port = 0;
+    u32 rate = 0, flag = 0, port = 0, clock_channels = 0;
     unsigned int index;
-    int clock = output_clock(&rate, &flag), edge;
+    int clock = output_clock(&rate, &flag, &clock_channels), edge;
     printk("\0016earc_route: HAL mode-select=%u (1 selects mode 7, not 6)\n", WORD(mode_select));
-    printk("\0016earc_route: clock3 ready=%u enabled=%u arc-callback=%d result=%d rate=%u flag=%u\n",
-           entry[8], entry[9], *(void **)(entry + 32) == CLOCK_CALLBACK, clock, rate, flag);
+    printk("\0016earc_route: clock3 ready=%u enabled=%u arc-callback=%d result=%d rate=%u channels=%u flag=%u\n",
+           entry[8], entry[9], *(void **)(entry + layout.clock_callback_offset) == CLOCK_CALLBACK, clock, rate,
+           clock_channels, flag);
     mutex_lock(BM_MUTEX);
     for (index = 0; index < 2; index++) {
         bytes = BM_GET("renderer", index);
@@ -477,6 +504,10 @@ static void print_decoded(void) {
            layout.hal_b, layout.rate_offset, layout.channel_count, layout.acmod_offset, layout.control_offset);
     printk("\0016earc_route: BM mutex=%llx clock table=%llx stride=%llx entry3=%llx\n",
            layout.bm_mutex, layout.clock_table, layout.clock_stride, layout.clock_entry3);
+    printk("\0016earc_route: clock mutex=+%llx object rate=+%llu channels=+%llu (taken=%llu) flag=+%llu callback=+%llu channel callback=+%llu\n",
+           layout.clock_mutex_offset, layout.clock_object_rate, layout.clock_object_channels,
+           layout.clock_takes_channels, layout.clock_object_flag, layout.clock_callback_offset,
+           layout.clock_channel_callback_offset);
 }
 
 static int apply(void) {
@@ -488,7 +519,7 @@ static int apply(void) {
     old_source_block = BM_GET(restore_pcm ? "mixer" : "encoder", restore_pcm ? 0 : 3);
     output_block = BM_GET("output", 3);
     if (!source_block || !old_source_block || !output_block) return -19;
-    if (carrier_rate == 192000 && (output_clock(&original_clock_rate, &original_clock_flag) ||
+    if (carrier_rate == 192000 && (output_clock(&original_clock_rate, &original_clock_flag, &original_clock_channels) ||
         (original_clock_rate != 48000 && original_clock_rate != 192000))) return -19;
     /* renderer_get_uid_pcm_bypass_head deletes the renderer's pipeline and
      * builds a bypass one unless +76 (bypass pipeline) and +77 (PCM bypass)
@@ -588,26 +619,28 @@ void cleanup_module(void) {
     printk("\0016earc_route: unloaded\n");
 }
 
-/* Linux's loader initialises the remaining fields. These offsets and the
- * complete 0x380-byte layout are those of the stock 5.4.268 modules
- * (aspectratiodrv.ko); build.py and the loader check them. */
+/* Linux's loader initialises the remaining fields. The size and the init and
+ * exit offsets are those of the stock aspectratiodrv.ko of the generation
+ * (5.4.268: 0x380/0x150/0x338; 6.12.44: 0x4c0/0x138/0x480; name at 24 in both);
+ * build.py and the loader check them. */
 struct target_module {
     u8 prefix[24];
     char name[56];
-    u8 before_init[0x150 - 80];
+    u8 before_init[EARC_MODULE_INIT - 80];
     int (*initialise)(void);
-    u8 before_exit[0x338 - 0x158];
+    u8 before_exit[EARC_MODULE_EXIT - EARC_MODULE_INIT - 8];
     void (*finish)(void);
-    u8 suffix[0x380 - 0x340];
+    u8 suffix[EARC_MODULE_SIZE - EARC_MODULE_EXIT - 8];
 };
-_Static_assert(sizeof(struct target_module) == 0x380, "module size");
-_Static_assert(__builtin_offsetof(struct target_module, initialise) == 0x150, "module init");
-_Static_assert(__builtin_offsetof(struct target_module, finish) == 0x338, "module exit");
+_Static_assert(sizeof(struct target_module) == EARC_MODULE_SIZE, "module size");
+_Static_assert(__builtin_offsetof(struct target_module, name) == 24, "module name");
+_Static_assert(__builtin_offsetof(struct target_module, initialise) == EARC_MODULE_INIT, "module init");
+_Static_assert(__builtin_offsetof(struct target_module, finish) == EARC_MODULE_EXIT, "module exit");
 struct target_module __this_module __attribute__((section(".gnu.linkonce.this_module"), aligned(64), used)) = {
     .name = "earc_route", .initialise = init_module, .finish = cleanup_module
 };
 
-/* Linux 5.4 moduleparam.h: struct kernel_param_ops is {flags, set, get,
+/* Linux 5.4 and 6.12 moduleparam.h: struct kernel_param_ops is {flags, set, get,
  * free}; struct kernel_param is three pointers, u16 perm, s8 level, u8 flags,
  * then the argument pointer. Permission 0 keeps the addresses out of sysfs. */
 extern int param_set_uint(const char *value, const void *parameter);
@@ -650,9 +683,9 @@ static const struct target_parameter parameters[] __attribute__((section("__para
     {"hd_ready", &__this_module, &uint_operations, 0400, -1, 0, &hd_ready}
 };
 static const char module_license[] __attribute__((section(".modinfo"), used)) = "license=GPL";
-static const char module_vermagic[] __attribute__((section(".modinfo"), used)) = "vermagic=5.4.268 SMP preempt mod_unload aarch64";
+static const char module_vermagic[] __attribute__((section(".modinfo"), used)) = "vermagic=" EARC_VERMAGIC;
 static const char module_description[] __attribute__((section(".modinfo"), used)) =
-    "description=Self-adapting port of Glasshouse's native DTS eARC forwarding route (5.4.268)";
+    "description=Self-adapting port of Glasshouse's native DTS eARC forwarding route";
 __asm__(".pushsection .plt,\"ax\",%progbits\n.byte 0\n.popsection\n"
         ".pushsection .init.plt,\"a\",%progbits\n.byte 0\n.popsection\n"
         ".pushsection .text.ftrace_trampoline,\"ax\",%progbits\n.byte 0\n.popsection\n");

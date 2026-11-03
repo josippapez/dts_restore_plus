@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
 #
-# build.sh CAPTURE_DIR... -- build out/earc_route.ko for the webOS 25 5.4.268
-# kernel generation and check it against private kernel captures.
+# build.sh CAPTURE_DIR... -- build out/earc_route-5.4.ko and out/earc_route-6.12.ko
+# for the webOS 25 5.4.268 and 6.12.44 kernel generations (each one only if a
+# capture of it is given) and check them against private kernel captures.
 #
 # Each CAPTURE_DIR holds kernel.bin, kallsyms.txt and stock-module.ko from one
-# TV (private LG files: keep them outside this repository). They are mounted
-# read-only; the module does not embed anything from them.
+# TV (private LG files: keep them outside this repository); the generation of
+# each comes from its stock module. kallsyms.txt must be the live /proc/kallsyms
+# addresses (the 6.12 survey captures were 0x10000 too high and are corrected).
+# They are mounted read-only; the modules do not embed anything from them.
 #
 # Runs build.py in a linux/arm64 container: debian:12-slim (GCC 12.2) with
 # gcc, binutils and python3 installed on the fly, or EARC_BUILD_IMAGE if that
 # image already has aarch64-linux-gnu-gcc, readelf, nm and python3.
 #
-# Produces in webos25/kmod/out/: earc_route.ko, earc_route.json (sha256, ABI,
-# per-kernel export proof) and build/ intermediates.
+# Produces in webos25/kmod/out/: earc_route-<generation>.ko, earc_route-<generation>.json
+# (sha256, ABI, per-kernel export proof) and build/ intermediates.
 #
 set -euo pipefail
 
