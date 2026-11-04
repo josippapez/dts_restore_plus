@@ -148,7 +148,12 @@
     if (!supported) {
       setVal("stVerified", "n/a", "warn");
     } else if (s.verified) {
-      setVal("stVerified", "yes (webOS 25 / C5)", "ok");
+      // Labels read "LG <family> <model> (...)"; year names are LG's marketing names.
+      var fam = /^LG (\S+)/.exec(s.verifiedLabel || "");
+      var v = s.webosVersion;
+      var year = { 7: 22, 8: 23, 9: 24, 10: 25 }[parseInt(v, 10)];
+      var tag = [year && "webOS " + year, v && "v" + v, fam && fam[1]].filter(Boolean).join(" / ");
+      setVal("stVerified", tag ? "yes (" + tag + ")" : "yes", "ok");
     } else {
       setVal("stVerified", "NO - unverified on hardware", "warn");
     }
