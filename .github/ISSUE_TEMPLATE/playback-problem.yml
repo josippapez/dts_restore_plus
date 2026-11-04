@@ -1,0 +1,55 @@
+name: Playback or sound problem
+description: DTS or TrueHD doesn't play, plays as stereo, or a receiver or soundbar shows the wrong format.
+title: "[Playback] <model> / <app> / <what happens>"
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Run this on the TV as root** and paste the whole output in the first box.
+        It only reads. It shows your firmware, what is installed and switched on,
+        your sound output setting, and what the app did recently.
+
+        ```sh
+        curl -sL https://raw.githubusercontent.com/josippapez/dts_restore_plus/main/webos25/restore/report-tv.sh | sh
+        ```
+  - type: textarea
+    id: report
+    attributes:
+      label: Output of report-tv.sh
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: app
+    attributes:
+      label: Which app played it?
+      placeholder: "LG Media Player (USB), Plex, Jellyfin, Emby, Kodi, Stremio, Nuvio..."
+    validations:
+      required: true
+  - type: input
+    id: file
+    attributes:
+      label: Audio track
+      description: Codec and channels as the app or a tool like MediaInfo shows it, and the container.
+      placeholder: "DTS-HD MA 7.1 in MKV, TrueHD Atmos 7.1 in MKV"
+    validations:
+      required: true
+  - type: input
+    id: playback
+    attributes:
+      label: Direct play or transcode?
+      description: Plex, Jellyfin and Emby show this in their dashboard while the video plays.
+  - type: input
+    id: receiver
+    attributes:
+      label: Receiver or soundbar
+      description: Model, and whether it is connected over ARC or eARC. Leave empty for TV speakers.
+      placeholder: "Denon AVR-X4800H over eARC"
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens?
+      description: What you hear, and what the receiver or soundbar displays (format and channel count).
+    validations:
+      required: true

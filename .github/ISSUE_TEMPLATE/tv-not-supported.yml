@@ -50,7 +50,8 @@ body:
     id: version
     attributes:
       label: App or release version
-      placeholder: "2.7.2 / webos25-2.7"
+      description: The DTS Enabler app version (shown in the app), not the webOS version.
+      placeholder: "2.7.52 / webos25-2.55"
     validations:
       required: true
   - type: textarea
@@ -66,7 +67,7 @@ body:
       label: App log (optional)
       description: |
         If you used the app, `/var/lib/webosbrew/dtsenabler/dtsenabler.log`.
-        The report script already includes the last 40 lines, so skip this if you ran it.
+        The report already includes the recent button presses, so skip this if you ran it.
       render: text
     validations:
       required: false

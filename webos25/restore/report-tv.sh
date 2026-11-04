@@ -163,6 +163,24 @@ elif [ "$MKV_HAS_ADTS" = "yes" ] && [ "$HAS_AVDEC_DCA" = "no" ] && [ "$HAS_DTSDE
 elif [ "$MKV_HAS_ADTS" = "yes" ]; then MECH=demuxer-emits-dts; fi
 echo "DTS_DISABLE_MECHANISM_GUESS=$MECH"
 
+
+# What is installed and switched on: issues kept needing a follow-up for these.
+A=/media/developer/apps/usr/palm/applications/io.github.josippapez.dtsenabler/appinfo.json
+echo "app_version=$(sed -n 's/.*"version"[^"]*"\([^"]*\)".*/\1/p' "$A" 2>/dev/null | head -n1)"
+D=/var/lib/webosbrew/dts25
+echo "hook_gate_version=$(sed -n 's/^W25_GATE_VERSION=//p' "$D/init_dts25.sh" 2>/dev/null | head -n1)"
+for f in init_dts25.sh libgstadecswitch.so; do
+  [ -f "$D/$f" ] && echo "$f.md5=$(md5sum < "$D/$f" | cut -d' ' -f1)"
+done
+grep -hE '^(verified|forced)=' "$D/stock.fp" 2>/dev/null
+for f in passthrough multich appdts.enabled; do
+  [ -e "$D/$f" ] && echo "optin_$f=on" || echo "optin_$f=off"
+done
+echo "sound_output=$(luna-send -n 1 -w 3000 luna://com.webos.settingsservice/getSystemSettings \
+  '{"category":"sound","keys":["soundOutput","soundOutputDigital"]}' </dev/null 2>/dev/null \
+  | grep -o '"soundOutput[A-Za-z]*" *: *"[^"]*"' | tr -d ' "' | tr '\n' ' ')"
+echo "watcher_sound_output=$(cat /run/dts25/sound-output 2>/dev/null)"
+
 echo
 echo "--- computed profile (what the app will pick) ---"
 PROFILE=unknown
