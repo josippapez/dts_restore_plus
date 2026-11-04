@@ -210,5 +210,22 @@ echo "C2_GATE_FAIL=$C2_GATE_FAIL"
 echo
 echo "--- app log (if the app has run) ---"
 L=/var/lib/webosbrew/dtsenabler/dtsenabler.log
-if [ -f "$L" ]; then tail -n 40 "$L"; else echo "no app log at $L"; fi
+if [ -f "$L" ]; then
+  # Status entries are long, so a plain tail pushed Enable's outcome out of the
+  # report (#18). Show what each button press did, then the latest status.
+  echo "last actions:"
+  awk '/^[^ ]/ { keep = /\[action\]/; if (keep) n++ }
+       keep { b[n] = b[n] $0 "\n" }
+       END { for (i = (n > 8 ? n - 7 : 1); i <= n; i++) printf "%s", b[i] }' "$L"
+  echo "latest status:"
+  awk '/^[^ ]/ { keep = !/\[action\]/; if (keep) cur = "" }
+       keep { cur = cur $0 "\n"; last = cur }
+       END { printf "%s", last }' "$L"
+else
+  echo "no app log at $L"
+fi
+
+echo
+echo "--- boot hook log (since the last restart) ---"
+if [ -f /tmp/dts25.log ]; then tail -n 30 /tmp/dts25.log; else echo "no boot hook log"; fi
 echo "=== end of report ==="
