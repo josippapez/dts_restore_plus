@@ -180,6 +180,9 @@ echo "sound_output=$(luna-send -n 1 -w 3000 luna://com.webos.settingsservice/get
   '{"category":"sound","keys":["soundOutput","soundOutputDigital"]}' </dev/null 2>/dev/null \
   | grep -o '"soundOutput[A-Za-z]*" *: *"[^"]*"' | tr -d ' "' | tr '\n' ' ')"
 echo "watcher_sound_output=$(cat /run/dts25/sound-output 2>/dev/null)"
+# Apps and HDMI inputs offer DTS only if this mentions dts (Show DTS tracks).
+echo "edidType=$(grep -o '"edidType"[[:space:]]*:[[:space:]]*"[^"]*"' /var/preferences/configd_db.json 2>/dev/null | head -n1 | sed 's/.*:[[:space:]]*"//; s/"$//')"
+echo "appdts_last=$(head -n1 "$D/appdts.last" 2>/dev/null)"
 
 echo
 echo "--- computed profile (what the app will pick) ---"
