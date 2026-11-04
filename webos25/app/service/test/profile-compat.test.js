@@ -719,6 +719,12 @@ test("a failing TS demuxer degrades to MP4/MKV instead of failing the enable", f
   ok(r, "enable with a usable TS demuxer");
   assert.match(r.stdout, /VERDICT=forced/);
   assert.match(r.stdout, /TS_BOUND=1/);
+  // #22: the staged TS demuxer and its trace are ours, so Uninstall must remove
+  // them rather than refuse the whole state as unexpected.
+  r = run(f, service.c2Disable(true, o));
+  ok(r, "uninstall with the TS demuxer staged");
+  assert.doesNotMatch(r.stdout, /REFUSED/, r.stdout);
+  assert.equal(fs.existsSync(f.state), false, "uninstall must remove the dedicated C2 state");
 
   // 4. TS shipped and usable, but the TV has no stock TS demuxer to override.
   f = fixture(); o = f.overrides();
