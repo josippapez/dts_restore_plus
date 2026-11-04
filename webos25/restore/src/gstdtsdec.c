@@ -1669,8 +1669,8 @@ gst_dtsdec_passthrough_decide (GstDtsDec * dts, const guint8 * d, gsize size)
 
 /* One burst per frame. If the sound output stops being a receiver mid-stream
  * the bursts turn to silence rather than noise; the next stream decodes. */
-static GstFlowReturn
-gst_dtsdec_passthrough_frame (GstDtsDec * dts, const guint8 * d, gsize size)
+static GstBuffer *
+gst_dtsdec_passthrough_burst (GstDtsDec * dts, const guint8 * d, gsize size)
 {
   GstBuffer *outbuf;
   GstMapInfo omap;
@@ -1694,7 +1694,7 @@ gst_dtsdec_passthrough_frame (GstDtsDec * dts, const guint8 * d, gsize size)
       || dts_iec61937_pack (d, size, omap.data, dts->pt_period) == 0)
     memset (omap.data, 0, dts->pt_period);
   gst_buffer_unmap (outbuf, &omap);
-  return gst_audio_decoder_finish_frame (GST_AUDIO_DECODER (dts), outbuf, 1);
+  return outbuf;
 }
 
 static GstFlowReturn
@@ -1710,24 +1710,22 @@ gst_dtsdec_handle_frame (GstAudioDecoder * bdec, GstBuffer * buffer)
   if (G_UNLIKELY (!buffer))
     return GST_FLOW_OK;
 
-  if (!dts->pt_decided || dts->pt_active) {
-    gboolean drop = FALSE;
-
-    gst_buffer_map (buffer, &map, GST_MAP_READ);
-    if (!dts->pt_decided)
-      drop = gst_dtsdec_passthrough_decide (dts, map.data, map.size);
-    if (drop)
-      result = gst_audio_decoder_finish_frame (bdec, NULL, 1);
-    else if (dts->pt_active)
-      result = gst_dtsdec_passthrough_frame (dts, map.data, map.size);
+  /* finish_frame releases the input buffer, so every path unmaps first */
+  gst_buffer_map (buffer, &map, GST_MAP_READ);
+  if (!dts->pt_decided
+      && gst_dtsdec_passthrough_decide (dts, map.data, map.size)) {
     gst_buffer_unmap (buffer, &map);
-    if (drop || dts->pt_active)
-      return result;
+    return gst_audio_decoder_finish_frame (bdec, NULL, 1);
+  }
+  if (dts->pt_active) {
+    GstBuffer *outbuf = gst_dtsdec_passthrough_burst (dts, map.data, map.size);
+
+    gst_buffer_unmap (buffer, &map);
+    return gst_audio_decoder_finish_frame (bdec, outbuf, 1);
   }
 
   /* FFmpeg reads up to AV_INPUT_BUFFER_PADDING_SIZE past the end, which must
    * be zero, so the frame goes through a padded copy. */
-  gst_buffer_map (buffer, &map, GST_MAP_READ);
   need = map.size + AV_INPUT_BUFFER_PADDING_SIZE;
   if (dts->pktbuf_size < need) {
     av_freep (&dts->pktbuf);
