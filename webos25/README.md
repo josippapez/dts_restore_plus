@@ -395,6 +395,7 @@ GStreamer major.minor version:
 | LG G5 OLED77G54LW (webOS 11.2.0) | 1.24.10 | `cb40b8b3bcda13d2c5a662762f8ff1b2` | `8fa3f7b96a045765a28a62011ff02a66` | `fc717f70284deebecd4a1ea1254617e7` |
 | LG C5 OLED65C5PUA (webOS 11.2.0) | 1.24.10 | `cb40b8b3bcda13d2c5a662762f8ff1b2` | `8fa3f7b96a045765a28a62011ff02a66` | `fc717f70284deebecd4a1ea1254617e7` |
 | LG G2 OLED77G23LA (webOS 11.2.0) | 1.24.10 | `cb40b8b3bcda13d2c5a662762f8ff1b2` | `d4e37523bcd2b00c16fc8792d75e1ae4` | `66ac51a0c81efbb8a705d0c60ab62cfa` |
+| LG G5 OLED65G56LS (webOS 10.3.0) | 1.24.0 | `3c8efc3a8af078f64d18fd2ce4f3ef71` | `18172fc834da68c7f31f36e46afbc5bd` | `2c7a44bc37a01a9f22adf93444467655` |
 
 A TV whose stock hashes are **not** in the table is refused by default — Enable/the boot
 hook show the probed values so they can be reported for a future entry — with an explicit

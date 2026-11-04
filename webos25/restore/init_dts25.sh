@@ -97,7 +97,7 @@ EXPECT_GST=1.24
 #   27 shadows libgstmatroska.so too (optional demuxer, Dolby Vision profile 7):
 #      bound in APPLY 2c, unbound by w25_drop_binds, fingerprinted in stock.fp and
 #      drift-checked like the /etc keys, so an older stock.fp without it is not drift.
-W25_GATE_VERSION=35
+W25_GATE_VERSION=38
 FP=/var/lib/webosbrew/dts25/stock.fp
 # Where the installed copy of THIS script lives, and the boot hook that symlinks
 # to it. Named here, in the shared block, so the read-only probe can fingerprint
@@ -408,6 +408,10 @@ w25_verdict() {
 # soundbar after opting in, and passed all four self-tests. An OLED55G5WUA on 43.21.71
 # reports the same three md5s.
 1.24|cb40b8b3bcda13d2c5a662762f8ff1b2|8fa3f7b96a045765a28a62011ff02a66|fc717f70284deebecd4a1ea1254617e7|OLED*G5*|LG G5 OLED77G54LW (webOS 11.2.0, GStreamer 1.24.10)
+# G5 on webOS 10.3.0 (firmware 33.31.28): its own builds of all three plugins
+# (owner report). An OLED65G56LS passed the self-tests after opting in, and played
+# DTS-HD MA and TrueHD in Plex with Direct Play forced.
+1.24|3c8efc3a8af078f64d18fd2ce4f3ef71|18172fc834da68c7f31f36e46afbc5bd|2c7a44bc37a01a9f22adf93444467655|OLED*G5*|LG G5 OLED65G56LS (webOS 10.3.0, GStreamer 1.24.0)
 # C5 on webOS 11.2: byte-identical to the G5 row above (read from the 43.21.77 image).
 # An OLED65C5PUA on 43.21.77 played DTS and TrueHD audibly over eARC.
 1.24|cb40b8b3bcda13d2c5a662762f8ff1b2|8fa3f7b96a045765a28a62011ff02a66|fc717f70284deebecd4a1ea1254617e7|OLED*C5*|LG C5 OLED65C5PUA (webOS 11.2.0, GStreamer 1.24.10)
