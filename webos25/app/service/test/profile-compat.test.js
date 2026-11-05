@@ -840,6 +840,18 @@ test("the relabel watcher re-reads the sound output on every call", function () 
   r = sh(fscript, {PATH: bin + ":" + process.env.PATH});
   assert.strictEqual(r.status, 0, r.stderr);
   assert.ok(!fs.existsSync(sent), "a payload posing as LG's call was re-sent");
+
+  // A switch to the Dolby track keeps the pipeline's marker, but LG's own
+  // decoder must keep its label so the receiver gets Dolby (discussion #17).
+  var dolby = JSON.parse(JSON.stringify(payload));
+  dolby.categoryInfo.codec = "ac3";
+  var dline = line.replace(JSON.stringify(payload), JSON.stringify(dolby));
+  var dscript = script.split("\n").slice(0, -3).concat([
+    'echo "' + process.pid + ' external_arc auto" > "$PT_OUT"',
+    "w25_mc_relabel '" + dline + "'"]).join("\n");
+  r = sh(dscript, {PATH: bin + ":" + process.env.PATH});
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.ok(!fs.existsSync(sent), "LG's ac3 label was relabelled to pcm");
 });
 
 /* "5.1 / 7.1 goes to the receiver" needs the relabel watcher alive: without it

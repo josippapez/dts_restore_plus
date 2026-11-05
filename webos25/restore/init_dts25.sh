@@ -683,7 +683,9 @@ w25_mc_relabel() {
     case $payload in *"$k"*) ;; *) return 0 ;; esac
   done
   codec=$(echo "$payload" | sed -n 's/.*"codec":"\([^"]*\)".*/\1/p')
-  case $codec in ''|pcm) return 0 ;; esac
+  # Only our decoders' labels: after a track switch to Dolby the marker is still
+  # there, and relabelling LG's "ac3" sent the receiver stereo PCM, not Dolby.
+  case $codec in dts|true-hd) ;; *) return 0 ;; esac
   id=$(echo "$payload" | sed -n 's/.*"pipelineId":"\([^"]*\)".*/\1/p')
   case $id in ''|*[!A-Za-z0-9_.-]*) return 0 ;; esac
   [ -f "$MC_FLAG" ] || return 0
