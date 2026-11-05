@@ -194,8 +194,38 @@ w25_drop_binds() {
 # ONLY, so the registry it writes does not name /var/lib/webosbrew and the next
 # w25_reg_is_ours is false -- no repeated 60s regen on every boot. It also works
 # when our libraries are already gone, for the same reason.
+w25_pt_stop() {
+  PT_RUN=/run/dts25
+  PT_OUT=$PT_RUN/sound-output
+  PT_PID=$PT_RUN/watcher.pid
+  HD_SVC=/var/lib/webosbrew/dts25/hdroute.sh
+  if [ -f "$HD_SVC" ]; then
+    if ! grep -q -- '--stop' "$HD_SVC"; then
+      echo 'ERROR=The installed DTS-HD helper is outdated. Enable DTS again before changing passthrough.'
+      return 1
+    fi
+    sh "$HD_SVC" --stop || { echo 'ERROR=Could not restore the eARC route; settings were kept.'; return 1; }
+  fi
+  P=$(cat "$PT_PID" 2>/dev/null)
+  if [ -n "$P" ] && [ -d "/proc/$P" ]; then
+    for child in /proc/[0-9]*; do
+      [ "$(cut -d' ' -f4 "$child/stat" 2>/dev/null)" = "$P" ] && kill "${child#/proc/}" 2>/dev/null
+    done
+    kill "$P" 2>/dev/null
+    attempts=0
+    while [ "$(cat "$PT_PID" 2>/dev/null)" = "$P" ] && [ -r "/proc/$P/stat" ] && [ "$(cut -d' ' -f3 "/proc/$P/stat")" != Z ] && [ "$attempts" -lt 10 ]; do
+      sleep 1
+      attempts=$((attempts + 1))
+    done
+    if [ "$(cat "$PT_PID" 2>/dev/null)" = "$P" ] && [ -r "/proc/$P/stat" ] && [ "$(cut -d' ' -f3 "/proc/$P/stat")" != Z ]; then
+      echo 'ERROR=The passthrough watcher did not stop; settings were kept.'
+      return 1
+    fi
+  fi
+  rm -f "$PT_OUT" "$PT_PID"
+}
 w25_stand_down() {
-  [ ! -f /var/lib/webosbrew/dts25/hdroute.sh ] || sh /var/lib/webosbrew/dts25/hdroute.sh --stop || return 1
+  w25_pt_stop || return 1
   w25_drop_binds
   if w25_reg_is_ours; then
     w25_log "a registry of ours is still live; regenerating the stock registry so nothing of ours stays registered"
@@ -670,24 +700,6 @@ w25_pt_start() {
   [ -n "$P" ] && [ -d "/proc/$P" ] && return 0
   ( w25_pt_watch ) </dev/null >/dev/null 2>&1 &
 }
-# Stops the watcher and its luna-send, and drops the file, so dtsdec decodes.
-w25_pt_stop() {
-  [ ! -f /var/lib/webosbrew/dts25/hdroute.sh ] || sh /var/lib/webosbrew/dts25/hdroute.sh --stop || return 1
-  P=$(cat "$PT_PID" 2>/dev/null)
-  if [ -n "$P" ] && [ -d "/proc/$P" ]; then
-    for c in /proc/[0-9]*; do
-      [ "$(cut -d' ' -f4 "$c/stat" 2>/dev/null)" = "$P" ] && kill "${c#/proc/}" 2>/dev/null
-    done
-    kill "$P" 2>/dev/null
-    attempts=0
-    while [ "$(cat "$PT_PID" 2>/dev/null)" = "$P" ] && [ "$attempts" -lt 10 ]; do
-      sleep 1
-      attempts=$((attempts + 1))
-    done
-    [ "$(cat "$PT_PID" 2>/dev/null)" != "$P" ] || return 1
-  fi
-  rm -f "$PT_OUT" "$PT_PID"
-}
 # W25_PT=start|stop: only start or stop the watcher, for the app's toggle, so
 # turning passthrough on or off takes effect without a restart.
 if [ -n "${W25_PT:-}" ]; then
@@ -702,7 +714,7 @@ fi
 # APPLY if the gate's inputs changed between the caller's preflight and this call.
 if [ "${W25_STAND_DOWN:-0}" = 1 ]; then
   if w25_reg_is_ours; then WAS_OURS=1; else WAS_OURS=0; fi
-  w25_stand_down
+  w25_stand_down || exit 1
   w25_log "stand-down requested by the installer (a registry of ours was live: $WAS_OURS)"
   echo "STOOD_DOWN=$WAS_OURS"
   exit 0
@@ -750,7 +762,7 @@ w25_unowned() {
 # registry naming them must be replaced whether or not it looks like ours.
 w25_self_heal() {
   w25_log "SELF-HEAL: $HEAL_WHY -- reverting every override"
-  [ ! -f /var/lib/webosbrew/dts25/hdroute.sh ] || sh /var/lib/webosbrew/dts25/hdroute.sh --stop || return 1
+  w25_pt_stop || return 1
   w25_drop_binds
   if ! w25_stock_registry; then
     w25_log "SELF-HEAL DEFERRED: LG's registry could not be rebuilt, so our plugins and the boot hook are KEPT (deleting them now would leave the live registry pointing at missing plugins). Retrying at the next boot."
@@ -1184,6 +1196,7 @@ w25_appdts_start() {
   ( w25_appdts_apply ) </dev/null >/dev/null 2>&1 &
 }
 w25_appdts_start
+w25_pt_stop || exit 1
 w25_pt_start
 # --- APPLY 2c) container demuxers with DTS re-enabled (mp4/ts/m2ts DTS -> audio/x-dts).
 #         Patched isomp4/mpegtsdemux default dts_support=TRUE; patched matroska

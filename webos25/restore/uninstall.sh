@@ -26,8 +26,6 @@
 # them fully reverts the TV. A REBOOT is recommended to guarantee a clean
 # state (drops any in-memory registry the media process already cached).
 #
-# Always exits 0.
-#
 set -u
 
 LOG=/tmp/dts25.log
@@ -75,15 +73,22 @@ w25_umount() {
 
 log "=== unified DTS+TrueHD uninstall start ==="
 
+STOP_SCRIPT=$(dirname "$0")/init_dts25.sh
+[ -f "$STOP_SCRIPT" ] || STOP_SCRIPT=$DTS_DEST/init_dts25.sh
+if [ -f "$STOP_SCRIPT" ]; then
+  grep -q 'ERROR=The installed DTS-HD helper is outdated' "$STOP_SCRIPT" || {
+    echo 'The installed init script is outdated. Run install.sh before uninstalling.'
+    exit 1
+  }
+  W25_PT=stop sh "$STOP_SCRIPT" || exit 1
+fi
+
 # --- 1. Remove boot hook ---------------------------------------------------
 if [ -L "$HOOK" ] || [ -e "$HOOK" ]; then
   rm -f "$HOOK" && log "removed boot hook $HOOK"
 else
   log "boot hook not present"
 fi
-
-# --- 1b. Stop the DTS-HD route service; it gives eARC back to LG's mixer ----
-[ ! -f "$DTS_DEST/hdroute.sh" ] || sh "$DTS_DEST/hdroute.sh" --stop || exit 1
 
 # --- 2. Unmount all binds --------------------------------------------------
 # Rootfs paths only. The same binds propagate into every app jail (27 jail-side

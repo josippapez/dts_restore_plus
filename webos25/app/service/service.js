@@ -448,8 +448,38 @@ var W25_COMPAT_SH = [
   "# ONLY, so the registry it writes does not name /var/lib/webosbrew and the next",
   "# w25_reg_is_ours is false -- no repeated 60s regen on every boot. It also works",
   "# when our libraries are already gone, for the same reason.",
+  "w25_pt_stop() {",
+  "  PT_RUN=/run/dts25",
+  "  PT_OUT=$PT_RUN/sound-output",
+  "  PT_PID=$PT_RUN/watcher.pid",
+  "  HD_SVC=/var/lib/webosbrew/dts25/hdroute.sh",
+  "  if [ -f \"$HD_SVC\" ]; then",
+  "    if ! grep -q -- '--stop' \"$HD_SVC\"; then",
+  "      echo 'ERROR=The installed DTS-HD helper is outdated. Enable DTS again before changing passthrough.'",
+  "      return 1",
+  "    fi",
+  "    sh \"$HD_SVC\" --stop || { echo 'ERROR=Could not restore the eARC route; settings were kept.'; return 1; }",
+  "  fi",
+  "  P=$(cat \"$PT_PID\" 2>/dev/null)",
+  "  if [ -n \"$P\" ] && [ -d \"/proc/$P\" ]; then",
+  "    for child in /proc/[0-9]*; do",
+  "      [ \"$(cut -d' ' -f4 \"$child/stat\" 2>/dev/null)\" = \"$P\" ] && kill \"${child#/proc/}\" 2>/dev/null",
+  "    done",
+  "    kill \"$P\" 2>/dev/null",
+  "    attempts=0",
+  "    while [ \"$(cat \"$PT_PID\" 2>/dev/null)\" = \"$P\" ] && [ -r \"/proc/$P/stat\" ] && [ \"$(cut -d' ' -f3 \"/proc/$P/stat\")\" != Z ] && [ \"$attempts\" -lt 10 ]; do",
+  "      sleep 1",
+  "      attempts=$((attempts + 1))",
+  "    done",
+  "    if [ \"$(cat \"$PT_PID\" 2>/dev/null)\" = \"$P\" ] && [ -r \"/proc/$P/stat\" ] && [ \"$(cut -d' ' -f3 \"/proc/$P/stat\")\" != Z ]; then",
+  "      echo 'ERROR=The passthrough watcher did not stop; settings were kept.'",
+  "      return 1",
+  "    fi",
+  "  fi",
+  "  rm -f \"$PT_OUT\" \"$PT_PID\"",
+  "}",
   "w25_stand_down() {",
-  "  [ ! -f /var/lib/webosbrew/dts25/hdroute.sh ] || sh /var/lib/webosbrew/dts25/hdroute.sh --stop || return 1",
+  "  w25_pt_stop || return 1",
   "  w25_drop_binds",
   "  if w25_reg_is_ours; then",
   "    w25_log \"a registry of ours is still live; regenerating the stock registry so nothing of ours stays registered\"",
@@ -927,24 +957,6 @@ var W25_INIT_MAIN = [
   "  [ -n \"$P\" ] && [ -d \"/proc/$P\" ] && return 0",
   "  ( w25_pt_watch ) </dev/null >/dev/null 2>&1 &",
   "}",
-  "# Stops the watcher and its luna-send, and drops the file, so dtsdec decodes.",
-  "w25_pt_stop() {",
-  "  [ ! -f /var/lib/webosbrew/dts25/hdroute.sh ] || sh /var/lib/webosbrew/dts25/hdroute.sh --stop || return 1",
-  "  P=$(cat \"$PT_PID\" 2>/dev/null)",
-  "  if [ -n \"$P\" ] && [ -d \"/proc/$P\" ]; then",
-  "    for c in /proc/[0-9]*; do",
-  "      [ \"$(cut -d' ' -f4 \"$c/stat\" 2>/dev/null)\" = \"$P\" ] && kill \"${c#/proc/}\" 2>/dev/null",
-  "    done",
-  "    kill \"$P\" 2>/dev/null",
-  "    attempts=0",
-  "    while [ \"$(cat \"$PT_PID\" 2>/dev/null)\" = \"$P\" ] && [ \"$attempts\" -lt 10 ]; do",
-  "      sleep 1",
-  "      attempts=$((attempts + 1))",
-  "    done",
-  "    [ \"$(cat \"$PT_PID\" 2>/dev/null)\" != \"$P\" ] || return 1",
-  "  fi",
-  "  rm -f \"$PT_OUT\" \"$PT_PID\"",
-  "}",
   "# W25_PT=start|stop: only start or stop the watcher, for the app's toggle, so",
   "# turning passthrough on or off takes effect without a restart.",
   "if [ -n \"${W25_PT:-}\" ]; then",
@@ -959,7 +971,7 @@ var W25_INIT_MAIN = [
   "# APPLY if the gate's inputs changed between the caller's preflight and this call.",
   "if [ \"${W25_STAND_DOWN:-0}\" = 1 ]; then",
   "  if w25_reg_is_ours; then WAS_OURS=1; else WAS_OURS=0; fi",
-  "  w25_stand_down",
+  "  w25_stand_down || exit 1",
   "  w25_log \"stand-down requested by the installer (a registry of ours was live: $WAS_OURS)\"",
   "  echo \"STOOD_DOWN=$WAS_OURS\"",
   "  exit 0",
@@ -1007,7 +1019,7 @@ var W25_INIT_MAIN = [
   "# registry naming them must be replaced whether or not it looks like ours.",
   "w25_self_heal() {",
   "  w25_log \"SELF-HEAL: $HEAL_WHY -- reverting every override\"",
-  "  [ ! -f /var/lib/webosbrew/dts25/hdroute.sh ] || sh /var/lib/webosbrew/dts25/hdroute.sh --stop || return 1",
+  "  w25_pt_stop || return 1",
   "  w25_drop_binds",
   "  if ! w25_stock_registry; then",
   "    w25_log \"SELF-HEAL DEFERRED: LG's registry could not be rebuilt, so our plugins and the boot hook are KEPT (deleting them now would leave the live registry pointing at missing plugins). Retrying at the next boot.\"",
@@ -1441,6 +1453,7 @@ var W25_INIT_MAIN = [
   "  ( w25_appdts_apply ) </dev/null >/dev/null 2>&1 &",
   "}",
   "w25_appdts_start",
+  "w25_pt_stop || exit 1",
   "w25_pt_start",
   "# --- APPLY 2c) container demuxers with DTS re-enabled (mp4/ts/m2ts DTS -> audio/x-dts).",
   "#         Patched isomp4/mpegtsdemux default dts_support=TRUE; patched matroska",
@@ -2693,6 +2706,7 @@ function w25Enable(force) {
     //    w25_drop_binds falls back to a lazy detach (plain umount of
     //    libgstlibav.so fails with "target is busy" while WebAppMgr has it
     //    mapped) and prints WARN_UNMOUNT= for anything that survives even that.
+    'w25_pt_stop || exit 1',
     "w25_drop_binds",
     // 3a. Generate the codec-capability override (insert TRUEHD+MLP after DTSE).
     'base64 -d > /tmp/dts25_cap.awk <<\'B64CAP\'',
@@ -2769,6 +2783,7 @@ function w25Enable(force) {
     'APPLY=$(W25_NO_APPDTS=1 FORCE="$FORCE" sh "' + W25_INIT_SCRIPT + '" 2>/dev/null)',
     'log "apply: $(printf "%s" "$APPLY" | tr "\\n" " ")"',
     'case "$APPLY" in',
+    '  *ERROR=*) printf "%s\\n" "$APPLY"; exit 1 ;;',
     '  *REFUSED=*)',
     '    printf "%s\\n" "$APPLY" | grep -e "^REFUSED=" -e "^REASON=" -e "^WARN_UNMOUNT="',
     '    log "=== enable (webos25 DTS+TrueHD) refused on apply ==="',
@@ -2800,9 +2815,8 @@ function w25DisableSteps() {
     'log() { echo "[dts25-disable $(date \'+%Y-%m-%d %H:%M:%S\')] $*" >> "$LOG" 2>&1; }',
     'log "=== disable (webos25) start ==="'
   ].concat(W25_COMPAT_SH, [
+    'w25_pt_stop || exit 1',
     'if [ -L "' + W25_HOOK + '" ] || [ -e "' + W25_HOOK + '" ]; then rm -f "' + W25_HOOK + '" && log "removed boot hook"; else log "boot hook not present"; fi',
-    // Gives eARC back to LG's mixer before our dtsdec goes away.
-    '[ ! -f "' + W25_DEST + '/hdroute.sh" ] || sh "' + W25_DEST + '/hdroute.sh" --stop || exit 1',
     // Prints WARN_UNMOUNT=<targets> and returns non-zero if a target survived even
     // a lazy detach, i.e. the revert did not actually happen. Surfaced to the
     // caller below rather than swallowed.
@@ -4041,8 +4055,8 @@ function w25PassthroughSteps(on, hd) {
   lines.push(Buffer.from(w25InitScriptBody(), "utf8").toString("base64"));
   lines.push('B64EOF');
   lines.push('chmod 0755 "' + W25_INIT_SCRIPT + '"');
+  lines.push('W25_PT=stop sh "' + W25_INIT_SCRIPT + '" </dev/null || exit 1');
   if (typeof hd === "boolean") {
-    lines.push('W25_PT=stop sh "' + W25_INIT_SCRIPT + '" </dev/null >/dev/null 2>&1 || exit 1');
     lines.push(hd ? ': > "' + W25_HD_FLAG + '"' : 'rm -f "' + W25_HD_FLAG + '"');
   }
   if (on) {
@@ -4054,7 +4068,6 @@ function w25PassthroughSteps(on, hd) {
     lines.push('i=0; while [ "$i" -lt 10 ]; do [ -s ' + W25_PT_RUN + '/sound-output ] && { [ ! -f ' + W25_HD_FLAG + ' ] || [ -s ' + W25_PT_RUN + '/hdroute.pid ]; } && break; sleep 1; i=$((i + 1)); done');
   } else {
     lines.push('rm -f "$FLAG"');
-    lines.push('W25_PT=stop sh "' + W25_INIT_SCRIPT + '" </dev/null >/dev/null 2>&1 || exit 1');
   }
   lines.push('P=$(cat ' + W25_PT_RUN + '/hdroute.pid 2>/dev/null); echo "HD_RUNNING=$([ -n "$P" ] && [ -d /proc/$P ] && echo 1 || echo 0)"');
   lines.push('echo "PT_OUT=$(cut -d" " -f2- ' + W25_PT_RUN + '/sound-output 2>/dev/null)"');
@@ -4082,6 +4095,10 @@ service.register("setPassthrough", function (message) {
     return rootExec(w25PassthroughSteps(want, hd)).then(function (r) {
       var kv = parseKv(r.stdout);
       var out = kv.PT_OUT || "";
+      if (kv.ERROR || !/^OK$/m.test(r.stdout || "")) {
+        message.respond({ returnValue: false, errorText: kv.ERROR || "Passthrough settings could not be changed." });
+        return;
+      }
       if (kv.HD_STAGED === "0") {
         message.respond({ returnValue: false,
           errorText: "The DTS-HD route service is not installed. Enable DTS again to install it." });
@@ -4441,6 +4458,10 @@ function runMechanism(message, action) {
 
     return rootExec(builder()).then(function (r) {
       var kv = parseKv(r.stdout);
+      if (kv.ERROR) {
+        message.respond({ returnValue: false, profile: profile, action: action, errorText: kv.ERROR });
+        return;
+      }
       // The webOS 25 builders print REFUSED=<verdict> + REASON=<text> instead of
       // OK when the compatibility gate stood them down. Nothing was bound in that
       // case, so report it as a failed call with the gate's own reason rather

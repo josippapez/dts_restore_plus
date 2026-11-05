@@ -13,7 +13,7 @@ var spawnSync = require("node:child_process").spawnSync;
 var ROOT = path.resolve(__dirname, "..", "..", "..", "..");
 var SERVICE = path.join(ROOT, "webos25/app/service/service.js");
 
-function loadService() {
+function loadService(mocks) {
   var source = fs.readFileSync(SERVICE, "utf8") + "\nmodule.exports = {" +
     "compatVerdict: compatVerdict, isKnownProfile: isKnownProfile," +
     "c2OwnerRoute: c2OwnerRoute," +
@@ -26,13 +26,16 @@ function loadService() {
     "constants: {C2: PROFILE_C2," +
     "sets: C2_EXPECTED_SETS, matchSet: c2MatchSet," +
     "libav: C2_EXPECTED_SETS[0].libav, iso: C2_EXPECTED_SETS[0].iso, mkv: C2_EXPECTED_SETS[0].mkv}};";
-  var FakeService = function () { this.register = function () {}; };
+  var handlers = {};
+  var FakeService = function () { this.register = function (name, handler) { handlers[name] = handler; }; };
   var context = {
     require: function (name) { return name === "webos-service" ? FakeService : require(name); },
     module: {exports: {}}, exports: {}, Buffer: Buffer, console: console,
     setTimeout: setTimeout, clearTimeout: clearTimeout
   };
   vm.runInNewContext(source, context, {filename: SERVICE});
+  Object.keys(mocks || {}).forEach(function (name) { context[name] = mocks[name]; });
+  context.module.exports.handlers = handlers;
   return context.module.exports;
 }
 
@@ -100,7 +103,15 @@ function fixture() {
 }
 function run(f, script, extra) { return sh(script, Object.assign({PATH: f.bin + ":" + process.env.PATH, GST_REGISTRY_1_0: f.registry}, extra || {})); }
 function ok(result, message) { assert.equal(result.status, 0, message + "\n" + result.stderr + "\n" + result.stdout); }
-function test(name, fn) { try { fn(); console.log("ok - " + name); } catch (e) { console.error("not ok - " + name + "\n" + e.stack); process.exitCode = 1; } }
+function test(name, fn) {
+  function passed() { console.log("ok - " + name); }
+  function failed(error) { console.error("not ok - " + name + "\n" + error.stack); process.exitCode = 1; }
+  try {
+    var result = fn();
+    if (result && typeof result.then === "function") return result.then(passed).catch(failed);
+    passed();
+  } catch (error) { failed(error); }
+}
 
 test("accepted C2 artifact sets match per-set and reject chimeras", function () {
   var sets = C.sets, match = C.matchSet;
@@ -537,7 +548,7 @@ test("the passthrough toggle only reports a receiver for external_arc", function
     var script = service.w25PassthroughSteps(on);
     var r = spawnSync("sh", ["-n"], { input: script, encoding: "utf8" });
     assert.strictEqual(r.status, 0, "generated script is not valid sh: " + r.stderr);
-    assert.ok(script.indexOf("W25_PT=" + (on ? "start" : "stop")) !== -1);
+    assert.ok(script.includes(on ? "W25_PT=start" : "W25_PT=stop"));
   });
   // The boot script must handle that mode before it gets anywhere near applying.
   var body = service.w25InitScriptBody();
@@ -551,21 +562,177 @@ test("DTS-HD shares the passthrough lifecycle and Disable restores eARC first", 
     var script = service.w25PassthroughSteps(true, hd);
     var r = spawnSync("sh", ["-n"], { input: script, encoding: "utf8" });
     assert.strictEqual(r.status, 0, "generated script is not valid sh: " + r.stderr);
+    var stop = script.indexOf("\nW25_PT=stop ");
+    assert.ok(Buffer.byteLength(JSON.stringify({command: script})) < 110 * 1024,
+      "the toggle must fit within the luna message limit");
+    assert.ok(stop >= 0 && stop < script.indexOf(': > "$FLAG"'), "stop before changing the passthrough marker");
+    assert.ok(stop < script.indexOf("W25_PT=start"), "stop before starting the watcher");
     if (typeof hd === "boolean") {
-      assert.ok(script.indexOf("W25_PT=stop") < script.indexOf("W25_PT=start"));
-      assert.ok(script.includes(hd ? ': > "/var/lib/webosbrew/dts25/passthrough-hd"'
-        : 'rm -f "/var/lib/webosbrew/dts25/passthrough-hd"'));
+      var marker = hd ? ': > "/var/lib/webosbrew/dts25/passthrough-hd"'
+        : 'rm -f "/var/lib/webosbrew/dts25/passthrough-hd"';
+      assert.ok(script.indexOf(marker) > stop, "stop before changing the HD marker");
     } else {
       assert.ok(!script.includes('> "/var/lib/webosbrew/dts25/passthrough-hd"'));
     }
   });
   var body = service.w25InitScriptBody();
   assert.ok(!body.includes("W25_HD="));
+  assert.ok(body.includes("\nw25_pt_stop || exit 1\nw25_pt_start\n"),
+    "boot apply must stop passthrough before restarting it after Disable");
   assert.ok(initFn("w25_pt_watch").includes("hdroute.sh </dev/null"));
-  assert.ok(initFn("w25_pt_stop").includes("hdroute.sh --stop"));
+  assert.ok(initFn("w25_pt_stop").includes('sh "$HD_SVC" --stop'));
+  var off = service.w25PassthroughSteps(false);
+  var offStop = off.indexOf("\nW25_PT=stop ");
+  assert.ok(offStop >= 0 && offStop < off.indexOf('rm -f "$FLAG"'), "stop before clearing the passthrough marker");
   var disable = service.w25Disable();
-  assert.ok(disable.lastIndexOf('hdroute.sh" --stop') < disable.lastIndexOf("w25_drop_binds\n"),
-    "Disable must stop the route service before dropping our dtsdec");
+  var stop = disable.indexOf("\nw25_pt_stop || exit 1\n");
+  assert.ok(stop >= 0 && stop < disable.indexOf('rm -f "/var/lib/webosbrew/init.d/restore_dts25"'),
+    "Disable must stop passthrough before removing the hook");
+  assert.ok(stop < disable.lastIndexOf("\nw25_drop_binds\n"), "Disable must stop passthrough before dropping binds");
+});
+
+test("CLI install decodes the canonical stop script before unmounting", function () {
+  var installer = path.join(ROOT, "webos25/restore/install.sh");
+  var source = fs.readFileSync(installer, "utf8");
+  var command = "awk '/^INIT_B64$/{exit} emit{print} /^base64 -d >.*INIT_B64/{emit=1}' \"$0\" | base64 -d | W25_PT=stop sh || exit 1";
+  assert.ok(source.split("\n").includes(command), "installer must use the canonical extraction command");
+  var stop = source.indexOf(command);
+  var unmount = source.indexOf('\nfor T in ');
+  assert.ok(stop >= 0 && unmount > stop, "stop must precede the unmount loop");
+  var result = spawnSync("sh", ["-c", command.replace("| W25_PT=stop sh || exit 1", "| cat"), installer],
+    {encoding: "utf8", timeout: 2000});
+  assert.ifError(result.error);
+  ok(result, "decode embedded stop script without executing it");
+  assert.equal(result.stdout, service.w25InitScriptBody());
+});
+
+test("CLI uninstall rejects outdated init and stops before hook removal on failure", function () {
+  var source = fs.readFileSync(path.join(ROOT, "webos25/restore/uninstall.sh"), "utf8");
+  var start = source.indexOf('\nSTOP_SCRIPT=');
+  var end = source.indexOf('\n# --- 1. Remove boot hook');
+  assert.ok(start >= 0 && end > start, "uninstall stop block must precede hook removal");
+  var block = source.slice(start, end);
+  assert.ok(block.includes('STOP_SCRIPT=$(dirname "$0")/init_dts25.sh\n'));
+  assert.ok(block.includes('[ -f "$STOP_SCRIPT" ] || STOP_SCRIPT=$DTS_DEST/init_dts25.sh\n'));
+  var guard = block.indexOf("grep -q 'ERROR=The installed DTS-HD helper is outdated' \"$STOP_SCRIPT\" || {");
+  var stop = block.indexOf('W25_PT=stop sh "$STOP_SCRIPT" || exit 1');
+  assert.ok(guard >= 0 && stop > guard, "exact outdated-helper guard must precede stop");
+  [false, true].forEach(function (modern) {
+    var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dts-cli-stop-"));
+    try {
+      var called = path.join(dir, "called"), hook = path.join(dir, "hook-removed");
+      exe(path.join(dir, "init_dts25.sh"),
+        (modern ? ": 'ERROR=The installed DTS-HD helper is outdated'\n" : "") +
+        'printf "%s" "$W25_PT" > "$CALLED"\nexit ' + (modern ? 7 : 0));
+      var result = spawnSync("sh", ["-c", block + '\nprintf hook > "$HOOK_SENTINEL"', path.join(dir, "uninstall.sh")],
+        {encoding: "utf8", timeout: 2000, env: Object.assign({}, process.env,
+          {DTS_DEST: path.join(dir, "installed"), CALLED: called, HOOK_SENTINEL: hook})});
+      assert.ifError(result.error);
+      assert.equal(result.status, 1, result.stderr);
+      assert.equal(fs.existsSync(called), modern, "outdated init must never execute");
+      if (modern) assert.equal(fs.readFileSync(called, "utf8"), "stop");
+      else assert.match(result.stdout, /The installed init script is outdated/);
+      assert.equal(fs.existsSync(hook), false, "failed stop must not reach hook removal");
+    } finally {
+      fs.rmSync(dir, {recursive: true, force: true});
+    }
+  });
+});
+
+[
+  ["legacy helper is rejected without execution", false, 0],
+  ["failed modern helper retains runtime state", true, 1],
+  ["successful modern helper clears a stale watcher", true, 0]
+].forEach(function (scenario) {
+  test("passthrough stop: " + scenario[0], function () {
+    var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dts-pt-stop-"));
+    try {
+      var runtime = path.join(dir, "run"), helper = path.join(dir, "hdroute.sh");
+      var called = path.join(dir, "called"), pid = path.join(runtime, "watcher.pid");
+      var output = path.join(runtime, "sound-output");
+      write(pid, "99999999\n");
+      write(output, "external_arc auto\n");
+      exe(helper, (scenario[1] ? '[ "$1" = --stop ] || exit 99\n' : "") +
+        'printf "%s" "$*" > "' + called + '"\nexit ' + scenario[2]);
+      var fn = initFn("w25_pt_stop");
+      assert.ok(fn.includes('sh "$HD_SVC" --stop'), "shared stop function must be present");
+      fn = fn.replace("/run/dts25", runtime).replace("/var/lib/webosbrew/dts25/hdroute.sh", helper)
+        .split("/proc/").join(dir + "/proc/");
+      var result = spawnSync("sh", ["-c", fn + "\nw25_pt_stop"], {encoding: "utf8", timeout: 2000});
+      assert.ifError(result.error);
+      var succeeds = scenario[1] && scenario[2] === 0;
+      assert.equal(result.status, succeeds ? 0 : 1, result.stderr);
+      assert.equal(fs.existsSync(called), scenario[1], "legacy helper must never run");
+      if (scenario[1]) assert.equal(fs.readFileSync(called, "utf8"), "--stop");
+      if (succeeds) {
+        assert.equal(fs.existsSync(pid), false);
+        assert.equal(fs.existsSync(output), false);
+      } else {
+        assert.match(result.stdout, scenario[1] ? /^ERROR=.*restore the eARC route/m : /^ERROR=.*outdated/m);
+        assert.equal(fs.readFileSync(pid, "utf8"), "99999999\n");
+        assert.equal(fs.readFileSync(output, "utf8"), "external_arc auto\n");
+      }
+    } finally {
+      fs.rmSync(dir, {recursive: true, force: true});
+    }
+  });
+});
+
+test("failed passthrough and Disable calls report failure to the app", function () {
+  var error = "Could not restore the eARC route; settings were kept.";
+  return Promise.all(["setPassthrough", "disable"].map(function (method) {
+    var mocked = loadService({
+      detectProfile: function () { return Promise.resolve({profile: "webos25-armel-gst124", probes: {}}); },
+      rootExec: function () { return Promise.resolve({stdout: "ERROR=" + error + "\n", stderr: ""}); },
+      logActionResult: function () {}
+    });
+    return new Promise(function (resolve) {
+      mocked.handlers[method]({payload: {enabled: false}, respond: resolve});
+    }).then(function (response) {
+      assert.equal(response.returnValue, false, method + " must not report success after a stop failure");
+      assert.ok(response.errorText.includes(error), method + " must preserve the stop error");
+    });
+  }));
+});
+
+test("HD routing distinguishes replacement streams in the same process", function () {
+  var source = fs.readFileSync(path.join(ROOT, "webos25/restore/hdroute.sh"), "utf8");
+  var armed = source.match(/^armed\(\) \{\n[\s\S]*?^\}/m)[0]
+    .replace('[ -d "/proc/$p" ]', 'kill -0 "$p" 2>/dev/null');
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dts-hd-stream-"));
+  try {
+    var script = [
+      "set -eu", 'ARMED="' + dir + '/armed"', armed,
+      process.platform === "darwin" ? 'stat() { /usr/bin/stat -f %i "$3"; }' : "",
+      'echo $$ > "$ARMED"', "armed", "first=$stream", "armed", '[ "$stream" = "$first" ]',
+      'echo $$ > "$ARMED.next"', 'mv "$ARMED.next" "$ARMED"',
+      "armed", '[ "$stream" != "$first" ]', 'rm "$ARMED"',
+      "if armed; then exit 1; fi"
+    ].join("\n");
+    var result = sh(script);
+    assert.strictEqual(result.status, 0, result.stderr);
+  } finally {
+    fs.rmSync(dir, {recursive: true, force: true});
+  }
+});
+
+test("HD recovery consumes each PCM status event only once", function () {
+  var source = fs.readFileSync(path.join(ROOT, "webos25/restore/hdroute.sh"), "utf8");
+  var reset = source.match(/^arc_reset\(\) \{\n[\s\S]*?^\}/m)[0];
+  var script = [
+    "set -eu", "ARC_STATUS=", reset,
+    'last_arc() { printf "%s\\n" "$EVENT"; }',
+    'EVENT="[1] _cb_output_status ARC mat 8 ch"',
+    "if arc_reset; then exit 1; fi",
+    'EVENT="[2] _cb_output_status ARC pcm 2 ch"',
+    "arc_reset",
+    "if arc_reset; then exit 2; fi",
+    'EVENT="[3] _cb_output_status ARC pcm 2 ch"',
+    "arc_reset",
+    "if arc_reset; then exit 3; fi"
+  ].join("\n");
+  var result = sh(script);
+  assert.strictEqual(result.status, 0, result.stderr);
 });
 
 test("HD graph discovery waits for completion without fixed one-second delays", function () {

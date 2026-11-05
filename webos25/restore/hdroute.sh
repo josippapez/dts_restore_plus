@@ -24,6 +24,8 @@ WORK=/tmp/dts25-hdroute
 LOG=/var/lib/webosbrew/dtsenabler/hdroute.log
 ACTIVE=0
 SEQ=0
+ARC_STATUS=
+ACTIVE_STREAM=
 
 mkdir -p "$RUN" "$WORK" "$(dirname "$LOG")"
 log() {
@@ -55,9 +57,17 @@ mute() {
 one() { [ -n "$1" ] && [ "$(printf '%s\n' "$1" | wc -l)" -eq 1 ]; }
 armed() {
   p=$(cat "$ARMED" 2>/dev/null) || return 1
-  [ -n "$p" ] && [ "$p" -gt 0 ] 2>/dev/null && [ -d "/proc/$p" ]
+  [ -n "$p" ] && [ "$p" -gt 0 ] 2>/dev/null && [ -d "/proc/$p" ] || return 1
+  stream="$p:$(stat -c %i "$ARMED" 2>/dev/null)"
 }
-last_arc() { dmesg | grep '_cb_output_status' | grep ' ARC ' | tail -1 | sed 's/.*ARC \([a-z]*\) .*/\1/'; }
+last_arc() { dmesg | grep '_cb_output_status' | grep ' ARC ' | tail -1; }
+arc_reset() {
+  arc_event=$(last_arc)
+  [ "$arc_event" != "$ARC_STATUS" ] || return 1
+  ARC_STATUS=$arc_event
+  case "$arc_event" in *' ARC pcm '*) return 0 ;; esac
+  return 1
+}
 
 restore() {
   [ -f "$STATE" ] || return 0
@@ -70,10 +80,13 @@ restore() {
   prop "$GAIN" mute-output "$GAIN_MUTE_OUT"
   rm -f "$STATE"
   ACTIVE=0
+  ACTIVE_STREAM=
   log "restored mixerbin_$MIXOUT -> queue_$QUEUE"
 }
 
 connect() {
+  armed || return 1
+  connecting_stream=$stream
   dump 2 d2 && dump 1 d1 || { log 'discovery failed'; return 1; }
   ES=$(awk '$1 ~ /^queue_0418/ && $3 ~ /^lipsync_/ {sub(/^lipsync_/,"",$3); print $3}' "$WORK/d2.edges")
   BYPASS=$(awk '$3 ~ /^bypass_/ {sub(/^bypass_/,"",$3); print $3}' "$WORK/d2.edges")
@@ -93,6 +106,7 @@ connect() {
   GAIN_MUTE_IN=$(mute in)
   GAIN_MUTE_OUT=$(mute out)
   [ -n "$GAIN_MUTE_IN" ] && [ -n "$GAIN_MUTE_OUT" ] || { log 'gain mute unreadable'; return 1; }
+  armed && [ "$stream" = "$connecting_stream" ] || return 1
   # written before the first change, so a crash mid-connect can still be undone
   printf 'MIXOUT=%s\nQUEUE=%s\nDELAY=%s\nGAIN=%s\nGAIN_MUTE_IN=%s\nGAIN_MUTE_OUT=%s\n' \
     "$MIXOUT" "$QUEUE" "$DELAY" "$GAIN" "$GAIN_MUTE_IN" "$GAIN_MUTE_OUT" > "$STATE.tmp" && mv -f "$STATE.tmp" "$STATE"
@@ -106,6 +120,8 @@ connect() {
   fi
   prop "$GAIN" mute-input 0
   prop "$GAIN" mute-output 0
+  ACTIVE_STREAM=$connecting_stream
+  ARC_STATUS=$(last_arc)
   log "routed lipsync_$ES -> delay_$DELAY -> gain_$GAIN -> bypass_$BYPASS -> queue_$QUEUE"
 }
 
@@ -136,12 +152,15 @@ log "started (pid $$)"
 FAILS=0
 while :; do
   if armed; then
+    if [ "$ACTIVE" = 1 ] && [ "$stream" != "$ACTIVE_STREAM" ]; then
+      restore
+    fi
     if [ "$ACTIVE" = 0 ]; then
       if connect; then FAILS=0; else FAILS=$((FAILS + 1)); fi
       # one stream that cannot be routed is retried a few times, then left alone
       while [ "$FAILS" -ge 5 ] && armed; do sleep 1; done
       armed || FAILS=0
-    elif [ "$(last_arc)" = pcm ]; then
+    elif arc_reset; then
       log 'eARC was reset to PCM while armed; rebuilding'
       restore
       connect || :

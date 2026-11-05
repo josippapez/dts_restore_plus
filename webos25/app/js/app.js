@@ -897,7 +897,9 @@
     $("btnAppDtsReboot").addEventListener("click", doAppDtsReboot);
     $("btnPtOn").addEventListener("click", function () { doPassthrough(true); });
     $("btnPtOff").addEventListener("click", function () { doPassthrough(false); });
-    $("hdPassthrough").addEventListener("change", function () { doPassthrough(true, this.checked); });
+    $("hdPassthrough").addEventListener("change", function () {
+      doPassthrough(this.checked || !$("btnPtOff").disabled, this.checked);
+    });
     $("btnSaveGain").addEventListener("click", doSaveGain);
     $("btnAb").addEventListener("click", doAbRender);
     $("btnAbA").addEventListener("click", function () { doAbPlay("a"); });
