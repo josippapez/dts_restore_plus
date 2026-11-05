@@ -687,6 +687,24 @@ test("failed passthrough and Disable calls report failure to the app", function 
   }));
 });
 
+test("HD logging never marks a successful connection as failed", function () {
+  var source = fs.readFileSync(path.join(ROOT, "webos25/restore/hdroute.sh"), "utf8");
+  var log = source.match(/^log\(\) \{\n[\s\S]*?^\}/m)[0];
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dts-hd-log-"));
+  try {
+    var file = path.join(dir, "route.log");
+    ["", "x".repeat(65536)].forEach(function (contents) {
+      fs.writeFileSync(file, contents);
+      var result = sh('LOG="' + file + '"\n' + log + '\nlog connected');
+      assert.strictEqual(result.status, 0, result.stderr);
+      assert.match(fs.readFileSync(file, "utf8"), /connected\n$/);
+      assert.ok(fs.statSync(file).size <= 65536);
+    });
+  } finally {
+    fs.rmSync(dir, {recursive: true, force: true});
+  }
+});
+
 test("HD routing distinguishes replacement streams in the same process", function () {
   var source = fs.readFileSync(path.join(ROOT, "webos25/restore/hdroute.sh"), "utf8");
   var armed = source.match(/^armed\(\) \{\n[\s\S]*?^\}/m)[0]
@@ -706,6 +724,18 @@ test("HD routing distinguishes replacement streams in the same process", functio
   } finally {
     fs.rmSync(dir, {recursive: true, force: true});
   }
+});
+
+test("HD retry exhaustion ends when a replacement stream appears", function () {
+  var source = fs.readFileSync(path.join(ROOT, "webos25/restore/hdroute.sh"), "utf8");
+  var retry = source.match(/      failed_stream=\$stream\n[\s\S]*?FAILS=0; fi/)[0];
+  var result = sh([
+    "set -eu", "FAILS=5", "stream=old", "waits=0",
+    'armed() { return 0; }',
+    'sleep() { waits=$((waits + 1)); stream=new; [ "$waits" -le 1 ]; }',
+    retry, '[ "$FAILS" = 0 ]', '[ "$waits" = 1 ]'
+  ].join("\n"));
+  assert.strictEqual(result.status, 0, result.stderr);
 });
 
 test("HD recovery consumes each PCM status event only once", function () {

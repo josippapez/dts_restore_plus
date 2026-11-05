@@ -1683,7 +1683,7 @@ gst_dtsdec_hd_close (GstDtsDec * dts)
 /* TRUE when the HD opt-in marker exists, the hdroute service runs and no
  * other stream holds the route; the muxer is then ready for whole frames. */
 static gboolean
-gst_dtsdec_hd_open (GstDtsDec * dts)
+gst_dtsdec_hd_open (GstDtsDec * dts, enum AVCodecID codec)
 {
   AVStream *st;
   guint8 *hdr;
@@ -1715,11 +1715,12 @@ gst_dtsdec_hd_open (GstDtsDec * dts)
       || avio_open_dyn_buf (&dts->spdif->pb) < 0)
     goto fail;
   st->codecpar->codec_type = AVMEDIA_TYPE_AUDIO;
-  st->codecpar->codec_id = AV_CODEC_ID_DTS;
+  st->codecpar->codec_id = codec;
   st->codecpar->sample_rate = 48000;
   /* dsp1's cpy_es8 takes the first byte of each word as its MSB: big-endian */
-  if (av_opt_set_int (dts->spdif->priv_data, "dtshd_rate", DTS_HD_RATE, 0) < 0
-      || av_opt_set_int (dts->spdif->priv_data, "dtshd_fallback_time", 0, 0) < 0
+  if ((codec == AV_CODEC_ID_DTS
+        && (av_opt_set_int (dts->spdif->priv_data, "dtshd_rate", DTS_HD_RATE, 0) < 0
+          || av_opt_set_int (dts->spdif->priv_data, "dtshd_fallback_time", 0, 0) < 0))
       || av_opt_set (dts->spdif->priv_data, "spdif_flags", "be", 0) < 0)
     goto fail;
   if (avformat_write_header (dts->spdif, NULL) < 0)
@@ -1841,7 +1842,7 @@ gst_dtsdec_passthrough_decide (GstDtsDec * dts, const guint8 * d, gsize size)
     return FALSE;
   }
 
-  if (gst_dtsdec_hd_open (dts)) {
+  if (gst_dtsdec_hd_open (dts, AV_CODEC_ID_DTS)) {
     if (gst_dtsdec_hd_set_caps (dts)) {
       dts->pt_active = TRUE;
       dts->pt_hd = TRUE;
@@ -2140,6 +2141,186 @@ gst_dtsdec_get_property (GObject * object, guint prop_id, GValue * value,
   }
 }
 
+typedef struct {
+  GstDtsDec parent;
+  gint pending;
+  gboolean synced;
+} GstTruehdMat;
+typedef struct { GstDtsDecClass parent; } GstTruehdMatClass;
+G_DEFINE_TYPE (GstTruehdMat, gst_truehd_mat, GST_TYPE_DTSDEC)
+
+static gboolean
+gst_truehd_mat_start (GstAudioDecoder * decoder)
+{
+  GstTruehdMat *self = (GstTruehdMat *) decoder;
+  GstDtsDec *dts = GST_DTSDEC (decoder);
+  self->pending = 0;
+  self->synced = FALSE;
+  dts->pt_output_ok = TRUE;
+  if (!gst_dtsdec_passthrough_allowed (dts)
+      || !gst_dtsdec_hd_open (dts, AV_CODEC_ID_TRUEHD)) {
+    gst_dtsdec_hd_close (dts);
+    return FALSE;
+  }
+  return TRUE;
+}
+
+static gboolean
+gst_truehd_mat_stop (GstAudioDecoder * decoder)
+{
+  gst_dtsdec_hd_close (GST_DTSDEC (decoder));
+  return TRUE;
+}
+
+static gboolean
+gst_truehd_mat_set_format (GstAudioDecoder * decoder, GstCaps * caps)
+{
+  gint rate = 0;
+  if (gst_structure_has_field (gst_caps_get_structure (caps, 0), "rate")
+      && (!gst_structure_get_int (gst_caps_get_structure (caps, 0), "rate", &rate)
+          || (rate != 48000 && rate != 96000 && rate != 192000)))
+    return FALSE;
+  return gst_dtsdec_hd_set_caps (GST_DTSDEC (decoder));
+}
+
+static GstFlowReturn
+gst_truehd_mat_parse (GstAudioDecoder * decoder, GstAdapter * adapter,
+    gint * offset, gint * length)
+{
+  gsize available = gst_adapter_available (adapter);
+  const guint8 *data;
+  (void) decoder;
+  *offset = 0;
+  *length = 0;
+  if (available < 4)
+    return GST_FLOW_EOS;
+  data = gst_adapter_map (adapter, 4);
+  *length = (GST_READ_UINT16_BE (data) & 0xfff) * 2;
+  gst_adapter_unmap (adapter);
+  if (*length < 8)
+    return GST_FLOW_ERROR;
+  return available >= (gsize) *length ? GST_FLOW_OK : GST_FLOW_EOS;
+}
+
+static GstFlowReturn
+gst_truehd_mat_handle_frame (GstAudioDecoder * decoder, GstBuffer * input)
+{
+  GstTruehdMat *self = (GstTruehdMat *) decoder;
+  GstDtsDec *dts = GST_DTSDEC (decoder);
+  GstMapInfo map;
+  AVPacket packet = { 0 };
+  guint8 *data = NULL;
+  gint size, result;
+  GstBuffer *output;
+
+  if (!input) {
+    if (self->pending) {
+      result = self->pending;
+      self->pending = 0;
+      return gst_audio_decoder_finish_frame (decoder, NULL, result);
+    }
+    return GST_FLOW_OK;
+  }
+  if (!gst_buffer_map (input, &map, GST_MAP_READ))
+    return GST_FLOW_ERROR;
+  if (!dts->spdif) {
+    gst_buffer_unmap (input, &map);
+    return GST_FLOW_ERROR;
+  }
+  if (map.size >= 8 && GST_READ_UINT32_BE (map.data + 4) == 0xf8726fba
+      && (map.size < 10 || (map.data[8] >> 4) > 2)) {
+    gst_buffer_unmap (input, &map);
+    return GST_FLOW_NOT_NEGOTIATED;
+  }
+  if (!self->synced) {
+    self->synced = map.size >= 10
+        && GST_READ_UINT32_BE (map.data + 4) == 0xf8726fba;
+    if (!self->synced) {
+      gst_buffer_unmap (input, &map);
+      return gst_audio_decoder_finish_frame (decoder, NULL, 1);
+    }
+  }
+  if (avio_open_dyn_buf (&dts->spdif->pb) < 0) {
+    gst_buffer_unmap (input, &map);
+    return GST_FLOW_ERROR;
+  }
+  packet.data = map.data;
+  packet.size = map.size;
+  packet.pts = packet.dts = AV_NOPTS_VALUE;
+  result = av_write_frame (dts->spdif, &packet);
+  size = avio_close_dyn_buf (dts->spdif->pb, &data);
+  dts->spdif->pb = NULL;
+  gst_buffer_unmap (input, &map);
+  if (result < 0 || size < 0) {
+    av_free (data);
+    return GST_FLOW_ERROR;
+  }
+  self->pending++;
+  if (!size) {
+    av_free (data);
+    return GST_FLOW_OK;
+  }
+  output = gst_buffer_new_wrapped_full (0, data, size, 0, size, data, av_free);
+  dts->pt_output_ok = dts->pt_output_ok
+      && gst_dtsdec_passthrough_allowed (dts) && dts_hd_service_alive ();
+  if (!dts->pt_output_ok)
+    gst_buffer_memset (output, 0, 0, size);
+  GST_BUFFER_FLAG_SET (output, LGAO_BUFFER_FLAG_ES);
+  result = self->pending;
+  self->pending = 0;
+  return gst_audio_decoder_finish_frame (decoder, output, result);
+}
+
+static void
+gst_truehd_mat_flush (GstAudioDecoder * decoder, gboolean hard)
+{
+  GstTruehdMat *self = (GstTruehdMat *) decoder;
+  (void) hard;
+  self->pending = 0;
+  self->synced = FALSE;
+  gst_dtsdec_hd_close (GST_DTSDEC (decoder));
+  if (!gst_truehd_mat_start (decoder))
+    GST_ELEMENT_ERROR (decoder, RESOURCE, OPEN_WRITE, (NULL),
+        ("could not restart TrueHD passthrough after a flush"));
+}
+
+static GstCaps *
+gst_truehd_mat_getcaps (GstAudioDecoder * decoder, GstCaps * filter)
+{
+  GstCaps *caps = gst_pad_get_pad_template_caps (GST_AUDIO_DECODER_SINK_PAD (decoder));
+  if (filter) {
+    GstCaps *result = gst_caps_intersect_full (filter, caps, GST_CAPS_INTERSECT_FIRST);
+    gst_caps_unref (caps);
+    caps = result;
+  }
+  return caps;
+}
+
+static void
+gst_truehd_mat_class_init (GstTruehdMatClass * klass)
+{
+  GstAudioDecoderClass *decoder = GST_AUDIO_DECODER_CLASS (klass);
+  GstElementClass *element = GST_ELEMENT_CLASS (klass);
+  GstPadTemplate *sink = gst_pad_template_new ("sink", GST_PAD_SINK,
+      GST_PAD_ALWAYS, gst_caps_from_string ("audio/x-true-hd"));
+  gst_element_class_set_static_metadata (element, "TrueHD MAT passthrough",
+      "Codec/Decoder/Audio", "Send TrueHD unchanged to an eARC receiver", "DTS restore");
+  gst_element_class_add_pad_template (element, sink);
+  decoder->start = gst_truehd_mat_start;
+  decoder->stop = gst_truehd_mat_stop;
+  decoder->set_format = gst_truehd_mat_set_format;
+  decoder->parse = gst_truehd_mat_parse;
+  decoder->handle_frame = gst_truehd_mat_handle_frame;
+  decoder->flush = gst_truehd_mat_flush;
+  decoder->getcaps = gst_truehd_mat_getcaps;
+}
+
+static void
+gst_truehd_mat_init (GstTruehdMat * self)
+{
+  GST_DTSDEC (self)->hd_lock_fd = -1;
+}
+
 static gboolean
 dtsdec_element_init (GstPlugin * plugin)
 {
@@ -2150,7 +2331,9 @@ dtsdec_element_init (GstPlugin * plugin)
   av_log_set_level (AV_LOG_ERROR);
 
   return gst_element_register (plugin, "dtsdec", GST_RANK_PRIMARY,
-      GST_TYPE_DTSDEC);
+      GST_TYPE_DTSDEC)
+      && gst_element_register (plugin, "truehdmat", GST_RANK_NONE,
+        gst_truehd_mat_get_type ());
 }
 
 static gboolean

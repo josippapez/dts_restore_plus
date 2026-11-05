@@ -1,80 +1,40 @@
-DTS decoder plugin (dtsdec) for LG C5 / webOS 25 -- BUILD REPORT
-=================================================================
+DTS / TrueHD passthrough plugin -- BUILD REPORT
+=============================================
 
-Since webos25-2.43 (app 2.7.38) out/ holds ONE file, libgstdtsdec.so. The
-decoder is ffmpeg's dca linked in statically; libdca.so.0 is no longer built or
-shipped.
+Built from src/gstdtsdec.c by build.sh using the cached dts25-dtsdec-build
+image: Debian bookworm armel cross-toolchain, snapshot 20250601T000000Z,
+FFmpeg n4.4.4 static dca decoder and spdif muxer (libavformat, libavcodec,
+libavutil). No GPL/nonfree configure options; LGPL-2.1-or-later.
 
-Built reproducibly by build.sh:
-  host        : debian:12-slim --platform linux/arm64, apt pinned to the Debian
-                snapshot 20250601T000000Z (Pin-Priority 1001 + dist-upgrade
-                --allow-downgrades, so the arm64 base libs match their armel
-                counterparts), armel foreign architecture
-  toolchain   : arm-linux-gnueabi-gcc (Debian bookworm, soft-float EABI5)
-  plugin      : src/gstdtsdec.c, vendored from gst-plugins-bad 1.22.0 ext/dts,
-                VERSION "1.22.0-webosdts"
-  ffmpeg      : n4.4.4 from https://git.ffmpeg.org/ffmpeg.git, static
-                libavcodec.a + libavutil.a only:
-                  --disable-everything --enable-decoder=dca
-                  --disable-avformat --disable-avfilter --disable-swresample
-                  --disable-swscale --disable-avdevice --disable-postproc
-                  --disable-network --disable-programs --disable-doc
-                  --disable-autodetect --disable-pthreads --disable-asm
-                  --enable-static --disable-shared --enable-pic
-                no --enable-gpl / --enable-version3 / --enable-nonfree, so the
-                result is LGPL-2.1-or-later (see ../../app/licenses/NOTICE.md)
-  link        : -Wl,--exclude-libs,ALL -Wl,--no-undefined -- no ffmpeg symbol is
-                exported, so it cannot bind to (or be bound by) the shared
-                libavcodec.so.58 that libgstlibav loads into the same process
+libgstdtsdec.so:
+  ARM EABI5 soft-float, e_flags 0x05000200, max GLIBC_2.35
+  No RPATH/RUNPATH; zero exported FFmpeg symbols
+  3438512 bytes
+  SHA256 b17507867ace092b7ff80dda56a0ca2e2dddec655880463d4f997b836e23b6af
+  dtsdec: DTS core/HD decode to S32LE, or opted-in IEC 61937 passthrough
+  truehdmat: explicitly selected TrueHD MAT, 61440-byte big-endian bursts
+  Both HD codecs share the route lock, receiver checks and HBR carrier caps.
+  HD carrier: S16LE, 192000 Hz, 8 channels, ES flag; not decoded PCM.
 
-What it decodes
----------------
-DTS core, DTS-HD Master Audio lossless (XLL), DTS-HD High Resolution (XBR/X96),
-7.1 (XXCH/XLL) and DTS Express (LBR). parse() frames the core together with its
-extension substream (EXSS) so both reach the decoder as one packet. Output is
-S32LE, up to 8 channels and 192 kHz (src caps channels [1,16], rate
-[4000,192000]). The
-make-up gain / DRC / centre boost (gain.conf, drc-mode, makeup-gain-db,
-center-boost-db) are unchanged; the `drc` boolean property is accepted but is a
-no-op (it drove libdca's in-stream DRC).
+Matching switch-out/libgstadecswitch.so:
+  29924 bytes
+  SHA256 0c3b317bc0f2cc5bab0756735f61c0d994562f77210d004d18d089dd66239323
+  TrueHD selects MAT only with both opt-ins and live receiver/route watchers;
+  otherwise it retains avdec_truehd PCM. Software handoff releases the old
+  decoder's route lock before starting its replacement.
 
-libgstdtsdec.so
----------------
-  file        : ELF 32-bit LSB shared object, ARM, EABI5 version 1 (SYSV),
-                not stripped (with debug_info)
-  e_flags     : 0x05000200   [EABI5 soft-float]
-  interpreter : none (shared object, no PT_INTERP); loader on the TV is
-                /lib/ld-linux.so.3
-  max GLIBC   : GLIBC_2.35   [<= 2.35, the C5's glibc]
-  NEEDED      : libgstaudio-1.0.so.0 libgstbase-1.0.so.0 libgstreamer-1.0.so.0
-                libgobject-2.0.so.0 libglib-2.0.so.0 libm.so.6 libc.so.6
-  RPATH       : none (RUNPATH none)
-  exported    : 0 ffmpeg symbols (av_/ff_/avpriv_/avcodec_/swr_); the only
-                exported text symbols are gst_dtsdec_get_type,
-                gst_element_register_dtsdec, gst_plugin_dtsdec_register,
-                gst_plugin_dtsdec_get_desc
-  size        : 2560416 bytes
-  md5         : 959d60fee50a265859d9f93c0619fbb0
-  sha1        : 7b8cdb9c466f6a7d383f437584fc56740938e4ac
+On-device verification: rooted C2, webOS 10.3.1, November 5, 2026
+  TrueHD MKV and tsMuxeR BD M2TS: MAT bytes identical to host FFmpeg.
+  BD sample includes an AC-3 compatibility core; TrueHD 0x72 is selected.
+  Same pipeline reused three times: 199 identical complete MAT bursts/run.
+  Actual app: eight mixed DTS/TrueHD plays with nonzero eARC output each;
+  seek/EOS/replay and unload release pass; gain unity, MAT 8ch/192000 status.
+  Same-pipeline DTS -> TrueHD switch and HD-disabled 6ch PCM fallback pass.
+  DTS-HD MA 7.1: 8ch decode matches host FFmpeg byte-for-byte.
+  DTS-HD MA TS/M2TS: PCM matches host after 45768-byte segment clipping.
+  Host decoder and service suites pass, including logging/retry regressions.
+  These are byte-flow/caps checks, not an independent audible confirmation.
 
-Replaces libgstdtsdec.so md5 41742e9ec2ce0754724b4d260c9fc09e (NEEDED
-libdca.so.0, RUNPATH /var/lib/webosbrew/dts25/libs) + libdca.so.0 md5
-d43ca613d6d2ca9ae5c336cb39bffd9f.
-
-On-device verification (real LG C5, webOS 10.3.1)
--------------------------------------------------
-Output compared against desktop ffmpeg 8.1 decoding the same file:
-  DTS-HD MA 5.1 in .mp4            bit-exact, whole file
-  DTS-HD MA 5.1 in .ts / .m2ts     bit-exact after GStreamer's normal 40 ms
-                                   segment clip at the start (needs the
-                                   substream-0x72 tsdemux in ../demux-out/)
-  DTS-HD MA 7.1 MKV, 258 s         md5 of the whole decoded stream identical
-                                   (73f18659444c14ce83fa664f876b467d),
-                                   8 channels, layout 0x63f
-Loudness on the 5 main channels is within 0.002 dB of the old libdca decoder
-(LFE +1 dB), so the +5 dB default in gain.conf still holds.
-CPU: a 3.8 s 5.1 MA file takes 0.37 s user (libdca build: 2.40 s); the 258 s
-7.1 MA file decodes in 15.5 s user (~6% of one core).
-
-This report is maintained by hand: update it whenever out/libgstdtsdec.so is
-rebuilt (build.sh prints the ABI values above).
+On-TV reuse regression: compile src/test/test-truehd-mat.c against GStreamer;
+run test-truehd-mat <matroskademux|tsdemux> <TrueHD sample> with the installed
+plugin path, receiver output and both passthrough opt-ins enabled.

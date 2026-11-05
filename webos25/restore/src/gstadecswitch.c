@@ -37,6 +37,7 @@
 #endif
 
 #include "gstadecswitch.h"
+#include <stdio.h>
 
 GST_DEBUG_CATEGORY_STATIC (adecswitch_debug);
 #define GST_CAT_DEFAULT adecswitch_debug
@@ -148,6 +149,36 @@ gst_adecswitch_rank_release (GstAdecSwitch * self)
  * family switch is exactly "the factory name changed" — which also makes
  * TrueHD -> MLP a switch (different factory) and AC-3 -> E-AC-3 not one
  * (decproxy swaps its own inner decoder for that). */
+static gboolean
+gst_adecswitch_truehd_passthrough (const GstStructure * caps)
+{
+  gchar *output = NULL, *service = NULL, proc[32];
+  gchar destination[64] = "", digital[64] = "";
+  gint watcher = 0, owner = 0, rate = 0;
+  gboolean ready = FALSE;
+
+  if ((gst_structure_has_field (caps, "rate")
+          && (!gst_structure_get_int (caps, "rate", &rate)
+              || (rate != 48000 && rate != 96000 && rate != 192000)))
+      || !g_file_test ("/var/lib/webosbrew/dts25/passthrough", G_FILE_TEST_EXISTS)
+      || !g_file_test ("/var/lib/webosbrew/dts25/passthrough-hd", G_FILE_TEST_EXISTS))
+    return FALSE;
+  if (g_file_get_contents ("/run/dts25/sound-output", &output, NULL, NULL)
+      && sscanf (output, "%d %63s %63s", &watcher, destination, digital) == 3
+      && watcher > 0 && !g_strcmp0 (destination, "external_arc")
+      && (!g_strcmp0 (digital, "passThrough") || !g_strcmp0 (digital, "auto"))
+      && g_file_get_contents ("/run/dts25/hdroute.pid", &service, NULL, NULL)
+      && sscanf (service, "%d", &owner) == 1 && owner > 0) {
+    g_snprintf (proc, sizeof (proc), "/proc/%d", watcher);
+    ready = g_file_test (proc, G_FILE_TEST_IS_DIR);
+    g_snprintf (proc, sizeof (proc), "/proc/%d", owner);
+    ready = ready && g_file_test (proc, G_FILE_TEST_IS_DIR);
+  }
+  g_free (output);
+  g_free (service);
+  return ready;
+}
+
 static const gchar *
 gst_adecswitch_factory_for_caps (GstCaps * caps)
 {
@@ -164,7 +195,7 @@ gst_adecswitch_factory_for_caps (GstCaps * caps)
       || !g_strcmp0 (name, "audio/x-private1-ac3"))
     return DECPROXY_FACTORY;
   if (!g_strcmp0 (name, "audio/x-true-hd"))
-    return "avdec_truehd";
+    return gst_adecswitch_truehd_passthrough (s) ? "truehdmat" : "avdec_truehd";
   if (!g_strcmp0 (name, "audio/x-mlp"))
     return "avdec_mlp";
   if (!g_strcmp0 (name, "audio/x-dts")
@@ -442,6 +473,9 @@ have_decoder:
 
   self->decoder = decoder;
   self->decoder_factory = factory_name;
+
+  if (old_decoder != NULL && !gst_adecswitch_is_decproxy (old_decoder))
+    gst_element_set_state (old_decoder, GST_STATE_NULL);
 
   if (!gst_element_sync_state_with_parent (decoder))
     GST_WARNING_OBJECT (self, "could not sync %s state with parent",

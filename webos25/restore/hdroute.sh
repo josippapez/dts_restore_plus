@@ -32,6 +32,7 @@ log() {
   echo "$(date '+%F %T') $*" >> "$LOG"
   # keep the persistent log small
   [ "$(wc -c < "$LOG")" -gt 65536 ] && tail -c 32768 "$LOG" > "$LOG.tmp" && mv -f "$LOG.tmp" "$LOG"
+  return 0
 }
 # dot_registry of one DSP into $WORK/$2.{graph,edges}; edges are "out port in port"
 dump() {
@@ -158,8 +159,9 @@ while :; do
     if [ "$ACTIVE" = 0 ]; then
       if connect; then FAILS=0; else FAILS=$((FAILS + 1)); fi
       # one stream that cannot be routed is retried a few times, then left alone
-      while [ "$FAILS" -ge 5 ] && armed; do sleep 1; done
-      armed || FAILS=0
+      failed_stream=$stream
+      while [ "$FAILS" -ge 5 ] && armed && [ "$stream" = "$failed_stream" ]; do sleep 1; done
+      if ! armed || [ "$stream" != "$failed_stream" ]; then FAILS=0; fi
     elif arc_reset; then
       log 'eARC was reset to PCM while armed; rebuilding'
       restore
