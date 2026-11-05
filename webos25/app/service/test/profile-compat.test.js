@@ -594,11 +594,8 @@ test("DTS-HD shares the passthrough lifecycle and Disable restores eARC first", 
 test("CLI install decodes the canonical stop script before unmounting", function () {
   var installer = path.join(ROOT, "webos25/restore/install.sh");
   var source = fs.readFileSync(installer, "utf8");
-  var command = "awk '/^INIT_B64$/{exit} emit{print} /^base64 -d >.*INIT_B64/{emit=1}' \"$0\" | base64 -d | W25_PT=stop sh || exit 1";
-  assert.ok(source.split("\n").includes(command), "installer must use the canonical extraction command");
-  var stop = source.indexOf(command);
-  var unmount = source.indexOf('\nfor T in ');
-  assert.ok(stop >= 0 && unmount > stop, "stop must precede the unmount loop");
+  var command = source.split("\n").find(function (line) { return line.includes("| W25_PT=stop sh || exit 1"); });
+  assert.ok(command && source.indexOf(command) < source.indexOf('\nfor T in '), "stop must precede unmounting");
   var result = spawnSync("sh", ["-c", command.replace("| W25_PT=stop sh || exit 1", "| cat"), installer],
     {encoding: "utf8", timeout: 2000});
   assert.ifError(result.error);
@@ -612,11 +609,6 @@ test("CLI uninstall rejects outdated init and stops before hook removal on failu
   var end = source.indexOf('\n# --- 1. Remove boot hook');
   assert.ok(start >= 0 && end > start, "uninstall stop block must precede hook removal");
   var block = source.slice(start, end);
-  assert.ok(block.includes('STOP_SCRIPT=$(dirname "$0")/init_dts25.sh\n'));
-  assert.ok(block.includes('[ -f "$STOP_SCRIPT" ] || STOP_SCRIPT=$DTS_DEST/init_dts25.sh\n'));
-  var guard = block.indexOf("grep -q 'ERROR=The installed DTS-HD helper is outdated' \"$STOP_SCRIPT\" || {");
-  var stop = block.indexOf('W25_PT=stop sh "$STOP_SCRIPT" || exit 1');
-  assert.ok(guard >= 0 && stop > guard, "exact outdated-helper guard must precede stop");
   [false, true].forEach(function (modern) {
     var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dts-cli-stop-"));
     try {

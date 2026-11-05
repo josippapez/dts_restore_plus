@@ -4047,7 +4047,7 @@ var W25_HD_FLAG = W25_DEST + "/passthrough-hd";
 function w25PassthroughSteps(on, hd) {
   var lines = ["set -u", 'FLAG=' + W25_PT_FLAG];
   if (hd === true) {
-    lines.push('[ -x ' + W25_DEST + '/hdroute-uimc ] && [ -f ' + W25_DEST + '/hdroute.sh ] || { echo "HD_STAGED=0"; echo OK; exit 0; }');
+    lines.push('[ -x ' + W25_DEST + '/hdroute-uimc ] && [ -f ' + W25_DEST + '/hdroute.sh ] || { echo "ERROR=The DTS-HD route service is not installed. Enable DTS again to install it."; exit 1; }');
   }
   // The current boot script carries the W25_PT mode; an older installed one
   // would ignore W25_PT and run a full apply instead.
@@ -4097,11 +4097,6 @@ service.register("setPassthrough", function (message) {
       var out = kv.PT_OUT || "";
       if (kv.ERROR || !/^OK$/m.test(r.stdout || "")) {
         message.respond({ returnValue: false, errorText: kv.ERROR || "Passthrough settings could not be changed." });
-        return;
-      }
-      if (kv.HD_STAGED === "0") {
-        message.respond({ returnValue: false,
-          errorText: "The DTS-HD route service is not installed. Enable DTS again to install it." });
         return;
       }
       logActionResult("passthrough", d.profile, want ? "on" : "off", "soundOutput=" + out);
