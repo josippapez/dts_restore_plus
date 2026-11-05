@@ -9,10 +9,13 @@
 #   `arm-linux-gnueabi-gcc` (soft-float) — NOT `arm-linux-gnueabihf`.
 #
 # Produces in webos25/restore/switch-out/:
-#   - libgstadecswitch.so   the decoder-switching bin (armel soft-float)
+#   - libgstadecswitch.so   the decoder-switching bin (armel soft-float), with
+#                           the hdbitstream lossless forwarder in the same plugin
 #
-# adecswitch links nothing but GStreamer core + glib (no libdca, no ffmpeg):
-# it only instantiates other elements by factory name.
+# The plugin links GStreamer core, base and audio + glib (no libdca, no
+# ffmpeg): adecswitch instantiates other elements by factory name; hdbitstream
+# is a GstAudioDecoder that packs frames (iec61937-hbr.c) instead of decoding
+# and drives LG's own eARC bypass route (lgroute.c).
 #
 # Requirements on the build host: Docker (or podman aliased to docker) with
 # qemu/binfmt for linux/arm64.
@@ -46,28 +49,41 @@ docker run --rm -i --platform linux/arm64 \
     dpkg --add-architecture armel
     apt-get update -qq >/dev/null 2>&1
 
+    # debian:12-slim (12.15) ships arm64 liblzma5 and libpcre2-8-0 from
+    # bookworm-security, newer than the armel builds in bookworm main, and the
+    # armel dev packages need the same version on both architectures. Step the
+    # arm64 copies back to main's version.
+    for p in liblzma5 libpcre2-8-0; do
+      v=$(apt-cache madison "$p:armel" | awk 'NR==1{print $3}')
+      apt-get install -y -qq --allow-downgrades "$p=$v" >/dev/null 2>&1
+    done
+
     apt-get install -y -qq --no-install-recommends \
       gcc-arm-linux-gnueabi pkg-config file binutils >/dev/null 2>&1
 
-    # armel dev packages: GStreamer core + glib. Nothing else is needed.
+    # armel dev packages: GStreamer core + plugins-base (GstAudioDecoder for
+    # hdbitstream) + glib. Nothing else is needed.
     apt-get install -y -qq --no-install-recommends \
       libgstreamer1.0-dev:armel \
+      libgstreamer-plugins-base1.0-dev:armel \
       libglib2.0-dev:armel >/dev/null 2>&1
 
-    cp /work/gstadecswitch.c /work/gstadecswitch.h /tmp/
+    cp /work/gstadecswitch.c /work/gstadecswitch.h /work/gsthdbitstream.c \
+       /work/lgroute.c /work/lgroute.h /work/lgroute-policy.h /work/hdparse.h \
+       /work/iec61937-hbr.c /work/iec61937-hbr.h /tmp/
     cd /tmp
 
     export PKG_CONFIG_LIBDIR=/usr/lib/arm-linux-gnueabi/pkgconfig:/usr/share/pkgconfig
-    CF=$(pkg-config --cflags gstreamer-1.0)
-    LB=$(pkg-config --libs   gstreamer-1.0)
+    CF=$(pkg-config --cflags gstreamer-1.0 gstreamer-audio-1.0 gstreamer-base-1.0)
+    LB=$(pkg-config --libs   gstreamer-1.0 gstreamer-audio-1.0 gstreamer-base-1.0)
 
     arm-linux-gnueabi-gcc -shared -fPIC -O2 -Wall -o /out/libgstadecswitch.so \
-      gstadecswitch.c \
+      gstadecswitch.c gsthdbitstream.c lgroute.c iec61937-hbr.c \
       -DVERSION='"1.24.0-webosdts"' \
       -DPACKAGE='"dts_restore_plus"' \
       -DGST_PACKAGE_NAME='"WebOS DTS restore"' \
       -DGST_PACKAGE_ORIGIN='"https://github.com/josippapez/dts_restore"' \
-      $CF $LB
+      $CF $LB -Wl,--no-undefined
 
     arm-linux-gnueabi-strip --strip-unneeded /out/libgstadecswitch.so
 
@@ -114,7 +130,8 @@ docker run --rm -i --platform linux/arm64 \
       export GST_REGISTRY_1_0=/tmp/adecswitch-registry.bin
       export GST_REGISTRY_FORK=no
       export GST_PLUGIN_PATH=/out
-      if qemu-arm-static /usr/bin/gst-inspect-1.0 adecswitch; then
+      if qemu-arm-static /usr/bin/gst-inspect-1.0 adecswitch \
+         && qemu-arm-static /usr/bin/gst-inspect-1.0 hdbitstream; then
         :
       else
         echo "SKIPPED: gst-inspect-1.0 could not run under qemu-user"
@@ -130,6 +147,7 @@ echo "artifact : $OUT/libgstadecswitch.so"
 echo "source   : $HERE/src/gstadecswitch.c"
 echo "target   : armel (ARM EABI5 soft-float), glibc <= $GLIBC_CEILING, GStreamer 1.24"
 echo "element  : adecswitch, rank 320, klass Codec/Decoder/Audio"
+echo "element  : hdbitstream, rank NONE (plugged by adecswitch), klass Codec/Decoder/Audio"
 echo ""
 echo "NOT VERIFIED BY THIS SCRIPT: on-device behaviour. Per"
 echo ".claude/rules/releasing.md the committed .so must be verified on a real"

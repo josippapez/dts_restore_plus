@@ -262,5 +262,25 @@ $CC -std=c99 -O2 -Wall -Wextra -Werror -Wno-unused-function -I"$WORK" \
 "$WORK/test-iec61937" "$HERE"
 
 echo
+echo "=== 11. HBR passthrough: DTS-HD + TrueHD MAT bursts vs ffmpeg's spdif muxer ==="
+# iec61937-hbr.c is plain C with no GStreamer dependency, so the test builds
+# the shipped file itself; no extraction needed.
+$CC -std=c99 -O2 -Wall -Wextra -Werror -I"$HERE/.." \
+    -o "$WORK/test-iec61937-hbr" "$HERE/test-iec61937-hbr.c" "$HERE/../iec61937-hbr.c"
+"$WORK/test-iec61937-hbr" "$HERE"
+
+echo
+echo "=== 12. hdbitstream frame delimiting (hdparse.h) on the HBR fixtures ==="
+$CC -std=c99 -O2 -Wall -Wextra -Werror -I"$HERE/.." \
+    -o "$WORK/test-hdparse" "$HERE/test-hdparse.c"
+"$WORK/test-hdparse" "$HERE"
+
+echo
+echo "=== 13. LG eARC route: the pcm-multi-ch flip and the opt-in decision (lgroute-policy.h) ==="
+$CC -std=c99 -O2 -Wall -Wextra -Werror -I"$HERE/.." \
+    -o "$WORK/test-lgroute" "$HERE/test-lgroute.c"
+"$WORK/test-lgroute"
+
+echo
 echo "=== ALL CHECKS PASSED ==="
 exit 0

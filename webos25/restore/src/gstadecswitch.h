@@ -52,6 +52,10 @@ struct _GstAdecSwitch
    * Written and read on the event/streaming threads under `lock`. */
   GstEvent *resource_event;
 
+  /* The caps the current inner decoder was plugged for, so hdbitstream's
+   * fallback can plug the decoder it stood in for. Streaming thread only. */
+  GstCaps *caps;
+
   /* Properties */
   guint grace_ms;               /* hw-teardown-grace-ms */
   gboolean post_changing_decoder;

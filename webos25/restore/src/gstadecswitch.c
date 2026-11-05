@@ -29,6 +29,13 @@
  * Never by a rank search: this element outranks all of them (320), so a rank
  * search would select itself.
  *
+ * LOSSLESS PASSTHROUGH (experiment, approach A): while lgroute_wanted() (the
+ * test marker exists and a receiver with Pass Through / Auto is reported),
+ * DTS / TrueHD / MLP get `hdbitstream` (gsthdbitstream.c) instead of their
+ * decoder. If that element cannot hold the route it posts an
+ * `hdbitstream-fallback` element message, answered here by plugging the
+ * decoder it stood in for, with the caps it was plugged for.
+ *
  * SPDX-License-Identifier: LGPL-2.1-or-later
  */
 
@@ -37,6 +44,9 @@
 #endif
 
 #include "gstadecswitch.h"
+#include "lgroute.h"
+
+G_GNUC_INTERNAL gboolean gst_hdbitstream_register (GstPlugin * plugin);
 
 GST_DEBUG_CATEGORY_STATIC (adecswitch_debug);
 #define GST_CAT_DEFAULT adecswitch_debug
@@ -53,6 +63,7 @@ GST_DEBUG_CATEGORY_STATIC (adecswitch_debug);
 #define ADECSWITCH_MAX_SEEK_HOLD_US (500 * G_TIME_SPAN_MILLISECOND)
 
 #define DECPROXY_FACTORY "decproxy"
+#define HDBITSTREAM_FACTORY "hdbitstream"
 
 enum
 {
@@ -175,6 +186,18 @@ gst_adecswitch_factory_for_caps (GstCaps * caps)
     return "dtsdec";
 
   return NULL;
+}
+
+/* The families hdbitstream carries: not private1-dts, whose per-packet
+ * substream header would land inside frames. */
+static gboolean
+gst_adecswitch_hd_family (GstCaps * caps)
+{
+  const gchar *factory = gst_adecswitch_factory_for_caps (caps);
+
+  return factory != NULL && g_strcmp0 (factory, DECPROXY_FACTORY) != 0
+      && !gst_structure_has_name (gst_caps_get_structure (caps, 0),
+      "audio/x-private1-dts");
 }
 
 static gboolean
@@ -336,38 +359,18 @@ gst_adecswitch_src_event_probe (GstPad * pad, GstPadProbeInfo * info,
   return GST_PAD_PROBE_OK;
 }
 
-/* Downstream events on the sink ghost pad. A CAPS event naming a different
- * family is the one and only switch trigger; same-family caps changes are
- * forwarded untouched. Runs on the streaming thread with that pad's stream
- * lock held (gstpad.c:5473-5486), so no data can overtake the swap. */
+/* Makes @factory_name the inner decoder for @caps, retiring the current one.
+ * Runs on the streaming thread: from the sink pad's CAPS probe with that
+ * pad's stream lock held (gstpad.c:5473-5486), so no data can overtake the
+ * swap, or from hdbitstream's fallback message, posted from inside its
+ * handle_frame on the same thread. */
 static GstPadProbeReturn
-gst_adecswitch_sink_event_probe (GstPad * pad, GstPadProbeInfo * info,
-    gpointer user_data)
+gst_adecswitch_plug (GstAdecSwitch * self, const gchar * factory_name,
+    GstCaps * caps)
 {
-  GstAdecSwitch *self = GST_ADECSWITCH (user_data);
-  GstEvent *event = GST_PAD_PROBE_INFO_EVENT (info);
   GstElement *old_decoder, *decoder;
-  const gchar *factory_name;
   gboolean is_hw, reused = FALSE;
-  GstCaps *caps = NULL;
   GstPad *target;
-
-  if (GST_EVENT_TYPE (event) != GST_EVENT_CAPS)
-    return GST_PAD_PROBE_OK;
-
-  gst_event_parse_caps (event, &caps);
-  factory_name = gst_adecswitch_factory_for_caps (caps);
-  if (factory_name == NULL) {
-    /* Can only happen if our template and this function disagree. */
-    GST_ERROR_OBJECT (self, "no inner decoder for %" GST_PTR_FORMAT, caps);
-    return GST_PAD_PROBE_OK;
-  }
-  if (self->decoder != NULL && !g_strcmp0 (self->decoder_factory,
-          factory_name)) {
-    GST_DEBUG_OBJECT (self, "same family (%s), forwarding %" GST_PTR_FORMAT,
-        factory_name, caps);
-    return GST_PAD_PROBE_OK;
-  }
 
   old_decoder = self->decoder;
   is_hw = !g_strcmp0 (factory_name, DECPROXY_FACTORY);
@@ -489,6 +492,70 @@ have_decoder:
   return GST_PAD_PROBE_OK;
 }
 
+/* Downstream events on the sink ghost pad. A CAPS event naming a different
+ * family is the one and only switch trigger; same-family caps changes are
+ * forwarded untouched. */
+static GstPadProbeReturn
+gst_adecswitch_sink_event_probe (GstPad * pad, GstPadProbeInfo * info,
+    gpointer user_data)
+{
+  GstAdecSwitch *self = GST_ADECSWITCH (user_data);
+  GstEvent *event = GST_PAD_PROBE_INFO_EVENT (info);
+  const gchar *factory_name;
+  GstCaps *caps = NULL;
+
+  if (GST_EVENT_TYPE (event) != GST_EVENT_CAPS)
+    return GST_PAD_PROBE_OK;
+
+  gst_event_parse_caps (event, &caps);
+  factory_name = gst_adecswitch_factory_for_caps (caps);
+  if (factory_name == NULL) {
+    /* Can only happen if our template and this function disagree. */
+    GST_ERROR_OBJECT (self, "no inner decoder for %" GST_PTR_FORMAT, caps);
+    return GST_PAD_PROBE_OK;
+  }
+  if (gst_adecswitch_hd_family (caps) && lgroute_wanted ()) {
+    lgroute_log (GST_ELEMENT_CAST (self), "lossless passthrough wanted: %s "
+        "stands in for %s", HDBITSTREAM_FACTORY, factory_name);
+    factory_name = HDBITSTREAM_FACTORY;
+  }
+  gst_caps_replace (&self->caps, caps);
+  if (self->decoder != NULL && !g_strcmp0 (self->decoder_factory,
+          factory_name)) {
+    GST_DEBUG_OBJECT (self, "same family (%s), forwarding %" GST_PTR_FORMAT,
+        factory_name, caps);
+    return GST_PAD_PROBE_OK;
+  }
+
+  return gst_adecswitch_plug (self, factory_name, caps);
+}
+
+/* hdbitstream could not hold the lossless route (it says why): plug the
+ * decoder it stood in for. The message comes from inside its handle_frame,
+ * so this runs on the streaming thread like the CAPS probe does. */
+static void
+gst_adecswitch_handle_message (GstBin * bin, GstMessage * message)
+{
+  GstAdecSwitch *self = GST_ADECSWITCH (bin);
+
+  if (GST_MESSAGE_TYPE (message) == GST_MESSAGE_ELEMENT
+      && gst_message_has_name (message, "hdbitstream-fallback")
+      && self->decoder != NULL
+      && GST_MESSAGE_SRC (message) == GST_OBJECT_CAST (self->decoder)
+      && self->caps != NULL) {
+    const gchar *factory_name = gst_adecswitch_factory_for_caps (self->caps);
+
+    GST_WARNING_OBJECT (self, "%s fell back (%s); plugging %s for %"
+        GST_PTR_FORMAT, HDBITSTREAM_FACTORY,
+        gst_structure_get_string (gst_message_get_structure (message), "reason"),
+        factory_name, self->caps);
+    gst_adecswitch_plug (self, factory_name, self->caps);
+    gst_message_unref (message);
+    return;
+  }
+  GST_BIN_CLASS (gst_adecswitch_parent_class)->handle_message (bin, message);
+}
+
 static GstStateChangeReturn
 gst_adecswitch_change_state (GstElement * element, GstStateChange transition)
 {
@@ -585,6 +652,7 @@ gst_adecswitch_dispose (GObject * object)
   self->decoder = NULL;
   self->decoder_factory = NULL;
   gst_event_replace (&self->resource_event, NULL);
+  gst_caps_replace (&self->caps, NULL);
 
   G_OBJECT_CLASS (gst_adecswitch_parent_class)->dispose (object);
 }
@@ -601,6 +669,8 @@ gst_adecswitch_class_init (GstAdecSwitchClass * klass)
   gobject_class->finalize = gst_adecswitch_finalize;
 
   element_class->change_state = GST_DEBUG_FUNCPTR (gst_adecswitch_change_state);
+  GST_BIN_CLASS (klass)->handle_message =
+      GST_DEBUG_FUNCPTR (gst_adecswitch_handle_message);
 
   g_object_class_install_property (gobject_class, PROP_HW_TEARDOWN_GRACE_MS,
       g_param_spec_uint ("hw-teardown-grace-ms", "HW teardown grace (ms)",
@@ -664,7 +734,7 @@ plugin_init (GstPlugin * plugin)
       "audio decoder-switching bin");
 
   return gst_element_register (plugin, "adecswitch", ADECSWITCH_RANK,
-      GST_TYPE_ADECSWITCH);
+      GST_TYPE_ADECSWITCH) && gst_hdbitstream_register (plugin);
 }
 
 GST_PLUGIN_DEFINE (GST_VERSION_MAJOR,
