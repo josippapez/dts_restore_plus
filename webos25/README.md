@@ -598,8 +598,7 @@ unchanged. **`.mp4` TrueHD remains unsupported** — `qtdemux.c` has no TrueHD/M
 - **No object audio, and no "Dolby Atmos"/"DTS:X" badge** for DTS or TrueHD — and this is not an
   AVR or eARC limitation: the badge appears on TV speakers alone for AC-3, because LG's
   `libgstlgaudiodec.so` is the only element with an Atmos codepath and its sink caps accept
-  neither `audio/x-dts` nor `audio/x-true-hd`. Structural, not configurable. With full
-  DTS-HD passthrough an eARC receiver renders DTS:X objects itself; see
+  neither `audio/x-dts` nor `audio/x-true-hd`. Structural, not configurable. See
   [`docs/PASSTHROUGH.md`](docs/PASSTHROUGH.md).
 
 ## Dolby Vision profile 7 (MKV and MP4)

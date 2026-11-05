@@ -1,110 +1,194 @@
-# DTS bitstream passthrough on webOS 25
+# DTS / TrueHD bitstream passthrough on webOS 25 — feasibility (investigation)
 
-webOS 25 has no DTS decoder, so `dtsdec` decodes DTS in software. A receiver can
-still get the real DTS bitstream in two ways. Both are opt-in in the app.
+**Question:** can we send an *undecoded* DTS or Dolby TrueHD bitstream to an AVR
+(eARC/ARC/optical) — i.e. real passthrough — instead of software-decoding to PCM
+(what this project does today)?
 
-| Mode | What the receiver gets | Needs |
-|---|---|---|
-| **Send DTS to a receiver** | the DTS 5.1 core | ARC or eARC, Digital Sound Out on Pass Through or Auto |
-| **Full DTS-HD MA / DTS:X** | every DTS track whole, unchanged | eARC, plus the mode above |
+**Verdict: DTS yes, through the audio graph rather than any config, caps or rank.**
+`dtsdec` sends the DTS core (README, "Send DTS to a receiver"), or the whole DTS-HD
+MA / DTS:X bitstream over eARC (below). TrueHD is still decode only.
 
-| DTS track | Core mode | Full mode |
-|---|---|---|
-| DTS, DTS-ES, DTS 96/24 | core | whole bitstream |
-| DTS-HD High Resolution | core | whole bitstream |
-| DTS-HD Master Audio | core | whole bitstream |
-| DTS:X (inside DTS-HD MA) | core | whole bitstream, objects included |
-| DTS Express (no core) | decoded | decoded |
-| 44.1 kHz DTS (music CDs), 14-bit or little-endian DTS (WAV) | decoded | decoded |
+## Full DTS-HD over eARC
 
-Decoded tracks still play, through the TV's normal PCM output. FFmpeg's muxer cannot
-pack DTS Express, and eARC is clocked for 48 kHz, so those stay decoded.
+LG's DSP graph already has a bitstream path to eARC (ES lipsync → delay → gain →
+bypass → eARC queue), but LG's kernel only connects it for LG's own decoders. Root
+can connect DSP modules through `/dev/lg/audio_uimc`, so `hdroute.sh` (with the
+`hdroute-uimc` ioctl helper) does it from userspace while a DTS-HD stream plays,
+and restores the mixer feed when it ends. `dtsdec` sends IEC 61937 type IV bursts
+with LG's MAT encoder caps, which eARC accepts. Module ids come from the live graph,
+so no model is hard-coded. Kernel evidence:
+[webos25-audio-decomp](https://github.com/maxdewald/webos25-audio-decomp)
+(`src/kernel/aud/user_imc.c`, `module_list.c`, `alsa_sndout.c`). Verified on a C2
+with a Denon soundbar. Log: `/var/lib/webosbrew/dtsenabler/hdroute.log`. eARC only;
+while it plays, TV sounds are not mixed in.
 
-The core mode is described in the [README](../README.md#send-dts-to-a-receiver-passthrough-opt-in).
-This page covers the full mode.
+## Why
 
-## The problem
+1. **LG's GStreamer audio sink takes PCM only.** The only sink is `lgaudiosink`
+   (element name `audiosink`, `libgstlgaudiosink.so`); its sink pad accepts **only
+   `audio/x-raw` (S8..S32 integer PCM)** — never `audio/x-dts`, `audio/x-ac3`,
+   `audio/x-eac3`, or `audio/x-true-hd`. So a bitstream cannot even be expressed at
+   the sink. No rank/caps change forces a sink to accept caps it doesn't advertise.
+2. **Everything is decoded to PCM before the sink.** Even AC3 goes
+   `ac3_audiodec (audio/x-ac3 → audio/x-raw)`. There is no `dcaparse`/`dtsparse` on
+   the device, and no IEC61937-packing element in GStreamer to wrap a bitstream.
+3. **`device_codec_capability_config.json` has no passthrough switch.** Entries are
+   `{name, channels}` only (AC3/EAC3/DTS/DTSH/DTSE/TRUEHD/MLP) — a *decode*
+   capability advertisement, not a bitstream flag. AC3 and DTS are identical in shape.
+4. **Passthrough lives in the closed HAL.** `audiooutputd`'s
+   `libelement-audio-decoder.so` (`Element::DecoderAudio`) tracks `codecSrc` vs
+   `codecDecoded` and exposes `drvSetTPDecoderOutputMode` / `TPDecoderOutputMode`;
+   `libelement-audio-ahdmi.so` (`Element::HdmiAudio`) drives the eARC/ARC output.
+   Its `src_codec_ext_type_t` enum *does* include `dts_hd`, `dts_hd_ma`, `dts_x_p1/p2`,
+   `dts_express`, `truehd`, `truehd_atmos`, `eac3_atmos`, `mat_atmos`, `ac4_atmos` —
+   so the platform recognizes these as bitstream types — but the routing (decode vs
+   bitstream) is decided at runtime from **source codec + eARC EDID + the user's
+   "Digital Sound Output" (Auto/Pass-Through/PCM) setting**, inside compiled code and
+   the SoC audio driver. There is no JSON/caps lever to flip.
 
-LG's audio graph already has a path for an undecoded bitstream: a bypass chain
-from the sink to the eARC output. LG's kernel only connects it when LG's own
-decoder plays. For our software decoder it never does, so the bitstream has
-nowhere to go and the eARC output keeps getting mixed PCM.
+## Multichannel PCM — already delivered to the sink (BD-LPCM reframe NOT needed)
 
-## The approach
+Update after on-device verification: LG's `audiosink` (`lgaudiosink`) advertises
+`audio/x-raw … channels=[1,10]`, and a **real Media-Player playback** of a 5.1 DTS
+file shows it negotiating `audio/x-raw, S32LE, 48000, channels=6` on its sink pad.
+So the current `dtsdec → S32LE 5.1 → audiosink` path **already hands full discrete
+5.1 PCM to LG's audio HAL** — there is no stereo downmix in the GStreamer path.
 
-The DSP modules can be connected from userspace through `/dev/lg/audio_uimc`.
-LG's kernel driver accepts that from root
-([`allow_nonsecure_connect`](https://github.com/maxdewald/webos25-audio-decomp/blob/acf7f0205ac4b3285058e13c7741facaab9a6fea/src/kernel/aud/module_list.c#L224)).
-So while a DTS-HD video plays, a small service builds the same chain LG's kernel
-would build, and takes it down again when the video ends. No kernel module, no
-kernel patch.
+The **DTS → BluRay-LPCM reframe** (the `experimental/gst-dtstolpcm/` idea) was
+premised on the sink being stereo-only; since the sink takes up to 10 channels
+directly, that reframe is **unnecessary** to reach a multichannel sink. It would
+only matter if LG's HAL gated eARC multichannel output specifically to the
+proprietary `pcm_audiodec` path — which can be checked with an AVR (see below).
 
-![The eARC route while a DTS-HD video plays](hd-route.svg)
+**The remaining variable is the TV's output stage, not the pipeline:** whether the
+HAL renders the delivered 5.1 to eARC or folds it to the built-in speakers depends
+on the "Digital Sound Output" setting + eARC EDID. Confirm on an AVR's input
+display; if an AVR shows 2.0 while the pipeline delivers 6ch, the fold happens in
+the closed HAL (not fixable from our layer) and only then is the `pcm_audiodec`
+path worth attempting.
 
-![What happens when a DTS-HD video starts and ends](hd-lifecycle.svg)
+## Likely impossible without proprietary reverse-engineering
 
-What each part does:
+- Rebuilding LG's closed `lgaudiosink` / `lxaudiodec` / `liblxa` / audio HAL.
+- TrueHD passthrough specifically (no decoder, no sink caps, licensing).
 
-- **`dtsdec`** packs each whole DTS frame into an IEC 61937 type IV burst (the HDMI
-  high-bitrate format), using FFmpeg's spdif muxer. It labels the stream with the caps
-  LG's own MAT (Dolby Atmos) encoder uses, which have the same data rate. The eARC
-  output then accepts it; the soundbar reads the real format from the burst header.
-  A frame that does not fit one burst is muted, never cut down to the core.
-- **`hdroute.sh`** waits for `dtsdec` to arm, finds the modules in the live DSP graph
-  by name, saves the current links, connects the bypass chain to eARC and unmutes it.
-  It undoes this when the stream ends, `dtsdec` dies, or the service stops.
-- **`hdroute-uimc`** is a small helper that issues the two ioctls: connect and
-  disconnect-input.
+## The related question, now settled: the "Dolby Atmos" / "DTS:X" badge
 
-## Proof
+Investigated 2026-08-19 on the same C5, because it is the question users actually
+ask: *AC-3 content shows an Atmos badge and DTS/TrueHD content does not — can that
+be fixed?* **No, and for a sharper reason than passthrough.**
 
-- **Kernel source, reconstructed:** the public
-  [webos25-audio-decomp](https://github.com/maxdewald/webos25-audio-decomp) repo
-  rebuilds LG's audio kernel driver and DSP code from the C2 firmware, checked against
-  LG's GPL source. The parts this relies on:
-  - the [connect and disconnect ioctls](https://github.com/maxdewald/webos25-audio-decomp/blob/acf7f0205ac4b3285058e13c7741facaab9a6fea/src/kernel/aud/user_imc.c#L454-L470);
-  - [`_get_output_format`](https://github.com/maxdewald/webos25-audio-decomp/blob/acf7f0205ac4b3285058e13c7741facaab9a6fea/src/kernel/aud/alsa_sndout.c#L2127),
-    which only picks the bypass for LG's own decoders, so it never routes ours;
-  - [`dot_registry`](https://github.com/maxdewald/webos25-audio-decomp/blob/acf7f0205ac4b3285058e13c7741facaab9a6fea/src/libaa/debug.c#L399),
-    which prints the live graph `hdroute.sh` reads.
-- **Bursts:** `src/test/test-spdif-hd.c` checks every burst against FFmpeg, for DTS-HD MA
-  and plain DTS, and that an oversized frame is muted instead of stripped to the core.
-- **On a TV:** LG C2 (`OLED42C27LA`, webOS 25 10.3.1) with a Denon soundbar over eARC.
-  The soundbar showed DTS-HD MA, including a looped clip, a seek, and connecting
-  while already playing.
+**An AVR is not involved.** The badge appears with **TV speakers only** and no AVR
+attached, so this is not an eARC/EDID question at all — LG renders the objects
+internally. (An earlier assumption that the badge required an AVR was wrong.)
 
-## Limits
+The badge is produced by **`libgstlgaudiodec.so`**, LG's native audio decoder
+element, and it is the only component with an Atmos codepath:
+`LGADEC_CODEC_EAC3_ATMOS`, `LGADEC_CODEC_AC4_ATMOS`, `INPUT_STREAM_ATMOS` /
+`INPUT_STREAM_NON_ATMOS`, `atmos_decoding`, `isAtmos`, `lgadec_get_atmos`. Its sink
+caps are:
 
-- **eARC only.** Plain ARC has no room for the HD bitstream.
-- **TV sounds are not mixed in** while a DTS-HD video plays, because the mixer feed
-  of eARC is replaced. They come back when the video ends.
-- **Lip sync** uses the receiver's own A/V delay setting.
-- **One stream at a time.** A second DTS stream gets the core mode.
-- **Not yet heard:** a DTS:X title and plain DTS through this mode. Both use the same
-  bursts as the tested DTS-HD MA clip.
-- If the graph does not look as expected, `hdroute.sh` logs it and changes nothing.
-  `dtsdec` then sends the core or silence for that video, never noise.
-- Log: `/var/lib/webosbrew/dtsenabler/hdroute.log`.
+```
+audio/x-ac3  x-ac4  x-adpcm  x-alaw  x-eac3  x-flac  x-iamf  x-lpcm  x-lpcm-1
+x-mulaw  x-opus  x-private-lg-lpcm  x-private-ts-lpcm  x-private1-ac3
+x-private1-lpcm  x-private2-lpcm  x-raw  x-vorbis  x-wma
+```
 
-## Other TVs
+**No `audio/x-dts`. No `audio/x-true-hd`.** Only E-AC-3 and AC-4 have Atmos enums at
+all. So object audio can never reach the one element able to badge or render it, and
+DTS:X / TrueHD-Atmos are structurally excluded — independently of the sink-caps
+problem above.
 
-Nothing in the route is tied to one model: module ids come from the live graph, and
-the helper only needs `/dev/lg/audio_uimc`. To check another webOS 25 set, play a
-DTS-HD video with the mode on and read the log.
+## "Can we just re-enable the TV's native DTS, or port a C4's?" — no, settled
 
-- `routed lipsync_… -> queue_…` and the receiver shows DTS-HD: it works.
-- `unexpected graph: …`: that TV's graph differs. Send the log line and the output
-  of `echo "2 debug_aimc2 X fcall dot_registry" > /proc/aaudio/callv; dmesg | tail -200`
-  (and the same with `1`).
-- `connect failed`: that kernel does not allow userspace connects.
+Asked because the 2024 sets (C4/G4/M4/T4) keep full native DTS while the 2025 sets
+dropped it, so transplanting LG's own decoder looks tempting. Measured on the C5
+(2026-08-21):
 
-Older webOS versions with native DTS (C4/G4/M4/T4) do not need this.
+- **The capability advertisement survived.** `device_codec_capability_config.json`
+  still lists `DTS`, `DTSE` and `DTSH`, and the HAL's `src_codec_ext_type_t` still
+  enumerates `dts_hd`, `dts_hd_ma`, `dts_x_p1/p2`, `dts_express`. This is why the
+  platform *looks* DTS-capable from configuration alone.
+- **The decoder element's DTS path is gone.** `libgstlgaudiodec.so` exposes no
+  `audio/x-dts` sink cap and no `LGADEC_CODEC_DTS*` enum (compare the present
+  `LGADEC_CODEC_EAC3_ATMOS` / `_AC4_ATMOS`). Of 27 case-insensitive "dts" matches in
+  that binary, all but two are **ADTS** (AAC) false positives; the survivors are the
+  dead field names `isDTSSeamless` and `isDtsCoreless`. So there is no flag to flip —
+  unlike C3, where `dts_audiodec` is registered with full DTS caps and only the
+  Matroska `enable-dts` gate is off.
+- **The DSP cannot decode DTS either — this is the decisive one.** `/proc/aaudio/
+  module/` contains exactly two DTS modules: `DTSENC_P0` (en**coder**) and
+  `DTSVIRTUALX` (Virtual:X post-processing). DTS encode and Virtual:X are licensed
+  separately from DTS decode, and LG kept only those. The per-DSP decoder list
+  confirms it — `/proc/aaudio/processors/dsp0/` holds one `dec_*` node per codec the
+  DSP firmware can actually decode:
 
-## What stays out of reach
+  ```
+  dec_ac4   dec_amrnb  dec_amrwb  dec_ddp   dec_dra   dec_flac  dec_heaac
+  dec_iamf  dec_mat    dec_mp3    dec_mpegh dec_ogg   dec_opus  dec_pcm   dec_wma
+  ```
 
-- **DTS decoding on LG's DSP.** The DSP firmware has a `dec_*` module for every codec
-  except DTS, so there is nothing to re-enable or port from an older TV.
-- **The "DTS:X" badge on the TV speakers.** LG's only object-audio decoder
-  (`libgstlgaudiodec.so`) accepts E-AC-3 and AC-4, never DTS or TrueHD. With the full
-  DTS-HD mode the receiver renders the objects instead.
-- **TrueHD passthrough.** Not supported.
+  Every codec is present except DTS. There is **no `dec_dts`** — the decoder is
+  physically absent from the DSP firmware, not disabled.
+
+**So "port C3's files to a C5" cannot work, at either layer.** C3's
+`libgstlgaudiodec.so` is a thin wrapper that asks the DSP for a `dec_dts` that does
+not exist here, so the element would load and then have nothing to call. Going deeper
+and transplanting C3's DSP firmware is not a plugin swap but replacing the audio
+subsystem's firmware across SoC generations (`o22n` → `o22n3`), and C3's firmware is
+**not a superset**: the C5 list above includes `dec_mat` (Dolby MAT/Atmos), `dec_ac4`,
+`dec_mpegh` and `dec_iamf`, which a 2023 build does not carry. The trade would be DTS
+in exchange for losing Atmos, AC-4 and MPEG-H — on top of near-certain failure and
+risk to the whole audio path.
+
+So the missing link is not merely the userspace element: the decode capability is
+absent from the DSP as well. Dropping a C4's `libgstlgaudiodec.so` onto a C5 would
+install a wrapper with nothing behind it — and it would additionally have to survive
+a GStreamer version change (webOS 24 → 1.24) and a different SoC-generation HAL/DSP
+ABI. LG removed DTS from the 2025 line for licensing, so the decoder is genuinely not
+shipped, not merely disabled.
+
+**Consequence, and it is the useful one:** software decode (this project's
+`dtsdec` and ffmpeg path) is not a workaround for a lever we failed to find
+— it is the only available mechanism on webOS 25. What native decode would have
+bought, and what is therefore permanently out of reach here: DSP-offloaded decoding,
+and the DTS:X badge with DAP object rendering. (DTS-HD MA lossless was on this list
+until webos25-2.43; `dtsdec` now decodes it in software.)
+
+There *is* a real signalling mechanism, and it is a dead end for us: LG's demuxers
+and parsers set an **`immersive=ATMOS` caps field** (`tsdemux.c:3031/3156/3742/3786`
+via `gst_ts_demux_set_caps_for_private_atmos_audio()`, `qtdemux.c:15180`,
+`gstac3parse.c:650`, read back at `gstac3parse.c:960`). But it is set on **bitstream**
+caps for E-AC-3/AC-4 only, feeding the same `lgaudiodec` that will not accept DTS or
+TrueHD. `libgstdecproxy.so` and `libgstcool` contain no `immersive`/`ATMOS` strings.
+The shipped `libavcodec` has **zero** `atmos|OAMD|EMDF|joc` strings, so our decoder
+has no object awareness either.
+
+What our path *does* deliver, measured: a real `Dolby TrueHD + Dolby Atmos` 7.1 MKV
+decodes to the **full 8-channel bed** (`S32LE 48000 channels=8 mask=0x0c3f`), with no
+substream or downmix warnings. Only the object layer is lost — which no open decoder
+renders. DTS matches that since webos25-2.43: `dtsdec` uses ffmpeg's XLL-capable `dca`
+decoder (before, libdca decoded the 5.1 **core** only), and a DTS-HD MA 7.1 MKV decodes
+to 8 channels, bit-exact against desktop ffmpeg on the C5. DTS:X objects are not
+rendered; what a DTS:X title's bed decodes to has not been measured.
+
+**Output stage note:** on this TV `/proc/aaudio/instances/03250001`
+(`output_speaker`) reports `output-channels=4`, and with no AVR the live audio graph
+terminates at `output_speaker`/`output_hp` with no `OUT_ARC`/`OUTES_ARC`/`MATENC`
+node. So everything folds to 4 channels regardless — any "more channels" upgrade is
+inaudible until an AVR is attached over eARC.
+
+## Remaining unknowns (only worth chasing with an AVR attached)
+
+1. Play a DTS title and read `/tmp/gst.log` (gstcool sets `GST_DEBUG=5`) + `PmLog`
+   for `TPDecoderOutputMode`, `codecSrc`/`codecDecoded`, and whether `audio-ahdmi`
+   ever selects a bitstream mode — shows what the HAL chooses and why.
+2. Read the AVR's advertised caps as the TV sees them via `com.webos.service.eim` /
+   `com.webos.service.extinputs.eim` (EDID/eARC) — does the sink even signal DTS/TrueHD?
+3. `strings` the SoC audio driver / `libAudioResources.so` for the
+   `src_codec_ext_type_t` → output-mode mapping table — that table (or a driver
+   ioctl), not a config file, is the true gate.
+
+**Bottom line:** the Atmos/DTS:X badge on the TV is out of reach — LG's only
+Atmos-capable decoder does not accept DTS or TrueHD input at all. With full DTS-HD
+passthrough an eARC receiver renders DTS:X itself.
