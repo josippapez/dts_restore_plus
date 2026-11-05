@@ -9,10 +9,10 @@
 # stream ends, dtsdec dies, or this service is stopped.
 #
 # Connections go through /dev/lg/audio_uimc (hdroute-uimc); modules are found in
-# the live graph, never by fixed id. Started and stopped by init_dts25.sh
-# (W25_HD=start|stop) while the passthrough-hd marker exists. Usage:
+# the live graph, never by fixed id. Runs as the sound-output watcher's child
+# while the passthrough-hd marker exists. Usage:
 #   sh hdroute.sh            run (foreground)
-#   sh hdroute.sh --restore  undo a route left by a killed instance, then exit
+#   sh hdroute.sh --stop     stop and restore, including after a crash
 set -u
 DIR=$(cd "$(dirname "$0")" && pwd)
 HELPER=$DIR/hdroute-uimc
@@ -36,9 +36,13 @@ dump() {
   SEQ=$((SEQ + 1))
   tag=HDROUTE_$$_${SEQ}
   printf '%s debug_aimc2 %s fcall dot_registry\n' "$1" "$tag" > /proc/aaudio/callv
-  sleep 1
-  dmesg | awk -v t="$tag" 'index($0, t ": start"){a=1} a{print} index($0, t ": end"){a=0; d=1} END{exit !d}' \
-    > "$WORK/$2.graph" || return 1
+  attempts=0
+  while ! dmesg | awk -v t="$tag" 'index($0, t ": start"){a=1} a{print} index($0, t ": end"){a=0; d=1} END{exit !d}' \
+      > "$WORK/$2.graph"; do
+    attempts=$((attempts + 1))
+    [ "$attempts" -lt 50 ] || return 1
+    usleep 20000 2>/dev/null || sleep 1
+  done
   sed -n 's/.*]  *\([a-z0-9_]*\)_[^_ ]*_out\([0-9a-f]*\) -> \([a-z0-9_]*\)_[^_ ]*_in\([0-9a-f]*\) .*/\1 \2 \3 \4/p' \
     "$WORK/$2.graph" > "$WORK/$2.edges"
 }
@@ -105,8 +109,19 @@ connect() {
   log "routed lipsync_$ES -> delay_$DELAY -> gain_$GAIN -> bypass_$BYPASS -> queue_$QUEUE"
 }
 
-if [ "${1:-}" = --restore ]; then
+if [ "${1:-}" = --stop ]; then
+  p=$(cat "$PIDFILE" 2>/dev/null)
+  if [ -n "$p" ] && [ -d "/proc/$p" ]; then
+    kill "$p" 2>/dev/null
+    attempts=0
+    while [ -d "/proc/$p" ] && [ "$attempts" -lt 10 ]; do
+      sleep 1
+      attempts=$((attempts + 1))
+    done
+    [ ! -d "/proc/$p" ] || { log 'stop timed out; keeping recovery state'; exit 1; }
+  fi
   restore
+  rm -f "$PIDFILE" "$ARMED"
   exit 0
 fi
 [ -x "$HELPER" ] || { log "missing $HELPER"; exit 1; }

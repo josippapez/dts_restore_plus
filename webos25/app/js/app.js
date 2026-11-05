@@ -281,10 +281,10 @@
       : "on — waiting for an ARC/eARC receiver",
       s.passthroughToReceiver ? "ok" : (s.passthroughRequested ? "warn" : null));
     setVal("sPtOut", s.passthroughOutput || "—");
-    $("btnHdOn").disabled  = !canW25Test || s.passthroughHdStaged !== true || s.passthroughHdRequested === true;
-    $("btnHdOff").disabled = !canW25Test || s.passthroughHdRequested !== true;
-    setVal("sHd", s.passthroughHdStaged === false ? "not installed — enable DTS again"
-      : !s.passthroughHdRequested ? "off"
+    $("hdPassthrough").disabled = !canW25Test;
+    $("hdPassthrough").checked = s.passthroughHdRequested === true;
+    setVal("sHd", !s.passthroughHdRequested ? "off"
+      : !s.passthroughRequested ? "off — passthrough disabled"
       : s.passthroughHdRunning ? "on" : "on — route service not running",
       s.passthroughHdRequested ? (s.passthroughHdRunning ? "ok" : "warn") : null);
     // A/B compare renders through the patched dtsdec, so it needs the same profile.
@@ -488,20 +488,16 @@
     }).catch(function (e) { toast("Could not change it: " + errText(e), "err"); });
   }
 
-  function doPassthroughHd(on) {
+  function doPassthrough(on, hd) {
     toast(on ? "Turning on…" : "Turning off…", "busy");
-    callService("setPassthroughHd", { enabled: on }).then(function (res) {
+    $("hdPassthrough").disabled = true;
+    callService("setPassthrough", { enabled: on, hd: hd }).then(function (res) {
       toast(res.summary || res.errorText || (on ? "Turned on" : "Turned off"), res.returnValue ? "ok" : "err");
       return refreshStatus();
-    }).catch(function (e) { toast("Could not change it: " + errText(e), "err"); });
-  }
-
-  function doPassthrough(on) {
-    toast(on ? "Turning on…" : "Turning off…", "busy");
-    callService("setPassthrough", { enabled: on }).then(function (res) {
-      toast(res.summary || (on ? "Turned on" : "Turned off"), res.returnValue ? "ok" : "err");
-      return refreshStatus();
-    }).catch(function (e) { toast("Could not change it: " + errText(e), "err"); });
+    }).catch(function (e) {
+      toast("Could not change it: " + errText(e), "err");
+      refreshStatus();
+    });
   }
 
   function doAppDtsReboot() {
@@ -901,8 +897,7 @@
     $("btnAppDtsReboot").addEventListener("click", doAppDtsReboot);
     $("btnPtOn").addEventListener("click", function () { doPassthrough(true); });
     $("btnPtOff").addEventListener("click", function () { doPassthrough(false); });
-    $("btnHdOn").addEventListener("click", function () { doPassthroughHd(true); });
-    $("btnHdOff").addEventListener("click", function () { doPassthroughHd(false); });
+    $("hdPassthrough").addEventListener("change", function () { doPassthrough(true, this.checked); });
     $("btnSaveGain").addEventListener("click", doSaveGain);
     $("btnAb").addEventListener("click", doAbRender);
     $("btnAbA").addEventListener("click", function () { doAbPlay("a"); });

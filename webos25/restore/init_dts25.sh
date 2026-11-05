@@ -25,8 +25,6 @@
 #   W25_PT=start|stop
 #                 only start or stop the DTS passthrough sound-output watcher
 #                 (the app's toggle), then exit.
-#   W25_HD=start|stop
-#                 only start or stop the DTS-HD eARC route service, then exit.
 #   FORCE=1       explicit opt-in on a TV that is not in the verified table.
 #
 # Always exits 0: a non-zero webosbrew init script trips the failsafe that
@@ -196,21 +194,8 @@ w25_drop_binds() {
 # ONLY, so the registry it writes does not name /var/lib/webosbrew and the next
 # w25_reg_is_ours is false -- no repeated 60s regen on every boot. It also works
 # when our libraries are already gone, for the same reason.
-# Stop the DTS-HD route service and give eARC back to LG's mixer. The service
-# restores on TERM; --restore covers one that was killed without a chance to.
-w25_hd_halt() {
-  HDP=$(cat /run/dts25/hdroute.pid 2>/dev/null)
-  if [ -n "$HDP" ] && [ -d "/proc/$HDP" ]; then
-    kill "$HDP" 2>/dev/null
-    i=0
-    while [ -d "/proc/$HDP" ] && [ "$i" -lt 10 ]; do sleep 1; i=$((i + 1)); done
-  fi
-  [ -f /var/lib/webosbrew/dts25/hdroute.sh ] && sh /var/lib/webosbrew/dts25/hdroute.sh --restore </dev/null >/dev/null 2>&1
-  rm -f /run/dts25/hdroute.pid /run/dts25/hd-armed
-  return 0
-}
 w25_stand_down() {
-  w25_hd_halt
+  [ ! -f /var/lib/webosbrew/dts25/hdroute.sh ] || sh /var/lib/webosbrew/dts25/hdroute.sh --stop || return 1
   w25_drop_binds
   if w25_reg_is_ours; then
     w25_log "a registry of ours is still live; regenerating the stock registry so nothing of ours stays registered"
@@ -651,6 +636,11 @@ PT_PID=$PT_RUN/watcher.pid
 w25_pt_watch() {
   read -r WPID _ < /proc/self/stat
   echo "$WPID" > "$PT_PID"
+  trap '[ ! -f /var/lib/webosbrew/dts25/hdroute.sh ] || sh /var/lib/webosbrew/dts25/hdroute.sh --stop; rm -f "$PT_OUT" "$PT_PID"' EXIT
+  trap 'exit 0' INT TERM HUP
+  if [ -f /var/lib/webosbrew/dts25/passthrough-hd ]; then
+    sh /var/lib/webosbrew/dts25/hdroute.sh </dev/null >/dev/null 2>&1 &
+  fi
   while [ -f "$PT_FLAG" ]; do
     luna-send -i luna://com.webos.settingsservice/getSystemSettings \
       '{"category":"sound","keys":["soundOutput","soundOutputDigital"],"subscribe":true}' \
@@ -682,41 +672,28 @@ w25_pt_start() {
 }
 # Stops the watcher and its luna-send, and drops the file, so dtsdec decodes.
 w25_pt_stop() {
+  [ ! -f /var/lib/webosbrew/dts25/hdroute.sh ] || sh /var/lib/webosbrew/dts25/hdroute.sh --stop || return 1
   P=$(cat "$PT_PID" 2>/dev/null)
   if [ -n "$P" ] && [ -d "/proc/$P" ]; then
     for c in /proc/[0-9]*; do
       [ "$(cut -d' ' -f4 "$c/stat" 2>/dev/null)" = "$P" ] && kill "${c#/proc/}" 2>/dev/null
     done
     kill "$P" 2>/dev/null
+    attempts=0
+    while [ "$(cat "$PT_PID" 2>/dev/null)" = "$P" ] && [ "$attempts" -lt 10 ]; do
+      sleep 1
+      attempts=$((attempts + 1))
+    done
+    [ "$(cat "$PT_PID" 2>/dev/null)" != "$P" ] || return 1
   fi
   rm -f "$PT_OUT" "$PT_PID"
 }
-# --- DTS-HD opt-in: the route service that connects dtsdec's HD bitstream to
-# eARC. dtsdec only sends HD while this service runs; otherwise it falls back
-# to the core passthrough above. Needs passthrough on as well.
-HD_FLAG=/var/lib/webosbrew/dts25/passthrough-hd
-HD_SVC=/var/lib/webosbrew/dts25/hdroute.sh
-HD_PID=$PT_RUN/hdroute.pid
-w25_hd_start() {
-  [ -f "$HD_FLAG" ] && [ -f "$PT_FLAG" ] && [ -f "$HD_SVC" ] || return 0
-  mkdir -p "$PT_RUN"
-  P=$(cat "$HD_PID" 2>/dev/null)
-  [ -n "$P" ] && [ -d "/proc/$P" ] && return 0
-  ( sh "$HD_SVC" ) </dev/null >/dev/null 2>&1 &
-}
-# W25_PT=start|stop / W25_HD=start|stop: only start or stop one helper, for the
-# app's toggles, so turning either on or off takes effect without a restart.
+# W25_PT=start|stop: only start or stop the watcher, for the app's toggle, so
+# turning passthrough on or off takes effect without a restart.
 if [ -n "${W25_PT:-}" ]; then
   case $W25_PT in
     start) w25_pt_start ;;
-    stop) w25_pt_stop; w25_hd_halt ;;
-  esac
-  exit 0
-fi
-if [ -n "${W25_HD:-}" ]; then
-  case $W25_HD in
-    start) w25_hd_start ;;
-    stop) w25_hd_halt ;;
+    stop) w25_pt_stop || exit 1 ;;
   esac
   exit 0
 fi
@@ -773,7 +750,7 @@ w25_unowned() {
 # registry naming them must be replaced whether or not it looks like ours.
 w25_self_heal() {
   w25_log "SELF-HEAL: $HEAL_WHY -- reverting every override"
-  w25_hd_halt
+  [ ! -f /var/lib/webosbrew/dts25/hdroute.sh ] || sh /var/lib/webosbrew/dts25/hdroute.sh --stop || return 1
   w25_drop_binds
   if ! w25_stock_registry; then
     w25_log "SELF-HEAL DEFERRED: LG's registry could not be rebuilt, so our plugins and the boot hook are KEPT (deleting them now would leave the live registry pointing at missing plugins). Retrying at the next boot."
@@ -1208,7 +1185,6 @@ w25_appdts_start() {
 }
 w25_appdts_start
 w25_pt_start
-w25_hd_start
 # --- APPLY 2c) container demuxers with DTS re-enabled (mp4/ts/m2ts DTS -> audio/x-dts).
 #         Patched isomp4/mpegtsdemux default dts_support=TRUE; patched matroska
 #         signals Dolby Vision profile 7. Bound BEFORE the regen below so the

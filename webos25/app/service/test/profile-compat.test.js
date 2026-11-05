@@ -22,7 +22,7 @@ function loadService() {
     "c2StatusBindsComplete: c2StatusBindsComplete, c2SelfTest: c2SelfTest," +
     "DETECT_PROBE: DETECT_PROBE, w25EdidTarget: w25EdidTarget, w25InitScriptBody: w25InitScriptBody," +
     "w25PtReceiver: w25PtReceiver, w25PassthroughSteps: w25PassthroughSteps, w25Enable: w25Enable," +
-    "w25PassthroughHdSteps: w25PassthroughHdSteps, w25Disable: w25Disable," +
+    "w25Disable: w25Disable," +
     "constants: {C2: PROFILE_C2," +
     "sets: C2_EXPECTED_SETS, matchSet: c2MatchSet," +
     "libav: C2_EXPECTED_SETS[0].libav, iso: C2_EXPECTED_SETS[0].iso, mkv: C2_EXPECTED_SETS[0].mkv}};";
@@ -546,24 +546,55 @@ test("the passthrough toggle only reports a receiver for external_arc", function
     "W25_PT mode must exit before the apply path");
 });
 
-/* DTS-HD: the toggle starts or stops the route service through W25_HD, which
- * must exit before applying, and Disable must hand eARC back first. */
-test("the DTS-HD toggle drives the route service and Disable stops it", function () {
-  [true, false].forEach(function (on) {
-    var script = service.w25PassthroughHdSteps(on);
+test("DTS-HD shares the passthrough lifecycle and Disable restores eARC first", function () {
+  [true, false, undefined].forEach(function (hd) {
+    var script = service.w25PassthroughSteps(true, hd);
     var r = spawnSync("sh", ["-n"], { input: script, encoding: "utf8" });
     assert.strictEqual(r.status, 0, "generated script is not valid sh: " + r.stderr);
-    assert.ok(script.indexOf("W25_HD=" + (on ? "start" : "stop")) !== -1);
+    if (typeof hd === "boolean") {
+      assert.ok(script.indexOf("W25_PT=stop") < script.indexOf("W25_PT=start"));
+      assert.ok(script.includes(hd ? ': > "/var/lib/webosbrew/dts25/passthrough-hd"'
+        : 'rm -f "/var/lib/webosbrew/dts25/passthrough-hd"'));
+    } else {
+      assert.ok(!script.includes('> "/var/lib/webosbrew/dts25/passthrough-hd"'));
+    }
   });
   var body = service.w25InitScriptBody();
-  var mode = body.indexOf('if [ -n "${W25_HD:-}" ]; then');
-  assert.ok(mode !== -1 && mode < body.indexOf("# --- G) self-heal"),
-    "W25_HD mode must exit before the apply path");
-  assert.ok(body.indexOf("w25_hd_start\n") > body.indexOf("w25_pt_start\n"),
-    "the boot path must start the route service");
+  assert.ok(!body.includes("W25_HD="));
+  assert.ok(initFn("w25_pt_watch").includes("hdroute.sh </dev/null"));
+  assert.ok(initFn("w25_pt_stop").includes("hdroute.sh --stop"));
   var disable = service.w25Disable();
-  assert.ok(disable.indexOf("w25_hd_halt") < disable.indexOf("w25_drop_binds\n"),
+  assert.ok(disable.lastIndexOf('hdroute.sh" --stop') < disable.lastIndexOf("w25_drop_binds\n"),
     "Disable must stop the route service before dropping our dtsdec");
+});
+
+test("HD graph discovery waits for completion without fixed one-second delays", function () {
+  var source = fs.readFileSync(path.join(ROOT, "webos25/restore/hdroute.sh"), "utf8");
+  var dump = source.match(/^dump\(\) \{\n[\s\S]*?^\}/m)[0];
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dts-hd-discovery-"));
+  try {
+    dump = dump.replace("/proc/aaudio/callv", '"$WORK/callv"');
+    [false, true].forEach(function (incomplete) {
+      fs.writeFileSync(path.join(dir, "calls"), "0\n");
+      var script = [
+        "set -u", 'WORK="' + dir + '"', "SEQ=0", dump,
+        'dmesg() { calls=$(cat "$WORK/calls"); calls=$((calls + 1)); echo "$calls" > "$WORK/calls";',
+        'echo "$tag: start"; echo "] queue_04180001_ptr_out0 -> lipsync_04230001_ptr_in0 x";',
+        incomplete ? "return 0; }" : '[ "$calls" -lt 3 ] || echo "$tag: end"; }',
+        "usleep() { :; }", "sleep() { return 99; }",
+        "dump 2 d2"
+      ].join("\n");
+      var result = sh(script);
+      assert.strictEqual(result.status, incomplete ? 1 : 0, result.stderr);
+      assert.strictEqual(Number(fs.readFileSync(path.join(dir, "calls"), "utf8")), incomplete ? 50 : 3);
+      if (!incomplete) {
+        assert.strictEqual(fs.readFileSync(path.join(dir, "d2.edges"), "utf8"),
+          "queue_04180001 0 lipsync_04230001 0\n");
+      }
+    });
+  } finally {
+    fs.rmSync(dir, {recursive: true, force: true});
+  }
 });
 
 /* Issue #13: the luna hub drops any message over 128 KiB and the app only sees

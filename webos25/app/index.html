@@ -246,17 +246,16 @@
           <dt>Passthrough</dt><dd id="sPt">&mdash;</dd>
           <dt>Sound output</dt><dd id="sPtOut">&mdash;</dd>
         </dl>
-        <h3>Full DTS-HD MA / DTS:X</h3>
+        <label class="row">
+          <input id="hdPassthrough" type="checkbox" class="focusable" data-nav disabled>
+          Full DTS-HD MA / DTS:X
+        </label>
         <p class="muted">
           Sends every DTS track whole (DTS, DTS-HD MA, DTS:X) instead of only the
           core. Needs an eARC receiver.
           Tested on an LG C2 with a Denon soundbar. While it plays, TV sounds are
           not mixed in, and lip sync uses the receiver's own delay setting.
         </p>
-        <div class="row">
-          <button id="btnHdOn"  class="btn focusable" data-nav disabled>Turn on</button>
-          <button id="btnHdOff" class="btn focusable" data-nav disabled>Turn off</button>
-        </div>
         <dl class="status">
           <dt>DTS-HD</dt><dd id="sHd">&mdash;</dd>
         </dl>

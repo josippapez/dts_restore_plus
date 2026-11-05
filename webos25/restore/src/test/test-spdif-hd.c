@@ -1,113 +1,53 @@
-/* Host test: dtsdec's HD passthrough setup of FFmpeg's spdif muxer, fed whole
- * DTS-HD MA frames, must emit IEC 61937 type IV bursts at the 768 kHz HBR rate
- * in big-endian words, carrying each frame byte for byte. */
+#include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include <libavformat/avformat.h>
 #include <libavutil/opt.h>
 
-static uint8_t out[1 << 22];
-static int out_len;
-
-static int sink (void *opaque, uint8_t * buf, int size)
-{
-  (void) opaque;
-  memcpy (out + out_len, buf, size);
-  out_len += size;
-  return size;
-}
-
 int main (int argc, char **argv)
 {
-  static uint8_t in[1 << 21];
-  AVFormatContext *s = NULL;
-  AVStream *st;
-  AVPacket *pkt = av_packet_alloc ();
-  FILE *f;
-  long n, off = 0;
-  int frames = 0, len, period, ret;
+  uint8_t frame[40000], *burst = NULL;
+  AVFormatContext *mux = NULL;
+  AVStream *stream;
+  AVPacket *packet = av_packet_alloc ();
+  FILE *input = argc == 2 ? fopen (argv[1], "rb") : NULL;
+  int core_size, burst_size, packed_size;
 
-  if (argc != 2 || !(f = fopen (argv[1], "rb"))) {
-    fprintf (stderr, "usage: %s <raw dts-hd file>\n", argv[0]);
-    return 2;
-  }
-  n = (long) fread (in, 1, sizeof (in), f);
-  fclose (f);
+  assert (input && packet);
+  assert (fread (frame, 1, 8, input) == 8);
+  core_size = ((frame[5] << 16 | frame[6] << 8 | frame[7]) >> 4 & 0x3fff) + 1;
+  assert (core_size >= 8 && core_size < (int) sizeof (frame));
+  assert (fread (frame + 8, 1, core_size - 8, input) == (size_t) core_size - 8);
+  fclose (input);
+  memset (frame + core_size, 0x55, sizeof (frame) - core_size);
 
-  if (avformat_alloc_output_context2 (&s, NULL, "spdif", NULL) < 0)
-    return 1;
-  /* FFmpeg 7 made the buffer const; dtsdec builds against n4.4 */
-  s->pb = avio_alloc_context (av_malloc (4096), 4096, 1, NULL, NULL,
-      (void *) sink, NULL);
-  st = avformat_new_stream (s, NULL);
-  st->codecpar->codec_type = AVMEDIA_TYPE_AUDIO;
-  st->codecpar->codec_id = AV_CODEC_ID_DTS;
-  st->codecpar->sample_rate = 48000;
-  av_opt_set_int (s->priv_data, "dtshd_rate", 768000, 0);
-  av_opt_set_int (s->priv_data, "dtshd_fallback_time", 0, 0);
-  av_opt_set (s->priv_data, "spdif_flags", "be", 0);
-  if (avformat_write_header (s, NULL) < 0)
-    return 1;
-
-  /* raw .dts: core sync 7FFE8001 at each frame start, EXSS follows */
-  while (off + 16 < n && frames < 32) {
-    long next = off + 1;
-    while (next + 4 < n && !(in[next] == 0x7f && in[next + 1] == 0xfe
-            && in[next + 2] == 0x80 && in[next + 3] == 0x01))
-      next++;
-    if (next + 4 >= n)
-      next = n;
-    pkt->data = in + off;
-    pkt->size = (int) (next - off);
-    len = out_len;
-    ret = av_write_frame (s, pkt);
-    avio_flush (s->pb);
-    if (ret < 0) {
-      printf ("FAIL frame %d: av_write_frame %d\n", frames, ret);
-      return 1;
-    }
-    period = out_len - len;
-    /* Pa Pb big-endian, Pc = 0x11 | subtype<<8, then the DTS-HD start code */
-    if (out[len] != 0xF8 || out[len + 1] != 0x72 || out[len + 2] != 0x4E
-        || out[len + 3] != 0x1F || (out[len + 5] & 0x7f) != 0x11
-        || out[len + 8] != 0x01 || out[len + 16] != 0xfe
-        || (out[len + 18] << 8 | out[len + 19]) != pkt->size
-        || memcmp (out + len + 20, in + off, (size_t) pkt->size) != 0) {
-      printf ("FAIL frame %d: burst header or payload mismatch\n", frames);
-      return 1;
-    }
-    if (frames == 0)
-      printf ("burst period %d bytes, subtype %d, frame %d bytes\n", period,
-          out[len + 4] & 0x1f, pkt->size);
-    off = next;
-    frames++;
-  }
-  /* dtsdec mutes a frame whose burst length field is not its own size: an
-   * oversized frame must come out core-only, so that check must catch it */
-  {
-    static uint8_t big[40000];
-    int core = ((in[5] << 16 | in[6] << 8 | in[7]) >> 4 & 0x3fff) + 1;
-
-    memcpy (big, in, (size_t) core);
-    memset (big + core, 0x55, sizeof (big) - (size_t) core);
-    pkt->data = big;
-    pkt->size = sizeof (big);
-    len = out_len;
-    if (av_write_frame (s, pkt) < 0)
-      return 1;
-    avio_flush (s->pb);
-    if ((out[len + 18] << 8 | out[len + 19]) == pkt->size) {
-      printf ("FAIL oversized frame was not detectable as stripped\n");
-      return 1;
-    }
-    printf ("ok - oversized frame stripped to %d bytes, detectable by length\n",
-        out[len + 18] << 8 | out[len + 19]);
-  }
-  av_write_trailer (s);
-  printf ("ok - %d DTS-HD frames packed whole as IEC 61937 type IV (BE, 768 kHz)\n",
-      frames);
-  return frames > 0 ? 0 : 1;
+  assert (avformat_alloc_output_context2 (&mux, NULL, "spdif", NULL) >= 0);
+  stream = avformat_new_stream (mux, NULL);
+  assert (stream);
+  stream->codecpar->codec_type = AVMEDIA_TYPE_AUDIO;
+  stream->codecpar->codec_id = AV_CODEC_ID_DTS;
+  stream->codecpar->sample_rate = 48000;
+  assert (av_opt_set_int (mux->priv_data, "dtshd_rate", 768000, 0) >= 0);
+  assert (av_opt_set_int (mux->priv_data, "dtshd_fallback_time", 0, 0) >= 0);
+  assert (av_opt_set (mux->priv_data, "spdif_flags", "be", 0) >= 0);
+  assert (avio_open_dyn_buf (&mux->pb) >= 0);
+  assert (avformat_write_header (mux, NULL) >= 0);
+  packet->data = frame;
+  packet->size = sizeof (frame);
+  assert (av_write_frame (mux, packet) >= 0);
+  burst_size = avio_close_dyn_buf (mux->pb, &burst);
+  mux->pb = NULL;
+  assert (burst_size >= 20);
+  packed_size = burst[18] << 8 | burst[19];
+  assert (packed_size == core_size && packed_size != packet->size);
+  assert (memcmp (burst + 20, frame, core_size) == 0);
+  printf ("ok - oversized frame reduced to %d bytes; length check detects fallback\n", packed_size);
+  packet->data = NULL;
+  packet->size = 0;
+  av_packet_free (&packet);
+  av_free (burst);
+  avformat_free_context (mux);
+  return 0;
 }

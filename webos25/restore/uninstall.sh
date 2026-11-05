@@ -83,15 +83,7 @@ else
 fi
 
 # --- 1b. Stop the DTS-HD route service; it gives eARC back to LG's mixer ----
-HDP=$(cat /run/dts25/hdroute.pid 2>/dev/null)
-if [ -n "$HDP" ] && [ -d "/proc/$HDP" ]; then
-  kill "$HDP" 2>/dev/null
-  i=0
-  while [ -d "/proc/$HDP" ] && [ "$i" -lt 10 ]; do sleep 1; i=$((i + 1)); done
-  log "stopped DTS-HD route service"
-fi
-[ -f "$DTS_DEST/hdroute.sh" ] && sh "$DTS_DEST/hdroute.sh" --restore </dev/null >/dev/null 2>&1
-rm -f /run/dts25/hdroute.pid /run/dts25/hd-armed
+[ ! -f "$DTS_DEST/hdroute.sh" ] || sh "$DTS_DEST/hdroute.sh" --stop || exit 1
 
 # --- 2. Unmount all binds --------------------------------------------------
 # Rootfs paths only. The same binds propagate into every app jail (27 jail-side
