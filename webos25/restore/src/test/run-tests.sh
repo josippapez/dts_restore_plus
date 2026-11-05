@@ -269,6 +269,8 @@ if command -v ffmpeg >/dev/null && pkg-config --exists libavformat 2>/dev/null; 
   $CC -O2 -Wall -o "$WORK/test-spdif-hd" "$HERE/test-spdif-hd.c" \
       $(pkg-config --cflags --libs libavformat libavcodec libavutil)
   "$WORK/test-spdif-hd" "$WORK/sample.dts"
+  ffmpeg -v error -y -i "$WORK/sample.dts" -c copy -bsf:a dca_core -f dts "$WORK/core.dts"
+  "$WORK/test-spdif-hd" "$WORK/core.dts"
 else
   echo "skip  needs ffmpeg + libavformat dev files"
 fi

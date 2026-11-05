@@ -6,10 +6,22 @@ still get the real DTS bitstream in two ways. Both are opt-in in the app.
 | Mode | What the receiver gets | Needs |
 |---|---|---|
 | **Send DTS to a receiver** | the DTS 5.1 core | ARC or eARC, Digital Sound Out on Pass Through or Auto |
-| **Full DTS-HD MA / DTS:X** | the whole bitstream, objects included | eARC, plus the mode above |
+| **Full DTS-HD MA / DTS:X** | every DTS track whole, unchanged | eARC, plus the mode above |
+
+| DTS track | Core mode | Full mode |
+|---|---|---|
+| DTS, DTS-ES, DTS 96/24 | core | whole bitstream |
+| DTS-HD High Resolution | core | whole bitstream |
+| DTS-HD Master Audio | core | whole bitstream |
+| DTS:X (inside DTS-HD MA) | core | whole bitstream, objects included |
+| DTS Express (no core) | decoded | decoded |
+| 44.1 kHz DTS (music CDs), 14-bit or little-endian DTS (WAV) | decoded | decoded |
+
+Decoded tracks still play, through the TV's normal PCM output. FFmpeg's muxer cannot
+pack DTS Express, and eARC is clocked for 48 kHz, so those stay decoded.
 
 The core mode is described in the [README](../README.md#send-dts-to-a-receiver-passthrough-opt-in).
-This page covers the full DTS-HD mode.
+This page covers the full mode.
 
 ## The problem
 
@@ -55,8 +67,8 @@ What each part does:
     which only picks the bypass for LG's own decoders, so it never routes ours;
   - [`dot_registry`](https://github.com/maxdewald/webos25-audio-decomp/blob/acf7f0205ac4b3285058e13c7741facaab9a6fea/src/libaa/debug.c#L399),
     which prints the live graph `hdroute.sh` reads.
-- **Bursts:** `src/test/test-spdif-hd.c` checks every burst against FFmpeg, and that an
-  oversized frame is muted instead of stripped to the core.
+- **Bursts:** `src/test/test-spdif-hd.c` checks every burst against FFmpeg, for DTS-HD MA
+  and plain DTS, and that an oversized frame is muted instead of stripped to the core.
 - **On a TV:** LG C2 (`OLED42C27LA`, webOS 25 10.3.1) with a Denon soundbar over eARC.
   The soundbar showed DTS-HD MA, including a looped clip, a seek, and connecting
   while already playing.
@@ -67,7 +79,9 @@ What each part does:
 - **TV sounds are not mixed in** while a DTS-HD video plays, because the mixer feed
   of eARC is replaced. They come back when the video ends.
 - **Lip sync** uses the receiver's own A/V delay setting.
-- **One DTS-HD stream at a time.** A second one gets the core mode.
+- **One stream at a time.** A second DTS stream gets the core mode.
+- **Not yet heard:** a DTS:X title and plain DTS through this mode. Both use the same
+  bursts as the tested DTS-HD MA clip.
 - If the graph does not look as expected, `hdroute.sh` logs it and changes nothing.
   `dtsdec` then sends the core or silence for that video, never noise.
 - Log: `/var/lib/webosbrew/dtsenabler/hdroute.log`.

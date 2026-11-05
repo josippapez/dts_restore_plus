@@ -4164,8 +4164,8 @@ service.register("setPassthroughHd", function (message) {
         enabled: want,
         running: running,
         soundOutput: out,
-        summary: !want ? "DTS-HD off: the receiver gets the DTS core again."
-          : running ? "DTS-HD on: DTS-HD MA / DTS:X goes to your eARC receiver from the next video."
+        summary: !want ? "DTS-HD off: the receiver gets only the DTS core again."
+          : running ? "DTS-HD on: every DTS track goes whole to your eARC receiver from the next video."
           : "DTS-HD on, but the route service did not start. Check the log."
       });
     });
