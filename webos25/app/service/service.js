@@ -276,6 +276,8 @@ var W25_INIT_HEAD = [
   "#   W25_PT=start|stop",
   "#                 only start or stop the DTS passthrough sound-output watcher",
   "#                 (the app's toggle), then exit.",
+  "#   W25_HD=start|stop",
+  "#                 only start or stop the DTS-HD eARC route service, then exit.",
   "#   FORCE=1       explicit opt-in on a TV that is not in the verified table.",
   "#",
   "# Always exits 0: a non-zero webosbrew init script trips the failsafe that",
@@ -351,7 +353,8 @@ var W25_COMPAT_SH = [
   "#   27 shadows libgstmatroska.so too (optional demuxer, Dolby Vision profile 7):",
   "#      bound in APPLY 2c, unbound by w25_drop_binds, fingerprinted in stock.fp and",
   "#      drift-checked like the /etc keys, so an older stock.fp without it is not drift.",
-  "W25_GATE_VERSION=38",
+  "#   39 starts the DTS-HD eARC route service (hdroute.sh) when passthrough-hd is set.",
+  "W25_GATE_VERSION=39",
   "FP=/var/lib/webosbrew/dts25/stock.fp",
   "# Where the installed copy of THIS script lives, and the boot hook that symlinks",
   "# to it. Named here, in the shared block, so the read-only probe can fingerprint",
@@ -447,7 +450,21 @@ var W25_COMPAT_SH = [
   "# ONLY, so the registry it writes does not name /var/lib/webosbrew and the next",
   "# w25_reg_is_ours is false -- no repeated 60s regen on every boot. It also works",
   "# when our libraries are already gone, for the same reason.",
+  "# Stop the DTS-HD route service and give eARC back to LG's mixer. The service",
+  "# restores on TERM; --restore covers one that was killed without a chance to.",
+  "w25_hd_halt() {",
+  "  HDP=$(cat /run/dts25/hdroute.pid 2>/dev/null)",
+  "  if [ -n \"$HDP\" ] && [ -d \"/proc/$HDP\" ]; then",
+  "    kill \"$HDP\" 2>/dev/null",
+  "    i=0",
+  "    while [ -d \"/proc/$HDP\" ] && [ \"$i\" -lt 10 ]; do sleep 1; i=$((i + 1)); done",
+  "  fi",
+  "  [ -f /var/lib/webosbrew/dts25/hdroute.sh ] && sh /var/lib/webosbrew/dts25/hdroute.sh --restore </dev/null >/dev/null 2>&1",
+  "  rm -f /run/dts25/hdroute.pid /run/dts25/hd-armed",
+  "  return 0",
+  "}",
   "w25_stand_down() {",
+  "  w25_hd_halt",
   "  w25_drop_binds",
   "  if w25_reg_is_ours; then",
   "    w25_log \"a registry of ours is still live; regenerating the stock registry so nothing of ours stays registered\"",
@@ -931,12 +948,32 @@ var W25_INIT_MAIN = [
   "  fi",
   "  rm -f \"$PT_OUT\" \"$PT_PID\"",
   "}",
-  "# W25_PT=start|stop: only start or stop the watcher, for the app's toggle, so",
-  "# turning passthrough on or off takes effect without a restart.",
+  "# --- DTS-HD opt-in: the route service that connects dtsdec's HD bitstream to",
+  "# eARC. dtsdec only sends HD while this service runs; otherwise it falls back",
+  "# to the core passthrough above. Needs passthrough on as well.",
+  "HD_FLAG=/var/lib/webosbrew/dts25/passthrough-hd",
+  "HD_SVC=/var/lib/webosbrew/dts25/hdroute.sh",
+  "HD_PID=$PT_RUN/hdroute.pid",
+  "w25_hd_start() {",
+  "  [ -f \"$HD_FLAG\" ] && [ -f \"$PT_FLAG\" ] && [ -f \"$HD_SVC\" ] || return 0",
+  "  mkdir -p \"$PT_RUN\"",
+  "  P=$(cat \"$HD_PID\" 2>/dev/null)",
+  "  [ -n \"$P\" ] && [ -d \"/proc/$P\" ] && return 0",
+  "  ( sh \"$HD_SVC\" ) </dev/null >/dev/null 2>&1 &",
+  "}",
+  "# W25_PT=start|stop / W25_HD=start|stop: only start or stop one helper, for the",
+  "# app's toggles, so turning either on or off takes effect without a restart.",
   "if [ -n \"${W25_PT:-}\" ]; then",
   "  case $W25_PT in",
   "    start) w25_pt_start ;;",
-  "    stop) w25_pt_stop ;;",
+  "    stop) w25_pt_stop; w25_hd_halt ;;",
+  "  esac",
+  "  exit 0",
+  "fi",
+  "if [ -n \"${W25_HD:-}\" ]; then",
+  "  case $W25_HD in",
+  "    start) w25_hd_start ;;",
+  "    stop) w25_hd_halt ;;",
   "  esac",
   "  exit 0",
   "fi",
@@ -993,6 +1030,7 @@ var W25_INIT_MAIN = [
   "# registry naming them must be replaced whether or not it looks like ours.",
   "w25_self_heal() {",
   "  w25_log \"SELF-HEAL: $HEAL_WHY -- reverting every override\"",
+  "  w25_hd_halt",
   "  w25_drop_binds",
   "  if ! w25_stock_registry; then",
   "    w25_log \"SELF-HEAL DEFERRED: LG's registry could not be rebuilt, so our plugins and the boot hook are KEPT (deleting them now would leave the live registry pointing at missing plugins). Retrying at the next boot.\"",
@@ -1427,6 +1465,7 @@ var W25_INIT_MAIN = [
   "}",
   "w25_appdts_start",
   "w25_pt_start",
+  "w25_hd_start",
   "# --- APPLY 2c) container demuxers with DTS re-enabled (mp4/ts/m2ts DTS -> audio/x-dts).",
   "#         Patched isomp4/mpegtsdemux default dts_support=TRUE; patched matroska",
   "#         signals Dolby Vision profile 7. Bound BEFORE the regen below so the",
@@ -2146,6 +2185,8 @@ var DETECT_PROBE = [
   "}",
   "w25_pd_cmp \"" + PAYLOAD_W25 + "/libgstdtsdec.so\" \"" + W25_DEST + "/libgstdtsdec.so\" libgstdtsdec.so",
   "w25_pd_cmp \"" + PAYLOAD_W25 + "/libgstadecswitch.so\" \"" + W25_DEST + "/libgstadecswitch.so\" libgstadecswitch.so",
+  "w25_pd_cmp \"" + PAYLOAD_W25 + "/hdroute.sh\" \"" + W25_DEST + "/hdroute.sh\" hdroute.sh",
+  "w25_pd_cmp \"" + PAYLOAD_W25 + "/hdroute-uimc\" \"" + W25_DEST + "/hdroute-uimc\" hdroute-uimc",
   "w25_pd_cmp \"" + PAYLOAD_W25_THD + "/libgstlibav.so\" \"" + W25_THD_DEST + "/libgstlibav.so\" libgstlibav.so",
   "w25_pd_cmp \"" + PAYLOAD_W25_DMX + "/libgstisomp4.so\" \"" + W25_DMX_DEST + "/libgstisomp4.so\" libgstisomp4.so",
   "w25_pd_cmp \"" + PAYLOAD_W25_DMX + "/libgstmpegtsdemux.so\" \"" + W25_DMX_DEST + "/libgstmpegtsdemux.so\" libgstmpegtsdemux.so",
@@ -2652,6 +2693,10 @@ function w25Enable(force) {
     'if [ -f "' + PAYLOAD_W25 + '/libgstadecswitch.so" ]; then',
     '  cp -f "' + PAYLOAD_W25 + '/libgstadecswitch.so" "' + W25_DEST + '/libgstadecswitch.so" && log "installed libgstadecswitch.so" || log "WARN: copy libgstadecswitch.so failed"',
     'else log "WARN: ' + PAYLOAD_W25 + '/libgstadecswitch.so not found (populate payload before packaging)"; fi',
+    // 1c. Stage the DTS-HD eARC route service. Mirrors install.sh step 1c.
+    'if [ -f "' + PAYLOAD_W25 + '/hdroute.sh" ] && [ -f "' + PAYLOAD_W25 + '/hdroute-uimc" ]; then',
+    '  cp -f "' + PAYLOAD_W25 + '/hdroute.sh" "' + PAYLOAD_W25 + '/hdroute-uimc" "' + W25_DEST + '/" && chmod 0755 "' + W25_DEST + '/hdroute.sh" "' + W25_DEST + '/hdroute-uimc" && log "installed hdroute" || log "WARN: staging hdroute failed"',
+    'else log "note: hdroute payload absent; DTS-HD passthrough unavailable"; fi',
     // 2. Stage the TrueHD payload (preserve the .so version symlinks).
     'mkdir -p "' + W25_THD_LIBS + '" || { log "FATAL: cannot create ' + W25_THD_LIBS + '"; exit 0; }',
     'if [ -f "' + PAYLOAD_W25_THD + '/libgstlibav.so" ]; then',
@@ -2780,6 +2825,8 @@ function w25DisableSteps() {
     'log "=== disable (webos25) start ==="'
   ].concat(W25_COMPAT_SH, [
     'if [ -L "' + W25_HOOK + '" ] || [ -e "' + W25_HOOK + '" ]; then rm -f "' + W25_HOOK + '" && log "removed boot hook"; else log "boot hook not present"; fi',
+    // Gives eARC back to LG's mixer before our dtsdec goes away.
+    'w25_hd_halt',
     // Prints WARN_UNMOUNT=<targets> and returns non-zero if a target survived even
     // a lazy detach, i.e. the revert did not actually happen. Surfaced to the
     // caller below rather than swallowed.
@@ -3539,6 +3586,9 @@ function w25StatusProbe() {
     // Report both so the UI can tell "asked for, not applied yet" from "on".
     'echo "APPDTS_FLAG=$([ -f ' + W25_APPDTS_FLAG + ' ] && echo 1 || echo 0)"',
     'echo "PT_FLAG=$([ -f ' + W25_PT_FLAG + ' ] && echo 1 || echo 0)"',
+    'echo "HD_FLAG=$([ -f ' + W25_HD_FLAG + ' ] && echo 1 || echo 0)"',
+    'P=$(cat ' + W25_PT_RUN + '/hdroute.pid 2>/dev/null); echo "HD_RUNNING=$([ -n "$P" ] && [ -d /proc/$P ] && echo 1 || echo 0)"',
+    'echo "HD_STAGED=$([ -x ' + W25_DEST + '/hdroute-uimc ] && [ -f ' + W25_DEST + '/hdroute.sh ] && echo 1 || echo 0)"',
     // Only while the watcher is alive: dtsdec ignores the file otherwise too.
     'P=$(cat ' + W25_PT_RUN + '/watcher.pid 2>/dev/null); echo "PT_OUT=$([ -n "$P" ] && [ -d /proc/$P ] && cut -d" " -f2- ' + W25_PT_RUN + '/sound-output 2>/dev/null)"',
     // The boot hook's last apply outcome: "<epoch> <on|skipped|failed> <message>".
@@ -3756,6 +3806,9 @@ service.register("status", function (message) {
         base.passthroughRequested = kv.PT_FLAG === "1";
         base.passthroughOutput = kv.PT_OUT || "";
         base.passthroughToReceiver = base.passthroughRequested && w25PtReceiver(kv.PT_OUT);
+        base.passthroughHdRequested = kv.HD_FLAG === "1";
+        base.passthroughHdRunning = kv.HD_RUNNING === "1";
+        base.passthroughHdStaged = kv.HD_STAGED === "1";
         base.appDtsRequested = kv.APPDTS_FLAG === "1";
         base.edidType = kv.EDIDTYPE || "";
         // The effect, not the intent: apps read this string, so it is what decides
@@ -4001,6 +4054,28 @@ function w25AppDtsSteps(on) {
  * ===================================================================== */
 var W25_PT_FLAG = W25_DEST + "/passthrough";
 var W25_PT_RUN = "/run/dts25";
+/* DTS-HD opt-in on top of passthrough: the boot script's W25_HD mode runs
+ * hdroute.sh, which routes dtsdec's whole DTS-HD/DTS:X bitstream to eARC. */
+var W25_HD_FLAG = W25_DEST + "/passthrough-hd";
+
+function w25PassthroughHdSteps(on) {
+  var lines = ["set -u", 'FLAG=' + W25_HD_FLAG];
+  if (on) {
+    lines.push('[ -x ' + W25_DEST + '/hdroute-uimc ] || { echo "HD_STAGED=0"; echo OK; exit 0; }');
+    lines.push(': > "' + W25_PT_FLAG + '"');
+    lines.push(': > "$FLAG"');
+    lines.push('setsid sh -c \'W25_PT=start sh "' + W25_INIT_SCRIPT + '"; W25_HD=start sh "' + W25_INIT_SCRIPT + '"\' </dev/null >/dev/null 2>&1 &');
+    lines.push('i=0; while [ "$i" -lt 10 ] && [ ! -s ' + W25_PT_RUN + '/hdroute.pid ]; do sleep 1; i=$((i + 1)); done');
+  } else {
+    lines.push('rm -f "$FLAG"');
+    lines.push('W25_HD=stop sh "' + W25_INIT_SCRIPT + '" </dev/null >/dev/null 2>&1');
+  }
+  lines.push('P=$(cat ' + W25_PT_RUN + '/hdroute.pid 2>/dev/null); echo "HD_RUNNING=$([ -n "$P" ] && [ -d /proc/$P ] && echo 1 || echo 0)"');
+  lines.push('echo "PT_OUT=$(cut -d" " -f2- ' + W25_PT_RUN + '/sound-output 2>/dev/null)"');
+  lines.push('echo OK');
+  lines.push("exit 0");
+  return lines.join("\n");
+}
 
 function w25PassthroughSteps(on) {
   var lines = ["set -u", 'FLAG=' + W25_PT_FLAG];
@@ -4055,6 +4130,43 @@ service.register("setPassthrough", function (message) {
         summary: !want ? "Passthrough off: DTS is decoded again."
           : w25PtReceiver(out) ? "Passthrough on: DTS goes to your receiver from the next video."
           : "Passthrough on. It starts once the TV sends sound to an ARC/eARC receiver."
+      });
+    });
+  }).catch(function (e) {
+    message.respond({ returnValue: false, errorText: e.errorText || e.message || String(e) });
+  });
+});
+
+service.register("setPassthroughHd", function (message) {
+  var want = !!(message.payload && message.payload.enabled);
+  detectProfile().then(function (d) {
+    if (d.profile !== PROFILE_W25) {
+      message.respond({
+        returnValue: false, profile: d.profile, supported: false,
+        errorText: "DTS-HD passthrough is only available on the webOS 25 profile (found '" + d.profile + "')."
+      });
+      return;
+    }
+    return rootExec(w25PassthroughHdSteps(want)).then(function (r) {
+      var kv = parseKv(r.stdout);
+      var running = kv.HD_RUNNING === "1";
+      var out = kv.PT_OUT || "";
+      logActionResult("passthrough-hd", d.profile, want ? "on" : "off",
+        "running=" + running + " soundOutput=" + out);
+      if (want && kv.HD_STAGED === "0") {
+        message.respond({ returnValue: false,
+          errorText: "The DTS-HD route service is not installed. Enable DTS again to install it." });
+        return;
+      }
+      message.respond({
+        returnValue: true,
+        profile: d.profile,
+        enabled: want,
+        running: running,
+        soundOutput: out,
+        summary: !want ? "DTS-HD off: the receiver gets the DTS core again."
+          : running ? "DTS-HD on: DTS-HD MA / DTS:X goes to your eARC receiver from the next video."
+          : "DTS-HD on, but the route service did not start. Check the log."
       });
     });
   }).catch(function (e) {

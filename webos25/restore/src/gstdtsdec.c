@@ -107,14 +107,19 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <math.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/file.h>
 
 #include <gst/gst.h>
 #include <gst/audio/audio.h>
 
 #include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/log.h>
 #include <libavutil/mem.h>
+#include <libavutil/opt.h>
 
 #include "gstdtsdec.h"
 
@@ -155,6 +160,24 @@ enum
 #define DTS_PASSTHROUGH_MARKER "/var/lib/webosbrew/dts25/passthrough"
 #define DTS_SOUND_OUTPUT_FILE "/run/dts25/sound-output"
 #define DTS_PASSTHROUGH_RECHECK_US (G_USEC_PER_SEC)
+
+/* webOS 25 patch: full DTS-HD (MA, DTS:X) passthrough. The whole frame goes
+ * out as IEC 61937 type IV at the 768 kHz HBR rate, packed by FFmpeg's spdif
+ * muxer, on the stream LG's own decoder uses for compressed audio: caps
+ * es/codec-str/data-* and buffer flag LGAO_DATA_ES, labelled as LG's MAT
+ * encoder output so dsp1 drives all four eARC lanes. LG never routes that
+ * stream to eARC by itself; the boot hook's hdroute service does, from
+ * userspace, while our pid is in DTS_HD_ARMED. Without a running service the
+ * core passthrough above is used. */
+#define DTS_HD_MARKER "/var/lib/webosbrew/dts25/passthrough-hd"
+#define DTS_HD_ARMED "/run/dts25/hd-armed"
+#define DTS_HD_SERVICE_PID "/run/dts25/hdroute.pid"
+#define DTS_HD_LOCK "/run/dts25/hd.lock"
+#define DTS_HD_RATE 768000
+/* burst header (8) + DTS-HD start code (10), then the 16-bit BE frame length */
+#define DTS_HD_LEN_OFFSET 18
+/* lgaudiosink: bit 21 of the buffer flags selects LGAO_DATA_ES */
+#define LGAO_BUFFER_FLAG_ES (1u << 21)
 
 /* webOS 25 patch: the DRC CORE parses ASCII floats through this hook so it
  * stays locale-independent without depending on GLib. Inside the plugin that
@@ -746,6 +769,7 @@ static void gst_dtsdec_apply_makeup_gain_db (GstDtsDec * dts, gfloat gain_db);
 static void gst_dtsdec_apply_center_boost_db (GstDtsDec * dts, gfloat boost_db);
 static void gst_dtsdec_drc_reset (GstDtsDec * dts);
 static void gst_dtsdec_drc_update_coefs (GstDtsDec * dts);
+static void gst_dtsdec_hd_close (GstDtsDec * dts);
 
 G_DEFINE_TYPE (GstDtsDec, gst_dtsdec, GST_TYPE_AUDIO_DECODER);
 GST_ELEMENT_REGISTER_DEFINE_CUSTOM (dtsdec, dtsdec_element_init);
@@ -1028,6 +1052,8 @@ gst_dtsdec_start (GstAudioDecoder * dec)
   gst_dtsdec_drc_reset (dts);
   dts->pt_decided = FALSE;
   dts->pt_active = FALSE;
+  dts->pt_hd = FALSE;
+  dts->hd_lock_fd = -1;
   dts->pt_skipped = 0;
 
   /* call upon legacy upstream byte support (e.g. seeking) */
@@ -1043,6 +1069,7 @@ gst_dtsdec_stop (GstAudioDecoder * dec)
 
   GST_DEBUG_OBJECT (dec, "stop");
 
+  gst_dtsdec_hd_close (dts);
   avcodec_free_context (&dts->avctx);
   av_frame_free (&dts->frame);
   av_packet_free (&dts->pkt);
@@ -1614,6 +1641,168 @@ dts_sound_output_is_receiver (void)
       && (strcmp (digital, "passThrough") == 0 || strcmp (digital, "auto") == 0);
 }
 
+/* TRUE while the hdroute service that would route our ES stream is alive. */
+static gboolean
+dts_hd_service_alive (void)
+{
+  gchar *text = NULL, proc[32];
+  gint pid = 0;
+  gboolean ok;
+
+  if (!g_file_get_contents (DTS_HD_SERVICE_PID, &text, NULL, NULL))
+    return FALSE;
+  ok = sscanf (text, "%d", &pid) == 1 && pid > 0;
+  g_free (text);
+  if (!ok)
+    return FALSE;
+  g_snprintf (proc, sizeof (proc), "/proc/%d", pid);
+  return g_file_test (proc, G_FILE_TEST_IS_DIR);
+}
+
+static gboolean
+dts_hd_arm (gint pid)
+{
+  gchar text[16];
+
+  g_snprintf (text, sizeof (text), "%d\n", pid);
+  return g_file_set_contents (DTS_HD_ARMED, text, -1, NULL);
+}
+
+static void
+gst_dtsdec_hd_close (GstDtsDec * dts)
+{
+  avformat_free_context (dts->spdif);
+  dts->spdif = NULL;
+  if (dts->hd_lock_fd >= 0) {
+    unlink (DTS_HD_ARMED);
+    close (dts->hd_lock_fd);
+    dts->hd_lock_fd = -1;
+  }
+}
+
+/* TRUE when the HD opt-in marker exists, the hdroute service runs and no
+ * other stream holds the route; the muxer is then ready for whole frames. */
+static gboolean
+gst_dtsdec_hd_open (GstDtsDec * dts)
+{
+  AVStream *st;
+  guint8 *hdr;
+
+  if (!g_file_test (DTS_HD_MARKER, G_FILE_TEST_EXISTS))
+    return FALSE;
+  if (!dts_hd_service_alive ()) {
+    GST_INFO_OBJECT (dts, "passthrough: hdroute service not running, core only");
+    return FALSE;
+  }
+  dts->hd_lock_fd = open (DTS_HD_LOCK,
+      O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600);
+  if (dts->hd_lock_fd < 0)
+    return FALSE;
+  if (flock (dts->hd_lock_fd, LOCK_EX | LOCK_NB) != 0) {
+    close (dts->hd_lock_fd);
+    dts->hd_lock_fd = -1;
+    return FALSE;
+  }
+  if (!dts_hd_arm ((gint) getpid ())) {
+    GST_WARNING_OBJECT (dts, "passthrough: cannot arm the hdroute service, core only");
+    close (dts->hd_lock_fd);
+    dts->hd_lock_fd = -1;
+    return FALSE;
+  }
+
+  if (avformat_alloc_output_context2 (&dts->spdif, NULL, "spdif", NULL) < 0
+      || !(st = avformat_new_stream (dts->spdif, NULL))
+      || avio_open_dyn_buf (&dts->spdif->pb) < 0)
+    goto fail;
+  st->codecpar->codec_type = AVMEDIA_TYPE_AUDIO;
+  st->codecpar->codec_id = AV_CODEC_ID_DTS;
+  st->codecpar->sample_rate = 48000;
+  /* dsp1's cpy_es8 takes the first byte of each word as its MSB: big-endian */
+  if (av_opt_set_int (dts->spdif->priv_data, "dtshd_rate", DTS_HD_RATE, 0) < 0
+      || av_opt_set_int (dts->spdif->priv_data, "dtshd_fallback_time", 0, 0) < 0
+      || av_opt_set (dts->spdif->priv_data, "spdif_flags", "be", 0) < 0)
+    goto fail;
+  if (avformat_write_header (dts->spdif, NULL) < 0)
+    goto fail;
+  avio_close_dyn_buf (dts->spdif->pb, &hdr);
+  av_free (hdr);
+  dts->spdif->pb = NULL;
+  return TRUE;
+
+fail:
+  GST_WARNING_OBJECT (dts, "passthrough: FFmpeg spdif muxer unavailable");
+  if (dts->spdif && dts->spdif->pb) {
+    avio_close_dyn_buf (dts->spdif->pb, &hdr);
+    av_free (hdr);
+  }
+  gst_dtsdec_hd_close (dts);
+  return FALSE;
+}
+
+static gboolean
+gst_dtsdec_hd_set_caps (GstDtsDec * dts)
+{
+  GstCaps *caps;
+  gboolean ok;
+
+  /* HBR is 8 x 192 kHz x 16 bit = 768 kHz stereo: as 8ch the buffer
+   * durations stay right. Labelled as LG's own MAT encoder output, the only
+   * HBR layout the stock kernel accepts in eARC status; the soundbar reads
+   * the real DTS type from the burst header. Without data-channels lgao
+   * reports 2 and dsp1 writes one lane instead of four. */
+  caps = gst_caps_new_simple ("audio/x-raw",
+      "format", G_TYPE_STRING, "S16LE", "layout", G_TYPE_STRING, "interleaved",
+      "rate", G_TYPE_INT, DTS_HD_RATE / 4, "channels", G_TYPE_INT, 8,
+      "channel-mask", GST_TYPE_BITMASK, (guint64) 0xc3f,
+      "es", G_TYPE_BOOLEAN, TRUE, "codec-str", G_TYPE_STRING, "mat",
+      "clock-x4", G_TYPE_BOOLEAN, TRUE,
+      "data-rate", G_TYPE_INT, DTS_HD_RATE / 4, "data-channels", G_TYPE_INT, 8,
+      "data-bps", G_TYPE_INT, 16, NULL);
+  ok = gst_audio_decoder_set_output_caps (GST_AUDIO_DECODER (dts), caps);
+  gst_caps_unref (caps);
+  return ok;
+}
+
+/* One burst per frame; when the output stopped being a receiver, or a frame
+ * cannot be packed whole, a burst of silence keeps the timing. A frame too
+ * large for the burst is never sent: FFmpeg would strip it to the core. */
+static GstBuffer *
+gst_dtsdec_hd_burst (GstDtsDec * dts, const guint8 * d, gsize size)
+{
+  AVPacket *pkt = dts->pkt;
+  GstBuffer *outbuf;
+  guint8 *data = NULL;
+  gint len = 0;
+
+  if (dts->pt_output_ok && avio_open_dyn_buf (&dts->spdif->pb) >= 0) {
+    pkt->data = (guint8 *) d;
+    pkt->size = (int) size;
+    if (av_write_frame (dts->spdif, pkt) < 0)
+      dts->pt_output_ok = FALSE;
+    pkt->data = NULL;
+    pkt->size = 0;
+    len = avio_close_dyn_buf (dts->spdif->pb, &data);
+    dts->spdif->pb = NULL;
+    if (len > DTS_HD_LEN_OFFSET + 1
+        && ((gsize) data[DTS_HD_LEN_OFFSET] << 8 | data[DTS_HD_LEN_OFFSET + 1]) != size) {
+      GST_WARNING_OBJECT (dts, "passthrough: %" G_GSIZE_FORMAT "-byte DTS-HD "
+          "frame does not fit one burst, muting it", size);
+      av_freep (&data);
+      len = 0;
+    }
+  }
+  if (len > 0) {
+    dts->pt_period = len;
+    outbuf = gst_buffer_new_wrapped_full (0, data, len, 0, len, data, av_free);
+  } else {
+    av_free (data);
+    outbuf = gst_buffer_new_allocate (NULL, dts->pt_period, NULL);
+    gst_buffer_memset (outbuf, 0, 0, dts->pt_period);
+  }
+  GST_BUFFER_FLAG_SET (outbuf, LGAO_BUFFER_FLAG_ES);
+  return outbuf;
+}
+
 static gboolean
 gst_dtsdec_passthrough_allowed (GstDtsDec * dts)
 {
@@ -1652,6 +1841,21 @@ gst_dtsdec_passthrough_decide (GstDtsDec * dts, const guint8 * d, gsize size)
     return FALSE;
   }
 
+  if (gst_dtsdec_hd_open (dts)) {
+    if (gst_dtsdec_hd_set_caps (dts)) {
+      dts->pt_active = TRUE;
+      dts->pt_hd = TRUE;
+      dts->pt_period = period * (DTS_HD_RATE / 48000);
+      dts->pt_output_ok = TRUE;
+      dts->pt_checked = g_get_monotonic_time ();
+      GST_INFO_OBJECT (dts, "passthrough: sending whole DTS frames as "
+          "IEC 61937 type IV at %d Hz", DTS_HD_RATE);
+      return FALSE;
+    }
+    GST_WARNING_OBJECT (dts, "passthrough: ES caps refused, core only");
+    gst_dtsdec_hd_close (dts);
+  }
+
   gst_audio_info_init (&info);
   gst_audio_info_set_format (&info, GST_AUDIO_FORMAT_S16LE, 48000, 2, pos);
   if (!gst_audio_decoder_set_output_format (GST_AUDIO_DECODER (dts), &info)) {
@@ -1686,6 +1890,9 @@ gst_dtsdec_passthrough_burst (GstDtsDec * dts, const guint8 * d, gsize size)
             "the rest of this stream");
     }
   }
+
+  if (dts->pt_hd)
+    return gst_dtsdec_hd_burst (dts, d, size);
 
   outbuf = gst_audio_decoder_allocate_output_buffer (GST_AUDIO_DECODER (dts),
       dts->pt_period);

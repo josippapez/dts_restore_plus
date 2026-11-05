@@ -22,6 +22,7 @@ function loadService() {
     "c2StatusBindsComplete: c2StatusBindsComplete, c2SelfTest: c2SelfTest," +
     "DETECT_PROBE: DETECT_PROBE, w25EdidTarget: w25EdidTarget, w25InitScriptBody: w25InitScriptBody," +
     "w25PtReceiver: w25PtReceiver, w25PassthroughSteps: w25PassthroughSteps, w25Enable: w25Enable," +
+    "w25PassthroughHdSteps: w25PassthroughHdSteps, w25Disable: w25Disable," +
     "constants: {C2: PROFILE_C2," +
     "sets: C2_EXPECTED_SETS, matchSet: c2MatchSet," +
     "libav: C2_EXPECTED_SETS[0].libav, iso: C2_EXPECTED_SETS[0].iso, mkv: C2_EXPECTED_SETS[0].mkv}};";
@@ -543,6 +544,26 @@ test("the passthrough toggle only reports a receiver for external_arc", function
   var mode = body.indexOf('if [ -n "${W25_PT:-}" ]; then');
   assert.ok(mode !== -1 && mode < body.indexOf("# --- G) self-heal"),
     "W25_PT mode must exit before the apply path");
+});
+
+/* DTS-HD: the toggle starts or stops the route service through W25_HD, which
+ * must exit before applying, and Disable must hand eARC back first. */
+test("the DTS-HD toggle drives the route service and Disable stops it", function () {
+  [true, false].forEach(function (on) {
+    var script = service.w25PassthroughHdSteps(on);
+    var r = spawnSync("sh", ["-n"], { input: script, encoding: "utf8" });
+    assert.strictEqual(r.status, 0, "generated script is not valid sh: " + r.stderr);
+    assert.ok(script.indexOf("W25_HD=" + (on ? "start" : "stop")) !== -1);
+  });
+  var body = service.w25InitScriptBody();
+  var mode = body.indexOf('if [ -n "${W25_HD:-}" ]; then');
+  assert.ok(mode !== -1 && mode < body.indexOf("# --- G) self-heal"),
+    "W25_HD mode must exit before the apply path");
+  assert.ok(body.indexOf("w25_hd_start\n") > body.indexOf("w25_pt_start\n"),
+    "the boot path must start the route service");
+  var disable = service.w25Disable();
+  assert.ok(disable.indexOf("w25_hd_halt") < disable.indexOf("w25_drop_binds\n"),
+    "Disable must stop the route service before dropping our dtsdec");
 });
 
 /* Issue #13: the luna hub drops any message over 128 KiB and the app only sees

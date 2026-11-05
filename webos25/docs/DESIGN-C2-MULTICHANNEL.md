@@ -39,10 +39,10 @@ Three suspects remain live, and the fix differs for each:
 1. **The decoder**, if the LG patch downmixes on the TV but not under QEMU.
 2. **Downstream fold** in LG's 1.18 `audiosink`/HAL/`audioconvert`. The C2 sink's
    caps have never been read; the `channels=[1,10]` reading in
-   [`PASSTHROUGH.md`](PASSTHROUGH.md) lines 38-40 is **C5-only**.
+   [`PASSTHROUGH.md`](https://github.com/josippapez/dts_restore_plus/blob/3c30e0b8cf6bc7c8c89906f5c6e0c64b1b601d09/webos25/docs/PASSTHROUGH.md#L38-L40) is **C5-only**.
 3. **The HDMI link.** Plain ARC and optical carry at most 2-channel LPCM;
    multichannel LPCM needs **eARC** plus the right "Digital Sound Output" setting
-   (the same variable `PASSTHROUGH.md` lines 46-50 records for the C5). If the
+   (the same variable the old `PASSTHROUGH.md` recorded for the C5). If the
    owner's soundbar is on ARC or optical, "stereo PCM at the soundbar" is expected
    **no matter what any decoder emits**, and no build can change it.
 
@@ -52,8 +52,8 @@ Two things this is **not**:
 
 - **Not the codec capability config.** `device_codec_capability_config.json` entries
   are `{name, channels}` only — a decode-capability advertisement with no
-  passthrough switch ([`PASSTHROUGH.md`](PASSTHROUGH.md) line 22). On the C5 it
-  still lists `DTS`/`DTSE`/`DTSH` after LG removed the decoder (line 96), so it
+  passthrough switch. On the C5 it
+  still lists `DTS`/`DTSE`/`DTSH` after LG removed the decoder, so it
   advertises rather than gates.
 - **Not `downmix.conf`.** That file tunes the mix coefficients
   (`front`/`center`/`lfe`/`rear`/`rear2`), never the channel count. In LG's source

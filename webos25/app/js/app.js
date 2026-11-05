@@ -281,6 +281,12 @@
       : "on — waiting for an ARC/eARC receiver",
       s.passthroughToReceiver ? "ok" : (s.passthroughRequested ? "warn" : null));
     setVal("sPtOut", s.passthroughOutput || "—");
+    $("btnHdOn").disabled  = !canW25Test || s.passthroughHdStaged !== true || s.passthroughHdRequested === true;
+    $("btnHdOff").disabled = !canW25Test || s.passthroughHdRequested !== true;
+    setVal("sHd", s.passthroughHdStaged === false ? "not installed — enable DTS again"
+      : !s.passthroughHdRequested ? "off"
+      : s.passthroughHdRunning ? "on" : "on — route service not running",
+      s.passthroughHdRequested ? (s.passthroughHdRunning ? "ok" : "warn") : null);
     // A/B compare renders through the patched dtsdec, so it needs the same profile.
     $("btnAb").disabled = !canW25Test;
     Array.prototype.slice.call(document.querySelectorAll("[data-gain], [data-preset], [data-center]"))
@@ -478,6 +484,14 @@
     toast(on ? "Turning on…" : "Turning off…", "busy");
     callService("setAppDts", { enabled: on }).then(function (res) {
       toast(res.summary || (on ? "Saved" : "Turned off"), res.returnValue ? "ok" : "err");
+      return refreshStatus();
+    }).catch(function (e) { toast("Could not change it: " + errText(e), "err"); });
+  }
+
+  function doPassthroughHd(on) {
+    toast(on ? "Turning on…" : "Turning off…", "busy");
+    callService("setPassthroughHd", { enabled: on }).then(function (res) {
+      toast(res.summary || res.errorText || (on ? "Turned on" : "Turned off"), res.returnValue ? "ok" : "err");
       return refreshStatus();
     }).catch(function (e) { toast("Could not change it: " + errText(e), "err"); });
   }
@@ -887,6 +901,8 @@
     $("btnAppDtsReboot").addEventListener("click", doAppDtsReboot);
     $("btnPtOn").addEventListener("click", function () { doPassthrough(true); });
     $("btnPtOff").addEventListener("click", function () { doPassthrough(false); });
+    $("btnHdOn").addEventListener("click", function () { doPassthroughHd(true); });
+    $("btnHdOff").addEventListener("click", function () { doPassthroughHd(false); });
     $("btnSaveGain").addEventListener("click", doSaveGain);
     $("btnAb").addEventListener("click", doAbRender);
     $("btnAbA").addEventListener("click", function () { doAbPlay("a"); });

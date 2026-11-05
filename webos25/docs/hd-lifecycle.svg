@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1060" height="250" viewBox="0 0 1060 250" font-family="Helvetica, Arial, sans-serif" font-size="13">
+  <defs>
+    <marker id="g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#6b7280"/></marker>
+  </defs>
+  <rect width="1060" height="250" fill="#ffffff"/>
+
+  <rect x="20" y="40" width="230" height="110" rx="8" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="135" y="64" text-anchor="middle" font-weight="bold">1. A DTS-HD video starts</text>
+  <text x="135" y="88" text-anchor="middle">dtsdec checks: HD switched on,</text>
+  <text x="135" y="106" text-anchor="middle">route service running, no other</text>
+  <text x="135" y="124" text-anchor="middle">DTS-HD stream. Then it writes</text>
+  <text x="135" y="142" text-anchor="middle" font-family="Menlo, monospace" font-size="11">/run/dts25/hd-armed</text>
+
+  <rect x="285" y="40" width="230" height="110" rx="8" fill="#f3f4f6" stroke="#9ca3af"/>
+  <text x="400" y="64" text-anchor="middle" font-weight="bold">2. hdroute.sh notices</text>
+  <text x="400" y="88" text-anchor="middle">reads the live DSP graph,</text>
+  <text x="400" y="106" text-anchor="middle">finds the modules by name,</text>
+  <text x="400" y="124" text-anchor="middle">saves the old links to</text>
+  <text x="400" y="142" text-anchor="middle" font-family="Menlo, monospace" font-size="11">/run/dts25/hdroute.state</text>
+
+  <rect x="550" y="40" width="230" height="110" rx="8" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+  <text x="665" y="64" text-anchor="middle" font-weight="bold">3. Route switched</text>
+  <text x="665" y="88" text-anchor="middle">hdroute-uimc connects the</text>
+  <text x="665" y="106" text-anchor="middle">bypass chain to eARC and</text>
+  <text x="665" y="124" text-anchor="middle">unmutes it. The soundbar</text>
+  <text x="665" y="142" text-anchor="middle">shows DTS-HD MA / DTS:X</text>
+
+  <rect x="815" y="40" width="225" height="110" rx="8" fill="#f3f4f6" stroke="#9ca3af"/>
+  <text x="927" y="64" text-anchor="middle" font-weight="bold">4. The video ends</text>
+  <text x="927" y="88" text-anchor="middle">dtsdec removes hd-armed (or</text>
+  <text x="927" y="106" text-anchor="middle">dies). hdroute.sh puts the</text>
+  <text x="927" y="124" text-anchor="middle">old links back: TV sound</text>
+  <text x="927" y="142" text-anchor="middle">reaches eARC as before</text>
+
+  <line x1="250" y1="95" x2="282" y2="95" stroke="#6b7280" stroke-width="1.5" marker-end="url(#g)"/>
+  <line x1="515" y1="95" x2="547" y2="95" stroke="#6b7280" stroke-width="1.5" marker-end="url(#g)"/>
+  <line x1="780" y1="95" x2="812" y2="95" stroke="#6b7280" stroke-width="1.5" marker-end="url(#g)"/>
+  <path d="M927,150 L927,190 L135,190 L135,153" fill="none" stroke="#6b7280" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#g)"/>
+  <text x="531" y="208" text-anchor="middle" fill="#4b5563" font-size="12">next DTS-HD video</text>
+  <text x="20" y="238" fill="#6b7280" font-size="12">If anything fails (unexpected graph, connect error), nothing is half-changed: the saved state is restored and dtsdec still plays. Stopping the service or uninstalling also restores.</text>
+</svg>

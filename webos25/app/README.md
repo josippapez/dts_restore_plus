@@ -554,8 +554,8 @@ Open questions: DTS decodes to **S32LE, up to 7.1** (DTS-HD MA lossless included
 LG's integer-only sink accepts these (confirmed on-device; the earlier F32LE issue
 was fixed by converting dtsdec's output to S32LE). The remaining unknown is whether
 the TV **renders full surround** to speakers/eARC or downmixes to stereo (not
-independently measured). Bitstream **passthrough** to an AVR is out of scope
-(months of proprietary-lib RE). See `../docs/MULTI-MODEL.md` for the full gap list.
+independently measured). Bitstream passthrough: `../docs/PASSTHROUGH.md`. See
+`../docs/MULTI-MODEL.md` for the full gap list.
 
 ## License
 

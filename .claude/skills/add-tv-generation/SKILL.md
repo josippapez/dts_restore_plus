@@ -65,6 +65,10 @@ Then pick:
 - **no decoder anywhere and no loadable payload** → refuse with a diagnostic profile.
   A GStreamer version match alone never justifies inheriting another family's mechanism.
 
+Full DTS-HD passthrough is separate: it needs `/dev/lg/audio_uimc` and LG's bypass
+chain in the DSP graph, not a model gate. Check it with the steps in
+[`webos25/docs/PASSTHROUGH.md`](../../../webos25/docs/PASSTHROUGH.md#other-tvs).
+
 ## 3. The plugin ABI rule — this is what makes reuse possible
 
 `gst_plugin_check_version()` rejects a plugin only when

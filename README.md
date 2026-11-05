@@ -206,7 +206,8 @@ The flag is checked at each playback start (no reboot needed) but **resets on re
   not reach LG's multichannel sink. (This does **not** apply to the webOS 25 build, which emits
   discrete channels up to 7.1 — since webos25-2.43 bit-exact against desktop ffmpeg on a C5,
   DTS-HD MA lossless included.)
-  Bitstream passthrough to an AVR is out of scope on either platform (decode-to-PCM only).
+  On webOS 25, DTS can also go to a receiver as a bitstream, up to full DTS-HD MA / DTS:X
+  over eARC ([passthrough](webos25/docs/PASSTHROUGH.md)).
 - **Root required.**
 - **4K content cannot 2× fast-forward** — a stock LG limitation that also applies to AC3/AAC.
 

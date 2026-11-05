@@ -41,6 +41,7 @@
 #define GST_DTSDEC_PASSTHROUGH_ALWAYS 2
 
 struct AVCodecContext;
+struct AVFormatContext;
 struct AVFrame;
 struct AVPacket;
 
@@ -116,6 +117,9 @@ struct _GstDtsDec {
   gint           pt_skipped;	/* frames dropped while waiting for core */
   gboolean       pt_output_ok;	/* last sound-output check passed        */
   gint64         pt_checked;	/* monotonic time of that check, us      */
+  gboolean       pt_hd;		/* whole frames as IEC 61937 type IV     */
+  struct AVFormatContext *spdif;	/* FFmpeg's spdif muxer, pt_hd only */
+  gint           hd_lock_fd;
 
   struct AVCodecContext *avctx;
   struct AVFrame *frame;

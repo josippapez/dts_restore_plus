@@ -361,8 +361,9 @@ Media Player, through seeking, pausing and volume changes.
   `external_arc` with Digital Sound Out on Pass Through or Auto. On the speakers, or any
   other output, it decodes as before. If the output changes during a video, the rest of
   that video is silent rather than noise.
-- **Core only.** DTS-HD MA and DTS:X tracks send their DTS 5.1 core. The 2-channel
-  16-bit stream has no room for more.
+- **Core only.** DTS-HD MA and DTS:X tracks send their DTS 5.1 core. For the whole
+  bitstream over eARC, also turn on **Full DTS-HD MA / DTS:X**
+  ([how it works](docs/PASSTHROUGH.md)).
 - **Videos only.** LG applies −3 dB / +3 dB to audio-only files (music), which breaks
   the bitstream, so an audio-only DTS file can come out as loud noise.
 - **48 kHz, 16-bit DTS core** (every DTS track in MKV, MP4 and TS). Anything else is
@@ -597,9 +598,9 @@ unchanged. **`.mp4` TrueHD remains unsupported** — `qtdemux.c` has no TrueHD/M
 - **No object audio, and no "Dolby Atmos"/"DTS:X" badge** for DTS or TrueHD — and this is not an
   AVR or eARC limitation: the badge appears on TV speakers alone for AC-3, because LG's
   `libgstlgaudiodec.so` is the only element with an Atmos codepath and its sink caps accept
-  neither `audio/x-dts` nor `audio/x-true-hd`. Structural, not configurable. See
+  neither `audio/x-dts` nor `audio/x-true-hd`. Structural, not configurable. With full
+  DTS-HD passthrough an eARC receiver renders DTS:X objects itself; see
   [`docs/PASSTHROUGH.md`](docs/PASSTHROUGH.md).
-- **No bitstream passthrough** to an AVR (decode-to-PCM only) — out of scope.
 
 ## Dolby Vision profile 7 (MKV and MP4)
 

@@ -9,7 +9,9 @@
 #
 # What this produces in webos25/out/:
 #   - libgstdtsdec.so   the patched decoder plugin (armel soft-float), with
-#                       FFmpeg n4.4.4's dca decoder linked in statically
+#                       FFmpeg n4.4.4's dca decoder and spdif muxer linked in
+#                       statically
+#   - hdroute-uimc      hdroute.sh's audio_uimc connect/disconnect helper
 #
 # The decoder is FFmpeg's dca (core + DTS-HD XLL/XBR/X96/XXCH + LBR), not
 # libdca (core only). It is built here as a static libavcodec/libavutil with
@@ -69,14 +71,16 @@ RUN SNAPSHOT=20250601T000000Z \
 RUN git clone -q --depth 1 -b n4.4.4 https://git.ffmpeg.org/ffmpeg.git /tmp/ffmpeg \
  && cd /tmp/ffmpeg && ./configure --cross-prefix=arm-linux-gnueabi- \
       --enable-cross-compile --arch=arm --target-os=linux --prefix=/tmp/ffdca \
-      --disable-everything --enable-decoder=dca \
-      --disable-avformat --disable-avfilter --disable-swresample \
+      --disable-everything --enable-decoder=dca --enable-muxer=spdif \
+      --enable-avformat --disable-avfilter --disable-swresample \
       --disable-swscale --disable-avdevice --disable-postproc \
       --disable-network --disable-programs --disable-doc --disable-autodetect \
       --disable-pthreads --disable-asm \
       --enable-static --disable-shared --enable-pic >/dev/null \
  && { grep -q "CONFIG_DCA_DECODER 1" config.h \
       || { echo "ERROR: FFmpeg configured without the dca decoder"; exit 1; }; } \
+ && { grep -q "CONFIG_SPDIF_MUXER 1" config.h \
+      || { echo "ERROR: FFmpeg configured without the spdif muxer"; exit 1; }; } \
  && make -j"$(nproc)" install >/dev/null \
  && rm -rf /tmp/ffmpeg
 DOCKERFILE_EOF
@@ -107,7 +111,8 @@ docker run --rm -i \
       -DPACKAGE='"gst-plugins-bad"' \
       -DGST_PACKAGE_NAME='"WebOS DTS restore"' \
       -DGST_PACKAGE_ORIGIN='"https://github.com/josippapez/dts_restore"' \
-      $CF /tmp/ffdca/lib/libavcodec.a /tmp/ffdca/lib/libavutil.a $LB -lm \
+      $CF /tmp/ffdca/lib/libavformat.a /tmp/ffdca/lib/libavcodec.a \
+      /tmp/ffdca/lib/libavutil.a $LB -lm \
       -Wl,--exclude-libs,ALL -Wl,--no-undefined
 
     echo "=== BUILT (must be ARM, 0x5000200 soft-float) ==="
@@ -118,6 +123,12 @@ docker run --rm -i \
     echo "=== exported FFmpeg symbols (must be 0) ==="
     n=$(arm-linux-gnueabi-objdump -T /out/libgstdtsdec.so | grep -cE " (av|ff|avpriv|avcodec|swr)_" || true)
     echo "$n"; [ "$n" = 0 ] || { echo "ERROR: FFmpeg symbols leak from the plugin"; exit 1; }
+
+    arm-linux-gnueabi-gcc -std=c11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror \
+      -o /out/hdroute-uimc hdroute-uimc.c
+    echo "=== hdroute-uimc (must be ARM, 0x5000200, GLIBC <= 2.35) ==="
+    arm-linux-gnueabi-readelf -h /out/hdroute-uimc | grep -E "Machine|Flags"
+    arm-linux-gnueabi-objdump -T /out/hdroute-uimc | grep -oE "GLIBC_[0-9.]+" | sort -V | tail -1
 CONTAINER_EOF
 
 ls -la "$OUT"

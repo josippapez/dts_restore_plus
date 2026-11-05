@@ -246,10 +246,19 @@
           <dt>Passthrough</dt><dd id="sPt">&mdash;</dd>
           <dt>Sound output</dt><dd id="sPtOut">&mdash;</dd>
         </dl>
+        <h3>Full DTS-HD MA / DTS:X</h3>
         <p class="muted">
-          Have a receiver? Help test lossless DTS-HD MA, DTS:X and TrueHD:
-          <code>github.com/josippapez/dts_restore_plus/discussions/17</code>
+          Sends the whole bitstream instead of the core. Needs an eARC receiver.
+          Tested on an LG C2 with a Denon soundbar. While it plays, TV sounds are
+          not mixed in, and lip sync uses the receiver's own delay setting.
         </p>
+        <div class="row">
+          <button id="btnHdOn"  class="btn focusable" data-nav disabled>Turn on</button>
+          <button id="btnHdOff" class="btn focusable" data-nav disabled>Turn off</button>
+        </div>
+        <dl class="status">
+          <dt>DTS-HD</dt><dd id="sHd">&mdash;</dd>
+        </dl>
       </section>
 
     </main>

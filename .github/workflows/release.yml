@@ -57,7 +57,7 @@ jobs:
         run: |
           set -e
           cd webos25/restore
-          for f in out/libgstdtsdec.so \
+          for f in out/libgstdtsdec.so out/hdroute-uimc hdroute.sh \
                    truehd-out/libgstlibav.so \
                    switch-out/libgstadecswitch.so \
                    demux-out/libgstisomp4.so demux-out/libgstmpegtsdemux.so \
@@ -116,6 +116,7 @@ jobs:
           cd webos25/app
           cp -f  ../restore/out/libgstdtsdec.so                                   payload/webos25/
           cp -f  ../restore/switch-out/libgstadecswitch.so                        payload/webos25/
+          cp -f  ../restore/hdroute.sh ../restore/out/hdroute-uimc                payload/webos25/
           cp -Pf ../restore/truehd-out/libgstlibav.so                             payload/webos25-truehd/
           cp -Pf ../restore/truehd-out/libav*.so* ../restore/truehd-out/libsw*.so* payload/webos25-truehd/
           cp -f  ../restore/demux-out/libgstisomp4.so ../restore/demux-out/libgstmpegtsdemux.so \

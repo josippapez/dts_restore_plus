@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1060" height="420" viewBox="0 0 1060 420" font-family="Helvetica, Arial, sans-serif" font-size="13">
+  <defs>
+    <marker id="g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#6b7280"/></marker>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#16a34a"/></marker>
+    <marker id="r" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#dc2626"/></marker>
+  </defs>
+  <rect width="1060" height="420" fill="#ffffff"/>
+
+  <!-- regions -->
+  <rect x="10" y="30" width="245" height="90" rx="8" fill="#eff6ff" stroke="#bfdbfe"/>
+  <text x="20" y="48" fill="#1e40af" font-weight="bold">TV CPU (GStreamer)</text>
+  <rect x="265" y="30" width="390" height="310" rx="8" fill="#f9fafb" stroke="#d1d5db"/>
+  <text x="275" y="48" fill="#374151" font-weight="bold">audio DSP 2</text>
+  <rect x="665" y="130" width="385" height="100" rx="8" fill="#f9fafb" stroke="#d1d5db"/>
+  <text x="675" y="148" fill="#374151" font-weight="bold">audio DSP 1 (eARC)</text>
+
+  <!-- row 1 -->
+  <rect x="20" y="60" width="110" height="44" rx="6" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="75" y="80" text-anchor="middle" font-weight="bold">dtsdec</text>
+  <text x="75" y="96" text-anchor="middle" font-size="11">whole HD frames</text>
+  <rect x="140" y="60" width="105" height="44" rx="6" fill="#f3f4f6" stroke="#9ca3af"/>
+  <text x="192" y="87" text-anchor="middle">lgaudiosink</text>
+  <rect x="275" y="60" width="110" height="44" rx="6" fill="#f3f4f6" stroke="#9ca3af"/>
+  <text x="330" y="80" text-anchor="middle">lipsync</text>
+  <text x="330" y="96" text-anchor="middle" font-size="11">bitstream input</text>
+  <line x1="130" y1="82" x2="138" y2="82" stroke="#6b7280" stroke-width="1.5" marker-end="url(#g)"/>
+  <line x1="245" y1="82" x2="273" y2="82" stroke="#6b7280" stroke-width="1.5" marker-end="url(#g)"/>
+
+  <!-- row 2 -->
+  <rect x="275" y="160" width="110" height="44" rx="6" fill="#f3f4f6" stroke="#9ca3af"/>
+  <text x="330" y="187" text-anchor="middle">delay</text>
+  <rect x="405" y="160" width="110" height="44" rx="6" fill="#f3f4f6" stroke="#9ca3af"/>
+  <text x="460" y="180" text-anchor="middle">gain</text>
+  <text x="460" y="196" text-anchor="middle" font-size="11" fill="#15803d">unmuted</text>
+  <rect x="535" y="160" width="110" height="44" rx="6" fill="#f3f4f6" stroke="#9ca3af"/>
+  <text x="590" y="187" text-anchor="middle">bypass</text>
+  <rect x="675" y="160" width="110" height="44" rx="6" fill="#f3f4f6" stroke="#9ca3af"/>
+  <text x="730" y="180" text-anchor="middle">queue</text>
+  <text x="730" y="196" text-anchor="middle" font-size="11">eARC input</text>
+  <rect x="800" y="160" width="110" height="44" rx="6" fill="#f3f4f6" stroke="#9ca3af"/>
+  <text x="855" y="187" text-anchor="middle">outctrlbin</text>
+  <rect x="925" y="160" width="115" height="44" rx="6" fill="#f3f4f6" stroke="#9ca3af"/>
+  <text x="982" y="187" text-anchor="middle">output_arc</text>
+  <line x1="385" y1="182" x2="403" y2="182" stroke="#6b7280" stroke-width="1.5" marker-end="url(#g)"/>
+  <line x1="515" y1="182" x2="533" y2="182" stroke="#6b7280" stroke-width="1.5" marker-end="url(#g)"/>
+  <line x1="785" y1="182" x2="798" y2="182" stroke="#6b7280" stroke-width="1.5" marker-end="url(#g)"/>
+  <line x1="910" y1="182" x2="923" y2="182" stroke="#6b7280" stroke-width="1.5" marker-end="url(#g)"/>
+
+  <!-- added links -->
+  <line x1="330" y1="104" x2="330" y2="157" stroke="#16a34a" stroke-width="3" marker-end="url(#a)"/>
+  <text x="338" y="136" fill="#15803d" font-size="12">added</text>
+  <line x1="645" y1="182" x2="672" y2="182" stroke="#16a34a" stroke-width="3" marker-end="url(#a)"/>
+  <text x="635" y="150" fill="#15803d" font-size="12">added</text>
+
+  <!-- removed link -->
+  <rect x="535" y="270" width="110" height="44" rx="6" fill="#f3f4f6" stroke="#9ca3af"/>
+  <text x="590" y="290" text-anchor="middle">mixerbin</text>
+  <text x="590" y="306" text-anchor="middle" font-size="11">TV sound as PCM</text>
+  <path d="M645,292 L700,292 L725,207" fill="none" stroke="#dc2626" stroke-width="2" stroke-dasharray="6,4" marker-end="url(#r)"/>
+  <text x="705" y="300" fill="#b91c1c" font-size="12">removed while a DTS-HD video plays,</text>
+  <text x="705" y="316" fill="#b91c1c" font-size="12">put back when it ends</text>
+
+  <!-- soundbar -->
+  <rect x="905" y="270" width="145" height="50" rx="6" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+  <text x="977" y="291" text-anchor="middle" font-weight="bold">eARC soundbar</text>
+  <text x="977" y="308" text-anchor="middle" font-size="11">DTS-HD MA / DTS:X</text>
+  <line x1="982" y1="204" x2="982" y2="267" stroke="#6b7280" stroke-width="1.5" marker-end="url(#g)"/>
+
+  <!-- legend -->
+  <line x1="20" y1="375" x2="60" y2="375" stroke="#6b7280" stroke-width="1.5"/>
+  <text x="68" y="379">stock link, unchanged</text>
+  <line x1="230" y1="375" x2="270" y2="375" stroke="#16a34a" stroke-width="3"/>
+  <text x="278" y="379">link hdroute.sh adds</text>
+  <line x1="440" y1="375" x2="480" y2="375" stroke="#dc2626" stroke-width="2" stroke-dasharray="6,4"/>
+  <text x="488" y="379">link hdroute.sh removes</text>
+  <rect x="680" y="365" width="20" height="18" rx="4" fill="#dbeafe" stroke="#2563eb"/>
+  <text x="708" y="379">our patched decoder</text>
+  <text x="20" y="408" fill="#6b7280" font-size="12">The same chain LG's kernel builds for its own bitstream bypass, wired from userspace through /dev/lg/audio_uimc. No kernel change.</text>
+</svg>

@@ -299,8 +299,8 @@ share only the immutable packaged source files; their state and hooks are separa
   now emits **S32LE** (up to 5.1; up to 7.1 since webos25-2.43), which the sink accepts (the
   earlier F32LE issue is fixed). The
   remaining unknown is whether the TV **renders full surround** to speakers/eARC or downmixes to
-  stereo (not independently measured). Bitstream passthrough is out of scope; the `experimental/`
-  LPCM-converter route would only be needed if the sink turns out to downmix.
+  stereo (not independently measured). The `experimental/` LPCM-converter route would only be
+  needed if the sink turns out to downmix. Bitstream passthrough: [`PASSTHROUGH.md`](PASSTHROUGH.md).
 - **Real-playback proof on C5: DONE** — both DTS and TrueHD confirmed playing on-device through LG's
   `starfish-media-pipeline`/`decproxy` (decproxy autoplugs the injected decoders; the sink receives
   S32LE), not just `decodebin`. Persistent across reboot.

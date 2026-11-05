@@ -262,5 +262,17 @@ $CC -std=c99 -O2 -Wall -Wextra -Werror -Wno-unused-function -I"$WORK" \
 "$WORK/test-iec61937" "$HERE"
 
 echo
+echo "=== 11. DTS-HD passthrough: whole frames as IEC 61937 type IV (768 kHz, BE) ==="
+if command -v ffmpeg >/dev/null && pkg-config --exists libavformat 2>/dev/null; then
+  ffmpeg -v error -y -i "$HERE/../../testfiles/DTS-HD-MA-5.1.m2ts" -map 0:a:0 \
+      -c copy -f dts "$WORK/sample.dts"
+  $CC -O2 -Wall -o "$WORK/test-spdif-hd" "$HERE/test-spdif-hd.c" \
+      $(pkg-config --cflags --libs libavformat libavcodec libavutil)
+  "$WORK/test-spdif-hd" "$WORK/sample.dts"
+else
+  echo "skip  needs ffmpeg + libavformat dev files"
+fi
+
+echo
 echo "=== ALL CHECKS PASSED ==="
 exit 0
