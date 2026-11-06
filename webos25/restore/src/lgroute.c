@@ -8,6 +8,8 @@
 #include "config.h"
 #endif
 
+#include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -193,6 +195,56 @@ lgroute_event_probe (GstPad * pad, GstPadProbeInfo * info, gpointer user_data)
   return GST_PAD_PROBE_OK;
 }
 
+/* The bypass head exists since the CAPS handler connected the renderer, and
+ * no data or first event has reached it yet: the first buffer is still in
+ * our hands. Reads the live module graph, writes the format to the single
+ * "rts -> srcbin -> lipsync" srcbin, logs the uid, the line and the result,
+ * then the module's own status for the before/after comparison. */
+static void
+lgroute_send_format (LgRoute * route)
+{
+  gchar *graph = NULL, *path, *status = NULL, cmd[96], uid[9];
+  gint chains = 0, fd;
+  gssize n, len;
+
+  if (!lgroute_format_command (route->fmt, cmd, sizeof (cmd))) {
+    lgroute_log (route->element, "fmt=none: the bypass srcbin keeps its own format");
+    return;
+  }
+  if (!g_file_get_contents (LGROUTE_PROC_MODULE_GRAPH, &graph, NULL, NULL)) {
+    lgroute_log (route->element, "cannot read %s, no format sent",
+        LGROUTE_PROC_MODULE_GRAPH);
+    return;
+  }
+  if (!lgroute_find_bypass_srcbin (graph, uid, &chains)) {
+    lgroute_log (route->element, "found %d rts->srcbin->lipsync chains in %s, "
+        "need exactly one: no format sent", chains, LGROUTE_PROC_MODULE_GRAPH);
+    g_free (graph);
+    return;
+  }
+  g_free (graph);
+
+  len = strlen (cmd);
+  path = g_strdup_printf (LGROUTE_PROC_INSTANCES "/%s/cmd", uid);
+  fd = open (path, O_WRONLY);
+  n = fd < 0 ? -1 : write (fd, cmd, len);
+  lgroute_log (route->element, "bypass srcbin_%s: wrote \"%.*s\" to %s -> %s",
+      uid, (int) len - 1, cmd, path,
+      n == len ? "ok" : g_strerror (errno));
+  if (fd >= 0)
+    close (fd);
+  g_free (path);
+
+  path = g_strdup_printf (LGROUTE_PROC_INSTANCES "/%s/lstatus", uid);
+  if (g_file_get_contents (path, &status, NULL, NULL)) {
+    g_strdelimit (status, "\n", ' ');
+    lgroute_log (route->element, "srcbin_%s lstatus after: %s", uid,
+        g_strstrip (status));
+    g_free (status);
+  }
+  g_free (path);
+}
+
 static GstPadProbeReturn
 lgroute_buffer_probe (GstPad * pad, GstPadProbeInfo * info, gpointer user_data)
 {
@@ -208,6 +260,8 @@ lgroute_buffer_probe (GstPad * pad, GstPadProbeInfo * info, gpointer user_data)
         GST_BUFFER_FLAG_IS_SET (buffer, LGROUTE_BUFFER_FLAG_ES) ? "set" : "CLEAR",
         GST_TIME_ARGS (GST_BUFFER_PTS (buffer)));
   lgroute_apply (route, act, "BUFFER");
+  if (act == LGROUTE_ACT_SET_FALSE && route->flip.flips == 1)
+    lgroute_send_format (route);
   return GST_PAD_PROBE_OK;
 }
 
@@ -216,6 +270,7 @@ lgroute_init (LgRoute * route, GstElement * element)
 {
   memset (route, 0, sizeof (*route));
   route->element = element;
+  route->fmt = LGROUTE_FMT_DEFAULT;
   lgroute_flip_init (&route->flip);
 }
 
@@ -223,6 +278,7 @@ gboolean
 lgroute_arm (LgRoute * route, const gchar ** why)
 {
   gboolean current = FALSE;
+  gchar *marker = NULL;
 
   if (route->sink != NULL)
     return TRUE;
@@ -239,9 +295,16 @@ lgroute_arm (LgRoute * route, const gchar ** why)
   }
   lgroute_flip_init (&route->flip);
   g_object_get (route->sink, LG_SINK_PROPERTY, &current, NULL);
-  lgroute_log (route->element, "armed on %s (%s was %s)",
+  if (g_file_get_contents (LGROUTE_MARKER, &marker, NULL, NULL)) {
+    if (!lgroute_marker_fmt (marker, &route->fmt))
+      lgroute_log (route->element, "marker fmt= value not understood, using %d",
+          (gint) route->fmt);
+    g_free (marker);
+  }
+  lgroute_log (route->element, "armed on %s (%s was %s), srcbin fmt=%s",
       GST_OBJECT_NAME (route->sink), LG_SINK_PROPERTY,
-      current ? "TRUE" : "FALSE");
+      current ? "TRUE" : "FALSE", route->fmt == LGROUTE_FMT_NONE ? "none"
+      : route->fmt == LGROUTE_FMT_OUT16 ? "16" : "32");
   route->event_probe = gst_pad_add_probe (route->sinkpad,
       GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM, lgroute_event_probe, route, NULL);
   route->buffer_probe = gst_pad_add_probe (route->sinkpad,

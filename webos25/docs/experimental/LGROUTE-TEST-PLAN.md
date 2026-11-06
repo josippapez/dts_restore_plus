@@ -118,21 +118,52 @@ Extra, if `/proc/aaudio` has per-module counters (list it and send): the bypass
 untouched; a 4:1 ratio means it resampled to 48 kHz and approach A needs the
 format command Glasshouse's module sends (approach B territory).
 
-## 3. Tester with an eARC receiver
+## 3. Tester with an eARC receiver: three variants from one install
 
-Same install (section 1), then:
-
-```sh
-: > /var/lib/webosbrew/dts25/lgroute-test     # empty: the receiver check stays on
-: > /tmp/dts25-lgroute.log
-LL0=$(wc -l < /var/log/legacy-log)
-cat /run/dts25/sound-output                     # must read "<pid> external_arc passThrough" or "... auto"
-```
+One install (section 1) carries three variants of the bypass srcbin format,
+chosen by the marker's content (`fmt=16` default, `fmt=none`, `fmt=32`; see
+`lgroute-policy.h`). The format is written to
+`/proc/aaudio/instances/<srcbin uid>/cmd` right after the flag flip, once per
+stream; the log says which srcbin it found and what the kernel answered.
+Run the variants **in this order**, one DTS-HD MA file each, 15 s, and keep
+the receiver's volume low: a variant that fails can reach the receiver as
+loud PCM noise. **If the receiver plays noise, stop playback at once**, then
+still collect that variant's logs.
 
 TV: Sound Out = HDMI ARC/eARC device, Digital Sound Out = Pass Through (Auto
-also counts). Play a DTS-HD MA file, then a TrueHD (Atmos if available) file,
-15 s each. **If the receiver plays loud noise, stop playback at once** and send
-the logs anyway: that means the bursts reached it as PCM.
+also counts). `cat /run/dts25/sound-output` must read
+`<pid> external_arc passThrough` (or `… auto`). Before each variant:
+
+```sh
+V=16                                            # then none, then 32
+echo "fmt=$V" > /var/lib/webosbrew/dts25/lgroute-test   # receiver check stays on
+: > /tmp/dts25-lgroute.log; LL0=$(wc -l < /var/log/legacy-log); dmesg -c >/dev/null
+```
+
+Play the DTS-HD MA file; while it plays (after ~5 s) take the snapshot:
+
+```sh
+U=$(grep -o 'rts_[0-9a-f]*_[0-9a-f]*_out0 -> srcbin_[0-9a-f]*' /proc/aaudio/dot_module_connection | sed 's/.*srcbin_//' | head -1)
+{ echo "srcbin uid=$U"; for f in status prop lstatus; do echo "--- $f"; cat /proc/aaudio/instances/$U/$f; done
+  cat /proc/aaudio/dot_block_connection; } > /tmp/lgroute-$V.snap 2>&1
+```
+
+After stopping: `cp /tmp/dts25-lgroute.log /tmp/lgroute-$V.log;
+tail -n +$LL0 /var/log/legacy-log > /tmp/lgroute-$V.legacy; dmesg > /tmp/lgroute-$V.dmesg`,
+and write down what the receiver's display showed and what was audible.
+
+- `fmt=16` (default): in = out = 8 ch / 192 kHz / 16 bit, the no-op request.
+  Expected on the receiver: DTS-HD MA (or DTS:X). The log must show
+  `bypass srcbin_0426xxxx: wrote "0x50020020 192000 8 16 0 0 192000 8 16" to
+  /proc/aaudio/instances/0426xxxx/cmd -> ok`.
+- `fmt=none`: nothing is written (`fmt=none: the bypass srcbin keeps its own
+  format`); tells whether the module passes the frames untouched by itself.
+- `fmt=32`: Glasshouse's line (output 32 bit). Under our ES first event dsp1
+  reads 16-bit words (output_arc.c:35-73), so this one is expected to come out
+  as noise or silence; it is the control that tells whether the srcbin's
+  output format reaches the eARC writer at all. Play it last, volume low.
+
+Then, with the winning variant set, a TrueHD (Atmos if available) file.
 
 Expected: the receiver's display shows DTS-HD MA / DTS:X for the first file and
 Dolby TrueHD / Atmos for the second, after about half a second of silence
@@ -145,9 +176,11 @@ Dolby TrueHD / Atmos for the second, after about half a second of silence
   HBR non-PCM;
 - the receiver's display.
 
-Send: `/tmp/dts25-lgroute.log`, the two greps and the two `/proc/aaudio` files
-from section 2, `dmesg | grep -i 'earc\|arc\|bypass\|output' | tail -80`, a
-photo of the receiver's display, the receiver model, and `sh report-tv.sh`.
+Send, per variant: `/tmp/lgroute-$V.{log,snap,legacy,dmesg}`, what the display
+showed and what was audible (silence / correct sound / noise, and after how
+long), plus once: a photo of the receiver's display on the winning variant,
+the receiver model, and `sh report-tv.sh`. Afterwards
+`rm /var/lib/webosbrew/dts25/lgroute-test` (section 5 for the full uninstall).
 
 If the display says PCM or Multi-PCM: the link stayed in L-PCM (output.c
 mapped the codec to PCM, or dsp1's HBR setting was overridden); the bursts are
@@ -157,9 +190,10 @@ Report exactly what the display shows and whether there is sound.
 ## 4. What approach A cannot settle on the C5 (needs the receiver tester)
 
 - Whether the PCM head's `rts` and `srcbin` modules pass the 8 ch / 192 kHz
-  frames bit-exact under an `es=true` first event (Glasshouse's module sent
-  the bypass srcbin an explicit format command; here nothing does, see
-  section 2's counter check).
+  frames bit-exact under an `es=true` first event, with or without the
+  format command (section 3's variants). Without a consumer nothing flows
+  into the head on the C5 (measured 2026-11-06: rts `au-input=0`, srcbin
+  without lstatus), so only the receiver run can tell.
 - Whether the eARC link ends up in HBR non-PCM mode when the ARM side
   (`_set_format` with codec MAT) and dsp1 (`HAL_SetArcEsMode(768000)`) both
   configure it.

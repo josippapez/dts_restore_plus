@@ -30,6 +30,7 @@ typedef struct
   gulong event_probe;
   gulong buffer_probe;
   LgRouteFlip flip;
+  LgRouteFmt fmt;               /* bypass srcbin format variant, from the marker */
 } LgRoute;
 
 /* The opt-in marker exists and the watcher reports an ARC/eARC receiver with
