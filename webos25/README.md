@@ -361,9 +361,9 @@ Media Player, through seeking, pausing and volume changes.
   `external_arc` with Digital Sound Out on Pass Through or Auto. On the speakers, or any
   other output, it decodes as before. If the output changes during a video, the rest of
   that video is silent rather than noise.
-- **Core only.** DTS-HD MA and DTS:X tracks send their DTS 5.1 core. For the whole
-  bitstream over eARC, also turn on **Full DTS-HD MA / DTS:X**
-  ([how it works](docs/PASSTHROUGH.md)).
+- **Core by default.** The experimental **Full DTS-HD / TrueHD** eARC opt-in uses
+  LG-managed routing on an exact sink-build allowlist. Migration testing is
+  incomplete; DTS:X, Atmos and other TV/receiver combinations are unverified.
 - **Videos only.** LG applies −3 dB / +3 dB to audio-only files (music), which breaks
   the bitstream, so an audio-only DTS file can come out as loud noise.
 - **48 kHz, 16-bit DTS core** (every DTS track in MKV, MP4 and TS). Anything else is
@@ -397,6 +397,7 @@ GStreamer major.minor version:
 | LG C5 OLED65C5PUA (webOS 11.2.0) | 1.24.10 | `cb40b8b3bcda13d2c5a662762f8ff1b2` | `8fa3f7b96a045765a28a62011ff02a66` | `fc717f70284deebecd4a1ea1254617e7` |
 | LG G2 OLED77G23LA (webOS 11.2.0) | 1.24.10 | `cb40b8b3bcda13d2c5a662762f8ff1b2` | `d4e37523bcd2b00c16fc8792d75e1ae4` | `66ac51a0c81efbb8a705d0c60ab62cfa` |
 | LG G5 OLED65G56LS (webOS 10.3.0) | 1.24.0 | `3c8efc3a8af078f64d18fd2ce4f3ef71` | `18172fc834da68c7f31f36e46afbc5bd` | `2c7a44bc37a01a9f22adf93444467655` |
+| LG UA73 55UA73006LA (webOS 10.3.2) | 1.24.0 | `3697edfd5fbb50309c54d28f76b6fc6b` | `d79a311c3783a7498576b7a88c0c8a97` | `772fb3b29e224423035eec9e93615b23` |
 
 A TV whose stock hashes are **not** in the table is refused by default — Enable/the boot
 hook show the probed values so they can be reported for a future entry — with an explicit

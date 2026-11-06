@@ -285,8 +285,8 @@
     $("hdPassthrough").checked = s.passthroughHdRequested === true;
     setVal("sHd", !s.passthroughHdRequested ? "off"
       : !s.passthroughRequested ? "off — passthrough disabled"
-      : s.passthroughHdRunning ? "on" : "on — route service not running",
-      s.passthroughHdRequested ? (s.passthroughHdRunning ? "ok" : "warn") : null);
+      : s.passthroughHdReady ? "ready for eARC" : "requested — waiting for eARC",
+      s.passthroughHdRequested ? (s.passthroughHdReady ? "ok" : "warn") : null);
     // A/B compare renders through the patched dtsdec, so it needs the same profile.
     $("btnAb").disabled = !canW25Test;
     Array.prototype.slice.call(document.querySelectorAll("[data-gain], [data-preset], [data-center]"))

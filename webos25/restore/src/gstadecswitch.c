@@ -37,7 +37,7 @@
 #endif
 
 #include "gstadecswitch.h"
-#include <stdio.h>
+#include "lgroute-control.h"
 
 GST_DEBUG_CATEGORY_STATIC (adecswitch_debug);
 #define GST_CAT_DEFAULT adecswitch_debug
@@ -152,31 +152,11 @@ gst_adecswitch_rank_release (GstAdecSwitch * self)
 static gboolean
 gst_adecswitch_truehd_passthrough (const GstStructure * caps)
 {
-  gchar *output = NULL, *service = NULL, proc[32];
-  gchar destination[64] = "", digital[64] = "";
-  gint watcher = 0, owner = 0, rate = 0;
-  gboolean ready = FALSE;
-
-  if ((gst_structure_has_field (caps, "rate")
-          && (!gst_structure_get_int (caps, "rate", &rate)
-              || (rate != 48000 && rate != 96000 && rate != 192000)))
-      || !g_file_test ("/var/lib/webosbrew/dts25/passthrough", G_FILE_TEST_EXISTS)
-      || !g_file_test ("/var/lib/webosbrew/dts25/passthrough-hd", G_FILE_TEST_EXISTS))
-    return FALSE;
-  if (g_file_get_contents ("/run/dts25/sound-output", &output, NULL, NULL)
-      && sscanf (output, "%d %63s %63s", &watcher, destination, digital) == 3
-      && watcher > 0 && !g_strcmp0 (destination, "external_arc")
-      && (!g_strcmp0 (digital, "passThrough") || !g_strcmp0 (digital, "auto"))
-      && g_file_get_contents ("/run/dts25/hdroute.pid", &service, NULL, NULL)
-      && sscanf (service, "%d", &owner) == 1 && owner > 0) {
-    g_snprintf (proc, sizeof (proc), "/proc/%d", watcher);
-    ready = g_file_test (proc, G_FILE_TEST_IS_DIR);
-    g_snprintf (proc, sizeof (proc), "/proc/%d", owner);
-    ready = ready && g_file_test (proc, G_FILE_TEST_IS_DIR);
-  }
-  g_free (output);
-  g_free (service);
-  return ready;
+  gint rate = 0;
+  return (!gst_structure_has_field (caps, "rate")
+      || (gst_structure_get_int (caps, "rate", &rate)
+          && (rate == 48000 || rate == 96000 || rate == 192000)))
+      && lgroute_control_receiver () && lgroute_control_check () == 0;
 }
 
 static const gchar *
@@ -367,38 +347,12 @@ gst_adecswitch_src_event_probe (GstPad * pad, GstPadProbeInfo * info,
   return GST_PAD_PROBE_OK;
 }
 
-/* Downstream events on the sink ghost pad. A CAPS event naming a different
- * family is the one and only switch trigger; same-family caps changes are
- * forwarded untouched. Runs on the streaming thread with that pad's stream
- * lock held (gstpad.c:5473-5486), so no data can overtake the swap. */
 static GstPadProbeReturn
-gst_adecswitch_sink_event_probe (GstPad * pad, GstPadProbeInfo * info,
-    gpointer user_data)
+gst_adecswitch_plug (GstAdecSwitch * self, const gchar *factory_name, GstCaps *caps)
 {
-  GstAdecSwitch *self = GST_ADECSWITCH (user_data);
-  GstEvent *event = GST_PAD_PROBE_INFO_EVENT (info);
   GstElement *old_decoder, *decoder;
-  const gchar *factory_name;
   gboolean is_hw, reused = FALSE;
-  GstCaps *caps = NULL;
   GstPad *target;
-
-  if (GST_EVENT_TYPE (event) != GST_EVENT_CAPS)
-    return GST_PAD_PROBE_OK;
-
-  gst_event_parse_caps (event, &caps);
-  factory_name = gst_adecswitch_factory_for_caps (caps);
-  if (factory_name == NULL) {
-    /* Can only happen if our template and this function disagree. */
-    GST_ERROR_OBJECT (self, "no inner decoder for %" GST_PTR_FORMAT, caps);
-    return GST_PAD_PROBE_OK;
-  }
-  if (self->decoder != NULL && !g_strcmp0 (self->decoder_factory,
-          factory_name)) {
-    GST_DEBUG_OBJECT (self, "same family (%s), forwarding %" GST_PTR_FORMAT,
-        factory_name, caps);
-    return GST_PAD_PROBE_OK;
-  }
 
   old_decoder = self->decoder;
   is_hw = !g_strcmp0 (factory_name, DECPROXY_FACTORY);
@@ -474,8 +428,8 @@ have_decoder:
   self->decoder = decoder;
   self->decoder_factory = factory_name;
 
-  if (old_decoder != NULL && !gst_adecswitch_is_decproxy (old_decoder))
-    gst_element_set_state (old_decoder, GST_STATE_NULL);
+  /* The fallback may be requested from the old decoder's streaming call;
+   * never take that decoder to NULL synchronously on its own thread. */
 
   if (!gst_element_sync_state_with_parent (decoder))
     GST_WARNING_OBJECT (self, "could not sync %s state with parent",
@@ -521,6 +475,52 @@ have_decoder:
   }
 
   return GST_PAD_PROBE_OK;
+}
+
+static GstPadProbeReturn
+gst_adecswitch_sink_event_probe (GstPad *pad, GstPadProbeInfo *info, gpointer data)
+{
+  GstAdecSwitch *self = GST_ADECSWITCH (data);
+  GstCaps *caps = NULL;
+  const gchar *factory;
+  (void) pad;
+  if (GST_PAD_PROBE_INFO_TYPE (info) & GST_PAD_PROBE_TYPE_BUFFER) {
+    if (self->truehd_fallback && self->caps) {
+      self->truehd_fallback = FALSE;
+      return gst_adecswitch_plug (self, "avdec_truehd", self->caps);
+    }
+    return GST_PAD_PROBE_OK;
+  }
+  GstEvent *event = GST_PAD_PROBE_INFO_EVENT (info);
+  if (GST_EVENT_TYPE (event) != GST_EVENT_CAPS)
+    return GST_PAD_PROBE_OK;
+  gst_event_parse_caps (event, &caps);
+  factory = gst_adecswitch_factory_for_caps (caps);
+  if (self->caps && gst_caps_is_equal (self->caps, caps)
+      && !g_strcmp0 (factory, "truehdmat")
+      && !g_strcmp0 (self->decoder_factory, "avdec_truehd"))
+    factory = "avdec_truehd";
+  self->truehd_fallback = FALSE;
+  gst_caps_replace (&self->caps, caps);
+  if (!factory || (self->decoder && !g_strcmp0 (self->decoder_factory, factory)))
+    return GST_PAD_PROBE_OK;
+  return gst_adecswitch_plug (self, factory, caps);
+}
+
+static void
+gst_adecswitch_handle_message (GstBin *bin, GstMessage *message)
+{
+  GstAdecSwitch *self = GST_ADECSWITCH (bin);
+  if (GST_MESSAGE_TYPE (message) == GST_MESSAGE_ELEMENT
+      && gst_message_has_name (message, "truehdmat-fallback")
+      && self->decoder && GST_MESSAGE_SRC (message) == GST_OBJECT (self->decoder)
+      && self->caps) {
+    /* Switch before dispatching the next input, after handle_frame returned. */
+    self->truehd_fallback = TRUE;
+    gst_message_unref (message);
+    return;
+  }
+  GST_BIN_CLASS (gst_adecswitch_parent_class)->handle_message (bin, message);
 }
 
 static GstStateChangeReturn
@@ -618,6 +618,7 @@ gst_adecswitch_dispose (GObject * object)
   self->parked_hw = NULL;
   self->decoder = NULL;
   self->decoder_factory = NULL;
+  gst_caps_replace (&self->caps, NULL);
   gst_event_replace (&self->resource_event, NULL);
 
   G_OBJECT_CLASS (gst_adecswitch_parent_class)->dispose (object);
@@ -635,6 +636,7 @@ gst_adecswitch_class_init (GstAdecSwitchClass * klass)
   gobject_class->finalize = gst_adecswitch_finalize;
 
   element_class->change_state = GST_DEBUG_FUNCPTR (gst_adecswitch_change_state);
+  GST_BIN_CLASS (klass)->handle_message = gst_adecswitch_handle_message;
 
   g_object_class_install_property (gobject_class, PROP_HW_TEARDOWN_GRACE_MS,
       g_param_spec_uint ("hw-teardown-grace-ms", "HW teardown grace (ms)",
@@ -679,7 +681,8 @@ gst_adecswitch_init (GstAdecSwitch * self)
   self->sinkpad = gst_ghost_pad_new_no_target_from_template ("sink", tmpl);
   gst_object_unref (tmpl);
   gst_pad_set_query_function (self->sinkpad, gst_adecswitch_sink_query);
-  gst_pad_add_probe (self->sinkpad, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM,
+  gst_pad_add_probe (self->sinkpad,
+      GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM | GST_PAD_PROBE_TYPE_BUFFER,
       gst_adecswitch_sink_event_probe, self, NULL);
   gst_element_add_pad (GST_ELEMENT_CAST (self), self->sinkpad);
 

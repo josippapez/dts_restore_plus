@@ -1,40 +1,30 @@
-DTS / TrueHD passthrough plugin -- BUILD REPORT
-=============================================
+DTS / TrueHD LG-managed routing -- DRAFT BUILD REPORT
+===================================================
 
-Built from src/gstdtsdec.c by build.sh using the cached dts25-dtsdec-build
-image: Debian bookworm armel cross-toolchain, snapshot 20250601T000000Z,
-FFmpeg n4.4.4 static dca decoder and spdif muxer (libavformat, libavcodec,
-libavutil). No GPL/nonfree configure options; LGPL-2.1-or-later.
+Built 2026-11-06 from gstdtsdec.c, lgroute.c and lgroute-control.c using
+cached dts25-dtsdec-build: Debian bookworm armel, snapshot 20250601T000000Z,
+FFmpeg n4.4.4 static dca decoder and spdif muxer. No GPL/nonfree options.
+Recovered sources reproduce all three saved pre-recovery binary hashes.
 
-libgstdtsdec.so:
-  ARM EABI5 soft-float, e_flags 0x05000200, max GLIBC_2.35
-  No RPATH/RUNPATH; zero exported FFmpeg symbols
-  3438512 bytes
-  SHA256 b17507867ace092b7ff80dda56a0ca2e2dddec655880463d4f997b836e23b6af
-  dtsdec: DTS core/HD decode to S32LE, or opted-in IEC 61937 passthrough
-  truehdmat: explicitly selected TrueHD MAT, 61440-byte big-endian bursts
-  Both HD codecs share the route lock, receiver checks and HBR carrier caps.
-  HD carrier: S16LE, 192000 Hz, 8 channels, ES flag; not decoded PCM.
+ARM EABI5 soft-float, e_flags 0x05000200:
+  out/libgstdtsdec.so (max GLIBC_2.35)
+    SHA256 311435f2f03a717210290d31203ceccc960ca1fcee033aaf3df09f0345451b10
+  switch-out/libgstadecswitch.so (max GLIBC_2.7)
+    SHA256 07a07eb53e88a508d7615a817db17f5e28711a22b3d4aac8698938fc1c48f3c1
+  out/lgroute-control (max GLIBC_2.34)
+    SHA256 14c7f63a24fe958a05dda1f915beae70248ddd1dff2b8152d8a56b854cb590cb
 
-Matching switch-out/libgstadecswitch.so:
-  29924 bytes
-  SHA256 0c3b317bc0f2cc5bab0756735f61c0d994562f77210d004d18d089dd66239323
-  TrueHD selects MAT only with both opt-ins and live receiver/route watchers;
-  otherwise it retains avdec_truehd PCM. Software handoff releases the old
-  decoder's route lock before starting its replacement.
+On-device checks, rooted C2 OLED42C27LA / webOS10.3.1, 2026-11-06:
+  Exact installed hashes match this report.
+  App self-test: DTS MP4, TS, M2TS and TrueHD MKV all decode successfully.
+  Muted app playback: DTS-HD M2TS/MKV and TrueHD MKV run.
+  Steady-state DTS-HD and TrueHD: mix=0, LG connects lipsync -> delay
+  and bypass -> gluepw; kernel reports ARC mat 8ch at physical192000Hz.
+  Main renderer gain property reads mute-input=true during DTS playback.
+  Stopping playback restores mix=1 and removes the recovery journal.
+  Host route/mixer/fallback tests and 38 app/lifecycle checks pass.
 
-On-device verification: rooted C2, webOS 10.3.1, November 5, 2026
-  TrueHD MKV and tsMuxeR BD M2TS: MAT bytes identical to host FFmpeg.
-  BD sample includes an AC-3 compatibility core; TrueHD 0x72 is selected.
-  Same pipeline reused three times: 199 identical complete MAT bursts/run.
-  Actual app: eight mixed DTS/TrueHD plays with nonzero eARC output each;
-  seek/EOS/replay and unload release pass; gain unity, MAT 8ch/192000 status.
-  Same-pipeline DTS -> TrueHD switch and HD-disabled 6ch PCM fallback pass.
-  DTS-HD MA 7.1: 8ch decode matches host FFmpeg byte-for-byte.
-  DTS-HD MA TS/M2TS: PCM matches host after 45768-byte segment clipping.
-  Host decoder and service suites pass, including logging/retry regressions.
-  These are byte-flow/caps checks, not an independent audible confirmation.
-
-On-TV reuse regression: compile src/test/test-truehd-mat.c against GStreamer;
-run test-truehd-mat <matroskademux|tsdemux> <TrueHD sample> with the installed
-plugin path, receiver output and both passthrough opt-ins enabled.
+NOT YET VERIFIED for this migration: audible receiver decoding, TrueHD BD
+TS/M2TS, seek/output-switch/crash recovery, DTS:X/Atmos, other TV stacks.
+Historical tests of the previous implementation do not validate this build.
+Keep PR draft; this is not a release-ready hardware qualification.

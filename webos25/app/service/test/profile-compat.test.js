@@ -579,8 +579,11 @@ test("DTS-HD shares the passthrough lifecycle and Disable restores eARC first", 
   assert.ok(!body.includes("W25_HD="));
   assert.ok(body.includes("\nw25_pt_stop || exit 1\nw25_pt_start\n"),
     "boot apply must stop passthrough before restarting it after Disable");
-  assert.ok(initFn("w25_pt_watch").includes("hdroute.sh </dev/null"));
-  assert.ok(initFn("w25_pt_stop").includes('sh "$HD_SVC" --stop'));
+  assert.ok(initFn("w25_pt_watch").includes("w25_pt_recover &"));
+  assert.ok(initFn("w25_pt_stop").includes('timeout 5 "$HD_HELPER" --recover'));
+  assert.ok(!body.includes("hdroute.sh"));
+  assert.ok(service.w25PassthroughSteps(true, true).includes("/lgroute-control ]"));
+  assert.ok(!service.w25PassthroughSteps(true, true).includes("HD_RUNNING"));
   var off = service.w25PassthroughSteps(false);
   var offStop = off.indexOf("\nW25_PT=stop ");
   assert.ok(offStop >= 0 && offStop < off.indexOf('rm -f "$FLAG"'), "stop before clearing the passthrough marker");
@@ -614,7 +617,7 @@ test("CLI uninstall rejects outdated init and stops before hook removal on failu
     try {
       var called = path.join(dir, "called"), hook = path.join(dir, "hook-removed");
       exe(path.join(dir, "init_dts25.sh"),
-        (modern ? ": 'ERROR=The installed DTS-HD helper is outdated'\n" : "") +
+        (modern ? ": 'lgroute-control'\n" : "") +
         'printf "%s" "$W25_PT" > "$CALLED"\nexit ' + (modern ? 7 : 0));
       var result = spawnSync("sh", ["-c", block + '\nprintf hook > "$HOOK_SENTINEL"', path.join(dir, "uninstall.sh")],
         {encoding: "utf8", timeout: 2000, env: Object.assign({}, process.env,
@@ -632,38 +635,56 @@ test("CLI uninstall rejects outdated init and stops before hook removal on failu
 });
 
 [
-  ["legacy helper is rejected without execution", false, 0],
-  ["failed modern helper retains runtime state", true, 1],
-  ["successful modern helper clears a stale watcher", true, 0]
+  ["restores a crash journal", "restore", 0],
+  ["waits for stream release", "release", 0],
+  ["active lock cannot masquerade as recovery", "active", 1],
+  ["helper restore failure retains journal", "fail", 1],
+  ["helper timeout retains journal", "timeout", 1],
+  ["missing helper retains journal", "missing", 1],
+  ["old experimental state is refused", "legacy", 1]
 ].forEach(function (scenario) {
   test("passthrough stop: " + scenario[0], function () {
     var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dts-pt-stop-"));
     try {
-      var runtime = path.join(dir, "run"), helper = path.join(dir, "hdroute.sh");
+      var runtime = path.join(dir, "run"), helper = path.join(dir, "lgroute-control");
       var called = path.join(dir, "called"), pid = path.join(runtime, "watcher.pid");
-      var output = path.join(runtime, "sound-output");
+      var output = path.join(runtime, "sound-output"), journal = path.join(runtime, "lgroute.state");
       write(pid, "99999999\n");
-      write(output, "external_arc auto\n");
-      exe(helper, (scenario[1] ? '[ "$1" = --stop ] || exit 99\n' : "") +
-        'printf "%s" "$*" > "' + called + '"\nexit ' + scenario[2]);
-      var fn = initFn("w25_pt_stop");
-      assert.ok(fn.includes('sh "$HD_SVC" --stop'), "shared stop function must be present");
-      fn = fn.replace("/run/dts25", runtime).replace("/var/lib/webosbrew/dts25/hdroute.sh", helper)
-        .split("/proc/").join(dir + "/proc/");
-      var result = spawnSync("sh", ["-c", fn + "\nw25_pt_stop"], {encoding: "utf8", timeout: 2000});
-      assert.ifError(result.error);
-      var succeeds = scenario[1] && scenario[2] === 0;
-      assert.equal(result.status, succeeds ? 0 : 1, result.stderr);
-      assert.equal(fs.existsSync(called), scenario[1], "legacy helper must never run");
-      if (scenario[1]) assert.equal(fs.readFileSync(called, "utf8"), "--stop");
-      if (succeeds) {
-        assert.equal(fs.existsSync(pid), false);
-        assert.equal(fs.existsSync(output), false);
-      } else {
-        assert.match(result.stdout, scenario[1] ? /^ERROR=.*restore the eARC route/m : /^ERROR=.*outdated/m);
-        assert.equal(fs.readFileSync(pid, "utf8"), "99999999\n");
-        assert.equal(fs.readFileSync(output, "utf8"), "external_arc auto\n");
+      write(output, "99999999 external_arc auto\n");
+      write(journal, "saved ALSA state");
+      if (scenario[1] === "legacy") {
+        write(path.join(runtime, "hdroute.state"), "unknown old graph");
+        exe(path.join(dir, "hdroute.sh"), 'touch "' + called + '"');
       }
+      if (scenario[1] !== "missing") exe(helper,
+        '[ "$1" = --recover ] || exit 99\n' +
+        '[ ! -e "' + output + '" ] && [ -e "' + runtime + '/stopping" ] || exit 98\n' +
+        'echo recover >> "' + called + '"\n' +
+        (scenario[1] === "fail" ? "exit 7" :
+          scenario[1] === "active" ? "exit 0" :
+          (scenario[1] === "release" ? '[ "$(wc -l < "' + called + '")" -ge 2 ] || exit 0\n' : "") +
+          'rm -f "' + journal + '"'));
+      var fn = initFn("w25_pt_stop").replace("/run/dts25", runtime)
+        .replace("/var/lib/webosbrew/dts25/lgroute-control", helper)
+        .split("/proc/").join(dir + "/proc/");
+      var clock = path.join(dir, "clock");
+      write(clock, "0\n");
+      var script = [fn,
+        'timeout() { [ "$1" = 5 ] || return 97; shift; ' +
+          (scenario[1] === "timeout" ? 'return 124;' : '"$@";') + ' }',
+        'sleep() { :; }',
+        'date() { n=$(cat "' + clock + '"); echo "$n"; echo $((n + 1)) > "' + clock + '"; }',
+        "w25_pt_stop"].join("\n");
+      var result = sh(script);
+      assert.ifError(result.error);
+      assert.equal(result.status, scenario[2], result.stderr + result.stdout);
+      assert.equal(fs.existsSync(output), false, "shutdown permission must be withdrawn even on failure");
+      assert.equal(fs.existsSync(journal), scenario[2] !== 0, "failed recovery must retain journal");
+      assert.equal(fs.existsSync(pid), scenario[2] !== 0, "failed stop must retain watcher bookkeeping");
+      if (["missing", "legacy", "timeout"].includes(scenario[1])) assert.equal(fs.existsSync(called), false);
+      else assert.match(fs.readFileSync(called, "utf8"), /^recover\n/);
+      if (scenario[1] === "release") assert.equal(fs.readFileSync(called, "utf8"), "recover\nrecover\n");
+      if (scenario[2]) assert.match(result.stdout, /^ERROR=/m);
     } finally {
       fs.rmSync(dir, {recursive: true, force: true});
     }
@@ -687,103 +708,41 @@ test("failed passthrough and Disable calls report failure to the app", function 
   }));
 });
 
-test("HD logging never marks a successful connection as failed", function () {
-  var source = fs.readFileSync(path.join(ROOT, "webos25/restore/hdroute.sh"), "utf8");
-  var log = source.match(/^log\(\) \{\n[\s\S]*?^\}/m)[0];
-  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dts-hd-log-"));
+test("the recovery watchdog retries failures and stops with passthrough", function () {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dts-recover-"));
   try {
-    var file = path.join(dir, "route.log");
-    ["", "x".repeat(65536)].forEach(function (contents) {
-      fs.writeFileSync(file, contents);
-      var result = sh('LOG="' + file + '"\n' + log + '\nlog connected');
-      assert.strictEqual(result.status, 0, result.stderr);
-      assert.match(fs.readFileSync(file, "utf8"), /connected\n$/);
-      assert.ok(fs.statSync(file).size <= 65536);
-    });
+    var helper = path.join(dir, "lgroute-control"), calls = path.join(dir, "calls");
+    var flag = path.join(dir, "passthrough");
+    write(flag);
+    exe(helper, '[ "$1" = --recover ] || exit 99\necho recover >> "' + calls + '"\nexit 7');
+    var fn = initFn("w25_pt_recover").split("/var/lib/webosbrew/dts25/lgroute-control").join(helper);
+    var result = sh([
+      'PT_FLAG="' + flag + '"', 'PT_RUN="' + dir + '"', fn,
+      'timeout() { [ "$1" = 5 ] || return 99; shift; "$@"; }',
+      'w25_log() { echo "$*"; }',
+      'sleep() { [ "$1" = 1 ] || exit 99; [ "$(wc -l < "' + calls + '")" -lt 2 ] || rm -f "$PT_FLAG"; }',
+      "w25_pt_recover"
+    ].join("\n"));
+    ok(result, "recovery watchdog");
+    assert.equal(fs.readFileSync(calls, "utf8"), "recover\nrecover\n");
+    assert.match(result.stdout, /journal retained/);
+    write(flag);
+    write(path.join(dir, "stopping"));
+    ok(sh('PT_FLAG="' + flag + '"\nPT_RUN="' + dir + '"\n' + fn + '\nw25_pt_recover'), "stopped watchdog");
+    assert.equal(fs.readFileSync(calls, "utf8"), "recover\nrecover\n", "shutdown must prevent more recovery calls");
   } finally {
     fs.rmSync(dir, {recursive: true, force: true});
   }
 });
 
-test("HD routing distinguishes replacement streams in the same process", function () {
-  var source = fs.readFileSync(path.join(ROOT, "webos25/restore/hdroute.sh"), "utf8");
-  var armed = source.match(/^armed\(\) \{\n[\s\S]*?^\}/m)[0]
-    .replace('[ -d "/proc/$p" ]', 'kill -0 "$p" 2>/dev/null');
-  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dts-hd-stream-"));
-  try {
-    var script = [
-      "set -eu", 'ARMED="' + dir + '/armed"', armed,
-      process.platform === "darwin" ? 'stat() { /usr/bin/stat -f %i "$3"; }' : "",
-      'echo $$ > "$ARMED"', "armed", "first=$stream", "armed", '[ "$stream" = "$first" ]',
-      'echo $$ > "$ARMED.next"', 'mv "$ARMED.next" "$ARMED"',
-      "armed", '[ "$stream" != "$first" ]', 'rm "$ARMED"',
-      "if armed; then exit 1; fi"
-    ].join("\n");
-    var result = sh(script);
-    assert.strictEqual(result.status, 0, result.stderr);
-  } finally {
-    fs.rmSync(dir, {recursive: true, force: true});
-  }
-});
-
-test("HD retry exhaustion ends when a replacement stream appears", function () {
-  var source = fs.readFileSync(path.join(ROOT, "webos25/restore/hdroute.sh"), "utf8");
-  var retry = source.match(/      failed_stream=\$stream\n[\s\S]*?FAILS=0; fi/)[0];
-  var result = sh([
-    "set -eu", "FAILS=5", "stream=old", "waits=0",
-    'armed() { return 0; }',
-    'sleep() { waits=$((waits + 1)); stream=new; [ "$waits" -le 1 ]; }',
-    retry, '[ "$FAILS" = 0 ]', '[ "$waits" = 1 ]'
-  ].join("\n"));
-  assert.strictEqual(result.status, 0, result.stderr);
-});
-
-test("HD recovery consumes each PCM status event only once", function () {
-  var source = fs.readFileSync(path.join(ROOT, "webos25/restore/hdroute.sh"), "utf8");
-  var reset = source.match(/^arc_reset\(\) \{\n[\s\S]*?^\}/m)[0];
-  var script = [
-    "set -eu", "ARC_STATUS=", reset,
-    'last_arc() { printf "%s\\n" "$EVENT"; }',
-    'EVENT="[1] _cb_output_status ARC mat 8 ch"',
-    "if arc_reset; then exit 1; fi",
-    'EVENT="[2] _cb_output_status ARC pcm 2 ch"',
-    "arc_reset",
-    "if arc_reset; then exit 2; fi",
-    'EVENT="[3] _cb_output_status ARC pcm 2 ch"',
-    "arc_reset",
-    "if arc_reset; then exit 3; fi"
-  ].join("\n");
-  var result = sh(script);
-  assert.strictEqual(result.status, 0, result.stderr);
-});
-
-test("HD graph discovery waits for completion without fixed one-second delays", function () {
-  var source = fs.readFileSync(path.join(ROOT, "webos25/restore/hdroute.sh"), "utf8");
-  var dump = source.match(/^dump\(\) \{\n[\s\S]*?^\}/m)[0];
-  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dts-hd-discovery-"));
-  try {
-    dump = dump.replace("/proc/aaudio/callv", '"$WORK/callv"');
-    [false, true].forEach(function (incomplete) {
-      fs.writeFileSync(path.join(dir, "calls"), "0\n");
-      var script = [
-        "set -u", 'WORK="' + dir + '"', "SEQ=0", dump,
-        'dmesg() { calls=$(cat "$WORK/calls"); calls=$((calls + 1)); echo "$calls" > "$WORK/calls";',
-        'echo "$tag: start"; echo "] queue_04180001_ptr_out0 -> lipsync_04230001_ptr_in0 x";',
-        incomplete ? "return 0; }" : '[ "$calls" -lt 3 ] || echo "$tag: end"; }',
-        "usleep() { :; }", "sleep() { return 99; }",
-        "dump 2 d2"
-      ].join("\n");
-      var result = sh(script);
-      assert.strictEqual(result.status, incomplete ? 1 : 0, result.stderr);
-      assert.strictEqual(Number(fs.readFileSync(path.join(dir, "calls"), "utf8")), incomplete ? 50 : 3);
-      if (!incomplete) {
-        assert.strictEqual(fs.readFileSync(path.join(dir, "d2.edges"), "utf8"),
-          "queue_04180001 0 lipsync_04230001 0\n");
-      }
-    });
-  } finally {
-    fs.rmSync(dir, {recursive: true, force: true});
-  }
+test("HD readiness uses the read-only ALSA check, not a route daemon", function () {
+  var script = service.w25PassthroughSteps(true, true);
+  assert.match(script, /timeout 5 .*lgroute-control --check/);
+  assert.ok(!script.includes("hdroute.pid"));
+  assert.ok(!script.includes("HD_RUNNING"));
+  var source = fs.readFileSync(SERVICE, "utf8");
+  assert.ok(source.includes('base.passthroughHdReady = base.passthroughToReceiver && kv.HD_READY === "1"'));
+  assert.ok(!source.includes("passthroughHdRunning"));
 });
 
 /* Issue #13: the luna hub drops any message over 128 KiB and the app only sees

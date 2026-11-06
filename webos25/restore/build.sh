@@ -7,11 +7,11 @@
 #   This matches Debian's `armel` port, so we cross-compile with
 #   `arm-linux-gnueabi-gcc` (soft-float) — NOT `arm-linux-gnueabihf` (hard-float).
 #
-# What this produces in webos25/out/:
+# What this produces in webos25/restore/out/:
 #   - libgstdtsdec.so   the patched decoder plugin (armel soft-float), with
 #                       FFmpeg n4.4.4's dca decoder and spdif muxer linked in
 #                       statically
-#   - hdroute-uimc      hdroute.sh's audio_uimc connect/disconnect helper
+#   - lgroute-control  named ALSA mixer validation/recovery helper
 #
 # The decoder is FFmpeg's dca (core + DTS-HD XLL/XBR/X96/XXCH + LBR), not
 # libdca (core only). It is built here as a static libavcodec/libavutil with
@@ -105,7 +105,7 @@ docker run --rm -i \
     #   VERSION / PACKAGE / GST_PACKAGE_* : plugin identity metadata.
     #   libavcodec.a libavutil.a + --exclude-libs,ALL : the static decoder,
     #        with none of its symbols exported (see the header comment).
-    arm-linux-gnueabi-gcc -shared -fPIC -O2 -Wall -o /out/libgstdtsdec.so gstdtsdec.c \
+    arm-linux-gnueabi-gcc -shared -fPIC -O2 -Wall -o /out/libgstdtsdec.so gstdtsdec.c lgroute.c lgroute-control.c \
       -I/tmp/ffdca/include \
       -DVERSION='"1.22.0-webosdts"' \
       -DPACKAGE='"gst-plugins-bad"' \
@@ -124,11 +124,10 @@ docker run --rm -i \
     n=$(arm-linux-gnueabi-objdump -T /out/libgstdtsdec.so | grep -cE " (av|ff|avpriv|avcodec|swr)_" || true)
     echo "$n"; [ "$n" = 0 ] || { echo "ERROR: FFmpeg symbols leak from the plugin"; exit 1; }
 
-    arm-linux-gnueabi-gcc -std=c11 -D_GNU_SOURCE -O2 -Wall -Wextra -Werror \
-      -o /out/hdroute-uimc hdroute-uimc.c
-    echo "=== hdroute-uimc (must be ARM, 0x5000200, GLIBC <= 2.35) ==="
-    arm-linux-gnueabi-readelf -h /out/hdroute-uimc | grep -E "Machine|Flags"
-    arm-linux-gnueabi-objdump -T /out/hdroute-uimc | grep -oE "GLIBC_[0-9.]+" | sort -V | tail -1
+    arm-linux-gnueabi-gcc -std=c11 -O2 -Wall -Wextra -Werror -DLGROUTE_CONTROL_MAIN \
+      -o /out/lgroute-control lgroute-control.c
+    arm-linux-gnueabi-readelf -h /out/lgroute-control | grep -E "Machine|Flags"
+
 CONTAINER_EOF
 
 ls -la "$OUT"

@@ -4,23 +4,22 @@
 (eARC/ARC/optical) — i.e. real passthrough — instead of software-decoding to PCM
 (what this project does today)?
 
-**Verdict: DTS yes, through the audio graph rather than any config, caps or rank.**
-`dtsdec` sends the DTS core (README, "Send DTS to a receiver"), or the whole DTS-HD
-MA / DTS:X bitstream over eARC (below). TrueHD is still decode only.
+**DTS core passthrough works; full DTS-HD / TrueHD is experimental.**
+The earlier LG-routing experiment produced receiver-confirmed DTS-HD and TrueHD
+on a C2 OLED42C27LA (firmware 33.31.68) with a Samsung Q995GF. The migration below
+is not yet device-verified. DTS:X and Atmos have not been confirmed.
 
 ## Full DTS-HD over eARC
 
-LG's DSP graph already has a bitstream path to eARC (ES lipsync → delay → gain →
-bypass → eARC queue), but LG's kernel only connects it for LG's own decoders. Root
-can connect DSP modules through `/dev/lg/audio_uimc`, so `hdroute.sh` (with the
-`hdroute-uimc` ioctl helper) does it from userspace while a DTS-HD stream plays,
-and restores the mixer feed when it ends. `dtsdec` sends IEC 61937 type IV bursts
-with LG's MAT encoder caps, which eARC accepts. Module ids come from the live graph,
-so no model is hard-coded. Kernel evidence:
-[webos25-audio-decomp](https://github.com/maxdewald/webos25-audio-decomp)
-(`src/kernel/aud/user_imc.c`, `module_list.c`, `alsa_sndout.c`). Verified on a C2
-with a Denon soundbar. Log: `/var/lib/webosbrew/dtsenabler/hdroute.log`. eARC only;
-while it plays, TV sounds are not mixed in.
+LG can connect its PCM bypass itself with active eARC and mixing disabled. The
+experimental transport retains FFmpeg's IEC 61937 packing, uses a 192 kHz physical
+carrier, and requests unmixed eARC through named ALSA controls. A recovery journal
+restores the previous mixer setting after the stream exits or its process dies;
+no helper reconnects DSP edges. TV sounds are not mixed during HD playback.
+
+Unknown sink builds refuse HD. Main-path isolation, seek/fallback lifecycle and
+crash recovery still need on-device validation before this migration can ship.
+The older investigation below describes the stock software-decoding path.
 
 ## Why
 

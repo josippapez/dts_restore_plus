@@ -76,11 +76,14 @@ log "=== unified DTS+TrueHD uninstall start ==="
 STOP_SCRIPT=$(dirname "$0")/init_dts25.sh
 [ -f "$STOP_SCRIPT" ] || STOP_SCRIPT=$DTS_DEST/init_dts25.sh
 if [ -f "$STOP_SCRIPT" ]; then
-  grep -q 'ERROR=The installed DTS-HD helper is outdated' "$STOP_SCRIPT" || {
+  grep -q 'lgroute-control' "$STOP_SCRIPT" || {
     echo 'The installed init script is outdated. Run install.sh before uninstalling.'
     exit 1
   }
   W25_PT=stop sh "$STOP_SCRIPT" || exit 1
+elif [ -e /run/dts25/lgroute.state ] || [ -e /run/dts25/hdroute.state ] || [ -e /run/dts25/hdroute.pid ] || [ -e /run/dts25/hd-armed ] || [ -e /run/dts25/watcher.pid ]; then
+  echo 'The passthrough stop script is missing; recovery state was kept. Run install.sh before uninstalling.'
+  exit 1
 fi
 
 # --- 1. Remove boot hook ---------------------------------------------------

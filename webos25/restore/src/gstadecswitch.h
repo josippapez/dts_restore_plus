@@ -22,6 +22,8 @@ G_DECLARE_FINAL_TYPE (GstAdecSwitch, gst_adecswitch, GST, ADECSWITCH, GstBin)
 struct _GstAdecSwitch
 {
   GstBin bin;
+  GstCaps *caps;
+  gboolean truehd_fallback;
 
   GstPad *sinkpad;              /* ghost -> current inner decoder sink */
   GstPad *srcpad;               /* ghost -> current inner decoder src  */

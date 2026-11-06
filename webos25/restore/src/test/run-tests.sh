@@ -274,5 +274,33 @@ else
 fi
 
 echo
+echo "=== 12. LG mixer ownership and crash recovery (Linux only) ==="
+if [ "$(uname -s)" = Linux ]; then
+  $CC -std=c11 -O2 -Wall -Wextra -Werror \
+      -DLGROUTE_RUN="\"$WORK/lgroute\"" \
+      -o "$WORK/test-lgroute-control" "$HERE/test-lgroute-control.c"
+  "$WORK/test-lgroute-control"
+else
+  echo "skip  Linux ALSA UAPI required (run test-lgroute-control.c on Linux)"
+fi
+
+echo
+echo "=== 13. TrueHD fallback switching (Linux + GStreamer development files) ==="
+if [ "$(uname -s)" = Linux ] && pkg-config --exists gstreamer-1.0 2>/dev/null; then
+  $CC -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter \
+      -DVERSION='"test"' -DPACKAGE='"test"' \
+      -DGST_PACKAGE_NAME='"test"' -DGST_PACKAGE_ORIGIN='"test"' \
+      -o "$WORK/test-adecswitch-fallback" "$HERE/test-adecswitch-fallback.c" \
+      "$HERE/../lgroute-control.c" $(pkg-config --cflags --libs gstreamer-1.0)
+  G_DEBUG=fatal-warnings "$WORK/test-adecswitch-fallback"
+  $CC -std=c11 -O2 -Wall -Wextra -Werror \
+      -o "$WORK/test-lgroute" "$HERE/test-lgroute.c" \
+      $(pkg-config --cflags --libs gstreamer-1.0)
+  G_DEBUG=fatal-warnings "$WORK/test-lgroute"
+else
+  echo "skip  Linux GStreamer development files required"
+fi
+
+echo
 echo "=== ALL CHECKS PASSED ==="
 exit 0
