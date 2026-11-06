@@ -9,31 +9,48 @@
 #include <unistd.h>
 
 #define MODULE_GRAPH "/proc/aaudio/dot_module_connection"
-#define SINK_HASH "90dba3ef32704ce4096bf1e6045d2879d0c2192d507bc04d1e8e98437f420a43"
+#define SINK_PLUGIN "/usr/lib/gstreamer-1.0/libgstlgaudiosink.so"
 #define ES_FLAG (1u << 21)
 
+/* The boot script hashes SINK_PLUGIN once and writes LGROUTE_SINK_OK on a match. */
 static gboolean verified_sink (GstElement *sink)
 {
   GstElementFactory *factory = gst_element_get_factory (sink);
+  GObjectClass *klass = G_OBJECT_GET_CLASS (sink);
   GstPlugin *plugin;
-  gchar *data = NULL, *hash;
-  gsize length;
   gboolean ok;
   if (!factory || strcmp (GST_OBJECT_NAME (factory), "audiosink")
-      || !g_object_class_find_property (G_OBJECT_GET_CLASS (sink), "pcm-multi-ch")
-      || !g_object_class_find_property (G_OBJECT_GET_CLASS (sink), "mute"))
+      || !g_object_class_find_property (klass, "pcm-multi-ch")
+      || !g_object_class_find_property (klass, "fade")
+      || !g_object_class_find_property (klass, "fade-volume"))
     return FALSE;
   plugin = gst_plugin_feature_get_plugin (GST_PLUGIN_FEATURE (factory));
   if (!plugin)
     return FALSE;
-  const gchar *filename = gst_plugin_get_filename (plugin);
-  ok = filename && g_file_get_contents (filename, &data, &length, NULL);
-  hash = ok ? g_compute_checksum_for_data (G_CHECKSUM_SHA256, (guchar *) data, length) : NULL;
-  ok = hash && !strcmp (hash, SINK_HASH);
-  g_free (hash);
-  g_free (data);
+  ok = !g_strcmp0 (gst_plugin_get_filename (plugin), SINK_PLUGIN)
+      && access (LGROUTE_SINK_OK, F_OK) == 0;
   gst_object_unref (plugin);
   return ok;
+}
+
+/* LG's fade reaches only the main renderer gain; the bypass path has none. */
+static void main_volume (LgRoute *route, gint volume)
+{
+  GstStructure *fade = gst_structure_new ("fade", "target-volume", G_TYPE_INT, volume,
+      "duration-in-ms", G_TYPE_INT, 0, "fade", G_TYPE_STRING, "Linear", NULL);
+  g_object_set (route->sink, "fade", fade, NULL);
+  gst_structure_free (fade);
+  route->muted = volume == 0;
+}
+
+/* Re-mute when the player starts its own fade on the main renderer. */
+static void main_mute (LgRoute *route)
+{
+  gint volume = -1;
+  if (route->muted)
+    g_object_get (route->sink, "fade-volume", &volume, NULL);
+  if (volume != 0)
+    main_volume (route, 0);
 }
 
 GstCaps *lgroute_carrier_caps (void)
@@ -84,40 +101,6 @@ static gboolean configure_converter (LgRoute *route, gchar **lines)
   return ok;
 }
 
-static gboolean main_path_mute (LgRoute *route, gboolean mute)
-{
-  if (!route->main_gain[0])
-    return !mute;
-  gchar *path = g_strdup_printf ("/proc/aaudio/instances/%s/prop", route->main_gain);
-  int fd = open (path, O_WRONLY | O_CLOEXEC);
-  const char *command = mute ? "mute-input 1\n" : "mute-input 0\n";
-  gboolean ok = fd >= 0 && write (fd, command, strlen (command)) == (ssize_t) strlen (command);
-  if (fd >= 0) close (fd);
-  g_free (path);
-  return ok;
-}
-
-static gboolean identify_main_gain (LgRoute *route, gchar **lines)
-{
-  unsigned count = 0;
-  gchar candidate[9] = "";
-  for (unsigned i = 0; lines[i]; i++) {
-    char source[9], gain[9], hash[17];
-    if (sscanf (lines[i], " lipsync_%8[0-9a-f]_%16[0-9a-f]_out0 -> gain_%8[0-9a-f]", source, hash, gain) != 3)
-      continue;
-    gchar *node = g_strdup_printf ("gain_%s", gain);
-    if (!strstr (route->before_graph, node) && strcmp (candidate, gain)) {
-      g_strlcpy (candidate, gain, sizeof candidate);
-      count++;
-    }
-    g_free (node);
-  }
-  if (count != 1)
-    return FALSE;
-  g_strlcpy (route->main_gain, candidate, sizeof route->main_gain);
-  return main_path_mute (route, TRUE);
-}
-
 static GstPadProbeReturn event_probe (GstPad *pad, GstPadProbeInfo *info, gpointer data)
 {
   LgRoute *route = data;
@@ -138,6 +121,8 @@ static GstPadProbeReturn event_probe (GstPad *pad, GstPadProbeInfo *info, gpoint
     }
     route->first = TRUE;
     route->feeding = FALSE;
+    /* pcm-multi-ch also feeds the carrier to the main path; mute it first. */
+    main_mute (route);
     g_object_set (route->sink, "pcm-multi-ch", TRUE, NULL);
   }
   return GST_PAD_PROBE_OK;
@@ -163,7 +148,7 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
     gchar *graph = NULL;
     if (g_file_get_contents (MODULE_GRAPH, &graph, NULL, NULL)) {
       gchar **lines = g_strsplit (graph, "\n", -1);
-      route->configured = configure_converter (route, lines) && identify_main_gain (route, lines);
+      route->configured = configure_converter (route, lines);
       g_strfreev (lines);
       g_free (graph);
     }
@@ -185,13 +170,9 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
       route->feeding = TRUE;
     }
   }
-  if (!main_path_mute (route, TRUE)) {
-    route->failed = TRUE;
-    route->reason = "cannot isolate main PCM renderer";
-    return GST_PAD_PROBE_DROP;
-  }
   gint64 now = g_get_monotonic_time ();
   if (now >= route->next_check) {
+    main_mute (route);
     if (lgroute_control_apply (&route->control) < 0) {
       route->failed = TRUE;
       route->reason = "cannot request unmixed eARC";
@@ -268,13 +249,14 @@ void lgroute_disarm (LgRoute *route)
   }
   if (route->sink) {
     g_object_set (route->sink, "pcm-multi-ch", FALSE, NULL);
-    main_path_mute (route, FALSE);
+    if (route->muted)
+      main_volume (route, 100);
   }
   lgroute_control_release (&route->control);
   gst_clear_object (&route->sinkpad);
   gst_clear_object (&route->sink);
   g_clear_pointer (&route->before_graph, g_free);
   route->events = route->buffers = 0;
-  route->main_gain[0] = 0;
+  route->muted = FALSE;
   route->feeding = route->configured = FALSE;
 }

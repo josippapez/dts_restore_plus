@@ -991,6 +991,11 @@ var W25_INIT_MAIN = [
   "w25_pt_start() {",
   "  [ -f \"$PT_FLAG\" ] || return 0",
   "  mkdir -p \"$PT_RUN\"",
+  "  # dtsdec reads this marker instead of hashing LG's sink on every stream.",
+  "  rm -f \"$PT_RUN/sink-ok\"",
+  "  SINK=/usr/lib/gstreamer-1.0/libgstlgaudiosink.so",
+  "  SINK_SHA=$(sha256sum \"$SINK\" 2>/dev/null || busybox sha256sum \"$SINK\" 2>/dev/null)",
+  "  [ \"${SINK_SHA%% *}\" = 90dba3ef32704ce4096bf1e6045d2879d0c2192d507bc04d1e8e98437f420a43 ] && : > \"$PT_RUN/sink-ok\"",
   "  P=$(cat \"$PT_PID\" 2>/dev/null)",
   "  [ -n \"$P\" ] && [ -d \"/proc/$P\" ] && return 0",
   "  rm -f \"$PT_RUN/stopping\"",
@@ -3615,7 +3620,7 @@ function w25StatusProbe() {
     'echo "APPDTS_FLAG=$([ -f ' + W25_APPDTS_FLAG + ' ] && echo 1 || echo 0)"',
     'echo "PT_FLAG=$([ -f ' + W25_PT_FLAG + ' ] && echo 1 || echo 0)"',
     'echo "HD_FLAG=$([ -f ' + W25_HD_FLAG + ' ] && echo 1 || echo 0)"',
-    'echo "HD_READY=$([ -x ' + W25_DEST + '/lgroute-control ] && timeout 5 ' + W25_DEST + '/lgroute-control --check >/dev/null 2>&1 && echo 1 || echo 0)"',
+    'echo "HD_READY=$([ -e ' + W25_PT_RUN + '/sink-ok ] && [ -x ' + W25_DEST + '/lgroute-control ] && timeout 5 ' + W25_DEST + '/lgroute-control --check >/dev/null 2>&1 && echo 1 || echo 0)"',
     // Only while the watcher is alive: dtsdec ignores the file otherwise too.
     'P=$(cat ' + W25_PT_RUN + '/watcher.pid 2>/dev/null); echo "PT_OUT=$([ -n "$P" ] && [ -d /proc/$P ] && cut -d" " -f2- ' + W25_PT_RUN + '/sound-output 2>/dev/null)"',
     // The boot hook's last apply outcome: "<epoch> <on|skipped|failed> <message>".
@@ -4107,7 +4112,7 @@ function w25PassthroughSteps(on, hd) {
   } else {
     lines.push('rm -f "$FLAG"');
   }
-  lines.push('echo "HD_READY=$([ -x ' + W25_DEST + '/lgroute-control ] && timeout 5 ' + W25_DEST + '/lgroute-control --check >/dev/null 2>&1 && echo 1 || echo 0)"');
+  lines.push('echo "HD_READY=$([ -e ' + W25_PT_RUN + '/sink-ok ] && [ -x ' + W25_DEST + '/lgroute-control ] && timeout 5 ' + W25_DEST + '/lgroute-control --check >/dev/null 2>&1 && echo 1 || echo 0)"');
   lines.push('echo "PT_OUT=$(cut -d" " -f2- ' + W25_PT_RUN + '/sound-output 2>/dev/null)"');
   lines.push('echo OK');
   lines.push("exit 0");

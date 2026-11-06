@@ -11,8 +11,7 @@ typedef struct {
   gulong events, buffers;
   LgRouteControl control;
   gchar *before_graph;
-  gchar main_gain[9];
-  gboolean first, feeding, configured, failed;
+  gboolean first, feeding, configured, failed, muted;
   gint64 next_check;
   const gchar *reason;
 } LgRoute;

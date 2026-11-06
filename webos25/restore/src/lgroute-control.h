@@ -14,6 +14,7 @@
 #define LGROUTE_PT "/var/lib/webosbrew/dts25/passthrough"
 #endif
 #define LGROUTE_OUTPUT LGROUTE_RUN "/sound-output"
+#define LGROUTE_SINK_OK LGROUTE_RUN "/sink-ok"
 
 typedef struct {
   int fd;

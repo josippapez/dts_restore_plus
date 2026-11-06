@@ -734,6 +734,11 @@ w25_pt_watch() {
 w25_pt_start() {
   [ -f "$PT_FLAG" ] || return 0
   mkdir -p "$PT_RUN"
+  # dtsdec reads this marker instead of hashing LG's sink on every stream.
+  rm -f "$PT_RUN/sink-ok"
+  SINK=/usr/lib/gstreamer-1.0/libgstlgaudiosink.so
+  SINK_SHA=$(sha256sum "$SINK" 2>/dev/null || busybox sha256sum "$SINK" 2>/dev/null)
+  [ "${SINK_SHA%% *}" = 90dba3ef32704ce4096bf1e6045d2879d0c2192d507bc04d1e8e98437f420a43 ] && : > "$PT_RUN/sink-ok"
   P=$(cat "$PT_PID" 2>/dev/null)
   [ -n "$P" ] && [ -d "/proc/$P" ] && return 0
   rm -f "$PT_RUN/stopping"

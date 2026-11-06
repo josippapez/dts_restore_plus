@@ -8,7 +8,7 @@ Recovered sources reproduce all three saved pre-recovery binary hashes.
 
 ARM EABI5 soft-float, e_flags 0x05000200:
   out/libgstdtsdec.so (max GLIBC_2.35)
-    SHA256 311435f2f03a717210290d31203ceccc960ca1fcee033aaf3df09f0345451b10
+    SHA256 f2def8000905952851a2be81189c9c22ca4657913fbdfbacd7d843832d58e13f
   switch-out/libgstadecswitch.so (max GLIBC_2.7)
     SHA256 07a07eb53e88a508d7615a817db17f5e28711a22b3d4aac8698938fc1c48f3c1
   out/lgroute-control (max GLIBC_2.34)
@@ -23,6 +23,10 @@ On-device checks, rooted C2 OLED42C27LA / webOS10.3.1, 2026-11-06:
   Main renderer gain property reads mute-input=true during DTS playback.
   Stopping playback restores mix=1 and removes the recovery journal.
   Host route/mixer/fallback tests and 38 app/lifecycle checks pass.
+
+Rebuilt after those checks: the main path is now muted through the sink's
+fade property, and the sink hash is checked once by the boot script
+(/run/dts25/sink-ok). Not yet re-verified on the TV.
 
 NOT YET VERIFIED for this migration: audible receiver decoding, TrueHD BD
 TS/M2TS, seek/output-switch/crash recovery, DTS:X/Atmos, other TV stacks.

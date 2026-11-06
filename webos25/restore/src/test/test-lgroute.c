@@ -9,7 +9,7 @@
 
 static const char *graph;
 static gboolean graph_ok = TRUE, receiver = TRUE, writes_ok = TRUE;
-static int apply_result, applies, formats, gains, mutes, unmutes, graph_reads;
+static int apply_result, applies, formats, gains, mutes, unmutes, graph_reads, player_volume = -1;
 static char destination[128];
 
 static gboolean
@@ -37,15 +37,9 @@ write_property (int fd, const void *buffer, size_t size)
 {
   g_assert_cmpint (fd, ==, 123);
   if (!writes_ok) return -1;
-  if (g_str_has_suffix (destination, "/cmd")) {
-    g_assert_cmpstr (destination, ==, "/proc/aaudio/instances/04260026/cmd");
-    if (!strncmp (buffer, "0x50020020 ", 11)) formats++;
-    else { g_assert_true (!strncmp (buffer, "0x50040008 ", 11)); gains++; }
-  } else {
-    g_assert_cmpstr (destination, ==, "/proc/aaudio/instances/041b0021/prop");
-    if (!strncmp (buffer, "mute-input 1", 12)) mutes++;
-    else { g_assert_true (!strncmp (buffer, "mute-input 0", 12)); unmutes++; }
-  }
+  g_assert_cmpstr (destination, ==, "/proc/aaudio/instances/04260026/cmd");
+  if (!strncmp (buffer, "0x50020020 ", 11)) formats++;
+  else { g_assert_true (!strncmp (buffer, "0x50040008 ", 11)); gains++; }
   return size;
 }
 
@@ -65,20 +59,37 @@ int lgroute_control_release (LgRouteControl *control) { (void) control; return 0
 #undef write
 #undef close
 
-typedef struct { GstElement parent; gboolean pcm; } TestSink;
+typedef struct { GstElement parent; gboolean pcm; gint volume; } TestSink;
 typedef struct { GstElementClass parent; } TestSinkClass;
 G_DEFINE_TYPE (TestSink, test_sink, GST_TYPE_ELEMENT)
 static void set_property (GObject *object, guint id, const GValue *value, GParamSpec *spec)
-{ (void) id; (void) spec; ((TestSink *) object)->pcm = g_value_get_boolean (value); }
+{
+  TestSink *sink = (TestSink *) object;
+  (void) spec;
+  if (id == 1) { sink->pcm = g_value_get_boolean (value); return; }
+  const GstStructure *fade = gst_value_get_structure (value);
+  gint duration = -1;
+  g_assert_true (gst_structure_get_int (fade, "target-volume", &sink->volume));
+  g_assert_true (gst_structure_get_int (fade, "duration-in-ms", &duration) && duration == 0);
+  g_assert_cmpstr (gst_structure_get_string (fade, "fade"), ==, "Linear");
+  if (sink->volume == 0) mutes++; else { g_assert_cmpint (sink->volume, ==, 100); unmutes++; }
+}
 static void get_property (GObject *object, guint id, GValue *value, GParamSpec *spec)
-{ (void) id; (void) spec; g_value_set_boolean (value, ((TestSink *) object)->pcm); }
+{
+  TestSink *sink = (TestSink *) object;
+  (void) spec;
+  if (id == 1) g_value_set_boolean (value, sink->pcm);
+  else g_value_set_int (value, player_volume >= 0 ? player_volume : sink->volume);
+}
 static void test_sink_class_init (TestSinkClass *klass)
 {
   GObjectClass *object = G_OBJECT_CLASS (klass);
   object->set_property = set_property; object->get_property = get_property;
   g_object_class_install_property (object, 1, g_param_spec_boolean ("pcm-multi-ch", "pcm", "pcm", FALSE, G_PARAM_READWRITE));
+  g_object_class_install_property (object, 2, g_param_spec_boxed ("fade", "fade", "fade", GST_TYPE_STRUCTURE, G_PARAM_WRITABLE));
+  g_object_class_install_property (object, 3, g_param_spec_int ("fade-volume", "volume", "volume", 0, 100, 100, G_PARAM_READABLE));
 }
-static void test_sink_init (TestSink *self) { (void) self; }
+static void test_sink_init (TestSink *self) { self->volume = 100; }
 
 static const char before[] =
   "lipsync_04230003_00000000e762b497_out0 -> gain_041b0006_00000000b582ed71_in0;\n";
@@ -119,6 +130,7 @@ static void reset (LgRoute *route)
   lgroute_init (route, NULL);
   route->sink = g_object_new (test_sink_get_type (), NULL);
   graph = before; graph_ok = receiver = writes_ok = TRUE; apply_result = graph_reads = 0;
+  player_volume = -1;
 }
 
 int main (int argc, char **argv)
@@ -129,11 +141,12 @@ int main (int argc, char **argv)
   g_assert_false (verified_sink (route.sink));
   g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_DROP);
   g_assert_true (route.failed); g_assert_cmpint (formats, ==, 0);
-  lgroute_disarm (&route);
+  lgroute_disarm (&route); g_assert_cmpint (mutes + unmutes, ==, 0);
 
   reset (&route);
   g_assert_cmpint (caps_event (&route), ==, GST_PAD_PROBE_OK);
   g_assert_true (((TestSink *) route.sink)->pcm);
+  g_assert_cmpint (mutes, ==, 1);
   graph = after;
   g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
   g_assert_true (route.configured); g_assert_false (((TestSink *) route.sink)->pcm);
@@ -141,7 +154,11 @@ int main (int argc, char **argv)
   g_assert_cmpint (formats, ==, 1); g_assert_cmpint (gains, ==, 1);
   g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
   g_assert_true (((TestSink *) route.sink)->pcm);
-  g_assert_cmpint (applies, ==, 1);
+  g_assert_cmpint (applies, ==, 1); g_assert_cmpint (mutes, ==, 1);
+  player_volume = 100; route.next_check = 0;
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  g_assert_cmpint (mutes, ==, 2);
+  player_volume = -1;
   g_assert_cmpint (caps_event (&route), ==, GST_PAD_PROBE_DROP);
   g_assert_true (route.failed);
   g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_DROP);
@@ -150,18 +167,10 @@ int main (int argc, char **argv)
   reset (&route); caps_event (&route); graph = before;
   g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_DROP);
   g_assert_true (route.failed); lgroute_disarm (&route);
+  g_assert_cmpint (unmutes, ==, 2);
 
   reset (&route); caps_event (&route);
   gchar *ambiguous = g_strconcat (after,
-      "lipsync_04230038_000000005b58d631_out0 -> gain_041b0022_00000000658bf012_in0;\n", NULL);
-  graph = ambiguous;
-  int old_mutes = mutes, old_unmutes = unmutes;
-  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_DROP);
-  g_assert_cmpint (mutes, ==, old_mutes); g_assert_cmpstr (route.main_gain, ==, "");
-  lgroute_disarm (&route); g_assert_cmpint (unmutes, ==, old_unmutes); g_free (ambiguous);
-
-  reset (&route); caps_event (&route);
-  ambiguous = g_strconcat (after,
       "rts_0425000b_000000001891f88e_out0 -> srcbin_04260027_00000000ad31c67e_in0;\n"
       "srcbin_04260027_00000000ad31c67e_out0 -> lipsync_04230036_00000000b582ed71_in0;\n", NULL);
   graph = ambiguous;
@@ -185,6 +194,6 @@ int main (int argc, char **argv)
   reset (&route); graph_ok = FALSE;
   g_assert_cmpint (caps_event (&route), ==, GST_PAD_PROBE_DROP);
   g_assert_true (route.failed); lgroute_disarm (&route);
-  g_print ("LG route: graph ownership, ambiguous/main isolation, carrier flags, CAPS changes and failure refusal pass\n");
+  g_print ("LG route: converter ownership, fade isolation, carrier flags, CAPS changes and failure refusal pass\n");
   return 0;
 }
