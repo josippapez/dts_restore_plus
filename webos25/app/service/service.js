@@ -4554,7 +4554,6 @@ function runMechanism(message, action) {
           kv.WARN_UNMOUNT + ". Reboot the TV to clear them.");
       }
       if (kv.WARN_PT_STOP) {
-        res.passthroughStopWarning = kv.WARN_PT_STOP;
         warnings.push("Passthrough did not stop cleanly (" + kv.WARN_PT_STOP +
           "). If TV sounds stay silent over eARC, reboot the TV.");
       }

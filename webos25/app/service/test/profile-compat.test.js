@@ -725,7 +725,6 @@ test("Disable succeeds with a warning when passthrough did not stop cleanly", fu
     mocked.handlers.disable({payload: {}, respond: resolve});
   }).then(function (response) {
     assert.equal(response.returnValue, true, response.errorText);
-    assert.equal(response.passthroughStopWarning, "stuck");
     assert.match(response.warning, /Passthrough did not stop cleanly \(stuck\)/);
   });
 });
