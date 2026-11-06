@@ -498,7 +498,10 @@ var W25_COMPAT_SH = [
   "}",
   "# Recovery paths must not stall on a stuck eARC journal; it is retried at the next start.",
   "w25_pt_stop_soft() {",
-  "  PT_STOP_OUT=$(w25_pt_stop) || w25_log \"WARN passthrough stop failed; continuing: $PT_STOP_OUT\"",
+  "  PT_STOP_OUT=$(w25_pt_stop) && return 0",
+  "  PT_STOP_OUT=$(printf '%s\\n' \"$PT_STOP_OUT\" | sed -n 's/^ERROR=//p' | head -n1)",
+  "  w25_log \"WARN passthrough stop failed; continuing: $PT_STOP_OUT\"",
+  "  echo \"WARN_PT_STOP=${PT_STOP_OUT:-passthrough did not stop cleanly}\"",
   "}",
   "w25_stand_down() {",
   "  w25_pt_stop_soft",
@@ -4549,6 +4552,11 @@ function runMechanism(message, action) {
         res.unmountWarning = kv.WARN_UNMOUNT;
         warnings.push("Some overrides could not be detached and are still active: " +
           kv.WARN_UNMOUNT + ". Reboot the TV to clear them.");
+      }
+      if (kv.WARN_PT_STOP) {
+        res.passthroughStopWarning = kv.WARN_PT_STOP;
+        warnings.push("Passthrough did not stop cleanly (" + kv.WARN_PT_STOP +
+          "). If TV sounds stay silent over eARC, reboot the TV.");
       }
       if (kv.REG_REVERTED !== undefined) {
         res.registryReverted = kv.REG_REVERTED === "1";

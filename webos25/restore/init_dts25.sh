@@ -244,7 +244,10 @@ w25_pt_stop() {
 }
 # Recovery paths must not stall on a stuck eARC journal; it is retried at the next start.
 w25_pt_stop_soft() {
-  PT_STOP_OUT=$(w25_pt_stop) || w25_log "WARN passthrough stop failed; continuing: $PT_STOP_OUT"
+  PT_STOP_OUT=$(w25_pt_stop) && return 0
+  PT_STOP_OUT=$(printf '%s\n' "$PT_STOP_OUT" | sed -n 's/^ERROR=//p' | head -n1)
+  w25_log "WARN passthrough stop failed; continuing: $PT_STOP_OUT"
+  echo "WARN_PT_STOP=${PT_STOP_OUT:-passthrough did not stop cleanly}"
 }
 w25_stand_down() {
   w25_pt_stop_soft

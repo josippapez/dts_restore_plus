@@ -696,6 +696,40 @@ test("CLI uninstall never runs an outdated init and continues past a failed stop
   });
 });
 
+test("soft stop logs and reports a failed stop without failing", function () {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dts-soft-stop-"));
+  try {
+    var log = path.join(dir, "log");
+    var result = sh([
+      'w25_log() { echo "$*" >> "' + log + '"; }',
+      "w25_pt_stop() { echo 'ERROR=Could not restore the eARC route; settings were kept.'; return 1; }",
+      initFn("w25_pt_stop_soft"), "w25_pt_stop_soft"].join("\n"));
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "WARN_PT_STOP=Could not restore the eARC route; settings were kept.\n");
+    assert.match(fs.readFileSync(log, "utf8"), /WARN passthrough stop failed/);
+    var clean = sh(["w25_pt_stop() { :; }", initFn("w25_pt_stop_soft"), "w25_pt_stop_soft"].join("\n"));
+    assert.equal(clean.status, 0);
+    assert.equal(clean.stdout, "");
+  } finally {
+    fs.rmSync(dir, {recursive: true, force: true});
+  }
+});
+
+test("Disable succeeds with a warning when passthrough did not stop cleanly", function () {
+  var mocked = loadService({
+    detectProfile: function () { return Promise.resolve({profile: "webos25-armel-gst124", probes: {}}); },
+    rootExec: function () { return Promise.resolve({stdout: "WARN_PT_STOP=stuck\nOK\n", stderr: ""}); },
+    logActionResult: function () {}
+  });
+  return new Promise(function (resolve) {
+    mocked.handlers.disable({payload: {}, respond: resolve});
+  }).then(function (response) {
+    assert.equal(response.returnValue, true, response.errorText);
+    assert.equal(response.passthroughStopWarning, "stuck");
+    assert.match(response.warning, /Passthrough did not stop cleanly \(stuck\)/);
+  });
+});
+
 test("failed passthrough and Disable calls report failure to the app", function () {
   var error = "Could not restore the eARC route; settings were kept.";
   return Promise.all(["setPassthrough", "disable"].map(function (method) {
