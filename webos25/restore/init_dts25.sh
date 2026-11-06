@@ -98,7 +98,8 @@ EXPECT_GST=1.24
 #      bound in APPLY 2c, unbound by w25_drop_binds, fingerprinted in stock.fp and
 #      drift-checked like the /etc keys, so an older stock.fp without it is not drift.
 #   41 the passthrough watcher restores the eARC mixer if a passthrough stream dies.
-W25_GATE_VERSION=41
+#   42 self-heal, stand-down and the boot apply continue when passthrough stop fails.
+W25_GATE_VERSION=42
 FP=/var/lib/webosbrew/dts25/stock.fp
 # Where the installed copy of THIS script lives, and the boot hook that symlinks
 # to it. Named here, in the shared block, so the read-only probe can fingerprint
@@ -241,8 +242,12 @@ w25_pt_stop() {
   done
   rm -f "$PT_PID"
 }
+# Recovery paths must not stall on a stuck eARC journal; it is retried at the next start.
+w25_pt_stop_soft() {
+  PT_STOP_OUT=$(w25_pt_stop) || w25_log "WARN passthrough stop failed; continuing: $PT_STOP_OUT"
+}
 w25_stand_down() {
-  w25_pt_stop || return 1
+  w25_pt_stop_soft
   w25_drop_binds
   if w25_reg_is_ours; then
     w25_log "a registry of ours is still live; regenerating the stock registry so nothing of ours stays registered"
@@ -793,7 +798,7 @@ w25_unowned() {
 # registry naming them must be replaced whether or not it looks like ours.
 w25_self_heal() {
   w25_log "SELF-HEAL: $HEAL_WHY -- reverting every override"
-  w25_pt_stop || return 1
+  w25_pt_stop_soft
   w25_drop_binds
   if ! w25_stock_registry; then
     w25_log "SELF-HEAL DEFERRED: LG's registry could not be rebuilt, so our plugins and the boot hook are KEPT (deleting them now would leave the live registry pointing at missing plugins). Retrying at the next boot."
@@ -1227,7 +1232,7 @@ w25_appdts_start() {
   ( w25_appdts_apply ) </dev/null >/dev/null 2>&1 &
 }
 w25_appdts_start
-w25_pt_stop || exit 1
+w25_pt_stop_soft
 w25_pt_start
 # --- APPLY 2c) container demuxers with DTS re-enabled (mp4/ts/m2ts DTS -> audio/x-dts).
 #         Patched isomp4/mpegtsdemux default dts_support=TRUE; patched matroska

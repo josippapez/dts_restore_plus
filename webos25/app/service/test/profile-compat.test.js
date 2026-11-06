@@ -577,8 +577,11 @@ test("DTS-HD shares the passthrough lifecycle and Disable restores eARC first", 
   });
   var body = service.w25InitScriptBody();
   assert.ok(!body.includes("W25_HD="));
-  assert.ok(body.includes("\nw25_pt_stop || exit 1\nw25_pt_start\n"),
+  assert.ok(body.includes("\nw25_pt_stop_soft\nw25_pt_start\n"),
     "boot apply must stop passthrough before restarting it after Disable");
+  assert.ok(initFn("w25_stand_down").includes("w25_pt_stop_soft"), "stand-down must not stall on a failed stop");
+  assert.ok(initFn("w25_self_heal").includes("w25_pt_stop_soft"), "self-heal must not stall on a failed stop");
+  assert.ok(body.includes("stop) w25_pt_stop || exit 1 ;;"), "the app toggle keeps failing hard");
   assert.ok(initFn("w25_pt_watch").includes("w25_pt_recover &"));
   assert.ok(initFn("w25_pt_stop").includes('timeout 5 "$HD_HELPER" --recover'));
   assert.ok(!body.includes("hdroute.sh"));
@@ -588,7 +591,7 @@ test("DTS-HD shares the passthrough lifecycle and Disable restores eARC first", 
   var offStop = off.indexOf("\nW25_PT=stop ");
   assert.ok(offStop >= 0 && offStop < off.indexOf('rm -f "$FLAG"'), "stop before clearing the passthrough marker");
   var disable = service.w25Disable();
-  var stop = disable.indexOf("\nw25_pt_stop || exit 1\n");
+  var stop = disable.indexOf("\nw25_pt_stop_soft\n");
   assert.ok(stop >= 0 && stop < disable.indexOf('rm -f "/var/lib/webosbrew/init.d/restore_dts25"'),
     "Disable must stop passthrough before removing the hook");
   assert.ok(stop < disable.lastIndexOf("\nw25_drop_binds\n"), "Disable must stop passthrough before dropping binds");
@@ -606,7 +609,7 @@ test("CLI install decodes the canonical stop script before unmounting", function
   assert.equal(result.stdout, service.w25InitScriptBody());
 });
 
-test("CLI uninstall rejects outdated init and stops before hook removal on failure", function () {
+test("CLI uninstall never runs an outdated init and continues past a failed stop", function () {
   var source = fs.readFileSync(path.join(ROOT, "webos25/restore/uninstall.sh"), "utf8");
   var start = source.indexOf('\nSTOP_SCRIPT=');
   var end = source.indexOf('\n# --- 1. Remove boot hook');
@@ -619,15 +622,17 @@ test("CLI uninstall rejects outdated init and stops before hook removal on failu
       exe(path.join(dir, "init_dts25.sh"),
         (modern ? ": 'lgroute-control'\n" : "") +
         'printf "%s" "$W25_PT" > "$CALLED"\nexit ' + (modern ? 7 : 0));
-      var result = spawnSync("sh", ["-c", block + '\nprintf hook > "$HOOK_SENTINEL"', path.join(dir, "uninstall.sh")],
+      var result = spawnSync("sh", ["-c", 'log() { echo "$*"; }' + block + '\nprintf hook > "$HOOK_SENTINEL"', path.join(dir, "uninstall.sh")],
         {encoding: "utf8", timeout: 2000, env: Object.assign({}, process.env,
           {DTS_DEST: path.join(dir, "installed"), CALLED: called, HOOK_SENTINEL: hook})});
       assert.ifError(result.error);
-      assert.equal(result.status, 1, result.stderr);
+      assert.equal(result.status, 0, result.stderr);
       assert.equal(fs.existsSync(called), modern, "outdated init must never execute");
-      if (modern) assert.equal(fs.readFileSync(called, "utf8"), "stop");
-      else assert.match(result.stdout, /The installed init script is outdated/);
-      assert.equal(fs.existsSync(hook), false, "failed stop must not reach hook removal");
+      if (modern) {
+        assert.equal(fs.readFileSync(called, "utf8"), "stop");
+        assert.match(result.stdout, /WARN passthrough stop failed/);
+      }
+      assert.equal(fs.existsSync(hook), true, "a failed stop must not block uninstall");
     } finally {
       fs.rmSync(dir, {recursive: true, force: true});
     }
