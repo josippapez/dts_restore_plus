@@ -738,6 +738,7 @@ static GstFlowReturn gst_dtsdec_parse (GstAudioDecoder * dec,
     GstAdapter * adapter, gint * offset, gint * length);
 static GstFlowReturn gst_dtsdec_handle_frame (GstAudioDecoder * dec,
     GstBuffer * buffer);
+static gboolean gst_dtsdec_sink_event (GstAudioDecoder * dec, GstEvent * event);
 
 static GstFlowReturn gst_dtsdec_chain (GstPad * pad, GstObject * parent,
     GstBuffer * buf);
@@ -787,6 +788,7 @@ gst_dtsdec_class_init (GstDtsDecClass * klass)
   gstbase_class->set_format = GST_DEBUG_FUNCPTR (gst_dtsdec_set_format);
   gstbase_class->parse = GST_DEBUG_FUNCPTR (gst_dtsdec_parse);
   gstbase_class->handle_frame = GST_DEBUG_FUNCPTR (gst_dtsdec_handle_frame);
+  gstbase_class->sink_event = GST_DEBUG_FUNCPTR (gst_dtsdec_sink_event);
 
   /**
    * GstDtsDec::drc
@@ -1048,6 +1050,18 @@ gst_dtsdec_start (GstAudioDecoder * dec)
   gst_audio_decoder_set_estimate_rate (dec, TRUE);
 
   return TRUE;
+}
+
+/* LG tears the renderer down after EOS; carrier feeding or mixer writes past it crash dsp2. */
+static gboolean
+gst_dtsdec_sink_event (GstAudioDecoder * dec, GstEvent * event)
+{
+  gboolean eos = GST_EVENT_TYPE (event) == GST_EVENT_EOS;
+  gboolean ret = GST_AUDIO_DECODER_CLASS (gst_dtsdec_parent_class)->sink_event (dec, event);
+
+  if (eos)
+    lgroute_disarm (&GST_DTSDEC (dec)->hd_route);
+  return ret;
 }
 
 static gboolean
@@ -1848,7 +1862,7 @@ gst_dtsdec_handle_frame (GstAudioDecoder * bdec, GstBuffer * buffer)
   gsize need;
   gint ret;
 
-  /* Keep isolation until stop: downstream can still hold carrier at EOS. */
+  /* no fancy draining */
   if (G_UNLIKELY (!buffer))
     return GST_FLOW_OK;
 

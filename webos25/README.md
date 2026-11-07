@@ -362,8 +362,8 @@ Media Player, through seeking, pausing and volume changes.
   other output, it decodes as before. If the output changes during a video, the rest of
   that video is silent rather than noise.
 - **Core by default.** The experimental **Full DTS-HD / TrueHD** eARC opt-in uses
-  LG-managed routing on an exact sink-build allowlist. Migration testing is
-  incomplete; DTS:X, Atmos and other TV/receiver combinations are unverified.
+  LG-managed routing on an exact sink-build allowlist, verified on a C2 with a Samsung
+  Q995GF; DTS:X, Atmos and other TV/receiver combinations are unverified.
 - **Videos only.** LG applies −3 dB / +3 dB to audio-only files (music), which breaks
   the bitstream, so an audio-only DTS file can come out as loud noise.
 - **48 kHz, 16-bit DTS core** (every DTS track in MKV, MP4 and TS). Anything else is

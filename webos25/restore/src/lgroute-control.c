@@ -169,11 +169,16 @@ int lgroute_control_apply (LgRouteControl *control)
   if (existing < 0)
     return -1;
   if (existing > 0) {
-    if (memcmp (current, applied, sizeof current)) {
+    if (memcmp (current, applied, 4 * sizeof *current)) {
       errno = EBUSY;
       return -1;
     }
-    return 0;
+    /* LG re-enables mixing while the stream starts; reassert only our own bit. */
+    if (current[4] == applied[4])
+      return 0;
+    return lgroute_control_write (control->fd, "Sndout EARC Outputtype", applied, 5) == 0
+        && lgroute_control_read (control->fd, "Sndout EARC Outputtype", current, 5) == 0
+        && !memcmp (current, applied, sizeof current) ? 0 : -1;
   }
   memcpy (before, current, sizeof current);
   memcpy (applied, current, sizeof current);

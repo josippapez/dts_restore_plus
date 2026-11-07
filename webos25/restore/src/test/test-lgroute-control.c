@@ -69,8 +69,8 @@ int main(void)
   int previous_writes=writes;
   assert(!lgroute_control_apply(&control));assert(writes==previous_writes);
   output[4]=1;
-  assert(lgroute_control_apply(&control)<0);assert(writes==previous_writes);
-  assert(output[4]==1);assert(!restore(3));
+  assert(!lgroute_control_apply(&control));assert(writes==previous_writes+1);
+  assert(output[4]==0);assert(!restore(3));assert(output[4]==1);
   memcpy(output,before,sizeof output);assert(!lgroute_control_apply(&control));
   output[2]=8;
   assert(lgroute_control_apply(&control)<0);assert(output[2]==8);
@@ -78,8 +78,8 @@ int main(void)
   memcpy(output,applied,sizeof output);previous_writes=writes;
   assert(!lgroute_control_apply(&control));assert(writes==previous_writes);
   assert(!access(LGROUTE_STATE,F_OK));output[4]=1;
-  assert(lgroute_control_apply(&control)<0);assert(writes==previous_writes);
-  assert(!restore(3));assert(output[4]==1);
+  assert(!lgroute_control_apply(&control));assert(writes==previous_writes+1);
+  assert(!restore(3));assert(output[4]==0);
   memcpy(output,before,sizeof output);ignore_write=1;assert(lgroute_control_apply(&control)<0);
   assert(!access(LGROUTE_STATE,F_OK));ignore_write=0;assert(!restore(3));
   memcpy(output,applied,sizeof output);journal(before,applied);

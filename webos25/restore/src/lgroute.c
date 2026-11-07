@@ -113,9 +113,10 @@ static gboolean configure_converter (LgRoute *route)
       "sign 0\n"
       "out-sampling-rate 192000\n"
       "out-channels 8\n"
-      "out-bit-per-sample 16\n"
+      /* LG's output queue only implements 32-bit; 16-bit output crashes DSP2. */
+      "out-bit-per-sample 32\n"
       "gain-enable false\n";
-    gboolean ok = fd >= 0 && read_owner (route, &confirmed)
+  gboolean ok = fd >= 0 && read_owner (route, &confirmed)
       && !memcmp (&owner, &confirmed, sizeof owner)
       && write (fd, properties, sizeof properties - 1) == sizeof properties - 1;
   if (fd >= 0) close (fd);
@@ -178,13 +179,21 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
   }
   if (route->failed)
     return GST_PAD_PROBE_DROP;
-  if (!route->first && !route->configured) {
-    route->failed = TRUE;
-    route->reason = "carrier arrived before renderer caps";
-    return GST_PAD_PROBE_DROP;
-  }
   if (route->first) {
     route->first = FALSE;
+    GstBuffer *buffer = gst_buffer_make_writable (GST_PAD_PROBE_INFO_BUFFER (info));
+    if (!buffer)
+      return GST_PAD_PROBE_DROP;
+    GST_PAD_PROBE_INFO_DATA (info) = buffer;
+    gst_buffer_memset (buffer, 0, 0, gst_buffer_get_size (buffer));
+    return GST_PAD_PROBE_OK;
+  }
+  if (!route->configured) {
+    if (!route->sink || !route->muted) {
+      route->failed = TRUE;
+      route->reason = "carrier arrived before renderer caps";
+      return GST_PAD_PROBE_DROP;
+    }
     route->configured = configure_converter (route);
     if (!route->configured) {
       route->failed = TRUE;

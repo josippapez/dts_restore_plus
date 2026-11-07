@@ -5,9 +5,8 @@
 (what this project does today)?
 
 **DTS core passthrough works; full DTS-HD / TrueHD is experimental.**
-The earlier LG-routing experiment produced receiver-confirmed DTS-HD and TrueHD
-on a C2 OLED42C27LA (firmware 33.31.68) with a Samsung Q995GF. The migration below
-is not yet device-verified. DTS:X and Atmos have not been confirmed.
+Receiver-confirmed DTS-HD and TrueHD on a C2 OLED42C27LA (firmware 33.31.68)
+with a Samsung Q995GF. DTS:X and Atmos have not been confirmed.
 
 ## Full DTS-HD over eARC
 
@@ -17,9 +16,8 @@ carrier, and requests unmixed eARC through named ALSA controls. A recovery journ
 restores the previous mixer setting after the stream exits or its process dies;
 no helper reconnects DSP edges. TV sounds are not mixed during HD playback.
 
-Unknown sink builds refuse HD. Main-path isolation, seek/fallback lifecycle and
-crash recovery still need on-device validation before this migration can ship.
-The older investigation below describes the stock software-decoding path.
+Unknown sink builds refuse HD. The older investigation below describes the stock
+software-decoding path.
 
 ## Why
 
