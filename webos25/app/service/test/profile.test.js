@@ -1,9 +1,11 @@
 "use strict";
 
 var test = require("node:test").test;
-var h = require("./helpers"), assert = h.assert, fs = h.fs, os = h.os, path = h.path, spawnSync = h.spawnSync;
-var service = h.service, C = h.C, sh = h.sh, write = h.write, exe = h.exe, fixture = h.fixture, run = h.run, ok = h.ok;
-var initFn = h.initFn, loadService = h.loadService, ROOT = h.ROOT, SERVICE = h.SERVICE;
+var assert = require("node:assert/strict");
+var fs = require("node:fs");
+var os = require("node:os");
+var path = require("node:path");
+var {service, C, sh, write, run, ok, initFn, SERVICE} = require("./helpers");
 
 /* A registered dts_audiodec must not displace an exact-matched C2 profile.
  *

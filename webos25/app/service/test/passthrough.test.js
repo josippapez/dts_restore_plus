@@ -1,9 +1,12 @@
 "use strict";
 
 var test = require("node:test").test;
-var h = require("./helpers"), assert = h.assert, fs = h.fs, os = h.os, path = h.path, spawnSync = h.spawnSync;
-var service = h.service, C = h.C, sh = h.sh, write = h.write, exe = h.exe, fixture = h.fixture, run = h.run, ok = h.ok;
-var initFn = h.initFn, loadService = h.loadService, ROOT = h.ROOT, SERVICE = h.SERVICE;
+var assert = require("node:assert/strict");
+var fs = require("node:fs");
+var os = require("node:os");
+var path = require("node:path");
+var spawnSync = require("node:child_process").spawnSync;
+var {service, sh, write, exe, run, ok, initFn, loadService, ROOT, SERVICE} = require("./helpers");
 
 /* Issue #12: the passthrough toggle. dtsdec only sends the bitstream to
  * external_arc with Pass Through or Auto; on speakers it would be loud noise. */

@@ -117,5 +117,4 @@ function initFn(name) {
   return fn.slice(0, fn.indexOf("}") + 1).join("\n");
 }
 
-module.exports = {assert: assert, fs: fs, os: os, path: path, spawnSync: spawnSync, ROOT: ROOT, SERVICE: SERVICE,
-  loadService: loadService, service: service, C: C, sh: sh, write: write, exe: exe, fixture: fixture, run: run, ok: ok, initFn: initFn};
+module.exports = {ROOT, SERVICE, loadService, service, C, sh, write, exe, fixture, run, ok, initFn};
