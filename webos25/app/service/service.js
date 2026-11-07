@@ -1813,7 +1813,8 @@ function c2MatchSet(libav, iso, mkv) {
  */
 function rootExec(command) {
   return new Promise(function (resolve, reject) {
-    service.call(HBC_EXEC, { command: command }, function (msg) {
+    // ls-hubd's LD_PRELOAD (libsystrim) makes every fork ~5x slower; SSH/CLI shells run without it.
+    service.call(HBC_EXEC, { command: "unset LD_PRELOAD\n" + command }, function (msg) {
       var p = (msg && msg.payload) ? msg.payload : {};
       // The Homebrew Channel exec service returns the output in `stdoutString` /
       // `stderrString` (plus base64 `stdoutBytes`/`stderrBytes`) -- NOT `stdout` /
@@ -1898,8 +1899,6 @@ function w25SetEdidTypeLive(value) {
  * anything. This whole string is an author constant.
  * ===================================================================== */
 var DETECT_PROBE = [
-  // ls-hubd's LD_PRELOAD (libsystrim) makes every fork ~5x slower; SSH/CLI shells run without it.
-  'unset LD_PRELOAD',
   'set -u',
   'first_glob() { for f in $1; do [ -e "$f" ] && { printf "%s\\n" "$f"; return 0; }; done; return 1; }',
   '',
@@ -3576,7 +3575,6 @@ function cxUninstall() {
  * ===================================================================== */
 function w25StatusProbe() {
   return [
-    'unset LD_PRELOAD',
     'echo "HOOK=$([ -e ' + W25_HOOK + ' ] && echo 1 || echo 0)"',
     'echo "REGBIND=$(grep -c " ' + W25_REG_TARGET + ' " /proc/mounts 2>/dev/null)"',
     'echo "CFGBIND=$(grep -c " ' + W25_CFG_LIVE + ' " /proc/mounts 2>/dev/null)"',
