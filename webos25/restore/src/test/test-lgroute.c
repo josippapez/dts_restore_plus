@@ -10,7 +10,7 @@
 
 static const char *graph;
 static gboolean graph_ok = TRUE, receiver = TRUE, writes_ok = TRUE, short_write;
-static int unmixed_result = 1, checks, formats, graph_reads;
+static int unmixed_result = 1, checks, formats, graph_reads, pcm_reports, restores;
 static char destination[128];
 
 static gboolean
@@ -50,6 +50,23 @@ static int close_property (int fd) { g_assert_cmpint (fd, ==, 123); return 0; }
 int lgroute_control_receiver (void) { return receiver; }
 int lgroute_control_check (void) { return 0; }
 int lgroute_control_unmixed (void) { checks++; return unmixed_result; }
+int lgroute_input_pipeline (char *pipeline, size_t size) { g_strlcpy (pipeline, "_p1", size); return 0; }
+int lgroute_input_query (const char *pipeline, char *codec, size_t codec_size,
+    char *immersive, size_t immersive_size)
+{
+  g_assert_cmpstr (pipeline, ==, "_p1");
+  g_strlcpy (codec, "dts", codec_size); g_strlcpy (immersive, "none", immersive_size);
+  return 0;
+}
+int lgroute_input_set (const char *pipeline, const char *resource,
+    const char *codec, const char *channel, const char *immersive)
+{
+  g_assert_cmpstr (pipeline, ==, "_p1"); g_assert_cmpstr (resource, ==, "ADEC1");
+  g_assert_cmpstr (immersive, ==, "none");
+  if (!g_strcmp0 (codec, "pcm")) { g_assert_cmpstr (channel, ==, "8"); pcm_reports++; }
+  else { g_assert_cmpstr (codec, ==, "dts"); g_assert_null (channel); restores++; }
+  return 0;
+}
 #define g_file_get_contents read_graph
 #define open open_property
 #define write write_property
@@ -107,15 +124,22 @@ caps_event (LgRoute *route)
   return result;
 }
 
+static gboolean last_silent;
+
 static GstPadProbeReturn
 carrier (LgRoute *route, gboolean expect_es)
 {
   GstBuffer *buffer = gst_buffer_new_allocate (NULL, 32768, NULL);
+  gst_buffer_memset (buffer, 0, 0x5a, 32768);
   GST_BUFFER_FLAG_SET (buffer, ES_FLAG);
   GstPadProbeInfo info = {0}; info.type = GST_PAD_PROBE_TYPE_BUFFER; info.data = buffer;
   GstPadProbeReturn result = buffer_probe (NULL, &info, route);
-  if (result == GST_PAD_PROBE_OK)
+  if (result == GST_PAD_PROBE_OK) {
+    guint8 byte = 1;
+    gst_buffer_extract (info.data, 100, &byte, 1);
+    last_silent = byte == 0;
     g_assert_cmpint (!!GST_BUFFER_FLAG_IS_SET ((GstBuffer *) info.data, ES_FLAG), ==, expect_es);
+  }
   gst_buffer_unref (info.data);
   return result;
 }
@@ -124,6 +148,7 @@ static void reset (LgRoute *route)
 {
   lgroute_init (route, NULL);
   route->sink = g_object_new (test_sink_get_type (), NULL);
+  g_strlcpy (route->resource, "ADEC1", sizeof route->resource);
   graph = before; graph_ok = receiver = writes_ok = TRUE; graph_reads = 0; unmixed_result = 1;
   short_write = FALSE;
 }
@@ -279,6 +304,23 @@ int main (int argc, char **argv)
   g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_DROP);
   g_assert_true (route.failed); g_assert_cmpstr (route.reason, ==, "LG keeps eARC mixing on");
   lgroute_disarm (&route);
+
+  /* Carrier is silence until LG unmixes; a mix re-reports PCM; disarm restores LG's codec. */
+  reset (&route); pcm_reports = restores = 0;
+  caps_event (&route); graph = after;
+  g_assert_cmpint (pcm_reports, ==, 0);
+  unmixed_result = 0;
+  /* Reported once the bypass exists, and again because LG is still mixing. */
+  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
+  g_assert_true (last_silent); g_assert_cmpint (pcm_reports, ==, 2);
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  g_assert_true (last_silent); g_assert_cmpint (pcm_reports, ==, 2);
+  unmixed_result = 1;
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  g_assert_false (last_silent);
+  lgroute_disarm (&route);
+  g_assert_cmpint (restores, ==, 1);
+  g_assert_cmpstr (route.pipeline, ==, "");
 
   reset (&route); caps_event (&route); graph = after; receiver = FALSE;
   g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_DROP);

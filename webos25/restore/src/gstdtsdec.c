@@ -1052,15 +1052,27 @@ gst_dtsdec_start (GstAudioDecoder * dec)
   return TRUE;
 }
 
+static void gst_dtsdec_hd_close (GstDtsDec * dts);
+
 /* LG tears the renderer down after EOS; carrier feeding or mixer writes past it crash dsp2. */
 static gboolean
 gst_dtsdec_sink_event (GstAudioDecoder * dec, GstEvent * event)
 {
+  GstDtsDec *dts = GST_DTSDEC (dec);
   gboolean eos = GST_EVENT_TYPE (event) == GST_EVENT_EOS;
   gboolean ret = GST_AUDIO_DECODER_CLASS (gst_dtsdec_parent_class)->sink_event (dec, event);
 
-  if (eos)
-    lgroute_disarm (&GST_DTSDEC (dec)->hd_route);
+  if (eos) {
+    gst_dtsdec_hd_close (dts);
+    /* A replay seeks this same pipeline; decide and arm again instead of sending an unrouted carrier. */
+    if (dts->pt_hd) {
+      dts->pt_decided = dts->pt_active = dts->pt_hd = FALSE;
+      dts->pt_skipped = 0;
+      dts->hd_silence = 0;
+      dts->sample_rate = -1;
+      dts->channels = 0;
+    }
+  }
   return ret;
 }
 

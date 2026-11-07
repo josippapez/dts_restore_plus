@@ -61,6 +61,33 @@ static gboolean configure_converter (void)
   return ok;
 }
 
+/* LG mixes any codec missing from the receiver's short eARC list (DTS on most
+ * soundbars); 8-channel PCM matches, so LG itself writes the unmixed output. */
+static void report_pcm (LgRoute *route)
+{
+  if (!route->resource[0])
+    return;
+  if (!route->pipeline[0]) {
+    if (lgroute_input_pipeline (route->pipeline, sizeof route->pipeline) < 0
+        || lgroute_input_query (route->pipeline, route->codec, sizeof route->codec,
+            route->immersive, sizeof route->immersive) < 0) {
+      route->pipeline[0] = 0;
+      return;
+    }
+  }
+  lgroute_input_set (route->pipeline, route->resource, "pcm", "8", "none");
+}
+
+static GstPadProbeReturn silence (GstPadProbeInfo *info)
+{
+  GstBuffer *buffer = gst_buffer_make_writable (GST_PAD_PROBE_INFO_BUFFER (info));
+  if (!buffer)
+    return GST_PAD_PROBE_DROP;
+  GST_PAD_PROBE_INFO_DATA (info) = buffer;
+  gst_buffer_memset (buffer, 0, 0, gst_buffer_get_size (buffer));
+  return GST_PAD_PROBE_OK;
+}
+
 static GstPadProbeReturn event_probe (GstPad *pad, GstPadProbeInfo *info, gpointer data)
 {
   LgRoute *route = data;
@@ -118,6 +145,8 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
       route->reason = "bypass converter missing, ambiguous, or not configurable";
       return GST_PAD_PROBE_DROP;
     }
+    /* The kernel routes the bypass to eARC only if it exists when LG writes the unmixed output. */
+    report_pcm (route);
   } else {
     GstBuffer *buffer = gst_buffer_make_writable (GST_PAD_PROBE_INFO_BUFFER (info));
     if (!buffer)
@@ -130,12 +159,16 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
     }
   }
   gint64 now = g_get_monotonic_time ();
-  if (now >= route->next_check) {
+  if (now >= route->next_check || !route->unmixed) {
     int unmixed = lgroute_control_receiver () ? lgroute_control_unmixed () : -1;
     if (unmixed > 0)
       route->mixed_since = 0;
     else if (!route->mixed_since && unmixed == 0)
       route->mixed_since = now;
+    /* LG's pipeline can re-report the real codec; describe the carrier again. */
+    if (unmixed == 0 && now >= route->next_check)
+      report_pcm (route);
+    route->unmixed = unmixed > 0;
     /* LG's policy rewrites can mix briefly; only a lasting mix means TV sound overlays the carrier. */
     if (unmixed < 0
         || (route->mixed_since && now - route->mixed_since >= G_TIME_SPAN_SECOND)) {
@@ -143,9 +176,11 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
       route->reason = unmixed < 0 ? "eARC Pass Through unavailable" : "LG keeps eARC mixing on";
       return GST_PAD_PROBE_DROP;
     }
-    route->next_check = now + 250 * G_TIME_SPAN_MILLISECOND;
+    if (now >= route->next_check)
+      route->next_check = now + 250 * G_TIME_SPAN_MILLISECOND;
   }
-  return GST_PAD_PROBE_OK;
+  /* Mixed eARC would play the carrier as noise; send silence until LG unmixes. */
+  return route->unmixed ? GST_PAD_PROBE_OK : silence (info);
 }
 
 void lgroute_init (LgRoute *route, GstElement *element)
@@ -199,8 +234,24 @@ gboolean lgroute_arm (LgRoute *route)
   }
   route->sinkpad = gst_element_get_static_pad (route->sink, "sink");
   if (!route->sinkpad) { lgroute_disarm (route); return FALSE; }
+  GObjectClass *klass = G_OBJECT_GET_CLASS (route->sink);
+  if (g_object_class_find_property (klass, "index") && g_object_class_find_property (klass, "mixer")) {
+    guint index = 0;
+    gboolean mixer = FALSE;
+    g_object_get (route->sink, "index", &index, "mixer", &mixer, NULL);
+    g_snprintf (route->resource, sizeof route->resource, "%s%u", mixer ? "AMIXER" : "ADEC", index);
+  }
   route->events = gst_pad_add_probe (route->sinkpad, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM, event_probe, route, NULL);
   route->buffers = gst_pad_add_probe (route->sinkpad, GST_PAD_PROBE_TYPE_BUFFER, buffer_probe, route, NULL);
+  /* A replay re-arms on a pad that already holds the carrier caps and may not resend them. */
+  GstCaps *current = gst_pad_get_current_caps (route->sinkpad), *carrier = lgroute_carrier_caps ();
+  if (current && gst_caps_is_equal (current, carrier)) {
+    route->first = TRUE;
+    route->feeding = FALSE;
+    g_object_set (route->sink, "pcm-multi-ch", TRUE, NULL);
+  }
+  gst_caps_unref (carrier);
+  if (current) gst_caps_unref (current);
   return TRUE;
 }
 
@@ -212,9 +263,12 @@ void lgroute_disarm (LgRoute *route)
   }
   if (route->sink)
     g_object_set (route->sink, "pcm-multi-ch", FALSE, NULL);
+  if (route->pipeline[0])
+    lgroute_input_set (route->pipeline, route->resource, route->codec, NULL, route->immersive);
   gst_clear_object (&route->sinkpad);
   gst_clear_object (&route->sink);
   route->events = route->buffers = 0;
   route->mixed_since = 0;
-  route->first = route->feeding = route->configured = FALSE;
+  route->first = route->feeding = route->configured = route->unmixed = FALSE;
+  route->pipeline[0] = route->resource[0] = 0;
 }

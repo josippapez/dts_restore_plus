@@ -12,8 +12,15 @@ with a Samsung Q995GF. DTS:X and Atmos have not been confirmed.
 
 LG connects its PCM bypass itself with active eARC and mixing disabled. The
 transport keeps FFmpeg's IEC 61937 packing on a 192 kHz carrier. HD needs Digital
-Sound Output on Pass Through: Auto re-encodes and mixes TV sounds in. Nothing writes
-LG's mixer; if LG keeps mixing on for a second, the stream falls back to the core.
+Sound Output on Pass Through: Auto re-encodes and mixes TV sounds in.
+
+LG mixes any input codec missing from the receiver's short eARC list, which omits
+DTS on many soundbars. Once LG has created the bypass, the decoder reports the
+stream to audiod (`tv/setQualityAttribute`) as 8-channel PCM, so LG itself writes
+unmixed output; the report must follow the bypass or the kernel routes it through
+the mixer. The carrier stays silent until eARC is unmixed, and LG's own report is
+restored at end of stream. Nothing writes LG's mixer; if LG keeps mixing on for a
+second, the stream falls back to the core.
 
 Unknown sink builds refuse HD. The older investigation below describes the stock
 software-decoding path.
