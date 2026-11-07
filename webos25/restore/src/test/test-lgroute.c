@@ -10,7 +10,7 @@
 
 static const char *graph;
 static gboolean graph_ok = TRUE, receiver = TRUE, writes_ok = TRUE, short_write;
-static int apply_result, applies, formats, graph_reads;
+static int unmixed_result = 1, checks, formats, graph_reads;
 static char destination[128];
 
 static gboolean
@@ -49,9 +49,7 @@ write_property (int fd, const void *buffer, size_t size)
 static int close_property (int fd) { g_assert_cmpint (fd, ==, 123); return 0; }
 int lgroute_control_receiver (void) { return receiver; }
 int lgroute_control_check (void) { return 0; }
-int lgroute_control_open (LgRouteControl *control) { (void) control; return 0; }
-int lgroute_control_apply (LgRouteControl *control) { (void) control; applies++; return apply_result; }
-int lgroute_control_release (LgRouteControl *control) { (void) control; return 0; }
+int lgroute_control_unmixed (void) { checks++; return unmixed_result; }
 #define g_file_get_contents read_graph
 #define open open_property
 #define write write_property
@@ -126,7 +124,7 @@ static void reset (LgRoute *route)
 {
   lgroute_init (route, NULL);
   route->sink = g_object_new (test_sink_get_type (), NULL);
-  graph = before; graph_ok = receiver = writes_ok = TRUE; apply_result = graph_reads = 0;
+  graph = before; graph_ok = receiver = writes_ok = TRUE; graph_reads = 0; unmixed_result = 1;
   short_write = FALSE;
 }
 
@@ -222,10 +220,10 @@ int main (int argc, char **argv)
   g_assert_cmpint (formats, ==, 1);
   g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
   g_assert_true (((TestSink *) route.sink)->pcm);
-  g_assert_cmpint (applies, ==, 1);
+  g_assert_cmpint (checks, ==, 1);
   route.next_check = 0;
   g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
-  g_assert_cmpint (applies, ==, 2);
+  g_assert_cmpint (checks, ==, 2);
   g_assert_cmpint (caps_event (&route), ==, GST_PAD_PROBE_DROP);
   g_assert_true (route.failed);
   g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_DROP);
@@ -264,9 +262,23 @@ int main (int argc, char **argv)
   g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_DROP);
   g_assert_true (route.failed); lgroute_disarm (&route);
 
-  reset (&route); caps_event (&route); graph = after; apply_result = -1;
+  reset (&route); caps_event (&route); graph = after; unmixed_result = -1;
   g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_DROP);
   g_assert_true (route.failed); lgroute_disarm (&route);
+
+  /* A brief LG policy rewrite is tolerated; a lasting mix falls back. */
+  reset (&route); caps_event (&route); graph = after; unmixed_result = 0;
+  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
+  g_assert_cmpint (route.mixed_since, !=, 0);
+  unmixed_result = 1; route.next_check = 0;
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  g_assert_cmpint (route.mixed_since, ==, 0);
+  unmixed_result = 0; route.next_check = 0;
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  route.mixed_since -= G_TIME_SPAN_SECOND; route.next_check = 0;
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_DROP);
+  g_assert_true (route.failed); g_assert_cmpstr (route.reason, ==, "LG keeps eARC mixing on");
+  lgroute_disarm (&route);
 
   reset (&route); caps_event (&route); graph = after; receiver = FALSE;
   g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_DROP);

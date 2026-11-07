@@ -351,9 +351,9 @@ var W25_COMPAT_SH = [
   "#   27 shadows libgstmatroska.so too (optional demuxer, Dolby Vision profile 7):",
   "#      bound in APPLY 2c, unbound by w25_drop_binds, fingerprinted in stock.fp and",
   "#      drift-checked like the /etc keys, so an older stock.fp without it is not drift.",
-  "#   41 the passthrough watcher restores the eARC mixer if a passthrough stream dies.",
+  "#   41 opt-in DTS-HD/TrueHD over eARC Pass Through; LG's mixer is only read.",
   "#   42 self-heal, stand-down and the boot apply continue when passthrough stop fails.",
-  "W25_GATE_VERSION=43",
+  "W25_GATE_VERSION=42",
   "FP=/var/lib/webosbrew/dts25/stock.fp",
   "# Where the installed copy of THIS script lives, and the boot hook that symlinks",
   "# to it. Named here, in the shared block, so the read-only probe can fingerprint",
@@ -453,15 +453,10 @@ var W25_COMPAT_SH = [
   "  PT_RUN=/run/dts25",
   "  PT_OUT=$PT_RUN/sound-output",
   "  PT_PID=$PT_RUN/watcher.pid",
-  "  HD_HELPER=/var/lib/webosbrew/dts25/lgroute-control",
-  "  # Withdraw permission before recovery; a live stream must release its lock.",
+  "  # Withdraw permission first; a live HD stream then falls back by itself.",
   "  mkdir -p \"$PT_RUN\" || return 1",
   "  : > \"$PT_RUN/stopping\" || return 1",
   "  rm -f \"$PT_OUT\" || return 1",
-  "  if [ -e \"$PT_RUN/hdroute.state\" ] || [ -e \"$PT_RUN/hdroute.pid\" ] || [ -e \"$PT_RUN/hd-armed\" ]; then",
-  "    echo 'ERROR=Old experimental DTS-HD state is present. Reboot before changing passthrough.'",
-  "    return 1",
-  "  fi",
   "  P=$(cat \"$PT_PID\" 2>/dev/null)",
   "  if [ -n \"$P\" ] && [ -d \"/proc/$P\" ]; then",
   "    for child in /proc/[0-9]*; do",
@@ -478,25 +473,9 @@ var W25_COMPAT_SH = [
   "      return 1",
   "    fi",
   "  fi",
-  "  rm -f \"$PT_OUT\"",
-  "  deadline=$(( $(date +%s) + 5 ))",
-  "  while :; do",
-  "    if [ -x \"$HD_HELPER\" ]; then",
-  "      timeout 5 \"$HD_HELPER\" --recover || { echo 'ERROR=Could not restore the eARC route; settings were kept.'; return 1; }",
-  "    elif [ -e \"$PT_RUN/lgroute.state\" ]; then",
-  "      echo 'ERROR=The eARC recovery helper is missing; settings were kept.'",
-  "      return 1",
-  "    fi",
-  "    [ -e \"$PT_RUN/lgroute.state\" ] || break",
-  "    if [ \"$(date +%s)\" -ge \"$deadline\" ]; then",
-  "      echo 'ERROR=The eARC route is still in use or unrecovered; settings were kept.'",
-  "      return 1",
-  "    fi",
-  "    sleep 1",
-  "  done",
-  "  rm -f \"$PT_PID\"",
+  "  rm -f \"$PT_OUT\" \"$PT_PID\"",
   "}",
-  "# Recovery paths must not stall on a stuck eARC journal; it is retried at the next start.",
+  "# Recovery paths must not stall on a watcher that will not stop.",
   "w25_pt_stop_soft() {",
   "  PT_STOP_OUT=$(w25_pt_stop) && return 0",
   "  PT_STOP_OUT=$(printf '%s\\n' \"$PT_STOP_OUT\" | sed -n 's/^ERROR=//p' | head -n1)",
@@ -949,21 +928,10 @@ var W25_INIT_MAIN = [
   "PT_RUN=/run/dts25",
   "PT_OUT=$PT_RUN/sound-output",
   "PT_PID=$PT_RUN/watcher.pid",
-  "w25_pt_recover() {",
-  "  trap 'exit 0' INT TERM HUP",
-  "  while [ -f \"$PT_FLAG\" ] && [ ! -e \"$PT_RUN/stopping\" ]; do",
-  "    if [ -e \"$PT_RUN/lgroute.state\" ] && [ -x /var/lib/webosbrew/dts25/lgroute-control ]; then",
-  "      timeout 5 /var/lib/webosbrew/dts25/lgroute-control --recover || w25_log 'WARN eARC crash recovery failed; journal retained'",
-  "    fi",
-  "    sleep 1",
-  "  done",
-  "}",
   "w25_pt_watch() {",
   "  read -r WPID _ < /proc/self/stat",
   "  echo \"$WPID\" > \"$PT_PID\"",
-  "  w25_pt_recover &",
-  "  RECOVERY_PID=$!",
-  "  trap 'rm -f \"$PT_OUT\"; kill \"$RECOVERY_PID\" 2>/dev/null; wait \"$RECOVERY_PID\" 2>/dev/null; rm -f \"$PT_PID\"' EXIT",
+  "  trap 'rm -f \"$PT_OUT\" \"$PT_PID\"' EXIT",
   "  trap 'exit 0' INT TERM HUP",
   "  while [ -f \"$PT_FLAG\" ] && [ ! -e \"$PT_RUN/stopping\" ]; do",
   "    luna-send -i luna://com.webos.settingsservice/getSystemSettings \\",
@@ -1930,6 +1898,8 @@ function w25SetEdidTypeLive(value) {
  * anything. This whole string is an author constant.
  * ===================================================================== */
 var DETECT_PROBE = [
+  // ls-hubd's LD_PRELOAD (libsystrim) makes every fork ~5x slower; SSH/CLI shells run without it.
+  'unset LD_PRELOAD',
   'set -u',
   'first_glob() { for f in $1; do [ -e "$f" ] && { printf "%s\\n" "$f"; return 0; }; done; return 1; }',
   '',
@@ -3606,6 +3576,7 @@ function cxUninstall() {
  * ===================================================================== */
 function w25StatusProbe() {
   return [
+    'unset LD_PRELOAD',
     'echo "HOOK=$([ -e ' + W25_HOOK + ' ] && echo 1 || echo 0)"',
     'echo "REGBIND=$(grep -c " ' + W25_REG_TARGET + ' " /proc/mounts 2>/dev/null)"',
     'echo "CFGBIND=$(grep -c " ' + W25_CFG_LIVE + ' " /proc/mounts 2>/dev/null)"',
@@ -3849,7 +3820,7 @@ service.register("status", function (message) {
         base.passthroughOutput = kv.PT_OUT || "";
         base.passthroughToReceiver = base.passthroughRequested && w25PtReceiver(kv.PT_OUT);
         base.passthroughHdRequested = kv.HD_FLAG === "1";
-        base.passthroughHdReady = base.passthroughToReceiver && kv.HD_READY === "1";
+        base.passthroughHdReady = base.passthroughRequested && w25HdOutput(kv.PT_OUT) && kv.HD_READY === "1";
         base.passthroughHdReason = w25HdReason(kv.HD_REASON, base.passthroughOutput);
         base.appDtsRequested = kv.APPDTS_FLAG === "1";
         base.edidType = kv.EDIDTYPE || "";
@@ -4103,14 +4074,20 @@ function w25HdReason(reason, output) {
   if (reason === "untested-sink") return "This TV's LG audio sink build is not on the tested list.";
   if (reason === "missing-helper") return "The eARC helper is missing. Enable DTS again to install it.";
   if (reason === "earc-unavailable") return "eARC is unavailable or its audio controls could not be verified.";
-  if (!w25PtReceiver(output)) return "Select an eARC receiver with Pass Through or Auto.";
+  if (!w25HdOutput(output)) return "Set Sound > Advanced Settings > Digital Sound Output to Pass Through.";
   return reason === "ready" ? "" : "HD readiness could not be verified.";
+}
+
+/** Only Pass Through keeps LG from mixing TV sounds into the HD carrier. */
+function w25HdOutput(out) {
+  return out === "external_arc passThrough";
 }
 
 function w25PassthroughSteps(on, hd) {
   var lines = ["set -u", 'FLAG=' + W25_PT_FLAG];
   if (hd === true) {
-    lines.push('[ -x ' + W25_DEST + '/lgroute-control ] || { echo "ERROR=The eARC recovery helper is not installed. Enable DTS again to install it."; exit 1; }');
+    lines.push('[ -x ' + W25_DEST + '/lgroute-control ] || { echo "ERROR=The eARC helper is not installed. Enable DTS again to install it."; exit 1; }');
+    lines.push('[ "$(cut -d" " -f2- ' + W25_PT_RUN + '/sound-output 2>/dev/null)" = "external_arc passThrough" ] || { echo "ERROR=Turn passthrough on and set Sound > Advanced Settings > Digital Sound Output to Pass Through first."; exit 1; }');
   }
   // The current boot script carries the W25_PT mode; an older installed one
   // would ignore W25_PT and run a full apply instead.
@@ -4170,7 +4147,7 @@ service.register("setPassthrough", function (message) {
         soundOutput: out,
         receiver: w25PtReceiver(out),
         summary: !want ? "Passthrough off: DTS is decoded again."
-          : hd === true ? (kv.HD_READY === "1" && w25PtReceiver(out)
+          : hd === true ? (kv.HD_READY === "1" && w25HdOutput(out)
             ? "DTS-HD ready: whole DTS tracks go to your eARC receiver from the next video."
             : "DTS-HD requested. " + w25HdReason(kv.HD_REASON, out))
           : hd === false ? "DTS-HD off: the receiver gets only the DTS core again."

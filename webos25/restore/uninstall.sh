@@ -75,14 +75,10 @@ log "=== unified DTS+TrueHD uninstall start ==="
 
 STOP_SCRIPT=$(dirname "$0")/init_dts25.sh
 [ -f "$STOP_SCRIPT" ] || STOP_SCRIPT=$DTS_DEST/init_dts25.sh
-if [ -f "$STOP_SCRIPT" ] && grep -q 'lgroute-control' "$STOP_SCRIPT"; then
-  W25_PT=stop sh "$STOP_SCRIPT" || {
-    log "WARN passthrough stop failed; continuing (a reboot clears /run/dts25)"
-    echo 'WARNING: passthrough did not stop cleanly. If TV sounds stay silent over eARC, reboot the TV.'
-  }
-elif [ -e /run/dts25/lgroute.state ] || [ -e /run/dts25/hdroute.state ] || [ -e /run/dts25/hdroute.pid ] || [ -e /run/dts25/hd-armed ] || [ -e /run/dts25/watcher.pid ]; then
-  log "WARN passthrough stop script missing or outdated; continuing (a reboot clears /run/dts25)"
-  echo 'WARNING: passthrough state was left behind. If TV sounds stay silent over eARC, reboot the TV.'
+STOP_VERSION=$(sed -n 's/^W25_GATE_VERSION=//p' "$STOP_SCRIPT" 2>/dev/null | head -n1)
+# W25_PT=stop exists since 35; an older script would run a full apply instead.
+if [ "${STOP_VERSION:-0}" -ge 35 ] 2>/dev/null; then
+  W25_PT=stop sh "$STOP_SCRIPT" || log "WARN passthrough stop failed; continuing (a reboot clears /run/dts25)"
 fi
 
 # --- 1. Remove boot hook ---------------------------------------------------

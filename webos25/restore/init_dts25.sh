@@ -97,9 +97,9 @@ EXPECT_GST=1.24
 #   27 shadows libgstmatroska.so too (optional demuxer, Dolby Vision profile 7):
 #      bound in APPLY 2c, unbound by w25_drop_binds, fingerprinted in stock.fp and
 #      drift-checked like the /etc keys, so an older stock.fp without it is not drift.
-#   41 the passthrough watcher restores the eARC mixer if a passthrough stream dies.
+#   41 opt-in DTS-HD/TrueHD over eARC Pass Through; LG's mixer is only read.
 #   42 self-heal, stand-down and the boot apply continue when passthrough stop fails.
-W25_GATE_VERSION=43
+W25_GATE_VERSION=42
 FP=/var/lib/webosbrew/dts25/stock.fp
 # Where the installed copy of THIS script lives, and the boot hook that symlinks
 # to it. Named here, in the shared block, so the read-only probe can fingerprint
@@ -199,15 +199,10 @@ w25_pt_stop() {
   PT_RUN=/run/dts25
   PT_OUT=$PT_RUN/sound-output
   PT_PID=$PT_RUN/watcher.pid
-  HD_HELPER=/var/lib/webosbrew/dts25/lgroute-control
-  # Withdraw permission before recovery; a live stream must release its lock.
+  # Withdraw permission first; a live HD stream then falls back by itself.
   mkdir -p "$PT_RUN" || return 1
   : > "$PT_RUN/stopping" || return 1
   rm -f "$PT_OUT" || return 1
-  if [ -e "$PT_RUN/hdroute.state" ] || [ -e "$PT_RUN/hdroute.pid" ] || [ -e "$PT_RUN/hd-armed" ]; then
-    echo 'ERROR=Old experimental DTS-HD state is present. Reboot before changing passthrough.'
-    return 1
-  fi
   P=$(cat "$PT_PID" 2>/dev/null)
   if [ -n "$P" ] && [ -d "/proc/$P" ]; then
     for child in /proc/[0-9]*; do
@@ -224,25 +219,9 @@ w25_pt_stop() {
       return 1
     fi
   fi
-  rm -f "$PT_OUT"
-  deadline=$(( $(date +%s) + 5 ))
-  while :; do
-    if [ -x "$HD_HELPER" ]; then
-      timeout 5 "$HD_HELPER" --recover || { echo 'ERROR=Could not restore the eARC route; settings were kept.'; return 1; }
-    elif [ -e "$PT_RUN/lgroute.state" ]; then
-      echo 'ERROR=The eARC recovery helper is missing; settings were kept.'
-      return 1
-    fi
-    [ -e "$PT_RUN/lgroute.state" ] || break
-    if [ "$(date +%s)" -ge "$deadline" ]; then
-      echo 'ERROR=The eARC route is still in use or unrecovered; settings were kept.'
-      return 1
-    fi
-    sleep 1
-  done
-  rm -f "$PT_PID"
+  rm -f "$PT_OUT" "$PT_PID"
 }
-# Recovery paths must not stall on a stuck eARC journal; it is retried at the next start.
+# Recovery paths must not stall on a watcher that will not stop.
 w25_pt_stop_soft() {
   PT_STOP_OUT=$(w25_pt_stop) && return 0
   PT_STOP_OUT=$(printf '%s\n' "$PT_STOP_OUT" | sed -n 's/^ERROR=//p' | head -n1)
@@ -692,21 +671,10 @@ PT_FLAG=/var/lib/webosbrew/dts25/passthrough
 PT_RUN=/run/dts25
 PT_OUT=$PT_RUN/sound-output
 PT_PID=$PT_RUN/watcher.pid
-w25_pt_recover() {
-  trap 'exit 0' INT TERM HUP
-  while [ -f "$PT_FLAG" ] && [ ! -e "$PT_RUN/stopping" ]; do
-    if [ -e "$PT_RUN/lgroute.state" ] && [ -x /var/lib/webosbrew/dts25/lgroute-control ]; then
-      timeout 5 /var/lib/webosbrew/dts25/lgroute-control --recover || w25_log 'WARN eARC crash recovery failed; journal retained'
-    fi
-    sleep 1
-  done
-}
 w25_pt_watch() {
   read -r WPID _ < /proc/self/stat
   echo "$WPID" > "$PT_PID"
-  w25_pt_recover &
-  RECOVERY_PID=$!
-  trap 'rm -f "$PT_OUT"; kill "$RECOVERY_PID" 2>/dev/null; wait "$RECOVERY_PID" 2>/dev/null; rm -f "$PT_PID"' EXIT
+  trap 'rm -f "$PT_OUT" "$PT_PID"' EXIT
   trap 'exit 0' INT TERM HUP
   while [ -f "$PT_FLAG" ] && [ ! -e "$PT_RUN/stopping" ]; do
     luna-send -i luna://com.webos.settingsservice/getSystemSettings \

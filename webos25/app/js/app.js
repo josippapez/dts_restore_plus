@@ -281,9 +281,14 @@
       : "on — waiting for an ARC/eARC receiver",
       s.passthroughToReceiver ? "ok" : (s.passthroughRequested ? "warn" : null));
     setVal("sPtOut", s.passthroughOutput || "—");
-    $("hdPassthrough").disabled = !canW25Test;
     $("hdPassthrough").checked = s.passthroughHdRequested === true;
-    setVal("sHd", !s.passthroughHdRequested ? "off"
+    $("hdPassthrough").disabled = !canW25Test
+      || (!s.passthroughHdRequested && s.passthroughOutput !== "external_arc passThrough");
+    $("hdHowTo").hidden = !canW25Test || !s.passthroughRequested
+      || s.passthroughOutput === "external_arc passThrough";
+    setVal("sHd", !s.passthroughHdRequested
+        ? (s.passthroughOutput === "external_arc passThrough" ? "off"
+          : "off — needs passthrough on and Digital Sound Output on Pass Through")
       : !s.passthroughRequested ? "off — passthrough disabled"
       : s.passthroughHdReady ? "ready for eARC" : s.passthroughHdReason || "HD readiness unavailable",
       s.passthroughHdRequested ? (s.passthroughHdReady ? "ok" : "warn") : null);

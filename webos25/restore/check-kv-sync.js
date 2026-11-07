@@ -26,7 +26,7 @@
  * map still passes here. Direction 2 is the one that caught the 2.7.12 bug, and it is
  * exact because it only considers UPPER_SNAKE probe keys. If you add a short
  * lowercase key, this check will NOT protect it -- add a real assertion in
- * profile-compat.test.js instead.
+ * app/service/test/profile.test.js instead.
  */
 "use strict";
 var fs = require("fs"), vm = require("vm"), path = require("path");

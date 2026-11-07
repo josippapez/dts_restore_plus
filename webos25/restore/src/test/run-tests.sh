@@ -274,7 +274,7 @@ else
 fi
 
 echo
-echo "=== 12. LG mixer ownership and crash recovery (Linux only) ==="
+echo "=== 12. LG eARC mixer state, Pass Through only (Linux only) ==="
 if [ "$(uname -s)" = Linux ]; then
   $CC -std=c11 -O2 -Wall -Wextra -Werror \
       -DLGROUTE_RUN="\"$WORK/lgroute\"" \

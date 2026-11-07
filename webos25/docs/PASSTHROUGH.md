@@ -10,11 +10,10 @@ with a Samsung Q995GF. DTS:X and Atmos have not been confirmed.
 
 ## Full DTS-HD over eARC
 
-LG can connect its PCM bypass itself with active eARC and mixing disabled. The
-experimental transport retains FFmpeg's IEC 61937 packing, uses a 192 kHz physical
-carrier, and requests unmixed eARC through named ALSA controls. A recovery journal
-restores the previous mixer setting after the stream exits or its process dies;
-no helper reconnects DSP edges. TV sounds are not mixed during HD playback.
+LG connects its PCM bypass itself with active eARC and mixing disabled. The
+transport keeps FFmpeg's IEC 61937 packing on a 192 kHz carrier. HD needs Digital
+Sound Output on Pass Through: Auto re-encodes and mixes TV sounds in. Nothing writes
+LG's mixer; if LG keeps mixing on for a second, the stream falls back to the core.
 
 Unknown sink builds refuse HD. The older investigation below describes the stock
 software-decoding path.

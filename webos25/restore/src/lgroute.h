@@ -9,9 +9,8 @@ typedef struct {
   GstElement *sink;
   GstPad *sinkpad;
   gulong events, buffers;
-  LgRouteControl control;
   gboolean first, feeding, configured, failed;
-  gint64 next_check;
+  gint64 next_check, mixed_since;
   const gchar *reason;
 } LgRoute;
 

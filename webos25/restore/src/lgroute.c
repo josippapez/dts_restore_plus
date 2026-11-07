@@ -101,10 +101,6 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
 {
   LgRoute *route = data;
   (void) pad;
-  if (!lgroute_control_receiver ()) {
-    route->failed = TRUE;
-    route->reason = "receiver or HD opt-in disappeared";
-  }
   if (route->failed)
     return GST_PAD_PROBE_DROP;
   if (!route->configured) {
@@ -135,9 +131,16 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
   }
   gint64 now = g_get_monotonic_time ();
   if (now >= route->next_check) {
-    if (lgroute_control_apply (&route->control) < 0) {
+    int unmixed = lgroute_control_receiver () ? lgroute_control_unmixed () : -1;
+    if (unmixed > 0)
+      route->mixed_since = 0;
+    else if (!route->mixed_since && unmixed == 0)
+      route->mixed_since = now;
+    /* LG's policy rewrites can mix briefly; only a lasting mix means TV sound overlays the carrier. */
+    if (unmixed < 0
+        || (route->mixed_since && now - route->mixed_since >= G_TIME_SPAN_SECOND)) {
       route->failed = TRUE;
-      route->reason = "unmixed eARC unavailable or output policy changed";
+      route->reason = unmixed < 0 ? "eARC Pass Through unavailable" : "LG keeps eARC mixing on";
       return GST_PAD_PROBE_DROP;
     }
     route->next_check = now + 250 * G_TIME_SPAN_MILLISECOND;
@@ -149,15 +152,13 @@ void lgroute_init (LgRoute *route, GstElement *element)
 {
   memset (route, 0, sizeof *route);
   route->element = element;
-  route->control.fd = route->control.lock_fd = -1;
 }
 
 gboolean lgroute_arm (LgRoute *route)
 {
   if (route->sink)
     return !route->failed;
-  if (route->failed || !lgroute_control_receiver ()
-      || lgroute_control_open (&route->control) < 0)
+  if (route->failed || !lgroute_control_receiver () || lgroute_control_check () < 0)
     return FALSE;
   GstObject *top = gst_object_ref (route->element), *parent;
   while ((parent = gst_object_get_parent (top))) {
@@ -211,9 +212,9 @@ void lgroute_disarm (LgRoute *route)
   }
   if (route->sink)
     g_object_set (route->sink, "pcm-multi-ch", FALSE, NULL);
-  lgroute_control_release (&route->control);
   gst_clear_object (&route->sinkpad);
   gst_clear_object (&route->sink);
   route->events = route->buffers = 0;
+  route->mixed_since = 0;
   route->first = route->feeding = route->configured = FALSE;
 }
