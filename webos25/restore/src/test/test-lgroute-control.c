@@ -29,7 +29,6 @@ static int fake_ioctl(int fd, unsigned long command, ...)
 }
 #define LGROUTE_PT LGROUTE_RUN "/passthrough"
 #define LGROUTE_HD LGROUTE_RUN "/passthrough-hd"
-#define LGROUTE_LUNA_SEND LGROUTE_RUN "/luna-send"
 #define ioctl fake_ioctl
 #include "../lgroute-control.c"
 #undef ioctl
@@ -55,33 +54,9 @@ int main(void)
   output[4]=0;assert(ready(3,state)&&state[4]==0);
   earc=0;assert(!ready(3,state));earc=1;
   output[2]=99;assert(!ready(3,state));output[2]=0;
+  sound_output("auto");char mode[64];assert(lgroute_sound_output(mode)&&!strcmp(mode,"auto"));
   unlink(LGROUTE_PT);assert(!lgroute_control_receiver());
-  unlink(LGROUTE_HD);unlink(LGROUTE_OUTPUT);
-
-  FILE *luna=fopen(LGROUTE_LUNA_SEND,"w");assert(luna);
-  fputs("#!/bin/sh\necho \"$5 $6\" >> " LGROUTE_RUN "/luna.log\n"
-        "case $5 in *getAudioInputProperty) echo '{\"returnValue\":true,\"audioInputProperty\":["
-        "{\"codec\":\"ac3\",\"pipelineId\":\"_other\",\"immersive\":\"none\"},"
-        "{\"codec\":\"dts\",\"pipelineId\":\"_p1\",\"immersive\":\"none\"}]}' ;;"
-        " *) echo '{\"returnValue\":true}' ;; esac\n",luna);
-  fclose(luna);assert(!chmod(LGROUTE_LUNA_SEND,0700));
-  char codec[32],immersive[16];
-  assert(!lgroute_input_query("_p1",codec,sizeof codec,immersive,sizeof immersive));
-  assert(!strcmp(codec,"dts")&&!strcmp(immersive,"none"));
-  assert(lgroute_input_query("_none",codec,sizeof codec,immersive,sizeof immersive)<0);
-  assert(!lgroute_input_set("_p1","ADEC1","pcm","8","none"));
-  assert(!lgroute_input_set("_p1","ADEC1","dts",NULL,"none"));
-  /* Values reach a JSON payload; quotes or braces are refused. */
-  assert(lgroute_input_set("_p1\",\"x","ADEC1","pcm","8","none")<0);
-  assert(lgroute_input_set("","ADEC1","pcm","8","none")<0);
-  char log[2048]={0};FILE *l=fopen(LGROUTE_RUN "/luna.log","r");assert(l);
-  size_t n=fread(log,1,sizeof log-1,l);fclose(l);log[n]=0;
-  assert(strstr(log,"tv/setQualityAttribute {\"categoryType\":\"audioInputInfo\",\"requestType\":\"setAudioInputInfo\","
-      "\"pipelineInfo\":{\"pipelineId\":\"_p1\",\"resource\":\"ADEC1\",\"sourceType\":\"MEDIA\"},"
-      "\"categoryInfo\":{\"codec\":\"pcm\",\"channel\":\"8\",\"immersive\":\"none\"}}"));
-  assert(strstr(log,"\"categoryInfo\":{\"codec\":\"dts\",\"immersive\":\"none\"}}"));
-  assert(!strstr(log,"_p1\\\""));
-  unlink(LGROUTE_RUN "/luna.log");unlink(LGROUTE_LUNA_SEND);
-  puts("LG mixer: ABI, Pass Through only, read-only mixer state, unavailable eARC and PCM input report pass");
+  unlink(LGROUTE_HD);unlink(LGROUTE_OUTPUT);assert(!lgroute_sound_output(mode));
+  puts("LG mixer: ABI, Pass Through only, read-only mixer state and unavailable eARC pass");
   return 0;
 }

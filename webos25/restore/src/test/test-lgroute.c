@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include <gst/gst.h>
+#include <glib/gstdio.h>
 #include <fcntl.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -10,7 +11,7 @@
 
 static const char *graph;
 static gboolean graph_ok = TRUE, receiver = TRUE, writes_ok = TRUE, short_write;
-static int unmixed_result = 1, checks, formats, graph_reads, pcm_reports, restores;
+static int unmixed_result = 1, checks, formats, graph_reads;
 static char destination[128];
 
 static gboolean
@@ -48,26 +49,35 @@ write_property (int fd, const void *buffer, size_t size)
 
 static int close_property (int fd) { g_assert_cmpint (fd, ==, 123); return 0; }
 int lgroute_control_receiver (void) { return receiver; }
-int lgroute_control_check (void) { return 0; }
 int lgroute_control_unmixed (void) { checks++; return unmixed_result; }
-int lgroute_input_pipeline (char *pipeline, size_t size) { g_strlcpy (pipeline, "_p1", size); return 0; }
-int lgroute_input_query (const char *pipeline, char *codec, size_t codec_size,
-    char *immersive, size_t immersive_size)
+static gchar luna_dir[] = "/tmp/lgroute-luna-XXXXXX", luna_send[64];
+#define LUNA_SEND luna_send
+
+/* Count LG input reports from the fake luna-send's log. */
+static int luna_count (const gchar *needle)
 {
-  g_assert_cmpstr (pipeline, ==, "_p1");
-  g_strlcpy (codec, "dts", codec_size); g_strlcpy (immersive, "none", immersive_size);
-  return 0;
+  gchar *path = g_build_filename (luna_dir, "log", NULL), *log = NULL;
+  int n = 0;
+  if (g_file_get_contents (path, &log, NULL, NULL))
+    for (const gchar *p = log; (p = strstr (p, needle)); p++) n++;
+  g_free (path); g_free (log);
+  return n;
 }
-int lgroute_input_set (const char *pipeline, const char *resource,
-    const char *codec, const char *channel, const char *immersive)
+
+static gboolean
+read_or_graph (const gchar *filename, gchar **contents, gsize *length, GError **error)
 {
-  g_assert_cmpstr (pipeline, ==, "_p1"); g_assert_cmpstr (resource, ==, "ADEC1");
-  g_assert_cmpstr (immersive, ==, "none");
-  if (!g_strcmp0 (codec, "pcm")) { g_assert_cmpstr (channel, ==, "8"); pcm_reports++; }
-  else { g_assert_cmpstr (codec, ==, "dts"); g_assert_null (channel); restores++; }
-  return 0;
+  if (!strcmp (filename, "/proc/self/cmdline")) {
+    static const char args[] = "starfish-media-pipeline\0pipeline_process\0-scom.webos.pipeline._p1\0";
+    *contents = g_memdup2 (args, sizeof args - 1);
+    *length = sizeof args - 1;
+    return TRUE;
+  }
+  if (strcmp (filename, "/proc/aaudio/dot_module_connection"))
+    return g_file_get_contents (filename, contents, length, error);
+  return read_graph (filename, contents, length, error);
 }
-#define g_file_get_contents read_graph
+#define g_file_get_contents read_or_graph
 #define open open_property
 #define write write_property
 #define close close_property
@@ -227,6 +237,16 @@ static void graph_tests (void)
 int main (int argc, char **argv)
 {
   gst_init (&argc, &argv);
+  g_assert_nonnull (g_mkdtemp (luna_dir));
+  g_snprintf (luna_send, sizeof luna_send, "%s/luna-send", luna_dir);
+  gchar *script = g_strdup_printf ("#!/bin/sh\necho \"$5 $6\" >> %s/log\n"
+      "case $5 in *getAudioInputProperty) echo '{\"returnValue\":true,\"audioInputProperty\":["
+      "{\"codec\":\"ac3\",\"pipelineId\":\"_other\",\"immersive\":\"none\"},"
+      "{\"codec\":\"dts\",\"pipelineId\":\"_p1\",\"immersive\":\"none\"}]}' ;;"
+      " *) echo '{\"returnValue\":true}' ;; esac\n", luna_dir);
+  g_assert_true (g_file_set_contents (luna_send, script, -1, NULL));
+  g_free (script);
+  g_assert_cmpint (g_chmod (luna_send, 0700), ==, 0);
   graph_tests ();
   LgRoute route;
   reset (&route);
@@ -306,21 +326,30 @@ int main (int argc, char **argv)
   lgroute_disarm (&route);
 
   /* Carrier is silence until LG unmixes; a mix re-reports PCM; disarm restores LG's codec. */
-  reset (&route); pcm_reports = restores = 0;
+  static const char pcm[] = "tv/setQualityAttribute {\"categoryType\":\"audioInputInfo\","
+      "\"requestType\":\"setAudioInputInfo\",\"pipelineInfo\":{\"pipelineId\":\"_p1\","
+      "\"resource\":\"ADEC1\",\"sourceType\":\"MEDIA\"},\"categoryInfo\":{\"codec\":\"pcm\","
+      "\"channel\":\"8\",\"immersive\":\"none\"}}";
+  static const char restore[] = "\"categoryInfo\":{\"codec\":\"dts\",\"immersive\":\"none\"}}";
+  gchar *log = g_build_filename (luna_dir, "log", NULL);
+  g_unlink (log); g_free (log);
+  reset (&route);
   caps_event (&route); graph = after;
-  g_assert_cmpint (pcm_reports, ==, 0);
+  g_assert_cmpint (luna_count (pcm), ==, 0);
   unmixed_result = 0;
   /* Reported once the bypass exists, and again because LG is still mixing. */
   g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
-  g_assert_true (last_silent); g_assert_cmpint (pcm_reports, ==, 2);
+  g_assert_true (last_silent); g_assert_cmpint (luna_count (pcm), ==, 2);
   g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
-  g_assert_true (last_silent); g_assert_cmpint (pcm_reports, ==, 2);
+  g_assert_true (last_silent); g_assert_cmpint (luna_count (pcm), ==, 2);
   unmixed_result = 1;
   g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
   g_assert_false (last_silent);
   lgroute_disarm (&route);
-  g_assert_cmpint (restores, ==, 1);
+  g_assert_cmpint (luna_count (restore), ==, 1);
   g_assert_cmpstr (route.pipeline, ==, "");
+  /* Values reach a JSON payload; quotes are refused. */
+  g_assert_false (token ("_p1\",\"x")); g_assert_false (token ("")); g_assert_true (token ("ADEC1"));
 
   reset (&route); caps_event (&route); graph = after; receiver = FALSE;
   g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_DROP);

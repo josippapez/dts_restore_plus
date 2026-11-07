@@ -12,6 +12,86 @@
 #define MODULE_GRAPH "/proc/aaudio/dot_module_connection"
 #define SINK_PLUGIN "/usr/lib/gstreamer-1.0/libgstlgaudiosink.so"
 #define ES_FLAG (1u << 21)
+#ifndef LUNA_SEND
+#define LUNA_SEND "/usr/bin/luna-send"
+#endif
+
+/* One luna-send call; TRUE when LG replies returnValue:true. */
+static gboolean luna (const gchar *uri, const gchar *payload, gchar **reply)
+{
+  const gchar *argv[] = { LUNA_SEND, "-n", "1", "-w", "2000", uri, payload, NULL };
+  /* LG's LD_PRELOAD in the media pipeline breaks luna-send. */
+  gchar **env = g_environ_unsetenv (g_get_environ (), "LD_PRELOAD"), *out = NULL;
+  gboolean ok = g_spawn_sync (NULL, (gchar **) argv, env, G_SPAWN_STDERR_TO_DEV_NULL,
+      NULL, NULL, &out, NULL, NULL, NULL) && out && strstr (out, "\"returnValue\":true");
+  g_strfreev (env);
+  if (reply) *reply = out; else g_free (out);
+  return ok;
+}
+
+/* Values reach a JSON payload; anything beyond [A-Za-z0-9_.-] is refused. */
+static gboolean token (const gchar *value)
+{
+  return value && *value && !value[strspn (value,
+      "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")];
+}
+
+/* audiod forwards this to UMI, which reapplies the digital output policy. */
+static gboolean input_set (LgRoute *route, const gchar *codec, const gchar *channel, const gchar *immersive)
+{
+  if (!token (route->pipeline) || !token (route->resource) || !token (codec)
+      || !token (immersive) || (channel && !token (channel)))
+    return FALSE;
+  gchar *payload = g_strdup_printf ("{\"categoryType\":\"audioInputInfo\","
+      "\"requestType\":\"setAudioInputInfo\",\"pipelineInfo\":{\"pipelineId\":\"%s\","
+      "\"resource\":\"%s\",\"sourceType\":\"MEDIA\"},\"categoryInfo\":{\"codec\":\"%s\"%s%s%s,"
+      "\"immersive\":\"%s\"}}", route->pipeline, route->resource, codec,
+      channel ? ",\"channel\":\"" : "", channel ? channel : "", channel ? "\"" : "", immersive);
+  gboolean ok = luna ("luna://com.webos.service.audio/tv/setQualityAttribute", payload, NULL);
+  g_free (payload);
+  return ok;
+}
+
+static gboolean field (const gchar *object, const gchar *key, gchar *value, gsize size)
+{
+  gchar *pattern = g_strdup_printf ("\"%s\":\"", key);
+  const gchar *start = strstr (object, pattern), *stop;
+  gsize length = strlen (pattern);
+  g_free (pattern);
+  if (!start || !(stop = strchr (start + length, '"')) || (gsize) (stop - start - length) >= size)
+    return FALSE;
+  g_strlcpy (value, start + length, stop - start - length + 1);
+  return TRUE;
+}
+
+/* This pipeline's id (from -scom.webos.pipeline.<id>) and LG's own report for it. */
+static gboolean input_query (LgRoute *route)
+{
+  static const gchar prefix[] = "-scom.webos.pipeline.";
+  gchar *args = NULL, *reply = NULL;
+  gsize length = 0;
+  if (!g_file_get_contents ("/proc/self/cmdline", &args, &length, NULL))
+    return FALSE;
+  for (gchar *arg = args; arg < args + length; arg += strlen (arg) + 1)
+    if (g_str_has_prefix (arg, prefix))
+      g_strlcpy (route->pipeline, arg + sizeof prefix - 1, sizeof route->pipeline);
+  g_free (args);
+  gchar *key = g_strdup_printf ("\"pipelineId\":\"%s\"", route->pipeline);
+  gboolean ok = token (route->pipeline)
+      && luna ("luna://com.webos.service.audio/tv/getAudioInputProperty", "{}", &reply);
+  gchar *match = ok ? strstr (reply, key) : NULL, *object = match, *end;
+  g_free (key);
+  while (object && object > reply && *object != '{')
+    object--;
+  if ((end = match ? strchr (match, '}') : NULL))
+    *end = 0;
+  ok = end && field (object, "codec", route->codec, sizeof route->codec);
+  if (ok && !field (object, "immersive", route->immersive, sizeof route->immersive))
+    g_strlcpy (route->immersive, "none", sizeof route->immersive);
+  g_free (reply);
+  if (!ok) route->pipeline[0] = 0;
+  return ok;
+}
 
 /* The boot script hashes SINK_PLUGIN once and writes LGROUTE_SINK_OK on a match. */
 static gboolean verified_sink (GstElement *sink)
@@ -65,17 +145,8 @@ static gboolean configure_converter (void)
  * soundbars); 8-channel PCM matches, so LG itself writes the unmixed output. */
 static void report_pcm (LgRoute *route)
 {
-  if (!route->resource[0])
-    return;
-  if (!route->pipeline[0]) {
-    if (lgroute_input_pipeline (route->pipeline, sizeof route->pipeline) < 0
-        || lgroute_input_query (route->pipeline, route->codec, sizeof route->codec,
-            route->immersive, sizeof route->immersive) < 0) {
-      route->pipeline[0] = 0;
-      return;
-    }
-  }
-  lgroute_input_set (route->pipeline, route->resource, "pcm", "8", "none");
+  if (route->resource[0] && (route->pipeline[0] || input_query (route)))
+    input_set (route, "pcm", "8", "none");
 }
 
 static GstPadProbeReturn silence (GstPadProbeInfo *info)
@@ -159,14 +230,15 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
     }
   }
   gint64 now = g_get_monotonic_time ();
-  if (now >= route->next_check || !route->unmixed) {
+  gboolean due = now >= route->next_check;
+  if (due || !route->unmixed) {
     int unmixed = lgroute_control_receiver () ? lgroute_control_unmixed () : -1;
     if (unmixed > 0)
       route->mixed_since = 0;
     else if (!route->mixed_since && unmixed == 0)
       route->mixed_since = now;
     /* LG's pipeline can re-report the real codec; describe the carrier again. */
-    if (unmixed == 0 && now >= route->next_check)
+    if (unmixed == 0 && due)
       report_pcm (route);
     route->unmixed = unmixed > 0;
     /* LG's policy rewrites can mix briefly; only a lasting mix means TV sound overlays the carrier. */
@@ -176,7 +248,7 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
       route->reason = unmixed < 0 ? "eARC Pass Through unavailable" : "LG keeps eARC mixing on";
       return GST_PAD_PROBE_DROP;
     }
-    if (now >= route->next_check)
+    if (due)
       route->next_check = now + 250 * G_TIME_SPAN_MILLISECOND;
   }
   /* Mixed eARC would play the carrier as noise; send silence until LG unmixes. */
@@ -193,7 +265,7 @@ gboolean lgroute_arm (LgRoute *route)
 {
   if (route->sink)
     return !route->failed;
-  if (route->failed || !lgroute_control_receiver () || lgroute_control_check () < 0)
+  if (route->failed || !lgroute_control_receiver () || lgroute_control_unmixed () < 0)
     return FALSE;
   GstObject *top = gst_object_ref (route->element), *parent;
   while ((parent = gst_object_get_parent (top))) {
@@ -202,26 +274,20 @@ gboolean lgroute_arm (LgRoute *route)
   }
   unsigned count = 0;
   if (GST_IS_BIN (top)) {
-    GstIterator *iterator = gst_bin_iterate_recurse (GST_BIN (top));
+    GstIterator *iterator = gst_bin_iterate_all_by_element_factory_name (GST_BIN (top), "audiosink");
     GValue value = G_VALUE_INIT;
-    gboolean done = FALSE;
-    while (!done) {
-      switch (gst_iterator_next (iterator, &value)) {
-        case GST_ITERATOR_OK: {
-          GstElement *element = g_value_get_object (&value);
-          if (verified_sink (element)) {
-            if (!count++) route->sink = gst_object_ref (element);
-          }
-          g_value_reset (&value);
-          break;
-        }
-        case GST_ITERATOR_RESYNC:
-          gst_iterator_resync (iterator);
-          gst_clear_object (&route->sink);
-          count = 0;
-          break;
-        default: done = TRUE; break;
+    for (GstIteratorResult result; (result = gst_iterator_next (iterator, &value)) != GST_ITERATOR_DONE
+        && result != GST_ITERATOR_ERROR;) {
+      if (result == GST_ITERATOR_RESYNC) {
+        gst_iterator_resync (iterator);
+        gst_clear_object (&route->sink);
+        count = 0;
+        continue;
       }
+      GstElement *element = g_value_get_object (&value);
+      if (verified_sink (element) && !count++)
+        route->sink = gst_object_ref (element);
+      g_value_reset (&value);
     }
     g_value_unset (&value);
     gst_iterator_free (iterator);
@@ -264,7 +330,7 @@ void lgroute_disarm (LgRoute *route)
   if (route->sink)
     g_object_set (route->sink, "pcm-multi-ch", FALSE, NULL);
   if (route->pipeline[0])
-    lgroute_input_set (route->pipeline, route->resource, route->codec, NULL, route->immersive);
+    input_set (route, route->codec, NULL, route->immersive);
   gst_clear_object (&route->sinkpad);
   gst_clear_object (&route->sink);
   route->events = route->buffers = 0;

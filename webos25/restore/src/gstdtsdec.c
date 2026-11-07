@@ -155,7 +155,6 @@ enum
  * <soundOutputDigital>". A bitstream played on speakers is loud noise, so a
  * missing file, a dead watcher or any other output means decode as usual. */
 #define DTS_PASSTHROUGH_MARKER "/var/lib/webosbrew/dts25/passthrough"
-#define DTS_SOUND_OUTPUT_FILE "/run/dts25/sound-output"
 #define DTS_PASSTHROUGH_RECHECK_US (G_USEC_PER_SEC)
 
 /* Full DTS-HD/TrueHD uses FFmpeg packing and LG-managed eARC routing. */
@@ -1043,7 +1042,6 @@ gst_dtsdec_start (GstAudioDecoder * dec)
   dts->pt_active = FALSE;
   dts->pt_hd = FALSE;
   lgroute_init (&dts->hd_route, GST_ELEMENT (dts));
-  dts->hd_silence = 0;
   dts->pt_skipped = 0;
 
   /* call upon legacy upstream byte support (e.g. seeking) */
@@ -1053,6 +1051,7 @@ gst_dtsdec_start (GstAudioDecoder * dec)
 }
 
 static void gst_dtsdec_hd_close (GstDtsDec * dts);
+static void gst_dtsdec_hd_stop (GstDtsDec * dts, gboolean decide);
 
 /* LG tears the renderer down after EOS; carrier feeding or mixer writes past it crash dsp2. */
 static gboolean
@@ -1062,17 +1061,11 @@ gst_dtsdec_sink_event (GstAudioDecoder * dec, GstEvent * event)
   gboolean eos = GST_EVENT_TYPE (event) == GST_EVENT_EOS;
   gboolean ret = GST_AUDIO_DECODER_CLASS (gst_dtsdec_parent_class)->sink_event (dec, event);
 
-  if (eos) {
+  /* A replay seeks this same pipeline; decide and arm again instead of sending an unrouted carrier. */
+  if (eos && dts->pt_hd)
+    gst_dtsdec_hd_stop (dts, TRUE);
+  else if (eos)
     gst_dtsdec_hd_close (dts);
-    /* A replay seeks this same pipeline; decide and arm again instead of sending an unrouted carrier. */
-    if (dts->pt_hd) {
-      dts->pt_decided = dts->pt_active = dts->pt_hd = FALSE;
-      dts->pt_skipped = 0;
-      dts->hd_silence = 0;
-      dts->sample_rate = -1;
-      dts->channels = 0;
-    }
-  }
   return ret;
 }
 
@@ -1639,20 +1632,9 @@ dts_iec61937_pack (const guint8 * d, gsize size, guint8 * out, gint out_size)
 static gboolean
 dts_sound_output_is_receiver (void)
 {
-  gchar *text = NULL, out[64] = "", digital[64] = "", proc[32];
-  gint pid = 0;
-  gboolean ok;
-
-  if (!g_file_get_contents (DTS_SOUND_OUTPUT_FILE, &text, NULL, NULL))
-    return FALSE;
-  ok = sscanf (text, "%d %63s %63s", &pid, out, digital) == 3;
-  g_free (text);
-  if (!ok || pid <= 0)
-    return FALSE;
-  g_snprintf (proc, sizeof (proc), "/proc/%d", pid);
-  return g_file_test (proc, G_FILE_TEST_IS_DIR)
-      && strcmp (out, "external_arc") == 0
-      && (strcmp (digital, "passThrough") == 0 || strcmp (digital, "auto") == 0);
+  gchar mode[64];
+  return lgroute_sound_output (mode)
+      && (!strcmp (mode, "passThrough") || !strcmp (mode, "auto"));
 }
 
 static void
@@ -1661,6 +1643,18 @@ gst_dtsdec_hd_close (GstDtsDec * dts)
   avformat_free_context (dts->spdif);
   dts->spdif = NULL;
   lgroute_disarm (&dts->hd_route);
+}
+
+/* Leaves HD; the next frame decodes, or decides again when decide is set. */
+static void
+gst_dtsdec_hd_stop (GstDtsDec * dts, gboolean decide)
+{
+  gst_dtsdec_hd_close (dts);
+  dts->pt_active = dts->pt_hd = FALSE;
+  dts->pt_decided = !decide;
+  dts->pt_skipped = 0;
+  dts->sample_rate = -1;
+  dts->channels = 0;
 }
 
 /* No private sink offsets or DSP edge rewiring. Unknown stacks decode. */
@@ -1887,10 +1881,7 @@ gst_dtsdec_handle_frame (GstAudioDecoder * bdec, GstBuffer * buffer)
   }
   if (dts->pt_hd && dts->hd_route.failed) {
     GST_WARNING_OBJECT (dts, "HD route failed (%s), decoding", dts->hd_route.reason);
-    gst_dtsdec_hd_close (dts);
-    dts->pt_active = dts->pt_hd = FALSE;
-    dts->sample_rate = -1;
-    dts->channels = 0;
+    gst_dtsdec_hd_stop (dts, FALSE);
   }
   if (dts->pt_active) {
     GstBuffer *outbuf = gst_dtsdec_passthrough_burst (dts, map.data, map.size);
@@ -2125,7 +2116,6 @@ gst_truehd_mat_start (GstAudioDecoder * decoder)
   self->synced = FALSE;
   dts->pt_output_ok = TRUE;
   lgroute_init (&dts->hd_route, GST_ELEMENT (dts));
-  dts->hd_silence = 0;
   return TRUE;
 }
 
@@ -2233,8 +2223,7 @@ gst_truehd_mat_handle_frame (GstAudioDecoder * decoder, GstBuffer * input)
     return GST_FLOW_OK;
   }
   output = gst_buffer_new_wrapped_full (0, data, size, 0, size, data, av_free);
-  dts->pt_output_ok = dts->pt_output_ok
-      && gst_dtsdec_passthrough_allowed (dts) && lgroute_control_receiver ();
+  dts->pt_output_ok = dts->pt_output_ok && gst_dtsdec_passthrough_allowed (dts);
   if (!dts->pt_output_ok)
     gst_buffer_memset (output, 0, 0, size);
   gst_dtsdec_hd_lead (dts, output);
@@ -2254,7 +2243,6 @@ gst_truehd_mat_flush (GstAudioDecoder * decoder, gboolean hard)
   /* Seeking resets MAT accumulation, not the already configured renderer. */
   avformat_free_context (dts->spdif);
   dts->spdif = NULL;
-  dts->hd_silence = 0;
 }
 
 static GstCaps *

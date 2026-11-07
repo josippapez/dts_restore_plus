@@ -156,7 +156,7 @@ gst_adecswitch_truehd_passthrough (const GstStructure * caps)
   return (!gst_structure_has_field (caps, "rate")
       || (gst_structure_get_int (caps, "rate", &rate)
           && (rate == 48000 || rate == 96000 || rate == 192000)))
-      && lgroute_control_receiver () && lgroute_control_check () == 0;
+      && lgroute_control_receiver () && lgroute_control_unmixed () >= 0;
 }
 
 static const gchar *
