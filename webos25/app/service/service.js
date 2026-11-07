@@ -4082,18 +4082,8 @@ function w25AppDtsSteps(on) {
   return lines.join("\n");
 }
 
-/* =======================================================================
- * DTS passthrough opt-in
- * ---------------------------------------------------------------------
- * LG sends non-Dolby PCM to an ARC/eARC receiver as a 2-channel 16-bit copy,
- * so decoded DTS 5.1 arrives as stereo. With this on, dtsdec sends the DTS core
- * as IEC 61937 inside that stereo stream instead, and the receiver decodes real
- * DTS 5.1 (owner-tested on a G2 with a Denon receiver: Plex and the Media
- * Player). dtsdec only does it while the boot script's watcher reports
- * external_arc with Pass Through or Auto; on speakers it decodes as usual.
- * The marker is the whole state. The toggle starts or stops the watcher right
- * away through the boot script's W25_PT mode, so no restart is needed.
- * ===================================================================== */
+/* Passthrough opt-in. The boot watcher tracks receiver selection; HD also
+ * requires a verified LG sink and eARC controls. Speakers use software decode. */
 var W25_PT_FLAG = W25_DEST + "/passthrough";
 var W25_PT_RUN = "/run/dts25";
 var W25_HD_FLAG = W25_DEST + "/passthrough-hd";
