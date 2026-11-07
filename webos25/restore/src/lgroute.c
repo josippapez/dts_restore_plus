@@ -3,12 +3,14 @@
  * SPDX-License-Identifier: LGPL-2.1-or-later */
 #define _GNU_SOURCE
 #include "lgroute.h"
+#include "lgroute-graph.h"
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 
 #define MODULE_GRAPH "/proc/aaudio/dot_module_connection"
+#define BLOCK_GRAPH "/proc/aaudio/dot_block_connection"
 #define SINK_PLUGIN "/usr/lib/gstreamer-1.0/libgstlgaudiosink.so"
 #define ES_FLAG (1u << 21)
 
@@ -22,7 +24,9 @@ static gboolean verified_sink (GstElement *sink)
   if (!factory || strcmp (GST_OBJECT_NAME (factory), "audiosink")
       || !g_object_class_find_property (klass, "pcm-multi-ch")
       || !g_object_class_find_property (klass, "fade")
-      || !g_object_class_find_property (klass, "fade-volume"))
+      || !g_object_class_find_property (klass, "fade-volume")
+      || !g_object_class_find_property (klass, "index")
+      || !g_object_class_find_property (klass, "mixer"))
     return FALSE;
   plugin = gst_plugin_feature_get_plugin (GST_PLUGIN_FEATURE (factory));
   if (!plugin)
@@ -47,10 +51,17 @@ static void main_volume (LgRoute *route, gint volume)
 static void main_mute (LgRoute *route)
 {
   gint volume = -1;
-  if (route->muted)
-    g_object_get (route->sink, "fade-volume", &volume, NULL);
+  g_object_get (route->sink, "fade-volume", &volume, NULL);
+  if (volume < 0 || volume > 100) {
+    route->failed = TRUE;
+    route->reason = "cannot read main renderer fade level";
+    return;
+  }
+  if (!route->muted || volume != 0)
+    route->restore_volume = volume;
   if (volume != 0)
     main_volume (route, 0);
+  route->muted = TRUE;
 }
 
 GstCaps *lgroute_carrier_caps (void)
@@ -64,33 +75,35 @@ GstCaps *lgroute_carrier_caps (void)
       "data-bps", G_TYPE_INT, 16, NULL);
 }
 
-/* Only use a converter created by this CAPS transaction. Ambiguity refuses HD. */
-static gboolean configure_converter (LgRoute *route, gchar **lines)
+static gboolean read_owner (LgRoute *route, LgRouteOwner *owner)
 {
-  gchar candidate[9] = "";
-  unsigned count = 0;
-  for (unsigned i = 0; lines[i]; i++) {
-    char rts[9], source[9], hash[17];
-    if (sscanf (lines[i], " rts_%8[0-9a-f]_%16[0-9a-f]_out0 -> srcbin_%8[0-9a-f]", rts, hash, source) != 3)
-      continue;
-    gchar *node = g_strdup_printf ("srcbin_%s", source);
-    if (!strstr (route->before_graph, node)) {
-      gchar *edge = g_strdup_printf ("srcbin_%s_", source);
-      gboolean connected = FALSE;
-      for (unsigned j = 0; lines[j]; j++)
-        if (strstr (lines[j], edge) && strstr (lines[j], "_out0 -> lipsync_"))
-          connected = TRUE;
-      g_free (edge);
-      if (connected && strcmp (candidate, source)) {
-        g_strlcpy (candidate, source, sizeof candidate);
-        count++;
-      }
-    }
-    g_free (node);
-  }
-  if (count != 1)
-    return FALSE;
-  gchar *path = g_strdup_printf ("/proc/aaudio/instances/%s/prop", candidate);
+  guint index = G_MAXUINT, confirmed = G_MAXUINT;
+  gboolean mixer = FALSE, confirmed_mixer = FALSE;
+  gchar *blocks = NULL, *modules = NULL, *after = NULL;
+  g_object_get (route->sink, "index", &index, "mixer", &mixer, NULL);
+  if (index >= (mixer ? 8u : 4u)) return FALSE;
+  gboolean ok = g_file_get_contents (BLOCK_GRAPH, &blocks, NULL, NULL)
+      && g_file_get_contents (MODULE_GRAPH, &modules, NULL, NULL)
+      && g_file_get_contents (BLOCK_GRAPH, &after, NULL, NULL)
+      && !strcmp (blocks, after)
+      && lgroute_resolve (blocks, modules, index + (mixer ? 4 : 0), owner);
+  g_object_get (route->sink, "index", &confirmed, "mixer", &confirmed_mixer, NULL);
+  g_free (blocks); g_free (modules); g_free (after);
+  return ok && index == confirmed && mixer == confirmed_mixer;
+}
+
+static gboolean owner_unchanged (LgRoute *route)
+{
+  LgRouteOwner owner;
+  return read_owner (route, &owner) && route->owner_slot == owner.slot
+      && !strcmp (route->owner_signature, owner.signature);
+}
+
+static gboolean configure_converter (LgRoute *route)
+{
+  LgRouteOwner owner, confirmed;
+  if (!read_owner (route, &owner)) return FALSE;
+  gchar *path = g_strdup_printf ("/proc/aaudio/instances/%s/prop", owner.converter + 7);
   int fd = open (path, O_WRONLY | O_CLOEXEC);
   static const char properties[] =
       "in-sampling-rate 192000\n"
@@ -102,10 +115,15 @@ static gboolean configure_converter (LgRoute *route, gchar **lines)
       "out-channels 8\n"
       "out-bit-per-sample 16\n"
       "gain-enable false\n";
-  gboolean ok = fd >= 0
+    gboolean ok = fd >= 0 && read_owner (route, &confirmed)
+      && !memcmp (&owner, &confirmed, sizeof owner)
       && write (fd, properties, sizeof properties - 1) == sizeof properties - 1;
   if (fd >= 0) close (fd);
   g_free (path);
+  if (ok) {
+    route->owner_slot = owner.slot;
+    g_strlcpy (route->owner_signature, owner.signature, sizeof route->owner_signature);
+  }
   return ok;
 }
 
@@ -114,23 +132,37 @@ static GstPadProbeReturn event_probe (GstPad *pad, GstPadProbeInfo *info, gpoint
   LgRoute *route = data;
   GstEvent *event = GST_PAD_PROBE_INFO_EVENT (info);
   (void) pad;
+  if (GST_EVENT_TYPE (event) == GST_EVENT_STREAM_START && route->configured) {
+    route->failed = TRUE;
+    route->reason = "stream changed during HD transport";
+    return GST_PAD_PROBE_OK;
+  }
+  if (GST_EVENT_TYPE (event) == GST_EVENT_FLUSH_STOP)
+    route->next_check = 0;
   if (GST_EVENT_TYPE (event) == GST_EVENT_CAPS) {
+    GstCaps *caps = NULL, *carrier = lgroute_carrier_caps ();
+    gst_event_parse_caps (event, &caps);
+    gboolean is_carrier = gst_caps_is_equal (caps, carrier);
+    gst_caps_unref (carrier);
+    if (!is_carrier) {
+      route->failed = TRUE;
+      route->reason = "HD transport replaced by another format";
+      route->events = 0;
+      lgroute_disarm (route);
+      return GST_PAD_PROBE_REMOVE;
+    }
     /* A replacement renderer cannot inherit the old renderer's mute target. */
     if (route->configured) {
       route->failed = TRUE;
       route->reason = "renderer caps changed during HD transport";
       return GST_PAD_PROBE_DROP;
     }
-    g_clear_pointer (&route->before_graph, g_free);
-    if (!g_file_get_contents (MODULE_GRAPH, &route->before_graph, NULL, NULL)) {
-      route->failed = TRUE;
-      route->reason = "cannot snapshot renderer graph";
-      return GST_PAD_PROBE_DROP;
-    }
     route->first = TRUE;
     route->feeding = FALSE;
     /* pcm-multi-ch also feeds the carrier to the main path; mute it first. */
     main_mute (route);
+    if (route->failed)
+      return GST_PAD_PROBE_DROP;
     g_object_set (route->sink, "pcm-multi-ch", TRUE, NULL);
   }
   return GST_PAD_PROBE_OK;
@@ -153,21 +185,19 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
   }
   if (route->first) {
     route->first = FALSE;
-    gchar *graph = NULL;
-    if (g_file_get_contents (MODULE_GRAPH, &graph, NULL, NULL)) {
-      gchar **lines = g_strsplit (graph, "\n", -1);
-      route->configured = configure_converter (route, lines);
-      g_strfreev (lines);
-      g_free (graph);
-    }
+    route->configured = configure_converter (route);
     if (!route->configured) {
       route->failed = TRUE;
-      route->reason = "new bypass converter missing, ambiguous, or not configurable";
+      route->reason = "owned bypass route missing, ambiguous, changed, or not configurable";
       return GST_PAD_PROBE_DROP;
     }
-    g_clear_pointer (&route->before_graph, g_free);
     g_object_set (route->sink, "pcm-multi-ch", FALSE, NULL);
   } else {
+    if (g_get_monotonic_time () >= route->next_check && !owner_unchanged (route)) {
+      route->failed = TRUE;
+      route->reason = "renderer ownership changed during HD transport";
+      return GST_PAD_PROBE_DROP;
+    }
     GstBuffer *buffer = gst_buffer_make_writable (GST_PAD_PROBE_INFO_BUFFER (info));
     if (!buffer)
       return GST_PAD_PROBE_DROP;
@@ -178,14 +208,16 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
       route->feeding = TRUE;
     }
   }
+  if (lgroute_control_apply (&route->control) < 0) {
+    route->failed = TRUE;
+    route->reason = "unmixed eARC unavailable or output policy changed";
+    return GST_PAD_PROBE_DROP;
+  }
   gint64 now = g_get_monotonic_time ();
   if (now >= route->next_check) {
     main_mute (route);
-    if (lgroute_control_apply (&route->control) < 0) {
-      route->failed = TRUE;
-      route->reason = "cannot request unmixed eARC";
+    if (route->failed)
       return GST_PAD_PROBE_DROP;
-    }
     route->next_check = now + 250 * G_TIME_SPAN_MILLISECOND;
   }
   return GST_PAD_PROBE_OK;
@@ -196,6 +228,7 @@ void lgroute_init (LgRoute *route, GstElement *element)
   memset (route, 0, sizeof *route);
   route->element = element;
   route->control.fd = route->control.lock_fd = -1;
+  route->restore_volume = -1;
 }
 
 gboolean lgroute_arm (LgRoute *route)
@@ -257,14 +290,19 @@ void lgroute_disarm (LgRoute *route)
   }
   if (route->sink) {
     g_object_set (route->sink, "pcm-multi-ch", FALSE, NULL);
-    if (route->muted)
-      main_volume (route, 100);
+    if (route->muted && route->restore_volume >= 0) {
+      gint volume = -1;
+      g_object_get (route->sink, "fade-volume", &volume, NULL);
+      if (volume == 0)
+        main_volume (route, route->restore_volume);
+    }
   }
   lgroute_control_release (&route->control);
   gst_clear_object (&route->sinkpad);
   gst_clear_object (&route->sink);
-  g_clear_pointer (&route->before_graph, g_free);
+  route->owner_signature[0] = '\0';
   route->events = route->buffers = 0;
   route->muted = FALSE;
+  route->restore_volume = -1;
   route->feeding = route->configured = FALSE;
 }

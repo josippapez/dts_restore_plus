@@ -165,11 +165,18 @@ int lgroute_control_apply (LgRouteControl *control)
   long current[5], before[5], applied[5];
   if (control->fd < 0 || !lgroute_control_receiver () || !ready (control->fd, current))
     return -1;
-  if (current[4] == 0)
-    return 0;
   int existing = journal_read (before, applied);
   if (existing < 0)
     return -1;
+  if (existing > 0) {
+    if (memcmp (current, applied, sizeof current)) {
+      errno = EBUSY;
+      return -1;
+    }
+    return 0;
+  }
+  if (current[4] == 0)
+    return 0;
   memcpy (before, current, sizeof current);
   memcpy (applied, current, sizeof current);
   applied[4] = 0;

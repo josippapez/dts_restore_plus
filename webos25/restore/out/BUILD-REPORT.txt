@@ -4,35 +4,38 @@ DTS / TrueHD LG-managed routing -- DRAFT BUILD REPORT
 Built 2026-11-07 from gstdtsdec.c, lgroute.c and lgroute-control.c using
 cached dts25-dtsdec-build: Debian bookworm armel, snapshot 20250601T000000Z,
 FFmpeg n4.4.4 static dca decoder and spdif muxer. No GPL/nonfree options.
-The DTS plugin now configures the bypass converter through named properties.
+The DTS plugin selects its bypass converter from the sink slot's connected
+mixer input and appsrc processor, not a before/after graph difference.
 
 ARM EABI5 soft-float, e_flags 0x05000200:
   out/libgstdtsdec.so (max GLIBC_2.35)
-    SHA256 cc7da8394a039d7051b32de10a8454ef90166173198d29d59923ae8c50a1f77a
+    SHA256 8cc7679a4b85d8eb553c1330b1a00253bcdddc79d3aee32e35d59216d2cde54d
   switch-out/libgstadecswitch.so (max GLIBC_2.7)
     SHA256 07a07eb53e88a508d7615a817db17f5e28711a22b3d4aac8698938fc1c48f3c1
   out/lgroute-control (max GLIBC_2.34)
-    SHA256 14c7f63a24fe958a05dda1f915beae70248ddd1dff2b8152d8a56b854cb590cb
+    SHA256 bd6c986f6f9136dadedcc40199122b387ed945b24e7347380efd20796c5c0eef
 
-On-device checks, rooted C2 OLED42C27LA / webOS10.3.1, 2026-11-06:
-  Exact installed hashes match this report.
-  App self-test: DTS MP4, TS, M2TS and TrueHD MKV all decode successfully.
-  Muted app playback: DTS-HD M2TS/MKV and TrueHD MKV run.
-  Steady-state DTS-HD and TrueHD: mix=0, LG connects lipsync -> delay
-  and bypass -> gluepw; kernel reports ARC mat 8ch at physical192000Hz.
-  Main renderer gain property reads mute-input=true during DTS playback.
-  Stopping playback restores mix=1 and removes the recovery journal.
-  Host route/mixer/fallback tests and 38 app/lifecycle checks pass.
+Current-build checks, rooted C2 OLED42C27LA / webOS10.3.1, 2026-11-07:
+  The exact staged plugin hash above loaded and decoded 48kHz/6ch elementary
+  DTS to fakesink/EOS; the recovery helper's read-only check passed.
+  No installed plugin was replaced.
+  A helper compiled from the actual route source configured named properties
+  and fed zero-filled buffers through the stock LG sink. Opt-in/mix-policy
+  helpers were stubbed, so this did not exercise full lgroute_arm or eARC.
+  Native-connected mixer slots 4/5 and decoder slot 0 passed selection,
+  concurrent-owner stability, neighbor teardown and renderer reopen.
+  Deliberately disconnecting each test route caused buffer refusal at the
+  next forced ownership check. Connections and policy returned to baseline:
+  eARC Outputtype 2,1,0,0,1; MainAudio Output 1,1; only renderer1 remained.
+  Startup selection took roughly 4-8ms; ordinary buffers 36-86us; periodic
+  checks were millisecond-scale. Identity checks run every 250ms, not per buffer.
+  Sanitized host route tests and real-capture C resolver tests passed.
+  Host suite passed; oversized DTS-HD test skipped (missing FFmpeg dev files).
+  Recovered-converter tests show named/raw byte equivalence; accepted device
+  writes do not themselves prove DSP byte identity or atomic graph ownership.
 
-Current-build checks on the same TV, 2026-11-07: isolated silent probe using
-the actual converter configuration function accepted named properties, fed
-12 buffers and reached EOS. Its renderer was removed; eARC Outputtype stayed
-2,1,0,0,1. No output connection or mix override was tested. The staged plugin
-decoded elementary DTS to a 4,276,304-byte WAV. Stock MP4/parser paths failed.
-Host recovered-converter tests show named/raw byte equivalence and FIRST/flush
-survival; write acceptance on the TV does not prove DSP state or byte identity.
-
-NOT YET VERIFIED for this build: end-to-end eARC transport, audible receiver
-decoding, TrueHD BD TS/M2TS, seek/output-switch/crash recovery, other TV stacks.
+NOT YET VERIFIED: normal-player HD startup timing, end-to-end eARC transport,
+audible receiver decoding, TrueHD BD TS/M2TS, seek/output-switch/crash recovery,
+other TV stacks. Graph reads and property writes are not an atomic ownership lease.
 Historical tests of the previous implementation do not validate this build.
 Keep PR draft; this is not a release-ready hardware qualification.

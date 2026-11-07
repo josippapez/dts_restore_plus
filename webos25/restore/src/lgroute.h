@@ -10,8 +10,10 @@ typedef struct {
   GstPad *sinkpad;
   gulong events, buffers;
   LgRouteControl control;
-  gchar *before_graph;
+  gchar owner_signature[65];
+  guint owner_slot;
   gboolean first, feeding, configured, failed, muted;
+  gint restore_volume;
   gint64 next_check;
   const gchar *reason;
 } LgRoute;
