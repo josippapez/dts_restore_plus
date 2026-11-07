@@ -60,39 +60,12 @@ sh webos25/restore/sync-init.sh          # regenerate copies 2 and 3 from it
 sh webos25/restore/check-init-sync.sh    # verify, the same way CI does
 ```
 
-`sync-init.sh` rewrites the `install.sh` blob and the three `service.js` arrays from the
-canonical file. It refuses to write anything unless it can locate every target precisely
-— it computes both files in memory first, so a failure on either blocks writes to both
-rather than half-writing one — and it is idempotent (a second run reports "already in
-sync" and changes nothing). Hand-editing a 30 KB base64 blob is not a reviewable change;
-don't.
+**Bump `W25_GATE_VERSION` whenever you change the script's behaviour, then run
+`sync-init.sh`.** Do not edit the generated copies by hand.
 
-It also refuses, writing nothing, if the canonical script's body changed since the last
-sync while its hand-maintained `W25_GATE_VERSION` stamp did not. That stamp is how the app
-notices an installed boot script is older than the one it ships (`hookStale`), so an
-un-bumped stamp would make that detection go quiet on exactly the TVs that need it. **Bump
-`W25_GATE_VERSION` whenever you change the script's behaviour, then run `sync-init.sh`.**
-The app also md5-compares what Enable would write against what is installed, so a stale
-stamp is caught at runtime too — but the generator is where it should be caught.
-
-If `check-revert-sync.sh` exits **2** rather than 1, that is a setup error, not a violated
-invariant: its extractor stopped matching one of the three scripts, almost always because
-the unmount loop was reformatted. Fix the extractor (or the formatting) — an exit 2 means
-the guard has stopped guarding, which is worse than a failure.
-
-`check-init-sync.sh` decodes copy 2, evaluates copy 3 without loading `webos-service`,
-and diffs both against copy 1, printing a unified diff and naming whichever drifted. It
-also calls `webos25/restore/check-revert-sync.sh`, which covers a *different* duplication
-the three copies don't include: the set of bind targets `install.sh`/`uninstall.sh`
-unmount, and the `GST_PLUGIN_PATH_1_0` used to regenerate a clean **stock** registry. It
-compares extracted sets and values rather than whole lines, so formatting or variable
-renames never false-fail — only a genuinely missing bind target or a diverged registry
-path does. A missing bind target in `uninstall.sh` is exactly the "not fully reversible"
-defect the compatibility work fixed, which is why it is guarded rather than trusted.
-
-The release workflow runs `check-init-sync.sh` before packaging, so a drifted release
-fails instead of shipping mismatched boot scripts. Both scripts need only POSIX `sh`,
-`node`, `base64` and `diff` — all present on macOS, Linux and the CI image.
+The release workflow checks boot-script equivalence, revert targets and the stock
+registry path before packaging. An exit code of **2** from `check-revert-sync.sh`
+means its extractor failed; repair the check rather than treating it as a pass.
 
 ## License texts ship inside both artifacts
 
@@ -187,8 +160,6 @@ All four root `gst/` files are required for packaging even though C2 binds
 
 - [ ] Binaries in `webos25/restore/**` current (rebuilt + on-device-verified if affected)
 - [ ] Four tracked root `gst/*.so` files copied into generated `payload/cx/`
-- [ ] `webos25/restore/out/BUILD-REPORT.txt` and `webos25/restore/demux-out/BUILD-REPORT.txt`
-      reflect the current build
 - [ ] A DTS-HD MA 7.1 file decodes to 8 channels (if `libgstdtsdec.so` changed)
 - [ ] DTS-HD in `.ts`/`.m2ts` decodes lossless — tsdemux passes substream 0x72, output
       bit-exact against desktop `ffmpeg` (if `libgstdtsdec.so` or `libgstmpegtsdemux.so` changed)

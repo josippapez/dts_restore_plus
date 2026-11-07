@@ -7,9 +7,11 @@
 #   This matches Debian's `armel` port, so we cross-compile with
 #   `arm-linux-gnueabi-gcc` (soft-float) — NOT `arm-linux-gnueabihf` (hard-float).
 #
-# What this produces in webos25/out/:
+# What this produces in webos25/restore/out/:
 #   - libgstdtsdec.so   the patched decoder plugin (armel soft-float), with
-#                       FFmpeg n4.4.4's dca decoder linked in statically
+#                       FFmpeg n4.4.4's dca decoder and spdif muxer linked in
+#                       statically
+#   - lgroute-control  named ALSA mixer validation/recovery helper
 #
 # The decoder is FFmpeg's dca (core + DTS-HD XLL/XBR/X96/XXCH + LBR), not
 # libdca (core only). It is built here as a static libavcodec/libavutil with
@@ -69,14 +71,16 @@ RUN SNAPSHOT=20250601T000000Z \
 RUN git clone -q --depth 1 -b n4.4.4 https://git.ffmpeg.org/ffmpeg.git /tmp/ffmpeg \
  && cd /tmp/ffmpeg && ./configure --cross-prefix=arm-linux-gnueabi- \
       --enable-cross-compile --arch=arm --target-os=linux --prefix=/tmp/ffdca \
-      --disable-everything --enable-decoder=dca \
-      --disable-avformat --disable-avfilter --disable-swresample \
+      --disable-everything --enable-decoder=dca --enable-muxer=spdif \
+      --enable-avformat --disable-avfilter --disable-swresample \
       --disable-swscale --disable-avdevice --disable-postproc \
       --disable-network --disable-programs --disable-doc --disable-autodetect \
       --disable-pthreads --disable-asm \
       --enable-static --disable-shared --enable-pic >/dev/null \
  && { grep -q "CONFIG_DCA_DECODER 1" config.h \
       || { echo "ERROR: FFmpeg configured without the dca decoder"; exit 1; }; } \
+ && { grep -q "CONFIG_SPDIF_MUXER 1" config.h \
+      || { echo "ERROR: FFmpeg configured without the spdif muxer"; exit 1; }; } \
  && make -j"$(nproc)" install >/dev/null \
  && rm -rf /tmp/ffmpeg
 DOCKERFILE_EOF
@@ -101,13 +105,14 @@ docker run --rm -i \
     #   VERSION / PACKAGE / GST_PACKAGE_* : plugin identity metadata.
     #   libavcodec.a libavutil.a + --exclude-libs,ALL : the static decoder,
     #        with none of its symbols exported (see the header comment).
-    arm-linux-gnueabi-gcc -shared -fPIC -O2 -Wall -o /out/libgstdtsdec.so gstdtsdec.c \
+    arm-linux-gnueabi-gcc -shared -fPIC -O2 -Wall -o /out/libgstdtsdec.so gstdtsdec.c lgroute.c lgroute-control.c \
       -I/tmp/ffdca/include \
       -DVERSION='"1.22.0-webosdts"' \
       -DPACKAGE='"gst-plugins-bad"' \
       -DGST_PACKAGE_NAME='"WebOS DTS restore"' \
       -DGST_PACKAGE_ORIGIN='"https://github.com/josippapez/dts_restore"' \
-      $CF /tmp/ffdca/lib/libavcodec.a /tmp/ffdca/lib/libavutil.a $LB -lm \
+      $CF /tmp/ffdca/lib/libavformat.a /tmp/ffdca/lib/libavcodec.a \
+      /tmp/ffdca/lib/libavutil.a $LB -lm \
       -Wl,--exclude-libs,ALL -Wl,--no-undefined
 
     echo "=== BUILT (must be ARM, 0x5000200 soft-float) ==="
@@ -118,6 +123,11 @@ docker run --rm -i \
     echo "=== exported FFmpeg symbols (must be 0) ==="
     n=$(arm-linux-gnueabi-objdump -T /out/libgstdtsdec.so | grep -cE " (av|ff|avpriv|avcodec|swr)_" || true)
     echo "$n"; [ "$n" = 0 ] || { echo "ERROR: FFmpeg symbols leak from the plugin"; exit 1; }
+
+    arm-linux-gnueabi-gcc -std=c11 -O2 -Wall -Wextra -Werror -DLGROUTE_CONTROL_MAIN \
+      -o /out/lgroute-control lgroute-control.c
+    arm-linux-gnueabi-readelf -h /out/lgroute-control | grep -E "Machine|Flags"
+
 CONTAINER_EOF
 
 ls -la "$OUT"

@@ -160,8 +160,7 @@ must be kept in sync, on a real TV, in the same change.
    ./build.sh          # -> out/libgstdtsdec.so
    ./build-truehd.sh   # -> truehd-out/libgstlibav.so + libav*/libsw* (applies the mlpdec gain patch)
    ```
-2. **Check each build's `BUILD-REPORT.txt`** (`out/BUILD-REPORT.txt`,
-   `truehd-out/BUILD-REPORT.txt`) — confirms the ELF is armel soft-float
+2. **Check the build's ABI output** — confirms the ELF is armel soft-float
    (`e_flags 0x05000200`) and every GLIBC symbol is `<= 2.35`, matching the C5
    userspace (see [`../README.md#target-abi-the-other-crux`](../README.md#target-abi-the-other-crux)).
    `build-truehd.sh` also self-verifies the patch, generated to
@@ -186,7 +185,7 @@ must be kept in sync, on a real TV, in the same change.
      `TRUEHD-BUILD.md`), but on-device confirmation is still required since
      this environment cannot itself build ARM binaries or run on a TV.
 4. **Recommit the rebuilt `.so`** in the **same change** as the source edit —
-   `restore/out/`, `restore/truehd-out/` (and their `BUILD-REPORT.txt`).
+   `restore/out/`, `restore/truehd-out/`.
    Never let the committed binaries drift behind the source.
 5. **Tag the release:**
    ```sh

@@ -351,7 +351,9 @@ var W25_COMPAT_SH = [
   "#   27 shadows libgstmatroska.so too (optional demuxer, Dolby Vision profile 7):",
   "#      bound in APPLY 2c, unbound by w25_drop_binds, fingerprinted in stock.fp and",
   "#      drift-checked like the /etc keys, so an older stock.fp without it is not drift.",
-  "W25_GATE_VERSION=40",
+  "#   41 opt-in DTS-HD/TrueHD over eARC Pass Through; LG's mixer is only read.",
+  "#   42 self-heal, stand-down and the boot apply continue when passthrough stop fails.",
+  "W25_GATE_VERSION=42",
   "FP=/var/lib/webosbrew/dts25/stock.fp",
   "# Where the installed copy of THIS script lives, and the boot hook that symlinks",
   "# to it. Named here, in the shared block, so the read-only probe can fingerprint",
@@ -447,7 +449,41 @@ var W25_COMPAT_SH = [
   "# ONLY, so the registry it writes does not name /var/lib/webosbrew and the next",
   "# w25_reg_is_ours is false -- no repeated 60s regen on every boot. It also works",
   "# when our libraries are already gone, for the same reason.",
+  "w25_pt_stop() {",
+  "  PT_RUN=/run/dts25",
+  "  PT_OUT=$PT_RUN/sound-output",
+  "  PT_PID=$PT_RUN/watcher.pid",
+  "  # Withdraw permission first; a live HD stream then falls back by itself.",
+  "  mkdir -p \"$PT_RUN\" || return 1",
+  "  : > \"$PT_RUN/stopping\" || return 1",
+  "  rm -f \"$PT_OUT\" || return 1",
+  "  P=$(cat \"$PT_PID\" 2>/dev/null)",
+  "  if [ -n \"$P\" ] && [ -d \"/proc/$P\" ]; then",
+  "    for child in /proc/[0-9]*; do",
+  "      [ \"$(cut -d' ' -f4 \"$child/stat\" 2>/dev/null)\" = \"$P\" ] && kill \"${child#/proc/}\" 2>/dev/null",
+  "    done",
+  "    kill \"$P\" 2>/dev/null",
+  "    attempts=0",
+  "    while [ \"$(cat \"$PT_PID\" 2>/dev/null)\" = \"$P\" ] && [ -r \"/proc/$P/stat\" ] && [ \"$(cut -d' ' -f3 \"/proc/$P/stat\")\" != Z ] && [ \"$attempts\" -lt 10 ]; do",
+  "      sleep 1",
+  "      attempts=$((attempts + 1))",
+  "    done",
+  "    if [ \"$(cat \"$PT_PID\" 2>/dev/null)\" = \"$P\" ] && [ -r \"/proc/$P/stat\" ] && [ \"$(cut -d' ' -f3 \"/proc/$P/stat\")\" != Z ]; then",
+  "      echo 'ERROR=The passthrough watcher did not stop; settings were kept.'",
+  "      return 1",
+  "    fi",
+  "  fi",
+  "  rm -f \"$PT_OUT\" \"$PT_PID\"",
+  "}",
+  "# Recovery paths must not stall on a watcher that will not stop.",
+  "w25_pt_stop_soft() {",
+  "  PT_STOP_OUT=$(w25_pt_stop) && return 0",
+  "  PT_STOP_OUT=$(printf '%s\\n' \"$PT_STOP_OUT\" | sed -n 's/^ERROR=//p' | head -n1)",
+  "  w25_log \"WARN passthrough stop failed; continuing: $PT_STOP_OUT\"",
+  "  echo \"WARN_PT_STOP=${PT_STOP_OUT:-passthrough did not stop cleanly}\"",
+  "}",
   "w25_stand_down() {",
+  "  w25_pt_stop_soft",
   "  w25_drop_binds",
   "  if w25_reg_is_ours; then",
   "    w25_log \"a registry of ours is still live; regenerating the stock registry so nothing of ours stays registered\"",
@@ -895,20 +931,23 @@ var W25_INIT_MAIN = [
   "w25_pt_watch() {",
   "  read -r WPID _ < /proc/self/stat",
   "  echo \"$WPID\" > \"$PT_PID\"",
-  "  while [ -f \"$PT_FLAG\" ]; do",
+  "  trap 'rm -f \"$PT_OUT\" \"$PT_PID\"' EXIT",
+  "  trap 'exit 0' INT TERM HUP",
+  "  while [ -f \"$PT_FLAG\" ] && [ ! -e \"$PT_RUN/stopping\" ]; do",
   "    luna-send -i luna://com.webos.settingsservice/getSystemSettings \\",
   "      '{\"category\":\"sound\",\"keys\":[\"soundOutput\",\"soundOutputDigital\"],\"subscribe\":true}' \\",
   "      </dev/null 2>/dev/null | {",
   "      out=",
   "      digital=",
   "      while read -r line; do",
-  "        [ -f \"$PT_FLAG\" ] || break",
+  "        [ -f \"$PT_FLAG\" ] && [ ! -e \"$PT_RUN/stopping\" ] || break",
   "        v=$(echo \"$line\" | sed -n 's/.*\"soundOutput\" *: *\"\\([^\"]*\\)\".*/\\1/p')",
   "        [ -n \"$v\" ] && out=$v",
   "        v=$(echo \"$line\" | sed -n 's/.*\"soundOutputDigital\" *: *\"\\([^\"]*\\)\".*/\\1/p')",
   "        [ -n \"$v\" ] && digital=$v",
   "        [ -n \"$out\" ] && [ -n \"$digital\" ] || continue",
   "        echo \"$WPID $out $digital\" > \"$PT_OUT.tmp\" && mv -f \"$PT_OUT.tmp\" \"$PT_OUT\"",
+  "        [ ! -e \"$PT_RUN/stopping\" ] || { rm -f \"$PT_OUT\"; break; }",
   "      done",
   "    }",
   "    # the subscription ended: decode until it is back",
@@ -917,30 +956,35 @@ var W25_INIT_MAIN = [
   "  done",
   "  rm -f \"$PT_OUT\" \"$PT_PID\"",
   "}",
+  "w25_pt_sink_verified() {",
+  "  case \"$1\" in",
+  "    90dba3ef32704ce4096bf1e6045d2879d0c2192d507bc04d1e8e98437f420a43) return 0 ;;",
+  "  esac",
+  "  return 1",
+  "}",
   "w25_pt_start() {",
   "  [ -f \"$PT_FLAG\" ] || return 0",
   "  mkdir -p \"$PT_RUN\"",
+  "  # dtsdec reads this marker instead of hashing LG's sink on every stream.",
+  "  rm -f \"$PT_RUN/sink-ok\"",
+  "  SINK=/usr/lib/gstreamer-1.0/libgstlgaudiosink.so",
+  "  SINK_SHA=$(sha256sum \"$SINK\" 2>/dev/null || busybox sha256sum \"$SINK\" 2>/dev/null)",
+  "  if w25_pt_sink_verified \"${SINK_SHA%% *}\"; then",
+  "    : > \"$PT_RUN/sink-ok\"",
+  "  else",
+  "    w25_log \"HD refused: untested LG sink build (${SINK_SHA%% *}); DTS core/decode remains available\"",
+  "  fi",
   "  P=$(cat \"$PT_PID\" 2>/dev/null)",
   "  [ -n \"$P\" ] && [ -d \"/proc/$P\" ] && return 0",
+  "  rm -f \"$PT_RUN/stopping\"",
   "  ( w25_pt_watch ) </dev/null >/dev/null 2>&1 &",
-  "}",
-  "# Stops the watcher and its luna-send, and drops the file, so dtsdec decodes.",
-  "w25_pt_stop() {",
-  "  P=$(cat \"$PT_PID\" 2>/dev/null)",
-  "  if [ -n \"$P\" ] && [ -d \"/proc/$P\" ]; then",
-  "    for c in /proc/[0-9]*; do",
-  "      [ \"$(cut -d' ' -f4 \"$c/stat\" 2>/dev/null)\" = \"$P\" ] && kill \"${c#/proc/}\" 2>/dev/null",
-  "    done",
-  "    kill \"$P\" 2>/dev/null",
-  "  fi",
-  "  rm -f \"$PT_OUT\" \"$PT_PID\"",
   "}",
   "# W25_PT=start|stop: only start or stop the watcher, for the app's toggle, so",
   "# turning passthrough on or off takes effect without a restart.",
   "if [ -n \"${W25_PT:-}\" ]; then",
   "  case $W25_PT in",
   "    start) w25_pt_start ;;",
-  "    stop) w25_pt_stop ;;",
+  "    stop) w25_pt_stop || exit 1 ;;",
   "  esac",
   "  exit 0",
   "fi",
@@ -949,7 +993,7 @@ var W25_INIT_MAIN = [
   "# APPLY if the gate's inputs changed between the caller's preflight and this call.",
   "if [ \"${W25_STAND_DOWN:-0}\" = 1 ]; then",
   "  if w25_reg_is_ours; then WAS_OURS=1; else WAS_OURS=0; fi",
-  "  w25_stand_down",
+  "  w25_stand_down || exit 1",
   "  w25_log \"stand-down requested by the installer (a registry of ours was live: $WAS_OURS)\"",
   "  echo \"STOOD_DOWN=$WAS_OURS\"",
   "  exit 0",
@@ -997,6 +1041,7 @@ var W25_INIT_MAIN = [
   "# registry naming them must be replaced whether or not it looks like ours.",
   "w25_self_heal() {",
   "  w25_log \"SELF-HEAL: $HEAL_WHY -- reverting every override\"",
+  "  w25_pt_stop_soft",
   "  w25_drop_binds",
   "  if ! w25_stock_registry; then",
   "    w25_log \"SELF-HEAL DEFERRED: LG's registry could not be rebuilt, so our plugins and the boot hook are KEPT (deleting them now would leave the live registry pointing at missing plugins). Retrying at the next boot.\"",
@@ -1430,6 +1475,7 @@ var W25_INIT_MAIN = [
   "  ( w25_appdts_apply ) </dev/null >/dev/null 2>&1 &",
   "}",
   "w25_appdts_start",
+  "w25_pt_stop_soft",
   "w25_pt_start",
   "# --- APPLY 2c) container demuxers with DTS re-enabled (mp4/ts/m2ts DTS -> audio/x-dts).",
   "#         Patched isomp4/mpegtsdemux default dts_support=TRUE; patched matroska",
@@ -1767,7 +1813,8 @@ function c2MatchSet(libav, iso, mkv) {
  */
 function rootExec(command) {
   return new Promise(function (resolve, reject) {
-    service.call(HBC_EXEC, { command: command }, function (msg) {
+    // ls-hubd's LD_PRELOAD (libsystrim) makes every fork ~5x slower; SSH/CLI shells run without it.
+    service.call(HBC_EXEC, { command: "unset LD_PRELOAD\n" + command }, function (msg) {
       var p = (msg && msg.payload) ? msg.payload : {};
       // The Homebrew Channel exec service returns the output in `stdoutString` /
       // `stderrString` (plus base64 `stdoutBytes`/`stderrBytes`) -- NOT `stdout` /
@@ -2150,6 +2197,7 @@ var DETECT_PROBE = [
   "}",
   "w25_pd_cmp \"" + PAYLOAD_W25 + "/libgstdtsdec.so\" \"" + W25_DEST + "/libgstdtsdec.so\" libgstdtsdec.so",
   "w25_pd_cmp \"" + PAYLOAD_W25 + "/libgstadecswitch.so\" \"" + W25_DEST + "/libgstadecswitch.so\" libgstadecswitch.so",
+  "w25_pd_cmp \"" + PAYLOAD_W25 + "/lgroute-control\" \"" + W25_DEST + "/lgroute-control\" lgroute-control",
   "w25_pd_cmp \"" + PAYLOAD_W25_THD + "/libgstlibav.so\" \"" + W25_THD_DEST + "/libgstlibav.so\" libgstlibav.so",
   "w25_pd_cmp \"" + PAYLOAD_W25_DMX + "/libgstisomp4.so\" \"" + W25_DMX_DEST + "/libgstisomp4.so\" libgstisomp4.so",
   "w25_pd_cmp \"" + PAYLOAD_W25_DMX + "/libgstmpegtsdemux.so\" \"" + W25_DMX_DEST + "/libgstmpegtsdemux.so\" libgstmpegtsdemux.so",
@@ -2656,6 +2704,10 @@ function w25Enable(force) {
     'if [ -f "' + PAYLOAD_W25 + '/libgstadecswitch.so" ]; then',
     '  cp -f "' + PAYLOAD_W25 + '/libgstadecswitch.so" "' + W25_DEST + '/libgstadecswitch.so" && log "installed libgstadecswitch.so" || log "WARN: copy libgstadecswitch.so failed"',
     'else log "WARN: ' + PAYLOAD_W25 + '/libgstadecswitch.so not found (populate payload before packaging)"; fi',
+    // 1c. Stage the eARC ALSA check/recovery helper. Mirrors install.sh step 1c.
+    'if [ -f "' + PAYLOAD_W25 + '/lgroute-control" ]; then',
+    '  cp -f "' + PAYLOAD_W25 + '/lgroute-control" "' + W25_DEST + '/lgroute-control" && chmod 0755 "' + W25_DEST + '/lgroute-control" && log "installed lgroute-control" || log "WARN: staging lgroute-control failed"',
+    'else log "note: lgroute-control payload absent; DTS-HD passthrough unavailable"; fi',
     // 2. Stage the TrueHD payload (preserve the .so version symlinks).
     'mkdir -p "' + W25_THD_LIBS + '" || { log "FATAL: cannot create ' + W25_THD_LIBS + '"; exit 0; }',
     'if [ -f "' + PAYLOAD_W25_THD + '/libgstlibav.so" ]; then',
@@ -2676,6 +2728,7 @@ function w25Enable(force) {
     //    w25_drop_binds falls back to a lazy detach (plain umount of
     //    libgstlibav.so fails with "target is busy" while WebAppMgr has it
     //    mapped) and prints WARN_UNMOUNT= for anything that survives even that.
+    'w25_pt_stop || exit 1',
     "w25_drop_binds",
     // 3a. Generate the codec-capability override (insert TRUEHD+MLP after DTSE).
     'base64 -d > /tmp/dts25_cap.awk <<\'B64CAP\'',
@@ -2752,6 +2805,7 @@ function w25Enable(force) {
     'APPLY=$(W25_NO_APPDTS=1 FORCE="$FORCE" sh "' + W25_INIT_SCRIPT + '" 2>/dev/null)',
     'log "apply: $(printf "%s" "$APPLY" | tr "\\n" " ")"',
     'case "$APPLY" in',
+    '  *ERROR=*) printf "%s\\n" "$APPLY"; exit 1 ;;',
     '  *REFUSED=*)',
     '    printf "%s\\n" "$APPLY" | grep -e "^REFUSED=" -e "^REASON=" -e "^WARN_UNMOUNT="',
     '    log "=== enable (webos25 DTS+TrueHD) refused on apply ==="',
@@ -2783,6 +2837,7 @@ function w25DisableSteps() {
     'log() { echo "[dts25-disable $(date \'+%Y-%m-%d %H:%M:%S\')] $*" >> "$LOG" 2>&1; }',
     'log "=== disable (webos25) start ==="'
   ].concat(W25_COMPAT_SH, [
+    'w25_pt_stop_soft',
     'if [ -L "' + W25_HOOK + '" ] || [ -e "' + W25_HOOK + '" ]; then rm -f "' + W25_HOOK + '" && log "removed boot hook"; else log "boot hook not present"; fi',
     // Prints WARN_UNMOUNT=<targets> and returns non-zero if a target survived even
     // a lazy detach, i.e. the revert did not actually happen. Surfaced to the
@@ -3543,6 +3598,8 @@ function w25StatusProbe() {
     // Report both so the UI can tell "asked for, not applied yet" from "on".
     'echo "APPDTS_FLAG=$([ -f ' + W25_APPDTS_FLAG + ' ] && echo 1 || echo 0)"',
     'echo "PT_FLAG=$([ -f ' + W25_PT_FLAG + ' ] && echo 1 || echo 0)"',
+    'echo "HD_FLAG=$([ -f ' + W25_HD_FLAG + ' ] && echo 1 || echo 0)"',
+    w25HdReadinessSteps(),
     // Only while the watcher is alive: dtsdec ignores the file otherwise too.
     'P=$(cat ' + W25_PT_RUN + '/watcher.pid 2>/dev/null); echo "PT_OUT=$([ -n "$P" ] && [ -d /proc/$P ] && cut -d" " -f2- ' + W25_PT_RUN + '/sound-output 2>/dev/null)"',
     // The boot hook's last apply outcome: "<epoch> <on|skipped|failed> <message>".
@@ -3760,6 +3817,9 @@ service.register("status", function (message) {
         base.passthroughRequested = kv.PT_FLAG === "1";
         base.passthroughOutput = kv.PT_OUT || "";
         base.passthroughToReceiver = base.passthroughRequested && w25PtReceiver(kv.PT_OUT);
+        base.passthroughHdRequested = kv.HD_FLAG === "1";
+        base.passthroughHdReady = base.passthroughRequested && w25HdOutput(kv.PT_OUT) && kv.HD_READY === "1";
+        base.passthroughHdReason = w25HdReason(kv.HD_REASON, base.passthroughOutput);
         base.appDtsRequested = kv.APPDTS_FLAG === "1";
         base.edidType = kv.EDIDTYPE || "";
         // The effect, not the intent: apps read this string, so it is what decides
@@ -3991,40 +4051,63 @@ function w25AppDtsSteps(on) {
   return lines.join("\n");
 }
 
-/* =======================================================================
- * DTS passthrough opt-in
- * ---------------------------------------------------------------------
- * LG sends non-Dolby PCM to an ARC/eARC receiver as a 2-channel 16-bit copy,
- * so decoded DTS 5.1 arrives as stereo. With this on, dtsdec sends the DTS core
- * as IEC 61937 inside that stereo stream instead, and the receiver decodes real
- * DTS 5.1 (owner-tested on a G2 with a Denon receiver: Plex and the Media
- * Player). dtsdec only does it while the boot script's watcher reports
- * external_arc with Pass Through or Auto; on speakers it decodes as usual.
- * The marker is the whole state. The toggle starts or stops the watcher right
- * away through the boot script's W25_PT mode, so no restart is needed.
- * ===================================================================== */
+/* Passthrough opt-in. The boot watcher tracks receiver selection; HD also
+ * requires a verified LG sink and eARC controls. Speakers use software decode. */
 var W25_PT_FLAG = W25_DEST + "/passthrough";
 var W25_PT_RUN = "/run/dts25";
+var W25_HD_FLAG = W25_DEST + "/passthrough-hd";
 
-function w25PassthroughSteps(on) {
+function w25HdReadinessSteps() {
+  return [
+    'HD_REASON=ready',
+    'if [ ! -e ' + W25_PT_RUN + '/sink-ok ]; then HD_REASON=untested-sink',
+    'elif [ ! -x ' + W25_DEST + '/lgroute-control ]; then HD_REASON=missing-helper',
+    'elif ! timeout 5 ' + W25_DEST + '/lgroute-control --check >/dev/null 2>&1; then HD_REASON=earc-unavailable; fi',
+    'echo "HD_REASON=$HD_REASON"',
+    'echo "HD_READY=$([ "$HD_REASON" = ready ] && echo 1 || echo 0)"'
+  ].join("\n");
+}
+
+function w25HdReason(reason, output) {
+  if (reason === "untested-sink") return "This TV's LG audio sink build is not on the tested list.";
+  if (reason === "missing-helper") return "The eARC helper is missing. Enable DTS again to install it.";
+  if (reason === "earc-unavailable") return "eARC is unavailable or its audio controls could not be verified.";
+  if (!w25HdOutput(output)) return "Set Sound > Advanced Settings > Digital Sound Output to Pass Through.";
+  return reason === "ready" ? "" : "HD readiness could not be verified.";
+}
+
+/** Only Pass Through keeps LG from mixing TV sounds into the HD carrier. */
+function w25HdOutput(out) {
+  return out === "external_arc passThrough";
+}
+
+function w25PassthroughSteps(on, hd) {
   var lines = ["set -u", 'FLAG=' + W25_PT_FLAG];
+  if (hd === true) {
+    lines.push('[ -x ' + W25_DEST + '/lgroute-control ] || { echo "ERROR=The eARC helper is not installed. Enable DTS again to install it."; exit 1; }');
+    lines.push('[ "$(cut -d" " -f2- ' + W25_PT_RUN + '/sound-output 2>/dev/null)" = "external_arc passThrough" ] || { echo "ERROR=Turn passthrough on and set Sound > Advanced Settings > Digital Sound Output to Pass Through first."; exit 1; }');
+  }
   // The current boot script carries the W25_PT mode; an older installed one
   // would ignore W25_PT and run a full apply instead.
   lines.push('base64 -d > "' + W25_INIT_SCRIPT + '" <<\'B64EOF\'');
   lines.push(Buffer.from(w25InitScriptBody(), "utf8").toString("base64"));
   lines.push('B64EOF');
   lines.push('chmod 0755 "' + W25_INIT_SCRIPT + '"');
+  lines.push('W25_PT=stop sh "' + W25_INIT_SCRIPT + '" </dev/null || exit 1');
+  if (typeof hd === "boolean") {
+    lines.push(hd ? ': > "' + W25_HD_FLAG + '"' : 'rm -f "' + W25_HD_FLAG + '"');
+  }
   if (on) {
     lines.push('mkdir -p "$(dirname "$FLAG")" 2>/dev/null');
     lines.push(': > "$FLAG"');
     // setsid + no stdio: the watcher outlives this exec call, and the bridge
     // must not wait on its pipes.
     lines.push('setsid sh -c \'W25_PT=start sh "' + W25_INIT_SCRIPT + '"\' </dev/null >/dev/null 2>&1 &');
-    lines.push('i=0; while [ "$i" -lt 10 ] && [ ! -s ' + W25_PT_RUN + '/sound-output ]; do sleep 1; i=$((i + 1)); done');
+    lines.push('i=0; while [ "$i" -lt 10 ]; do [ -s ' + W25_PT_RUN + '/sound-output ] && break; sleep 1; i=$((i + 1)); done');
   } else {
     lines.push('rm -f "$FLAG"');
-    lines.push('W25_PT=stop sh "' + W25_INIT_SCRIPT + '" </dev/null >/dev/null 2>&1');
   }
+  lines.push(w25HdReadinessSteps());
   lines.push('echo "PT_OUT=$(cut -d" " -f2- ' + W25_PT_RUN + '/sound-output 2>/dev/null)"');
   lines.push('echo OK');
   lines.push("exit 0");
@@ -4038,6 +4121,7 @@ function w25PtReceiver(out) {
 
 service.register("setPassthrough", function (message) {
   var want = !!(message.payload && message.payload.enabled);
+  var hd = message.payload && message.payload.hd;
   detectProfile().then(function (d) {
     if (d.profile !== PROFILE_W25) {
       message.respond({
@@ -4046,9 +4130,13 @@ service.register("setPassthrough", function (message) {
       });
       return;
     }
-    return rootExec(w25PassthroughSteps(want)).then(function (r) {
+    return rootExec(w25PassthroughSteps(want, hd)).then(function (r) {
       var kv = parseKv(r.stdout);
       var out = kv.PT_OUT || "";
+      if (kv.ERROR || !/^OK$/m.test(r.stdout || "")) {
+        message.respond({ returnValue: false, errorText: kv.ERROR || "Passthrough settings could not be changed." });
+        return;
+      }
       logActionResult("passthrough", d.profile, want ? "on" : "off", "soundOutput=" + out);
       message.respond({
         returnValue: true,
@@ -4057,6 +4145,10 @@ service.register("setPassthrough", function (message) {
         soundOutput: out,
         receiver: w25PtReceiver(out),
         summary: !want ? "Passthrough off: DTS is decoded again."
+          : hd === true ? (kv.HD_READY === "1" && w25HdOutput(out)
+            ? "DTS-HD ready: whole DTS tracks go to your eARC receiver from the next video."
+            : "DTS-HD requested. " + w25HdReason(kv.HD_REASON, out))
+          : hd === false ? "DTS-HD off: the receiver gets only the DTS core again."
           : w25PtReceiver(out) ? "Passthrough on: DTS goes to your receiver from the next video."
           : "Passthrough on. It starts once the TV sends sound to an ARC/eARC receiver."
       });
@@ -4399,6 +4491,10 @@ function runMechanism(message, action) {
 
     return rootExec(builder()).then(function (r) {
       var kv = parseKv(r.stdout);
+      if (kv.ERROR) {
+        message.respond({ returnValue: false, profile: profile, action: action, errorText: kv.ERROR });
+        return;
+      }
       // The webOS 25 builders print REFUSED=<verdict> + REASON=<text> instead of
       // OK when the compatibility gate stood them down. Nothing was bound in that
       // case, so report it as a failed call with the gate's own reason rather
@@ -4456,6 +4552,10 @@ function runMechanism(message, action) {
         res.unmountWarning = kv.WARN_UNMOUNT;
         warnings.push("Some overrides could not be detached and are still active: " +
           kv.WARN_UNMOUNT + ". Reboot the TV to clear them.");
+      }
+      if (kv.WARN_PT_STOP) {
+        warnings.push("Passthrough did not stop cleanly (" + kv.WARN_PT_STOP +
+          "). If TV sounds stay silent over eARC, reboot the TV.");
       }
       if (kv.REG_REVERTED !== undefined) {
         res.registryReverted = kv.REG_REVERTED === "1";

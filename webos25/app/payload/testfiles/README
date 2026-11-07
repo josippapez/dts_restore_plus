@@ -33,6 +33,6 @@ about the BluRay/HDMV layout. Keep these files byte-identical to restore/.
 The TrueHD sample is MKV on purpose. A BluRay TrueHD track carries an AC-3
 substream on the SAME PID, so a .ts case passes by decoding the AC-3 core even
 when the TrueHD pad was never exposed -- it would report the patch working when
-it is not. Matroska has no such fallback. It is a synthetic 4s 6-channel tone
-bed (ffmpeg -c:a truehd), not a clip, because it only has to prove the decoder
-runs; channel_layout is 5.1(side), which is what a real TrueHD track negotiates.
+it is not. Matroska has no such fallback. This is a five-second excerpt of
+https://samples.ffmpeg.org/A-codecs/TrueHD/TrueHD.raw, stream-copied into MKV
+without re-encoding: 24-bit, 48 kHz TrueHD 5.1(side), with no AC-3 fallback.

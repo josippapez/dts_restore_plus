@@ -126,7 +126,7 @@ The single most important rule when widening an existing profile.
   the CX profile; adding a file there changes CX behaviour.
 - Every enable/disable path must stay reversible, and `Disable` must not depend on the
   state being tidy.
-- Cover all four paths in `app/service/test/profile-compat.test.js`: not shipped,
+- Cover all four paths in `app/service/test/c2-ts.test.js`: not shipped,
   dependency unresolved, usable, and no stock target to override. Then make the change
   hard-fail locally and confirm the test goes red. A guard that cannot fail is not a guard.
 
@@ -148,13 +148,13 @@ sh   webos25/restore/check-init-sync.sh
 sh   webos25/restore/check-revert-sync.sh
 sh   webos25/restore/check-report-sync.sh
 sh   webos25/restore/check-manifest-floor.sh
-cd webos25/app/service && node test/profile-compat.test.js
+node --test 'webos25/app/service/test/*.test.js'
 cd webos25/restore && sh src/test/run-tests.sh
 ```
 
 `check-kv-sync.js` catches produced-but-unread and read-but-unproduced for the
 UPPER_SNAKE probe keys. It **cannot** judge short lowercase keys (`mp4`, `ts`) — those
-need a real assertion in `profile-compat.test.js`; see the self-test-map test there.
+need a real assertion in `app/service/test/profile.test.js`; see the self-test-map test there.
 
 ### Every place a new generation touches
 
@@ -164,7 +164,7 @@ need a real assertion in `profile-compat.test.js`; see the self-test-map test th
   self-test shell, the self-test response handler, the diagnostic log fields
 - `app/js/app.js`: the capability/label rendering and the button gating
 - `.github/workflows/release.yml`: staging the payload into the `.ipk`
-- `app/service/test/profile-compat.test.js`: the fixture and the new-path tests
+- `app/service/test/helpers.js` (the fixture) and the matching `*.test.js` (new-path tests)
 - docs: `MULTI-MODEL.md`, the profile's design doc, `app/README.md`
 
 ## 7. Make failures diagnosable before asking an owner to test

@@ -26,8 +26,6 @@
 # them fully reverts the TV. A REBOOT is recommended to guarantee a clean
 # state (drops any in-memory registry the media process already cached).
 #
-# Always exits 0.
-#
 set -u
 
 LOG=/tmp/dts25.log
@@ -74,6 +72,14 @@ w25_umount() {
 }
 
 log "=== unified DTS+TrueHD uninstall start ==="
+
+STOP_SCRIPT=$(dirname "$0")/init_dts25.sh
+[ -f "$STOP_SCRIPT" ] || STOP_SCRIPT=$DTS_DEST/init_dts25.sh
+STOP_VERSION=$(sed -n 's/^W25_GATE_VERSION=//p' "$STOP_SCRIPT" 2>/dev/null | head -n1)
+# W25_PT=stop exists since 35; an older script would run a full apply instead.
+if [ "${STOP_VERSION:-0}" -ge 35 ] 2>/dev/null; then
+  W25_PT=stop sh "$STOP_SCRIPT" || log "WARN passthrough stop failed; continuing (a reboot clears /run/dts25)"
+fi
 
 # --- 1. Remove boot hook ---------------------------------------------------
 if [ -L "$HOOK" ] || [ -e "$HOOK" ]; then

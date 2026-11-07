@@ -486,7 +486,7 @@ selection, so this owner matched all eleven C2 gates and still landed on the
 the 128 KB stub, so the behavioral signal lies. The override now yields to an exact
 C2 match (`service.js`; mirrored in `restore/report-tv.sh`, both pinned by
 `restore/check-report-sync.sh` and by a regression test in
-`app/service/test/profile-compat.test.js`). It still fires for C3/C4, where the
+`app/service/test/profile.test.js`). It still fires for C3/C4, where the
 decoder is real and the demuxer gate is the actual problem. Note the C2 zstd-compressed squashfs needs a
 zstd-capable `unsquashfs` (Homebrew `squashfs`); epk2extract's bundled one silently
 emits only the `.pak` files.

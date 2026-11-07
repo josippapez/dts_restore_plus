@@ -27,6 +27,7 @@
 
 #include <gst/gst.h>
 #include <gst/audio/gstaudiodecoder.h>
+#include "lgroute.h"
 
 /* Largest channel count handled (the scratch block and reorder map are sized
  * by it). FFmpeg's dca decoder emits at most 8 for DTS-HD MA 7.1; LG's
@@ -41,6 +42,7 @@
 #define GST_DTSDEC_PASSTHROUGH_ALWAYS 2
 
 struct AVCodecContext;
+struct AVFormatContext;
 struct AVFrame;
 struct AVPacket;
 
@@ -116,6 +118,10 @@ struct _GstDtsDec {
   gint           pt_skipped;	/* frames dropped while waiting for core */
   gboolean       pt_output_ok;	/* last sound-output check passed        */
   gint64         pt_checked;	/* monotonic time of that check, us      */
+  gboolean       pt_hd;		/* whole frames as IEC 61937 type IV     */
+  struct AVFormatContext *spdif;	/* FFmpeg's spdif muxer, pt_hd only */
+  LgRoute        hd_route;
+  guint64        hd_silence;
 
   struct AVCodecContext *avctx;
   struct AVFrame *frame;

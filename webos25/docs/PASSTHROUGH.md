@@ -4,10 +4,19 @@
 (eARC/ARC/optical) — i.e. real passthrough — instead of software-decoding to PCM
 (what this project does today)?
 
-**Verdict: not achievable via any editable config, caps, or rank on webOS 25.**
-The decode-vs-passthrough decision is compiled into LG's **closed audio HAL**, not
-exposed in any file we can edit. (Investigated on a real C5, read-only, plus
-GStreamer/LG-source/RootMyTV-#72 research.)
+**DTS core passthrough works; full DTS-HD / TrueHD is experimental.**
+Receiver-confirmed DTS-HD and TrueHD on a C2 OLED42C27LA (firmware 33.31.68)
+with a Samsung Q995GF. DTS:X and Atmos have not been confirmed.
+
+## Full DTS-HD over eARC
+
+LG connects its PCM bypass itself with active eARC and mixing disabled. The
+transport keeps FFmpeg's IEC 61937 packing on a 192 kHz carrier. HD needs Digital
+Sound Output on Pass Through: Auto re-encodes and mixes TV sounds in. Nothing writes
+LG's mixer; if LG keeps mixing on for a second, the stream falls back to the core.
+
+Unknown sink builds refuse HD. The older investigation below describes the stock
+software-decoding path.
 
 ## Why
 
@@ -56,9 +65,7 @@ path worth attempting.
 
 ## Likely impossible without proprietary reverse-engineering
 
-- True DTS or TrueHD **bitstream** over eARC via any open path.
 - Rebuilding LG's closed `lgaudiosink` / `lxaudiodec` / `liblxa` / audio HAL.
-- TrueHD passthrough specifically (no decoder, no sink caps, licensing).
 
 ## The related question, now settled: the "Dolby Atmos" / "DTS:X" badge
 
@@ -177,8 +184,6 @@ inaudible until an AVR is attached over eARC.
    `src_codec_ext_type_t` → output-mode mapping table — that table (or a driver
    ioctl), not a config file, is the true gate.
 
-**Bottom line:** passthrough is out of reach on webOS 25 without proprietary RE, and
-the Atmos/DTS:X badge is out of reach for a second, independent reason — LG's only
-Atmos-capable decoder does not accept DTS or TrueHD input at all. Keep the honest
-"decode-to-PCM only, no passthrough, no object audio" caveat in the README; the only
-realistic upgrade is decode-then-reframe to multichannel PCM (BD-LPCM), not bitstream.
+**Bottom line:** the Atmos/DTS:X badge on the TV is out of reach — LG's only
+Atmos-capable decoder does not accept DTS or TrueHD input at all. With full DTS-HD
+passthrough an eARC receiver renders DTS:X itself.
