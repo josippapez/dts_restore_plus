@@ -99,7 +99,7 @@ EXPECT_GST=1.24
 #      drift-checked like the /etc keys, so an older stock.fp without it is not drift.
 #   41 the passthrough watcher restores the eARC mixer if a passthrough stream dies.
 #   42 self-heal, stand-down and the boot apply continue when passthrough stop fails.
-W25_GATE_VERSION=42
+W25_GATE_VERSION=43
 FP=/var/lib/webosbrew/dts25/stock.fp
 # Where the installed copy of THIS script lives, and the boot hook that symlinks
 # to it. Named here, in the shared block, so the read-only probe can fingerprint
@@ -695,7 +695,7 @@ PT_PID=$PT_RUN/watcher.pid
 w25_pt_recover() {
   trap 'exit 0' INT TERM HUP
   while [ -f "$PT_FLAG" ] && [ ! -e "$PT_RUN/stopping" ]; do
-    if [ -x /var/lib/webosbrew/dts25/lgroute-control ]; then
+    if [ -e "$PT_RUN/lgroute.state" ] && [ -x /var/lib/webosbrew/dts25/lgroute-control ]; then
       timeout 5 /var/lib/webosbrew/dts25/lgroute-control --recover || w25_log 'WARN eARC crash recovery failed; journal retained'
     fi
     sleep 1
@@ -731,6 +731,12 @@ w25_pt_watch() {
   done
   rm -f "$PT_OUT" "$PT_PID"
 }
+w25_pt_sink_verified() {
+  case "$1" in
+    90dba3ef32704ce4096bf1e6045d2879d0c2192d507bc04d1e8e98437f420a43) return 0 ;;
+  esac
+  return 1
+}
 w25_pt_start() {
   [ -f "$PT_FLAG" ] || return 0
   mkdir -p "$PT_RUN"
@@ -738,7 +744,11 @@ w25_pt_start() {
   rm -f "$PT_RUN/sink-ok"
   SINK=/usr/lib/gstreamer-1.0/libgstlgaudiosink.so
   SINK_SHA=$(sha256sum "$SINK" 2>/dev/null || busybox sha256sum "$SINK" 2>/dev/null)
-  [ "${SINK_SHA%% *}" = 90dba3ef32704ce4096bf1e6045d2879d0c2192d507bc04d1e8e98437f420a43 ] && : > "$PT_RUN/sink-ok"
+  if w25_pt_sink_verified "${SINK_SHA%% *}"; then
+    : > "$PT_RUN/sink-ok"
+  else
+    w25_log "HD refused: untested LG sink build (${SINK_SHA%% *}); DTS core/decode remains available"
+  fi
   P=$(cat "$PT_PID" 2>/dev/null)
   [ -n "$P" ] && [ -d "/proc/$P" ] && return 0
   rm -f "$PT_RUN/stopping"

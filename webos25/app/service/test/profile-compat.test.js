@@ -22,6 +22,7 @@ function loadService(mocks) {
     "c2StatusBindsComplete: c2StatusBindsComplete, c2SelfTest: c2SelfTest," +
     "DETECT_PROBE: DETECT_PROBE, w25EdidTarget: w25EdidTarget, w25InitScriptBody: w25InitScriptBody," +
     "w25PtReceiver: w25PtReceiver, w25PassthroughSteps: w25PassthroughSteps, w25Enable: w25Enable," +
+    "w25HdReadinessSteps: w25HdReadinessSteps, w25HdReason: w25HdReason," +
     "w25Disable: w25Disable," +
     "constants: {C2: PROFILE_C2," +
     "sets: C2_EXPECTED_SETS, matchSet: c2MatchSet," +
@@ -752,6 +753,7 @@ test("the recovery watchdog retries failures and stops with passthrough", functi
     var helper = path.join(dir, "lgroute-control"), calls = path.join(dir, "calls");
     var flag = path.join(dir, "passthrough");
     write(flag);
+    write(path.join(dir, "lgroute.state"));
     exe(helper, '[ "$1" = --recover ] || exit 99\necho recover >> "' + calls + '"\nexit 7');
     var fn = initFn("w25_pt_recover").split("/var/lib/webosbrew/dts25/lgroute-control").join(helper);
     var result = sh([
@@ -768,6 +770,11 @@ test("the recovery watchdog retries failures and stops with passthrough", functi
     write(path.join(dir, "stopping"));
     ok(sh('PT_FLAG="' + flag + '"\nPT_RUN="' + dir + '"\n' + fn + '\nw25_pt_recover'), "stopped watchdog");
     assert.equal(fs.readFileSync(calls, "utf8"), "recover\nrecover\n", "shutdown must prevent more recovery calls");
+    fs.unlinkSync(path.join(dir, "stopping"));
+    fs.unlinkSync(path.join(dir, "lgroute.state"));
+    ok(sh('PT_FLAG="' + flag + '"\nPT_RUN="' + dir + '"\n' + fn +
+      '\nsleep() { rm -f "$PT_FLAG"; }\nw25_pt_recover'), "idle watchdog");
+    assert.equal(fs.readFileSync(calls, "utf8"), "recover\nrecover\n", "no journal means no helper execution");
   } finally {
     fs.rmSync(dir, {recursive: true, force: true});
   }
@@ -781,6 +788,38 @@ test("HD readiness uses the read-only ALSA check, not a route daemon", function 
   var source = fs.readFileSync(SERVICE, "utf8");
   assert.ok(source.includes('base.passthroughHdReady = base.passthroughToReceiver && kv.HD_READY === "1"'));
   assert.ok(!source.includes("passthroughHdRunning"));
+});
+
+test("HD readiness distinguishes sink builds, helper and eARC failures", function () {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dts-hd-ready-"));
+  try {
+    var script = service.w25HdReadinessSteps()
+      .split("/run/dts25").join(dir)
+      .split("/var/lib/webosbrew/dts25").join(dir);
+    assert.match(sh(script).stdout, /HD_REASON=untested-sink\nHD_READY=0/);
+    write(path.join(dir, "sink-ok"));
+    assert.match(sh(script).stdout, /HD_REASON=missing-helper\nHD_READY=0/);
+    exe(path.join(dir, "lgroute-control"), "exit 1");
+    var bounded = 'timeout() { shift; "$@"; }\n' + script;
+    assert.match(sh(bounded).stdout, /HD_REASON=earc-unavailable\nHD_READY=0/);
+    exe(path.join(dir, "lgroute-control"), "exit 0");
+    assert.match(sh(bounded).stdout, /HD_REASON=ready\nHD_READY=1/);
+    assert.match(service.w25HdReason("untested-sink", "external_arc passThrough"), /tested list/);
+    assert.equal(service.w25HdReason("ready", "external_arc passThrough"), "");
+    assert.match(service.w25HdReason("ready", "tv_speaker pcm"), /Select an eARC receiver/);
+    ok(spawnSync("sh", ["-n"], {input: service.w25PassthroughSteps(true, true), encoding: "utf8"}), "HD toggle syntax");
+  } finally {
+    fs.rmSync(dir, {recursive: true, force: true});
+  }
+});
+
+test("HD sink allowlist accepts exact tested hashes only", function () {
+  var fn = initFn("w25_pt_sink_verified");
+  var known = "90dba3ef32704ce4096bf1e6045d2879d0c2192d507bc04d1e8e98437f420a43";
+  ok(sh(fn + '\nw25_pt_sink_verified "' + known + '"'), "known sink");
+  ["", "x", known.slice(1), "a".repeat(64)].forEach(function (hash) {
+    assert.notEqual(sh(fn + '\nw25_pt_sink_verified "' + hash + '"').status, 0);
+  });
 });
 
 /* Issue #13: the luna hub drops any message over 128 KiB and the app only sees

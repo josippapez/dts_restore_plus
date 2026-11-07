@@ -175,8 +175,6 @@ int lgroute_control_apply (LgRouteControl *control)
     }
     return 0;
   }
-  if (current[4] == 0)
-    return 0;
   memcpy (before, current, sizeof current);
   memcpy (applied, current, sizeof current);
   applied[4] = 0;
@@ -193,7 +191,7 @@ int lgroute_control_apply (LgRouteControl *control)
   if (fflush (file) || fsync (fd)) ok = 0;
   if (fclose (file)) ok = 0;
   if (!ok || rename (temporary, LGROUTE_STATE) < 0) { unlink (temporary); return -1; }
-  if (lgroute_control_write (control->fd, "Sndout EARC Outputtype", applied, 5) < 0
+  if ((current[4] != 0 && lgroute_control_write (control->fd, "Sndout EARC Outputtype", applied, 5) < 0)
       || lgroute_control_read (control->fd, "Sndout EARC Outputtype", current, 5) < 0
       || memcmp (current, applied, sizeof current))
     return -1;

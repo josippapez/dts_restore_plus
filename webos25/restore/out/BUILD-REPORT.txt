@@ -9,16 +9,22 @@ mixer input and appsrc processor, not a before/after graph difference.
 
 ARM EABI5 soft-float, e_flags 0x05000200:
   out/libgstdtsdec.so (max GLIBC_2.35)
-    SHA256 8cc7679a4b85d8eb553c1330b1a00253bcdddc79d3aee32e35d59216d2cde54d
+    SHA256 60682eb15af222bf3bce1f5a05b0a0402fcb31c2a0a5d593a790a8d34a95b3e7
   switch-out/libgstadecswitch.so (max GLIBC_2.7)
     SHA256 07a07eb53e88a508d7615a817db17f5e28711a22b3d4aac8698938fc1c48f3c1
   out/lgroute-control (max GLIBC_2.34)
-    SHA256 bd6c986f6f9136dadedcc40199122b387ed945b24e7347380efd20796c5c0eef
+    SHA256 a237e27ceb855c0fca3cbba46e4c064d08e2a63f6e07dbc5b875e253de28ab1a
 
 Current-build checks, rooted C2 OLED42C27LA / webOS10.3.1, 2026-11-07:
   The exact staged plugin hash above loaded and decoded 48kHz/6ch elementary
-  DTS to fakesink/EOS; the recovery helper's read-only check passed.
+  DTS to a 1,142,876-byte WAV; the recovery helper's read-only check passed.
   No installed plugin was replaced.
+  Cross-compiled source regression tests passed on the TV's GStreamer runtime:
+  non-carrier CAPS handoff through real pads, repeated cleanup and fade restore.
+  Mixer policy is journaled once and verified before each buffer; a changed
+  policy triggers fallback instead of corrective rewrites. Host tests passed.
+
+Previous-build renderer checks on the same TV, 2026-11-07:
   A helper compiled from the actual route source configured named properties
   and fed zero-filled buffers through the stock LG sink. Opt-in/mix-policy
   helpers were stubbed, so this did not exercise full lgroute_arm or eARC.

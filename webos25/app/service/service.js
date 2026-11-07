@@ -353,7 +353,7 @@ var W25_COMPAT_SH = [
   "#      drift-checked like the /etc keys, so an older stock.fp without it is not drift.",
   "#   41 the passthrough watcher restores the eARC mixer if a passthrough stream dies.",
   "#   42 self-heal, stand-down and the boot apply continue when passthrough stop fails.",
-  "W25_GATE_VERSION=42",
+  "W25_GATE_VERSION=43",
   "FP=/var/lib/webosbrew/dts25/stock.fp",
   "# Where the installed copy of THIS script lives, and the boot hook that symlinks",
   "# to it. Named here, in the shared block, so the read-only probe can fingerprint",
@@ -952,7 +952,7 @@ var W25_INIT_MAIN = [
   "w25_pt_recover() {",
   "  trap 'exit 0' INT TERM HUP",
   "  while [ -f \"$PT_FLAG\" ] && [ ! -e \"$PT_RUN/stopping\" ]; do",
-  "    if [ -x /var/lib/webosbrew/dts25/lgroute-control ]; then",
+  "    if [ -e \"$PT_RUN/lgroute.state\" ] && [ -x /var/lib/webosbrew/dts25/lgroute-control ]; then",
   "      timeout 5 /var/lib/webosbrew/dts25/lgroute-control --recover || w25_log 'WARN eARC crash recovery failed; journal retained'",
   "    fi",
   "    sleep 1",
@@ -988,6 +988,12 @@ var W25_INIT_MAIN = [
   "  done",
   "  rm -f \"$PT_OUT\" \"$PT_PID\"",
   "}",
+  "w25_pt_sink_verified() {",
+  "  case \"$1\" in",
+  "    90dba3ef32704ce4096bf1e6045d2879d0c2192d507bc04d1e8e98437f420a43) return 0 ;;",
+  "  esac",
+  "  return 1",
+  "}",
   "w25_pt_start() {",
   "  [ -f \"$PT_FLAG\" ] || return 0",
   "  mkdir -p \"$PT_RUN\"",
@@ -995,7 +1001,11 @@ var W25_INIT_MAIN = [
   "  rm -f \"$PT_RUN/sink-ok\"",
   "  SINK=/usr/lib/gstreamer-1.0/libgstlgaudiosink.so",
   "  SINK_SHA=$(sha256sum \"$SINK\" 2>/dev/null || busybox sha256sum \"$SINK\" 2>/dev/null)",
-  "  [ \"${SINK_SHA%% *}\" = 90dba3ef32704ce4096bf1e6045d2879d0c2192d507bc04d1e8e98437f420a43 ] && : > \"$PT_RUN/sink-ok\"",
+  "  if w25_pt_sink_verified \"${SINK_SHA%% *}\"; then",
+  "    : > \"$PT_RUN/sink-ok\"",
+  "  else",
+  "    w25_log \"HD refused: untested LG sink build (${SINK_SHA%% *}); DTS core/decode remains available\"",
+  "  fi",
   "  P=$(cat \"$PT_PID\" 2>/dev/null)",
   "  [ -n \"$P\" ] && [ -d \"/proc/$P\" ] && return 0",
   "  rm -f \"$PT_RUN/stopping\"",
@@ -3620,7 +3630,7 @@ function w25StatusProbe() {
     'echo "APPDTS_FLAG=$([ -f ' + W25_APPDTS_FLAG + ' ] && echo 1 || echo 0)"',
     'echo "PT_FLAG=$([ -f ' + W25_PT_FLAG + ' ] && echo 1 || echo 0)"',
     'echo "HD_FLAG=$([ -f ' + W25_HD_FLAG + ' ] && echo 1 || echo 0)"',
-    'echo "HD_READY=$([ -e ' + W25_PT_RUN + '/sink-ok ] && [ -x ' + W25_DEST + '/lgroute-control ] && timeout 5 ' + W25_DEST + '/lgroute-control --check >/dev/null 2>&1 && echo 1 || echo 0)"',
+    w25HdReadinessSteps(),
     // Only while the watcher is alive: dtsdec ignores the file otherwise too.
     'P=$(cat ' + W25_PT_RUN + '/watcher.pid 2>/dev/null); echo "PT_OUT=$([ -n "$P" ] && [ -d /proc/$P ] && cut -d" " -f2- ' + W25_PT_RUN + '/sound-output 2>/dev/null)"',
     // The boot hook's last apply outcome: "<epoch> <on|skipped|failed> <message>".
@@ -3840,6 +3850,7 @@ service.register("status", function (message) {
         base.passthroughToReceiver = base.passthroughRequested && w25PtReceiver(kv.PT_OUT);
         base.passthroughHdRequested = kv.HD_FLAG === "1";
         base.passthroughHdReady = base.passthroughToReceiver && kv.HD_READY === "1";
+        base.passthroughHdReason = w25HdReason(kv.HD_REASON, base.passthroughOutput);
         base.appDtsRequested = kv.APPDTS_FLAG === "1";
         base.edidType = kv.EDIDTYPE || "";
         // The effect, not the intent: apps read this string, so it is what decides
@@ -4087,6 +4098,25 @@ var W25_PT_FLAG = W25_DEST + "/passthrough";
 var W25_PT_RUN = "/run/dts25";
 var W25_HD_FLAG = W25_DEST + "/passthrough-hd";
 
+function w25HdReadinessSteps() {
+  return [
+    'HD_REASON=ready',
+    'if [ ! -e ' + W25_PT_RUN + '/sink-ok ]; then HD_REASON=untested-sink',
+    'elif [ ! -x ' + W25_DEST + '/lgroute-control ]; then HD_REASON=missing-helper',
+    'elif ! timeout 5 ' + W25_DEST + '/lgroute-control --check >/dev/null 2>&1; then HD_REASON=earc-unavailable; fi',
+    'echo "HD_REASON=$HD_REASON"',
+    'echo "HD_READY=$([ "$HD_REASON" = ready ] && echo 1 || echo 0)"'
+  ].join("\n");
+}
+
+function w25HdReason(reason, output) {
+  if (reason === "untested-sink") return "This TV's LG audio sink build is not on the tested list.";
+  if (reason === "missing-helper") return "The eARC helper is missing. Enable DTS again to install it.";
+  if (reason === "earc-unavailable") return "eARC is unavailable or its audio controls could not be verified.";
+  if (!w25PtReceiver(output)) return "Select an eARC receiver with Pass Through or Auto.";
+  return reason === "ready" ? "" : "HD readiness could not be verified.";
+}
+
 function w25PassthroughSteps(on, hd) {
   var lines = ["set -u", 'FLAG=' + W25_PT_FLAG];
   if (hd === true) {
@@ -4112,7 +4142,7 @@ function w25PassthroughSteps(on, hd) {
   } else {
     lines.push('rm -f "$FLAG"');
   }
-  lines.push('echo "HD_READY=$([ -e ' + W25_PT_RUN + '/sink-ok ] && [ -x ' + W25_DEST + '/lgroute-control ] && timeout 5 ' + W25_DEST + '/lgroute-control --check >/dev/null 2>&1 && echo 1 || echo 0)"');
+  lines.push(w25HdReadinessSteps());
   lines.push('echo "PT_OUT=$(cut -d" " -f2- ' + W25_PT_RUN + '/sound-output 2>/dev/null)"');
   lines.push('echo OK');
   lines.push("exit 0");
@@ -4152,7 +4182,7 @@ service.register("setPassthrough", function (message) {
         summary: !want ? "Passthrough off: DTS is decoded again."
           : hd === true ? (kv.HD_READY === "1" && w25PtReceiver(out)
             ? "DTS-HD ready: whole DTS tracks go to your eARC receiver from the next video."
-            : "DTS-HD requested. It is ready when an eARC receiver is selected with Pass Through or Auto.")
+            : "DTS-HD requested. " + w25HdReason(kv.HD_REASON, out))
           : hd === false ? "DTS-HD off: the receiver gets only the DTS core again."
           : w25PtReceiver(out) ? "Passthrough on: DTS goes to your receiver from the next video."
           : "Passthrough on. It starts once the TV sends sound to an ARC/eARC receiver."
