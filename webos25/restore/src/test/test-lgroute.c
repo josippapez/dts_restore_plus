@@ -8,7 +8,7 @@
 #include "../lgroute.h"
 
 static const char *graph;
-static gboolean graph_ok = TRUE, receiver = TRUE, writes_ok = TRUE;
+static gboolean graph_ok = TRUE, receiver = TRUE, writes_ok = TRUE, short_write;
 static int apply_result, applies, formats, gains, mutes, unmutes, graph_reads, player_volume = -1;
 static char destination[128];
 
@@ -37,9 +37,20 @@ write_property (int fd, const void *buffer, size_t size)
 {
   g_assert_cmpint (fd, ==, 123);
   if (!writes_ok) return -1;
-  g_assert_cmpstr (destination, ==, "/proc/aaudio/instances/04260026/cmd");
-  if (!strncmp (buffer, "0x50020020 ", 11)) formats++;
-  else { g_assert_true (!strncmp (buffer, "0x50040008 ", 11)); gains++; }
+  g_assert_cmpstr (destination, ==, "/proc/aaudio/instances/04260026/prop");
+  static const char expected[] =
+      "in-sampling-rate 192000\n"
+      "in-channels 8\n"
+      "in-bit-per-sample 16\n"
+      "endian 0\n"
+      "sign 0\n"
+      "out-sampling-rate 192000\n"
+      "out-channels 8\n"
+      "out-bit-per-sample 16\n"
+      "gain-enable false\n";
+  g_assert_cmpmem (buffer, size, expected, sizeof expected - 1);
+  if (short_write) return size - 1;
+  formats++; gains++;
   return size;
 }
 
@@ -130,6 +141,7 @@ static void reset (LgRoute *route)
   lgroute_init (route, NULL);
   route->sink = g_object_new (test_sink_get_type (), NULL);
   graph = before; graph_ok = receiver = writes_ok = TRUE; apply_result = graph_reads = 0;
+  short_write = FALSE;
   player_volume = -1;
 }
 
@@ -180,6 +192,10 @@ int main (int argc, char **argv)
   lgroute_disarm (&route); g_free (ambiguous);
 
   reset (&route); caps_event (&route); graph = after; writes_ok = FALSE;
+  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_DROP);
+  g_assert_true (route.failed); lgroute_disarm (&route);
+
+  reset (&route); caps_event (&route); graph = after; short_write = TRUE;
   g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_DROP);
   g_assert_true (route.failed); lgroute_disarm (&route);
 

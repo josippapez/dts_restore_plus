@@ -1,14 +1,14 @@
 DTS / TrueHD LG-managed routing -- DRAFT BUILD REPORT
 ===================================================
 
-Built 2026-11-06 from gstdtsdec.c, lgroute.c and lgroute-control.c using
+Built 2026-11-07 from gstdtsdec.c, lgroute.c and lgroute-control.c using
 cached dts25-dtsdec-build: Debian bookworm armel, snapshot 20250601T000000Z,
 FFmpeg n4.4.4 static dca decoder and spdif muxer. No GPL/nonfree options.
-Recovered sources reproduce all three saved pre-recovery binary hashes.
+The DTS plugin now configures the bypass converter through named properties.
 
 ARM EABI5 soft-float, e_flags 0x05000200:
   out/libgstdtsdec.so (max GLIBC_2.35)
-    SHA256 f2def8000905952851a2be81189c9c22ca4657913fbdfbacd7d843832d58e13f
+    SHA256 cc7da8394a039d7051b32de10a8454ef90166173198d29d59923ae8c50a1f77a
   switch-out/libgstadecswitch.so (max GLIBC_2.7)
     SHA256 07a07eb53e88a508d7615a817db17f5e28711a22b3d4aac8698938fc1c48f3c1
   out/lgroute-control (max GLIBC_2.34)
@@ -24,11 +24,15 @@ On-device checks, rooted C2 OLED42C27LA / webOS10.3.1, 2026-11-06:
   Stopping playback restores mix=1 and removes the recovery journal.
   Host route/mixer/fallback tests and 38 app/lifecycle checks pass.
 
-Rebuilt after those checks: the main path is now muted through the sink's
-fade property, and the sink hash is checked once by the boot script
-(/run/dts25/sink-ok). Not yet re-verified on the TV.
+Current-build checks on the same TV, 2026-11-07: isolated silent probe using
+the actual converter configuration function accepted named properties, fed
+12 buffers and reached EOS. Its renderer was removed; eARC Outputtype stayed
+2,1,0,0,1. No output connection or mix override was tested. The staged plugin
+decoded elementary DTS to a 4,276,304-byte WAV. Stock MP4/parser paths failed.
+Host recovered-converter tests show named/raw byte equivalence and FIRST/flush
+survival; write acceptance on the TV does not prove DSP state or byte identity.
 
-NOT YET VERIFIED for this migration: audible receiver decoding, TrueHD BD
-TS/M2TS, seek/output-switch/crash recovery, DTS:X/Atmos, other TV stacks.
+NOT YET VERIFIED for this build: end-to-end eARC transport, audible receiver
+decoding, TrueHD BD TS/M2TS, seek/output-switch/crash recovery, other TV stacks.
 Historical tests of the previous implementation do not validate this build.
 Keep PR draft; this is not a release-ready hardware qualification.

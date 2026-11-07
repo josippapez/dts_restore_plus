@@ -90,12 +90,20 @@ static gboolean configure_converter (LgRoute *route, gchar **lines)
   }
   if (count != 1)
     return FALSE;
-  gchar *path = g_strdup_printf ("/proc/aaudio/instances/%s/cmd", candidate);
+  gchar *path = g_strdup_printf ("/proc/aaudio/instances/%s/prop", candidate);
   int fd = open (path, O_WRONLY | O_CLOEXEC);
-  static const char format[] = "0x50020020 192000 8 16 0 0 192000 8 16\n";
-  static const char gain[] = "0x50040008 0 0\n";
-  gboolean ok = fd >= 0 && write (fd, format, sizeof format - 1) == sizeof format - 1
-      && write (fd, gain, sizeof gain - 1) == sizeof gain - 1;
+  static const char properties[] =
+      "in-sampling-rate 192000\n"
+      "in-channels 8\n"
+      "in-bit-per-sample 16\n"
+      "endian 0\n"
+      "sign 0\n"
+      "out-sampling-rate 192000\n"
+      "out-channels 8\n"
+      "out-bit-per-sample 16\n"
+      "gain-enable false\n";
+  gboolean ok = fd >= 0
+      && write (fd, properties, sizeof properties - 1) == sizeof properties - 1;
   if (fd >= 0) close (fd);
   g_free (path);
   return ok;
