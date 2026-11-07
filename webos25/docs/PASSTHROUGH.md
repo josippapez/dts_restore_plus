@@ -67,7 +67,6 @@ path worth attempting.
 ## Likely impossible without proprietary reverse-engineering
 
 - Rebuilding LG's closed `lgaudiosink` / `lxaudiodec` / `liblxa` / audio HAL.
-- TrueHD passthrough specifically (no decoder, no sink caps, licensing).
 
 ## The related question, now settled: the "Dolby Atmos" / "DTS:X" badge
 
