@@ -80,7 +80,7 @@ Why tsdemux was rebuilt again (DTS-HD extension substream, webos25-2.43)
 For the BD DTS stream types tsdemux kept only PES substream 0x71 (the DTS core)
 and dropped 0x72, the DTS-HD extension substream that carries XLL/XBR/X96. That
 did not matter while dtsdec (libdca) decoded the core only. dtsdec now decodes
-the extension (ffmpeg dca), so the filter is
+the extension (ffmpeg dca, see ../out/BUILD-REPORT.txt), so the filter is
 removed and both substreams reach dtsdec, whose parser joins core + extension
 back into one frame:
 
