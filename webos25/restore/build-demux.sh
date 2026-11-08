@@ -8,7 +8,8 @@
 # Also patches matroska-demux so Dolby Vision profile 7 (UHD Blu-ray) MKVs
 # are signalled as Dolby Vision instead of being downgraded to HDR10.
 #
-# Produces libgstisomp4.so + libgstmpegtsdemux.so + libgstmatroska.so for
+# Produces libgstisomp4.so + libgstmpegtsdemux.so + libgstmatroska.so (and
+# libgstmpegpsdemux.so, DTS in .vob/MPEG-PS) for
 # LG C5 (webOS 25):
 #   32-bit ARM EABI5 soft-float (arm-linux-gnueabi), e_flags 0x05000200,
 #   ld-linux.so.3, glibc <= 2.35 (built on debian:11-slim). GStreamer 1.24.
@@ -35,22 +36,27 @@ done
 QTDEMUX="$CTX/src/gst-plugins-good/gst/isomp4/qtdemux.c"
 TSDEMUX="$CTX/src/gst-plugins-bad/gst/mpegtsdemux/tsdemux.c"
 MKVDEMUX="$CTX/src/gst-plugins-good/gst/matroska/matroska-demux.c"
+PSDEMUX="$CTX/src/gst-plugins-bad/gst/mpegdemux/gstmpegdemux.c"
 
 perl -0pi -e 's/qtdemux->dts_support = FALSE;/qtdemux->dts_support = TRUE;/g' "$QTDEMUX"
 perl -0pi -e 's/demux->dts_support = FALSE;/demux->dts_support = TRUE;/g'     "$TSDEMUX"
 # matroska: with dts_support FALSE this build drops A_DTS tracks entirely (no
 # pad), unlike LG's stock binary, which re-tags them for our dtsdec.
 perl -0pi -e 's/demux->dts_support = FALSE;/demux->dts_support = TRUE;/g'     "$MKVDEMUX"
+# mpegpsdemux (.vob / MPEG-PS): the same default-init assignment, inside the
+# same #ifdef DTS_SUPPORT; without it ST_PS_AUDIO_DTS creates no pad and LG's
+# player says the video has no supported audio.
+perl -0pi -e 's/demux->dts_support = FALSE;/demux->dts_support = TRUE;/g'     "$PSDEMUX"
 
 echo "=== DTS patch verification ==="
-for f in "$QTDEMUX" "$TSDEMUX" "$MKVDEMUX"; do
+for f in "$QTDEMUX" "$TSDEMUX" "$MKVDEMUX" "$PSDEMUX"; do
   echo "--- $f"
   grep -n 'dts_support = TRUE'  "$f" || { echo "PATCH FAILED: no TRUE in $f"; exit 1; }
   if grep -n 'dts_support = FALSE' "$f"; then
     echo "PATCH FAILED: dts_support = FALSE still present in $f"; exit 1
   fi
 done
-echo "=== DTS patch OK (all three files: dts_support = TRUE, no remaining FALSE) ==="
+echo "=== DTS patch OK (all four files: dts_support = TRUE, no remaining FALSE) ==="
 
 # ---------------------------------------------------------------------------
 # TRUEHD-IN-MPEG-TS PATCH: LG wraps the BD TrueHD stream-type case in tsdemux.c
@@ -243,6 +249,7 @@ echo "=== in-container DTS patch check ==="
 grep -n 'qtdemux->dts_support = TRUE' "$SRC/gst-plugins-good/gst/isomp4/qtdemux.c"
 grep -n 'demux->dts_support = TRUE'   "$SRC/gst-plugins-bad/gst/mpegtsdemux/tsdemux.c"
 grep -n 'demux->dts_support = TRUE'   "$SRC/gst-plugins-good/gst/matroska/matroska-demux.c"
+grep -n 'demux->dts_support = TRUE'   "$SRC/gst-plugins-bad/gst/mpegdemux/gstmpegdemux.c"
 grep -n 'demux->dv_profile <= 7'      "$SRC/gst-plugins-good/gst/matroska/matroska-demux.c"
 
 COMMON="--cross-file $CROSS --prefix $PREFIX --libdir lib --buildtype release
@@ -269,27 +276,29 @@ ninja -C "$WORK/good" install
 
 meson setup "$WORK/bad" "$SRC/gst-plugins-bad" $COMMON \
   -Dintrospection=disabled \
-  -Dauto_features=disabled -Dmpegtsdemux=enabled -Ddca=true -Dorc=disabled
+  -Dauto_features=disabled -Dmpegtsdemux=enabled -Dmpegdemux=enabled -Ddca=true -Dorc=disabled
 ninja -C "$WORK/bad" install
 
 cp "$PREFIX/lib/gstreamer-1.0/libgstisomp4.so" "$OUT/"
 cp "$PREFIX/lib/gstreamer-1.0/libgstmpegtsdemux.so" "$OUT/"
 cp "$PREFIX/lib/gstreamer-1.0/libgstmatroska.so" "$OUT/"
+cp "$PREFIX/lib/gstreamer-1.0/libgstmpegpsdemux.so" "$OUT/"
 arm-linux-gnueabi-strip --strip-unneeded "$OUT/libgstisomp4.so" "$OUT/libgstmpegtsdemux.so" \
-  "$OUT/libgstmatroska.so"
+  "$OUT/libgstmatroska.so" "$OUT/libgstmpegpsdemux.so"
 # Debian's bz2 soname is libbz2.so.1.0; the C5 only has libbz2.so.1 (the stock
 # libgstmatroska.so NEEDs that name too), so rewrite it or the plugin won't load.
 patchelf --replace-needed libbz2.so.1.0 libbz2.so.1 "$OUT/libgstmatroska.so"
 arm-linux-gnueabi-readelf -d "$OUT/libgstmatroska.so" | grep -q 'NEEDED.*\[libbz2\.so\.1\]' \
   || { echo "libgstmatroska.so does not NEED libbz2.so.1"; exit 1; }
 
-for so in "$OUT"/libgstisomp4.so "$OUT"/libgstmpegtsdemux.so "$OUT"/libgstmatroska.so; do
+for so in "$OUT"/libgstisomp4.so "$OUT"/libgstmpegtsdemux.so "$OUT"/libgstmatroska.so "$OUT"/libgstmpegpsdemux.so; do
   echo "--- $so"
   file "$so"
   echo -n "e_flags: "; od -An -tx4 -j36 -N4 "$so"
   echo -n "max GLIBC: "; arm-linux-gnueabi-objdump -T "$so" | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -1
   echo "NEEDED:"; arm-linux-gnueabi-readelf -d "$so" | grep NEEDED
-  echo -n "x-dts strings: "; strings "$so" | grep -c 'audio/x-dts'
+  echo -n "x-dts strings: "; strings "$so" | grep -c 'audio/x-dts' || true
+  echo -n "x-private1-dts strings: "; strings "$so" | grep -c 'audio/x-private1-dts' || true
   echo -n "DTS audio strings: "; strings "$so" | grep -c 'DTS audio'
 done
 echo "BUILD OK"

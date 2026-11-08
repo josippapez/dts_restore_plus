@@ -256,7 +256,7 @@ same as GStreamer and its plugins. So is every shipped binary below; each keeps 
 |---|---|---|
 | App, service, `install.sh`/`init_dts25.sh`/`uninstall.sh` | LGPL-2.1-or-later | this repo's own code |
 | Legacy `gst/libgst{matroska,isomp4,isomp4_1_8,libav}.so` (packaged in `payload/cx/`) | LGPL-2.1-or-later | LG GStreamer 1.14.4 sources; shared by the inherited CX mechanism and experimental C2 profile |
-| `webos25/restore/demux-out/libgst{isomp4,mpegtsdemux,matroska}.so` | LGPL-2.1-or-later | built from gst-plugins-good / -bad |
+| `webos25/restore/demux-out/libgst{isomp4,mpegtsdemux,matroska,mpegpsdemux}.so` | LGPL-2.1-or-later | built from gst-plugins-good / -bad |
 | `webos25/restore/truehd-out/libgstlibav.so`, `libav*.so*`, `libsw*.so*` | LGPL-2.1-or-later | ffmpeg 4.4 configured **without** `--enable-gpl` / `--enable-version3` (see `webos25/restore/build-truehd.sh`) |
 | `webos25/restore/out/libgstdtsdec.so` | LGPL-2.1-or-later | gst-plugins-bad `ext/dts` (LGPL) with ffmpeg n4.4.4's `dca` decoder linked in **statically**, configured **without** `--enable-gpl` / `--enable-version3` / `--enable-nonfree` (see `webos25/restore/build.sh`). Before webos25-2.43 it linked libdca and was GPL-2.0-or-later |
 

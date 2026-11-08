@@ -487,7 +487,7 @@ cp ../restore/switch-out/libgstadecswitch.so                   payload/webos25/
 cp ../restore/truehd-out/libgstlibav.so ../restore/truehd-out/libav*.so* \
    ../restore/truehd-out/libsw*.so*                            payload/webos25-truehd/
 cp ../restore/demux-out/libgstisomp4.so ../restore/demux-out/libgstmpegtsdemux.so \
-   ../restore/demux-out/libgstmatroska.so                      payload/webos25-demux/
+   ../restore/demux-out/libgstmatroska.so ../restore/demux-out/libgstmpegpsdemux.so payload/webos25-demux/
 # small DTS samples for the self-test / play-by-ear (already bundled)
 # payload/testfiles/{DTS-in-mp4.mp4,DTS-HD-MA-5.1.ts,DTS-HD-MA-5.1.m2ts}
 cp -f ../../gst/*.so                                           payload/cx/  # shared CX + C2

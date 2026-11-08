@@ -99,7 +99,11 @@ EXPECT_GST=1.24
 #      drift-checked like the /etc keys, so an older stock.fp without it is not drift.
 #   41 opt-in DTS-HD/TrueHD over eARC Pass Through; LG's mixer is only read.
 #   42 self-heal, stand-down and the boot apply continue when passthrough stop fails.
-W25_GATE_VERSION=44
+#   45 libgstmpegpsdemux.so (optional, DTS in .vob / MPEG-PS) is bound in APPLY 2c,
+#      unbound by w25_drop_binds and counted by w25_plugin_binds_present. It is NOT
+#      fingerprinted (no stock.fp key, no drift check), and the registry proof
+#      requires mpegpsdemux only when our bind is live.
+W25_GATE_VERSION=45
 FP=/var/lib/webosbrew/dts25/stock.fp
 # Where the installed copy of THIS script lives, and the boot hook that symlinks
 # to it. Named here, in the shared block, so the read-only probe can fingerprint
@@ -113,6 +117,7 @@ LGLIBAV=/usr/lib/gstreamer-1.0/libgstlibav.so
 LGISO=/usr/lib/gstreamer-1.0/libgstisomp4.so
 LGTSD=/usr/lib/gstreamer-1.0/libgstmpegtsdemux.so
 LGMKV=/usr/lib/gstreamer-1.0/libgstmatroska.so
+LGPSD=/usr/lib/gstreamer-1.0/libgstmpegpsdemux.so
 # CORE payload -- without any of these there is no DTS, no TrueHD, and no
 # switching bin, so a missing one means "do not bind anything".
 MYDTS=/var/lib/webosbrew/dts25/libgstdtsdec.so
@@ -129,6 +134,7 @@ MYSWITCH=/var/lib/webosbrew/dts25/libgstadecswitch.so
 MYISO=/var/lib/webosbrew/demux25/libgstisomp4.so
 MYTSD=/var/lib/webosbrew/demux25/libgstmpegtsdemux.so
 MYMKV=/var/lib/webosbrew/demux25/libgstmatroska.so
+MYPSD=/var/lib/webosbrew/demux25/libgstmpegpsdemux.so
 MYCFG=/var/lib/webosbrew/truehd/codec_capability.json
 MYGC=/var/lib/webosbrew/truehd/gstcool.conf
 MYLIBS=/var/lib/webosbrew/truehd/libs:/var/lib/webosbrew/dts25/libs
@@ -174,7 +180,7 @@ w25_umount() {
 # the warning up.
 w25_drop_binds() {
   UNMOUNT_FAILED=
-  for t in "$CFG" "$GC" "$LGLIBAV" "$LGISO" "$LGTSD" "$LGMKV" "$REG" "$LLS"; do
+  for t in "$CFG" "$GC" "$LGLIBAV" "$LGISO" "$LGTSD" "$LGMKV" "$LGPSD" "$REG" "$LLS"; do
     w25_umount "$t" || UNMOUNT_FAILED="${UNMOUNT_FAILED:+$UNMOUNT_FAILED }$t"
   done
   [ -z "$UNMOUNT_FAILED" ] && return 0
@@ -532,7 +538,7 @@ w25_loader_ok() {
     LOADER_MISS="the core payload is not staged ($MYDTS / $MYLIBAV / $MYSWITCH)"
     return 1
   fi
-  for so in "$MYDTS" "$MYLIBAV" "$MYSWITCH" "$MYISO" "$MYTSD" "$MYMKV"; do
+  for so in "$MYDTS" "$MYLIBAV" "$MYSWITCH" "$MYISO" "$MYTSD" "$MYMKV" "$MYPSD"; do
     [ -f "$so" ] || continue
     n=$(LD_LIBRARY_PATH="$MYLIBS" LD_TRACE_LOADED_OBJECTS=1 "$LD_SO" "$so" 2>&1 | grep -c "not found")
     if [ "$n" != 0 ]; then LOADER_MISS="$so has $n unresolved dependencies on this TV"; return 1; fi
@@ -557,6 +563,10 @@ w25_reg_has_all() {
   for e in dtsdec avdec_truehd adecswitch qtdemux tsdemux matroskademux; do
     GST_REGISTRY_1_0="$1" GST_REGISTRY_UPDATE=no GST_REGISTRY_FORK=no /usr/bin/gst-inspect-1.0 "$e" >/dev/null 2>&1 || { REG_MISS=$e; return 1; }
   done
+  # The .vob demuxer is optional: held to the same proof only while our bind is live.
+  if grep -q " $LGPSD " /proc/mounts 2>/dev/null; then
+    GST_REGISTRY_1_0="$1" GST_REGISTRY_UPDATE=no GST_REGISTRY_FORK=no /usr/bin/gst-inspect-1.0 mpegpsdemux >/dev/null 2>&1 || { REG_MISS=mpegpsdemux; return 1; }
+  fi
   return 0
 }
 # Regenerate a clean STOCK registry from the pristine on-disk plugins and write
@@ -586,6 +596,7 @@ w25_plugin_binds_present() {
   grep -q " $LGISO " /proc/mounts 2>/dev/null && return 0
   grep -q " $LGTSD " /proc/mounts 2>/dev/null && return 0
   grep -q " $LGMKV " /proc/mounts 2>/dev/null && return 0
+  grep -q " $LGPSD " /proc/mounts 2>/dev/null && return 0
   return 1
 }
 w25_stock_registry() {
@@ -1227,12 +1238,13 @@ w25_appdts_start
 w25_pt_stop_soft
 w25_pt_start
 # --- APPLY 2c) container demuxers with DTS re-enabled (mp4/ts/m2ts DTS -> audio/x-dts).
-#         Patched isomp4/mpegtsdemux default dts_support=TRUE; patched matroska
+#         Patched isomp4/mpegtsdemux/mpegpsdemux default dts_support=TRUE; patched matroska
 #         signals Dolby Vision profile 7. Bound BEFORE the regen below so the
 #         registry picks them up at their normal path.
 [ -f "$MYISO" ] && ! grep -q " $LGISO " /proc/mounts 2>/dev/null && mount -n --bind -o ro "$MYISO" "$LGISO" 2>>$LOG
 [ -f "$MYTSD" ] && ! grep -q " $LGTSD " /proc/mounts 2>/dev/null && mount -n --bind -o ro "$MYTSD" "$LGTSD" 2>>$LOG
 [ -f "$MYMKV" ] && ! grep -q " $LGMKV " /proc/mounts 2>/dev/null && mount -n --bind -o ro "$MYMKV" "$LGMKV" 2>>$LOG
+[ -f "$MYPSD" ] && [ -f "$LGPSD" ] && ! grep -q " $LGPSD " /proc/mounts 2>/dev/null && mount -n --bind -o ro "$MYPSD" "$LGPSD" 2>>$LOG
 # --- APPLY 3) regenerate the media registry (fresh) with dtsdec + our libav, then write it to the media path.
 #    Bounded by `timeout` and scanned in-process (GST_REGISTRY_FORK=no) so a hang can't trip HBC
 #    failsafe and no gst-plugin-scanner child lingers past the timeout.

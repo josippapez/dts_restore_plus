@@ -176,3 +176,27 @@ it bind-mounted and the registry regenerated:
 NOT covered: TrueHD in .mp4. qtdemux.c has no TrueHD/MLP codepath at all (no
 `mlpa` fourcc handling), so that needs new code, not a gate flip — still
 unsupported and documented as such.
+
+DTS in .vob / MPEG-PS (libgstmpegpsdemux.so, NOT YET VERIFIED ON A TV)
+----------------------------------------------------------------------
+LG's player says "This video doesn't support audio" for a DTS .vob. Reported cause,
+confirmed in LG's source: gst-plugins-bad/gst/mpegdemux/gstmpegdemux.c creates the
+ST_PS_AUDIO_DTS pad (audio/x-private1-dts, which dtsdec and adecswitch accept) only
+under #ifdef DTS_SUPPORT and only when demux->dts_support is TRUE, and the default
+assignment (line ~541) is FALSE. build-demux.sh flips it exactly like the three
+demuxers above (-Dmpegdemux=enabled, -Ddca=true) and fails the build if it did not
+land. pad_linked() can still overwrite it from LG's "dts-support" smart property,
+the same mechanism tsdemux has and which the shipped patch already survives.
+
+  libgstmpegpsdemux.so : md5 1717f39a4cad989c211a3442fce08030
+                         sha1 24d49e94f82a21b536ee2f6216e98fb36928f0e3
+                         sha256 dd5a154d6fa7022b6a1293d8f6600376907b1d272d552f9306a2e8256121ba3a
+                         104548 bytes, ARM EABI5 soft-float, e_flags 0x05000200,
+                         max GLIBC 2.4, NEEDED libgstbase/libgstreamer/libgobject/
+                         libglib/libgstpbutils/libc
+  strings              : audio/x-private1-dts + "DTS audio" present
+  the other three      : rebuilt byte-identical (reproducible)
+
+Bound over /usr/lib/gstreamer-1.0/libgstmpegpsdemux.so only when staged AND that
+file exists; not fingerprinted and not a reason to refuse. Needs an on-TV check
+that the stock file exists at that path and that a DTS .vob plays.
