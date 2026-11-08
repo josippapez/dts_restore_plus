@@ -14,13 +14,12 @@
 # adecswitch links nothing but GStreamer core + glib (no libdca, no ffmpeg):
 # it only instantiates other elements by factory name.
 #
-# Requirements on the build host: Docker (or podman aliased to docker) with
-# qemu/binfmt for linux/arm64.
+# Requirements on the build host: Docker. Cross-compilation runs natively.
 #
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-OUT="$HERE/switch-out"
+OUT="${OUT:-$HERE/switch-out}"
 GLIBC_CEILING=2.35
 mkdir -p "$OUT"
 
@@ -28,23 +27,21 @@ echo "=== adecswitch webOS25 cross-build ==="
 echo "src: $HERE/src"
 echo "out: $OUT"
 
-docker run --rm -i --platform linux/arm64 \
+docker run --rm -i \
   -v "$HERE/src":/work:ro \
   -v "$OUT":/out \
   -e GLIBC_CEILING="$GLIBC_CEILING" \
   debian:12-slim /bin/bash -euo pipefail -s <<'CONTAINER_EOF'
     export DEBIAN_FRONTEND=noninteractive
 
-    # Single suite for both architectures. bookworm-security carries an arm64
-    # libpcre2-8-0 10.42-1+deb12u1 that armel never got, and Multi-Arch: same
-    # packages must match version for version, so with the security suite
-    # enabled `libgstreamer1.0-dev:armel` is unsatisfiable ("libpcre2-8-0:armel
-    # ... not going to be installed").
+    # Match build.sh's snapshot so Multi-Arch packages have identical versions.
+    SNAPSHOT=20250601T000000Z
     rm -f /etc/apt/sources.list.d/debian.sources
-    printf 'deb http://deb.debian.org/debian bookworm main\n' > /etc/apt/sources.list
-
+    printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/%s bookworm main\n' "$SNAPSHOT" > /etc/apt/sources.list
+    printf 'Package: *\nPin: origin "snapshot.debian.org"\nPin-Priority: 1001\n' > /etc/apt/preferences.d/snapshot
     dpkg --add-architecture armel
-    apt-get update -qq >/dev/null 2>&1
+    apt-get update -qq
+    apt-get -y -qq --allow-downgrades dist-upgrade
 
     apt-get install -y -qq --no-install-recommends \
       gcc-arm-linux-gnueabi pkg-config file binutils >/dev/null 2>&1
@@ -54,7 +51,7 @@ docker run --rm -i --platform linux/arm64 \
       libgstreamer1.0-dev:armel \
       libglib2.0-dev:armel >/dev/null 2>&1
 
-    cp /work/gstadecswitch.c /work/gstadecswitch.h /tmp/
+    cp /work/gstadecswitch.c /work/gstadecswitch.h /work/lgroute-control.c /work/lgroute-control.h /tmp/
     cd /tmp
 
     export PKG_CONFIG_LIBDIR=/usr/lib/arm-linux-gnueabi/pkgconfig:/usr/share/pkgconfig
@@ -62,12 +59,12 @@ docker run --rm -i --platform linux/arm64 \
     LB=$(pkg-config --libs   gstreamer-1.0)
 
     arm-linux-gnueabi-gcc -shared -fPIC -O2 -Wall -o /out/libgstadecswitch.so \
-      gstadecswitch.c \
+      gstadecswitch.c lgroute-control.c \
       -DVERSION='"1.24.0-webosdts"' \
       -DPACKAGE='"dts_restore_plus"' \
       -DGST_PACKAGE_NAME='"WebOS DTS restore"' \
       -DGST_PACKAGE_ORIGIN='"https://github.com/josippapez/dts_restore"' \
-      $CF $LB
+      $CF $LB -Wl,--no-undefined
 
     arm-linux-gnueabi-strip --strip-unneeded /out/libgstadecswitch.so
 

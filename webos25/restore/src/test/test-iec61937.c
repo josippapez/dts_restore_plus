@@ -11,6 +11,7 @@ typedef unsigned int guint;
 typedef unsigned char guint8;
 typedef uint32_t guint32;
 typedef uint64_t guint64;
+typedef int64_t gint64;
 typedef size_t gsize;
 typedef int gboolean;
 #define GST_READ_UINT32_BE(p) ((guint32) (p)[0] << 24 | (guint32) (p)[1] << 16 | (guint32) (p)[2] << 8 | (p)[3])
@@ -72,6 +73,24 @@ main (int argc, char **argv)
   if (dts_iec61937_pack (in, n_in, NULL, 0) != 0) {
     fprintf (stderr, "FAIL: a frame without a core sync was accepted\n");
     return 1;
+  }
+  in[0] ^= 0xff;
+  /* A core header of 512, 1024 or 2048 samples (NBLKS 15, 31, 63) at 48 kHz: only
+   * the 2048-sample frame has a DTS-HD period FFmpeg refuses at 768 kHz. */
+  {
+    guint8 core[2048] = { 0x7f, 0xfe, 0x80, 0x01, 0, 0, 0x7d, 0xb0, 13 << 2 };
+    static const guint8 nblks[] = { 15, 31, 63 };
+    static const int fits[] = { 1, 1, 0 };
+    for (int i = 0; i < 3; i++) {
+      core[4] = 0x80 | (nblks[i] >> 6);
+      core[5] = (nblks[i] & 0x3f) << 2;
+      gint period = dts_iec61937_pack (core, 2012, NULL, 0);
+      if (period != (nblks[i] + 1) * 128 || dts_hd_period_ok (period, 768000) != fits[i]) {
+        fprintf (stderr, "FAIL: %d-sample core: period %d, HD ok %d\n", (nblks[i] + 1) * 32,
+            period, dts_hd_period_ok (period, 768000));
+        return 1;
+      }
+    }
   }
   printf ("ok - IEC 61937 bursts match ffmpeg's spdif muxer (%ld bytes)\n", pos);
   return 0;

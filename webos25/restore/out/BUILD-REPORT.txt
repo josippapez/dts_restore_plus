@@ -1,9 +1,10 @@
 DTS decoder plugin (dtsdec) for LG C5 / webOS 25 -- BUILD REPORT
 =================================================================
 
-Since webos25-2.43 (app 2.7.38) out/ holds ONE file, libgstdtsdec.so. The
-decoder is ffmpeg's dca linked in statically; libdca.so.0 is no longer built or
-shipped.
+out/ holds libgstdtsdec.so and, since the LG-managed eARC route (PR #23),
+lgroute-control. The decoder is ffmpeg's dca linked in statically; libdca.so.0
+is no longer built or shipped. The values below were read from the committed
+binaries, not from a rebuild.
 
 Built reproducibly by build.sh:
   host        : debian:12-slim --platform linux/arm64, apt pinned to the Debian
@@ -12,11 +13,12 @@ Built reproducibly by build.sh:
                 counterparts), armel foreign architecture
   toolchain   : arm-linux-gnueabi-gcc (Debian bookworm, soft-float EABI5)
   plugin      : src/gstdtsdec.c, vendored from gst-plugins-bad 1.22.0 ext/dts,
-                VERSION "1.22.0-webosdts"
+                VERSION "1.22.0-webosdts", plus src/lgroute.c and
+                src/lgroute-control.c (opt-in DTS-HD/TrueHD carrier to eARC)
   ffmpeg      : n4.4.4 from https://git.ffmpeg.org/ffmpeg.git, static
-                libavcodec.a + libavutil.a only:
-                  --disable-everything --enable-decoder=dca
-                  --disable-avformat --disable-avfilter --disable-swresample
+                libavformat.a + libavcodec.a + libavutil.a only:
+                  --disable-everything --enable-decoder=dca --enable-muxer=spdif
+                  --enable-avformat --disable-avfilter --disable-swresample
                   --disable-swscale --disable-avdevice --disable-postproc
                   --disable-network --disable-programs --disable-doc
                   --disable-autodetect --disable-pthreads --disable-asm
@@ -49,13 +51,32 @@ libgstdtsdec.so
   NEEDED      : libgstaudio-1.0.so.0 libgstbase-1.0.so.0 libgstreamer-1.0.so.0
                 libgobject-2.0.so.0 libglib-2.0.so.0 libm.so.6 libc.so.6
   RPATH       : none (RUNPATH none)
-  exported    : 0 ffmpeg symbols (av_/ff_/avpriv_/avcodec_/swr_); the only
+  exported    : 0 ffmpeg symbols (av_/ff_/avpriv_/avcodec_/avformat_/swr_);
                 exported text symbols are gst_dtsdec_get_type,
                 gst_element_register_dtsdec, gst_plugin_dtsdec_register,
-                gst_plugin_dtsdec_get_desc
-  size        : 2560416 bytes
-  md5         : 959d60fee50a265859d9f93c0619fbb0
-  sha1        : 7b8cdb9c466f6a7d383f437584fc56740938e4ac
+                gst_plugin_dtsdec_get_desc, gst_truehd_mat_get_type and the
+                lgroute_* / lgroute_control_* helpers
+  size        : 3454200 bytes
+  md5         : d5392c5db94399b4b09346e248e90b66
+  sha1        : e603c18b4d6cb408b2ce411e53d239313cac5891
+  sha256      : 11ead4fdd92a4b2de13ae4bc6a1c7d3d8f44a8248af30a1ab38d6a0f0d000cc2
+
+lgroute-control
+---------------
+  file        : ELF 32-bit LSB pie executable, ARM, EABI5 version 1 (SYSV),
+                not stripped
+  e_flags     : 0x05000200   [EABI5 soft-float]
+  interpreter : /lib/ld-linux.so.3
+  max GLIBC   : GLIBC_2.34
+  NEEDED      : libc.so.6
+  purpose     : `--check` reads LG's "Sndout EARC OnOff" / "Sndout EARC
+                Outputtype" ALSA controls; it never writes them
+  size        : 8640 bytes
+  md5         : 52f745940dc07e109f10519165cb12e1
+  sha256      : 86c31c4bed17121739d990bec0467fa0cb46fdd22987cb6b9ae967caca5e890f
+
+switch-out/libgstadecswitch.so (built by build-switch.sh)
+  sha256      : c611dc24dc8751f8ecbd37f81630ac0b7ffe27bbd999592c9336a79a761431bc
 
 Replaces libgstdtsdec.so md5 41742e9ec2ce0754724b4d260c9fc09e (NEEDED
 libdca.so.0, RUNPATH /var/lib/webosbrew/dts25/libs) + libdca.so.0 md5
@@ -63,6 +84,8 @@ d43ca613d6d2ca9ae5c336cb39bffd9f.
 
 On-device verification (real LG C5, webOS 10.3.1)
 -------------------------------------------------
+Measured on the webos25-2.43 decoder build; the dca decode path was not
+re-measured for the build above.
 Output compared against desktop ffmpeg 8.1 decoding the same file:
   DTS-HD MA 5.1 in .mp4            bit-exact, whole file
   DTS-HD MA 5.1 in .ts / .m2ts     bit-exact after GStreamer's normal 40 ms
@@ -75,6 +98,10 @@ Loudness on the 5 main channels is within 0.002 dB of the old libdca decoder
 (LFE +1 dB), so the +5 dB default in gain.conf still holds.
 CPU: a 3.8 s 5.1 MA file takes 0.37 s user (libdca build: 2.40 s); the 258 s
 7.1 MA file decodes in 15.5 s user (~6% of one core).
+
+DTS-HD/TrueHD to eARC (opt-in, PR #23): heard by ear on a C2 OLED42C27LA
+(33.31.68) and a C2 OLED55C21LA (webOS 10.3.1) with a Samsung Q995GF, per the PR.
+DTS:X, Atmos and other TVs are not verified.
 
 This report is maintained by hand: update it whenever out/libgstdtsdec.so is
 rebuilt (build.sh prints the ABI values above).

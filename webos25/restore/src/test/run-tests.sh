@@ -252,7 +252,7 @@ echo
 echo "=== 10. DTS passthrough: IEC 61937 bursts vs ffmpeg's spdif muxer ==="
 {
   sed -n '/^#define DTS_SYNC_CORE_BE/,/^#define DTS_MIN_CORE_SIZE/p' "$SRC"
-  for f in dts_read_be16 dts_core_size dts_exss_size dts_frame_size dts_iec61937_pack; do
+  for f in dts_read_be16 dts_core_size dts_exss_size dts_frame_size dts_iec61937_pack dts_hd_period_ok; do
     awk -v f="$f" 'prev ~ /^static/ && $0 ~ "^" f " \\(" { p = 1; print prev }
                    p { print } p && /^}/ { p = 0 } { prev = $0 }' "$SRC"
   done
@@ -260,6 +260,46 @@ echo "=== 10. DTS passthrough: IEC 61937 bursts vs ffmpeg's spdif muxer ==="
 $CC -std=c99 -O2 -Wall -Wextra -Werror -Wno-unused-function -I"$WORK" \
     -o "$WORK/test-iec61937" "$HERE/test-iec61937.c"
 "$WORK/test-iec61937" "$HERE"
+
+echo
+echo "=== 11. DTS-HD passthrough: detect oversized-frame core fallback ==="
+if command -v ffmpeg >/dev/null && pkg-config --exists libavformat 2>/dev/null; then
+  ffmpeg -v error -y -i "$HERE/../../testfiles/DTS-HD-MA-5.1.m2ts" -map 0:a:0 \
+      -c copy -f dts "$WORK/sample.dts"
+  $CC -O2 -Wall -o "$WORK/test-spdif-hd" "$HERE/test-spdif-hd.c" \
+      $(pkg-config --cflags --libs libavformat libavcodec libavutil)
+  "$WORK/test-spdif-hd" "$WORK/sample.dts"
+else
+  echo "skip  needs ffmpeg + libavformat dev files"
+fi
+
+echo
+echo "=== 12. LG eARC mixer state, Pass Through only (Linux only) ==="
+if [ "$(uname -s)" = Linux ]; then
+  $CC -std=c11 -O2 -Wall -Wextra -Werror \
+      -DLGROUTE_RUN="\"$WORK/lgroute\"" \
+      -o "$WORK/test-lgroute-control" "$HERE/test-lgroute-control.c"
+  "$WORK/test-lgroute-control"
+else
+  echo "skip  Linux ALSA UAPI required (run test-lgroute-control.c on Linux)"
+fi
+
+echo
+echo "=== 13. TrueHD fallback switching (Linux + GStreamer development files) ==="
+if [ "$(uname -s)" = Linux ] && pkg-config --exists gstreamer-1.0 2>/dev/null; then
+  $CC -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter \
+      -DVERSION='"test"' -DPACKAGE='"test"' \
+      -DGST_PACKAGE_NAME='"test"' -DGST_PACKAGE_ORIGIN='"test"' \
+      -o "$WORK/test-adecswitch-fallback" "$HERE/test-adecswitch-fallback.c" \
+      "$HERE/../lgroute-control.c" $(pkg-config --cflags --libs gstreamer-1.0)
+  G_DEBUG=fatal-warnings "$WORK/test-adecswitch-fallback"
+  $CC -std=c11 -O2 -Wall -Wextra -Werror \
+      -o "$WORK/test-lgroute" "$HERE/test-lgroute.c" \
+      $(pkg-config --cflags --libs gstreamer-1.0)
+  G_DEBUG=fatal-warnings "$WORK/test-lgroute"
+else
+  echo "skip  Linux GStreamer development files required"
+fi
 
 echo
 echo "=== ALL CHECKS PASSED ==="

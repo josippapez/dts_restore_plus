@@ -97,7 +97,9 @@ EXPECT_GST=1.24
 #   27 shadows libgstmatroska.so too (optional demuxer, Dolby Vision profile 7):
 #      bound in APPLY 2c, unbound by w25_drop_binds, fingerprinted in stock.fp and
 #      drift-checked like the /etc keys, so an older stock.fp without it is not drift.
-W25_GATE_VERSION=40
+#   41 opt-in DTS-HD/TrueHD over eARC Pass Through; LG's mixer is only read.
+#   42 self-heal, stand-down and the boot apply continue when passthrough stop fails.
+W25_GATE_VERSION=42
 FP=/var/lib/webosbrew/dts25/stock.fp
 # Where the installed copy of THIS script lives, and the boot hook that symlinks
 # to it. Named here, in the shared block, so the read-only probe can fingerprint
@@ -193,7 +195,41 @@ w25_drop_binds() {
 # ONLY, so the registry it writes does not name /var/lib/webosbrew and the next
 # w25_reg_is_ours is false -- no repeated 60s regen on every boot. It also works
 # when our libraries are already gone, for the same reason.
+w25_pt_stop() {
+  PT_RUN=/run/dts25
+  PT_OUT=$PT_RUN/sound-output
+  PT_PID=$PT_RUN/watcher.pid
+  # Withdraw permission first; a live HD stream then falls back by itself.
+  mkdir -p "$PT_RUN" || return 1
+  : > "$PT_RUN/stopping" || return 1
+  rm -f "$PT_OUT" || return 1
+  P=$(cat "$PT_PID" 2>/dev/null)
+  if [ -n "$P" ] && [ -d "/proc/$P" ]; then
+    for child in /proc/[0-9]*; do
+      [ "$(cut -d' ' -f4 "$child/stat" 2>/dev/null)" = "$P" ] && kill "${child#/proc/}" 2>/dev/null
+    done
+    kill "$P" 2>/dev/null
+    attempts=0
+    while [ "$(cat "$PT_PID" 2>/dev/null)" = "$P" ] && [ -r "/proc/$P/stat" ] && [ "$(cut -d' ' -f3 "/proc/$P/stat")" != Z ] && [ "$attempts" -lt 10 ]; do
+      sleep 1
+      attempts=$((attempts + 1))
+    done
+    if [ "$(cat "$PT_PID" 2>/dev/null)" = "$P" ] && [ -r "/proc/$P/stat" ] && [ "$(cut -d' ' -f3 "/proc/$P/stat")" != Z ]; then
+      echo 'ERROR=The passthrough watcher did not stop; settings were kept.'
+      return 1
+    fi
+  fi
+  rm -f "$PT_OUT" "$PT_PID"
+}
+# Recovery paths must not stall on a watcher that will not stop.
+w25_pt_stop_soft() {
+  PT_STOP_OUT=$(w25_pt_stop) && return 0
+  PT_STOP_OUT=$(printf '%s\n' "$PT_STOP_OUT" | sed -n 's/^ERROR=//p' | head -n1)
+  w25_log "WARN passthrough stop failed; continuing: $PT_STOP_OUT"
+  echo "WARN_PT_STOP=${PT_STOP_OUT:-passthrough did not stop cleanly}"
+}
 w25_stand_down() {
+  w25_pt_stop_soft
   w25_drop_binds
   if w25_reg_is_ours; then
     w25_log "a registry of ours is still live; regenerating the stock registry so nothing of ours stays registered"
@@ -638,20 +674,23 @@ PT_PID=$PT_RUN/watcher.pid
 w25_pt_watch() {
   read -r WPID _ < /proc/self/stat
   echo "$WPID" > "$PT_PID"
-  while [ -f "$PT_FLAG" ]; do
+  trap 'rm -f "$PT_OUT" "$PT_PID"' EXIT
+  trap 'exit 0' INT TERM HUP
+  while [ -f "$PT_FLAG" ] && [ ! -e "$PT_RUN/stopping" ]; do
     luna-send -i luna://com.webos.settingsservice/getSystemSettings \
       '{"category":"sound","keys":["soundOutput","soundOutputDigital"],"subscribe":true}' \
       </dev/null 2>/dev/null | {
       out=
       digital=
       while read -r line; do
-        [ -f "$PT_FLAG" ] || break
+        [ -f "$PT_FLAG" ] && [ ! -e "$PT_RUN/stopping" ] || break
         v=$(echo "$line" | sed -n 's/.*"soundOutput" *: *"\([^"]*\)".*/\1/p')
         [ -n "$v" ] && out=$v
         v=$(echo "$line" | sed -n 's/.*"soundOutputDigital" *: *"\([^"]*\)".*/\1/p')
         [ -n "$v" ] && digital=$v
         [ -n "$out" ] && [ -n "$digital" ] || continue
         echo "$WPID $out $digital" > "$PT_OUT.tmp" && mv -f "$PT_OUT.tmp" "$PT_OUT"
+        [ ! -e "$PT_RUN/stopping" ] || { rm -f "$PT_OUT"; break; }
       done
     }
     # the subscription ended: decode until it is back
@@ -660,30 +699,35 @@ w25_pt_watch() {
   done
   rm -f "$PT_OUT" "$PT_PID"
 }
+w25_pt_sink_verified() {
+  case "$1" in
+    90dba3ef32704ce4096bf1e6045d2879d0c2192d507bc04d1e8e98437f420a43) return 0 ;;
+  esac
+  return 1
+}
 w25_pt_start() {
   [ -f "$PT_FLAG" ] || return 0
   mkdir -p "$PT_RUN"
+  # dtsdec reads this marker instead of hashing LG's sink on every stream.
+  rm -f "$PT_RUN/sink-ok"
+  SINK=/usr/lib/gstreamer-1.0/libgstlgaudiosink.so
+  SINK_SHA=$(sha256sum "$SINK" 2>/dev/null || busybox sha256sum "$SINK" 2>/dev/null)
+  if w25_pt_sink_verified "${SINK_SHA%% *}"; then
+    : > "$PT_RUN/sink-ok"
+  else
+    w25_log "HD refused: untested LG sink build (${SINK_SHA%% *}); DTS core/decode remains available"
+  fi
   P=$(cat "$PT_PID" 2>/dev/null)
   [ -n "$P" ] && [ -d "/proc/$P" ] && return 0
+  rm -f "$PT_RUN/stopping"
   ( w25_pt_watch ) </dev/null >/dev/null 2>&1 &
-}
-# Stops the watcher and its luna-send, and drops the file, so dtsdec decodes.
-w25_pt_stop() {
-  P=$(cat "$PT_PID" 2>/dev/null)
-  if [ -n "$P" ] && [ -d "/proc/$P" ]; then
-    for c in /proc/[0-9]*; do
-      [ "$(cut -d' ' -f4 "$c/stat" 2>/dev/null)" = "$P" ] && kill "${c#/proc/}" 2>/dev/null
-    done
-    kill "$P" 2>/dev/null
-  fi
-  rm -f "$PT_OUT" "$PT_PID"
 }
 # W25_PT=start|stop: only start or stop the watcher, for the app's toggle, so
 # turning passthrough on or off takes effect without a restart.
 if [ -n "${W25_PT:-}" ]; then
   case $W25_PT in
     start) w25_pt_start ;;
-    stop) w25_pt_stop ;;
+    stop) w25_pt_stop || exit 1 ;;
   esac
   exit 0
 fi
@@ -692,7 +736,7 @@ fi
 # APPLY if the gate's inputs changed between the caller's preflight and this call.
 if [ "${W25_STAND_DOWN:-0}" = 1 ]; then
   if w25_reg_is_ours; then WAS_OURS=1; else WAS_OURS=0; fi
-  w25_stand_down
+  w25_stand_down || exit 1
   w25_log "stand-down requested by the installer (a registry of ours was live: $WAS_OURS)"
   echo "STOOD_DOWN=$WAS_OURS"
   exit 0
@@ -740,6 +784,7 @@ w25_unowned() {
 # registry naming them must be replaced whether or not it looks like ours.
 w25_self_heal() {
   w25_log "SELF-HEAL: $HEAL_WHY -- reverting every override"
+  w25_pt_stop_soft
   w25_drop_binds
   if ! w25_stock_registry; then
     w25_log "SELF-HEAL DEFERRED: LG's registry could not be rebuilt, so our plugins and the boot hook are KEPT (deleting them now would leave the live registry pointing at missing plugins). Retrying at the next boot."
@@ -1173,6 +1218,7 @@ w25_appdts_start() {
   ( w25_appdts_apply ) </dev/null >/dev/null 2>&1 &
 }
 w25_appdts_start
+w25_pt_stop_soft
 w25_pt_start
 # --- APPLY 2c) container demuxers with DTS re-enabled (mp4/ts/m2ts DTS -> audio/x-dts).
 #         Patched isomp4/mpegtsdemux default dts_support=TRUE; patched matroska

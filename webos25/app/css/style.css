@@ -111,6 +111,7 @@ code {
 
 /* ---- Rows / buttons ---- */
 .row { display: flex; flex-wrap: wrap; gap: 20px; margin-top: 24px; }
+#hdPassthrough { width: 30px; height: 30px; accent-color: var(--accent); }
 .btn {
   appearance: none;
   border: 2px solid #3a4654;
