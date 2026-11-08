@@ -121,6 +121,8 @@ for f in libgstlibav libgstisomp4 libgstmatroska libgstmpegtsdemux; do
   fi
 done
 [ -e /etc/gst/gstcool.conf ] && echo "gstcool.conf.sha256=$(hash_of sha256 /etc/gst/gstcool.conf)"
+# LG's own sink; DTS-HD/TrueHD to eARC only arms for builds on the boot script's list.
+[ -e "$G/libgstlgaudiosink.so" ] && echo "libgstlgaudiosink.so.sha256=$(hash_of sha256 "$G/libgstlgaudiosink.so")"
 
 echo
 echo "--- existing state (is something already installed?) ---"
