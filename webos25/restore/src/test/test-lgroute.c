@@ -226,6 +226,100 @@ static gchar *replace_text (const gchar *text, const gchar *old, const gchar *re
   return result;
 }
 
+static GstPadProbeReturn
+send_event (LgRoute *route, GstEvent *event)
+{
+  GstPadProbeInfo info = {0};
+  info.type = GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM; info.data = event;
+  GstPadProbeReturn result = event_probe (NULL, &info, route);
+  gst_event_unref (event);
+  return result;
+}
+
+/* Resume and seek: a pad probe built as lgroute_arm builds it must see flushes. */
+static void resume_tests (void)
+{
+  LgRoute route;
+
+  /* 1. lgroute_arm's probe mask delivers FLUSH_STOP to the handler. */
+  reset (&route);
+  GstPad *pad = gst_pad_new ("flush", GST_PAD_SINK), *source = gst_pad_new ("src", GST_PAD_SRC);
+  g_assert_true (gst_pad_set_active (pad, TRUE));
+  g_assert_true (gst_pad_set_active (source, TRUE));
+  g_assert_cmpint (gst_pad_link (source, pad), ==, GST_PAD_LINK_OK);
+  route.sinkpad = gst_object_ref (pad);
+  route.events = gst_pad_add_probe (pad, EVENT_PROBE_MASK, event_probe, &route, NULL);
+  route.next_check = g_get_monotonic_time () + 60 * G_TIME_SPAN_SECOND;
+  route.unmixed = TRUE;
+  gst_pad_push_event (source, gst_event_new_flush_start ());
+  gst_pad_push_event (source, gst_event_new_flush_stop (TRUE));
+  g_assert_cmpint (route.next_check, ==, 0);
+  g_assert_false (route.unmixed);
+  lgroute_disarm (&route);
+  gst_pad_unlink (source, pad);
+  gst_object_unref (source); gst_object_unref (pad);
+
+  /* 2. Configured route: a repeated STREAM_START with the same id keeps it. */
+  reset (&route);
+  send_event (&route, gst_event_new_stream_start ("a"));
+  g_assert_cmpint (caps_event (&route), ==, GST_PAD_PROBE_OK);
+  graph = after;
+  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
+  send_event (&route, gst_event_new_stream_start ("a"));
+  g_assert_cmpint (caps_event (&route), ==, GST_PAD_PROBE_OK);
+  g_assert_false (route.failed); g_assert_true (route.configured);
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  g_assert_false (last_silent);
+
+  /* 3. A new id: the renderer restarts, so setup is redone with the new caps. */
+  int formats_before = formats;
+  send_event (&route, gst_event_new_stream_start ("b"));
+  g_assert_false (route.failed); g_assert_false (route.configured);
+  g_assert_cmpint (caps_event (&route), ==, GST_PAD_PROBE_OK);
+  g_assert_true (((TestSink *) route.sink)->pcm);
+  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);   /* first ES event flagged again */
+  g_assert_true (route.configured); g_assert_cmpint (formats, ==, formats_before + 1);
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  lgroute_disarm (&route);
+
+  /* 4. A new id whose caps never arrive fails cleanly instead of passing carrier. */
+  reset (&route);
+  send_event (&route, gst_event_new_stream_start ("a"));
+  caps_event (&route); graph = after;
+  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
+  send_event (&route, gst_event_new_stream_start ("b"));
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_DROP);
+  g_assert_true (route.failed);
+  lgroute_disarm (&route);
+
+  /* 5. LG switches eARC back to mixed between two buffers well inside the old
+   * 250 ms cache: the second buffer must be silence, not carrier. */
+  reset (&route);
+  caps_event (&route); graph = after;
+  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  g_assert_false (last_silent);
+  route.next_check = g_get_monotonic_time () + 60 * G_TIME_SPAN_SECOND;
+  unmixed_result = 0;
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  g_assert_true (last_silent);
+  unmixed_result = 1;
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  g_assert_false (last_silent);
+  lgroute_disarm (&route);
+
+  /* 6. After a flush the first carrier buffer re-reads the mixer: mixed means silence. */
+  reset (&route);
+  caps_event (&route); graph = after;
+  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  send_event (&route, gst_event_new_flush_stop (TRUE));
+  unmixed_result = 0;
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  g_assert_true (last_silent);
+  lgroute_disarm (&route);
+}
+
 static void handoff_tests (void)
 {
   for (unsigned sequence = 0; sequence < 3; sequence++) {
@@ -406,13 +500,15 @@ int main (int argc, char **argv)
   g_assert_cmpint (formats, ==, 1);
   g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
   g_assert_true (((TestSink *) route.sink)->pcm);
-  g_assert_cmpint (checks, ==, 1);
-  route.next_check = 0;
-  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  /* The mixer state is read on every carrier buffer, not once per 250 ms. */
   g_assert_cmpint (checks, ==, 2);
-  g_assert_cmpint (caps_event (&route), ==, GST_PAD_PROBE_DROP);
-  g_assert_true (route.failed);
-  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_DROP);
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  g_assert_cmpint (checks, ==, 3);
+  /* The same carrier caps again (a resume resends them) keep the route. */
+  g_assert_cmpint (caps_event (&route), ==, GST_PAD_PROBE_OK);
+  g_assert_false (route.failed);
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  g_assert_false (last_silent);
   lgroute_disarm (&route);
 
   reset (&route); caps_event (&route); graph = before;
@@ -433,16 +529,7 @@ int main (int argc, char **argv)
   g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_DROP);
   g_assert_true (route.failed); lgroute_disarm (&route);
 
-  reset (&route); caps_event (&route); graph = after;
-  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
-  GstEvent *stream = gst_event_new_stream_start ("replacement");
-  GstPadProbeInfo stream_info = {0};
-  stream_info.type = GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM;
-  stream_info.data = stream;
-  g_assert_cmpint (event_probe (NULL, &stream_info, &route), ==, GST_PAD_PROBE_OK);
-  gst_event_unref (stream);
-  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_DROP);
-  lgroute_disarm (&route);
+  resume_tests ();
 
   reset (&route); caps_event (&route); graph = after; short_write = TRUE;
   g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_DROP);

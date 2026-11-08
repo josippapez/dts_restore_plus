@@ -14,7 +14,7 @@ typedef struct {
   gboolean first, feeding, configured, failed, unmixed;
   gint64 next_check, mixed_since;
   const gchar *reason;
-  gchar resource[16];
+  gchar resource[16], stream_id[128];
   LgSession *session;
 } LgRoute;
 
