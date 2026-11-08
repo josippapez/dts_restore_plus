@@ -200,8 +200,17 @@ carrier (LgRoute *route, gboolean expect_es)
   return result;
 }
 
+static void set_lg_codec (const gchar *codec)
+{
+  gchar *path = g_build_filename (luna_dir, "state", NULL);
+  g_file_set_contents (path, codec, -1, NULL);
+  g_free (path);
+}
+
 static void reset (LgRoute *route)
 {
+  drain ();
+  set_lg_codec ("dts");
   lgroute_init (route, NULL);
   route->sink = g_object_new (test_sink_get_type (), NULL);
   g_strlcpy (route->resource, "ADEC1", sizeof route->resource);
@@ -299,11 +308,31 @@ static void async_tests (void)
   report_pcm (&route);
   lgroute_disarm (&route);
   drain ();
-  g_assert_cmpint (call_count, ==, 3);
+  g_assert_cmpint (call_count, ==, 4);
   for (int i = 0; i < call_count; i++) g_assert_true (call_thread[i] != g_thread_self ());
   g_assert_nonnull (strstr (g_ptr_array_index (calls, 0), "getAudioInputProperty"));
   g_assert_nonnull (strstr (g_ptr_array_index (calls, 1), "\"codec\":\"pcm\",\"channel\":\"8\""));
-  g_assert_nonnull (strstr (g_ptr_array_index (calls, 2), "\"codec\":\"dts\",\"immersive\":\"none\""));
+  g_assert_nonnull (strstr (g_ptr_array_index (calls, 2), "getAudioInputProperty"));
+  g_assert_nonnull (strstr (g_ptr_array_index (calls, 3), "\"codec\":\"dts\",\"immersive\":\"none\""));
+
+  /* LG already described the next stream: the late restore must not overwrite it. */
+  reset (&route);
+  forget_calls ();
+  report_pcm (&route);
+  drain ();
+  set_lg_codec ("ac3");
+  lgroute_disarm (&route);
+  drain ();
+  g_assert_cmpint (calls_matching ("setQualityAttribute"), ==, 1);
+  g_assert_cmpint (calls_matching ("\"codec\":\"dts\""), ==, 0);
+  /* Still our relabel: restored once. */
+  reset (&route);
+  forget_calls ();
+  report_pcm (&route);
+  drain ();
+  lgroute_disarm (&route);
+  drain ();
+  g_assert_cmpint (calls_matching ("\"codec\":\"dts\""), ==, 1);
 
   /* No second report while one is in flight; once it ends the next is sent without a new query. */
   reset (&route);
@@ -348,11 +377,14 @@ int main (int argc, char **argv)
   gst_init (&argc, &argv);
   g_assert_nonnull (g_mkdtemp (luna_dir));
   g_snprintf (luna_send, sizeof luna_send, "%s/luna-send", luna_dir);
+  /* The fake LG remembers the codec it was last given for _p1 (default dts). */
   gchar *script = g_strdup_printf ("#!/bin/sh\necho \"$5 $6\" >> %s/log\n"
-      "case $5 in *getAudioInputProperty) sleep 0.3; echo '{\"returnValue\":true,\"audioInputProperty\":["
+      "case $5 in *getAudioInputProperty) sleep 0.3; c=$(cat %s/state 2>/dev/null || echo dts);"
+      " echo '{\"returnValue\":true,\"audioInputProperty\":["
       "{\"codec\":\"ac3\",\"pipelineId\":\"_other\",\"immersive\":\"none\"},"
-      "{\"codec\":\"dts\",\"pipelineId\":\"_p1\",\"immersive\":\"none\"}]}' ;;"
-      " *) echo '{\"returnValue\":true}' ;; esac\n", luna_dir);
+      "{\"codec\":\"'$c'\",\"pipelineId\":\"_p1\",\"immersive\":\"none\"}]}' ;;"
+      " *) echo \"$6\" | sed 's/.*\"codec\":\"\\([a-z0-9]*\\)\".*/\\1/' > %s/state;"
+      " echo '{\"returnValue\":true}' ;; esac\n", luna_dir, luna_dir, luna_dir);
   g_assert_true (g_file_set_contents (luna_send, script, -1, NULL));
   g_free (script);
   g_assert_cmpint (g_chmod (luna_send, 0700), ==, 0);

@@ -174,7 +174,15 @@ static void run_request (gpointer data, gpointer unused)
   LgSession *session = request->session;
   (void) unused;
   if (request->restore) {
-    if (session->pipeline[0])
+    /* The restore now lands after the caller moved on: if LG already reports
+     * something other than our relabel, it has described the next stream and
+     * the saved codec would overwrite it. */
+    LgSession now = { 0 };
+    if (!session->pipeline[0])
+      ;
+    else if (input_query (&now) && g_strcmp0 (now.codec, "pcm"))
+      g_debug ("lgroute: LG reports \"%s\", not restoring \"%s\"", now.codec, session->codec);
+    else
       input_set (session->pipeline, request->resource, session->codec, NULL, session->immersive);
   } else {
     if (session->pipeline[0] || input_query (session))
