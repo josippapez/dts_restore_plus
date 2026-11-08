@@ -1622,6 +1622,17 @@ dts_iec61937_pack (const guint8 * d, gsize size, guint8 * out, gint out_size)
   return period;
 }
 
+/* FFmpeg's spdif muxer (spdif_header_dts4) sizes a DTS-HD burst as
+ * hd_rate * samples / 48000 and refuses a period outside 512..16384, so a
+ * 2048-sample core cannot be sent as HD at 768 kHz. core_period is what
+ * dts_iec61937_pack() returns (samples x 4 bytes). */
+static gboolean
+dts_hd_period_ok (gint core_period, gint hd_rate)
+{
+  gint64 hd_period = (gint64) hd_rate * (core_period >> 2) / 48000;
+  return hd_period >= 512 && hd_period <= 16384;
+}
+
 /* webOS 25 patch: TRUE when the boot hook's watcher, still alive, last saw the
  * TV sending sound to an ARC/eARC receiver with Digital Sound Out on Pass
  * Through or Auto. Anything else, a missing file included, is FALSE.
@@ -1720,7 +1731,8 @@ gst_dtsdec_hd_lead (GstDtsDec *dts, GstBuffer *buffer)
 
 /* One burst per frame; when the output stopped being a receiver, or a frame
  * cannot be packed whole, a burst of silence keeps the timing. A frame too
- * large for the burst is never sent: FFmpeg would strip it to the core. */
+ * large for the burst is never sent: FFmpeg would strip it to the core.
+ * NULL when the muxer rejects the frame: the caller leaves HD and decodes. */
 static GstBuffer *
 gst_dtsdec_hd_burst (GstDtsDec * dts, const guint8 * d, gsize size)
 {
@@ -1728,16 +1740,22 @@ gst_dtsdec_hd_burst (GstDtsDec * dts, const guint8 * d, gsize size)
   GstBuffer *outbuf;
   guint8 *data = NULL;
   gint len = 0;
+  gboolean rejected;
 
   if (dts->pt_output_ok && avio_open_dyn_buf (&dts->spdif->pb) >= 0) {
     pkt->data = (guint8 *) d;
     pkt->size = (int) size;
-    if (av_write_frame (dts->spdif, pkt) < 0)
-      dts->pt_output_ok = FALSE;
+    rejected = av_write_frame (dts->spdif, pkt) < 0;
     pkt->data = NULL;
     pkt->size = 0;
     len = avio_close_dyn_buf (dts->spdif->pb, &data);
     dts->spdif->pb = NULL;
+    if (rejected) {
+      GST_WARNING_OBJECT (dts, "passthrough: FFmpeg refused a %" G_GSIZE_FORMAT
+          "-byte DTS frame, leaving HD", size);
+      av_free (data);
+      return NULL;
+    }
     if (len > DTS_HD_LEN_OFFSET + 1
         && ((gsize) data[DTS_HD_LEN_OFFSET] << 8 | data[DTS_HD_LEN_OFFSET + 1]) != size) {
       GST_WARNING_OBJECT (dts, "passthrough: %" G_GSIZE_FORMAT "-byte DTS-HD "
@@ -1796,7 +1814,10 @@ gst_dtsdec_passthrough_decide (GstDtsDec * dts, const guint8 * d, gsize size)
     return FALSE;
   }
 
-  if (gst_dtsdec_hd_open (dts, AV_CODEC_ID_DTS)) {
+  if (!dts_hd_period_ok (period, DTS_HD_RATE))
+    GST_INFO_OBJECT (dts, "passthrough: %d-byte core period is too long for "
+        "DTS-HD at %d Hz, core only", period, DTS_HD_RATE);
+  else if (gst_dtsdec_hd_open (dts, AV_CODEC_ID_DTS)) {
     if (gst_dtsdec_hd_set_caps (dts)) {
       dts->pt_active = TRUE;
       dts->pt_hd = TRUE;
@@ -1886,8 +1907,11 @@ gst_dtsdec_handle_frame (GstAudioDecoder * bdec, GstBuffer * buffer)
   if (dts->pt_active) {
     GstBuffer *outbuf = gst_dtsdec_passthrough_burst (dts, map.data, map.size);
 
-    gst_buffer_unmap (buffer, &map);
-    return gst_audio_decoder_finish_frame (bdec, outbuf, 1);
+    if (outbuf) {
+      gst_buffer_unmap (buffer, &map);
+      return gst_audio_decoder_finish_frame (bdec, outbuf, 1);
+    }
+    gst_dtsdec_hd_stop (dts, FALSE);
   }
 
   /* FFmpeg reads up to AV_INPUT_BUFFER_PADDING_SIZE past the end, which must
@@ -2156,6 +2180,23 @@ gst_truehd_mat_parse (GstAudioDecoder * decoder, GstAdapter * adapter,
   return available >= (gsize) *length ? GST_FLOW_OK : GST_FLOW_EOS;
 }
 
+/* Closes HD and asks adecswitch for avdec_truehd; this frame is finished empty. */
+static GstFlowReturn
+gst_truehd_mat_fallback (GstAudioDecoder * decoder)
+{
+  GstTruehdMat *self = (GstTruehdMat *) decoder;
+  GstDtsDec *dts = GST_DTSDEC (decoder);
+  gint result;
+
+  gst_dtsdec_hd_close (dts);
+  gst_element_post_message (GST_ELEMENT (dts),
+      gst_message_new_element (GST_OBJECT (dts),
+          gst_structure_new_empty ("truehdmat-fallback")));
+  result = self->pending + 1;
+  self->pending = 0;
+  return gst_audio_decoder_finish_frame (decoder, NULL, result);
+}
+
 static GstFlowReturn
 gst_truehd_mat_handle_frame (GstAudioDecoder * decoder, GstBuffer * input)
 {
@@ -2177,22 +2218,18 @@ gst_truehd_mat_handle_frame (GstAudioDecoder * decoder, GstBuffer * input)
   }
   if (!dts->spdif || dts->hd_route.failed) {
     if (dts->hd_route.failed || !gst_dtsdec_hd_open (dts, AV_CODEC_ID_TRUEHD)
-        || (!dts->hd_route.configured && !gst_dtsdec_hd_set_caps (dts))) {
-      gst_dtsdec_hd_close (dts);
-      gst_element_post_message (GST_ELEMENT (dts),
-          gst_message_new_element (GST_OBJECT (dts),
-              gst_structure_new_empty ("truehdmat-fallback")));
-      result = self->pending + 1;
-      self->pending = 0;
-      return gst_audio_decoder_finish_frame (decoder, NULL, result);
-    }
+        || (!dts->hd_route.configured && !gst_dtsdec_hd_set_caps (dts)))
+      return gst_truehd_mat_fallback (decoder);
   }
   if (!gst_buffer_map (input, &map, GST_MAP_READ))
     return GST_FLOW_ERROR;
   if (map.size >= 8 && GST_READ_UINT32_BE (map.data + 4) == 0xf8726fba
       && (map.size < 10 || (map.data[8] >> 4) > 2)) {
     gst_buffer_unmap (input, &map);
-    return GST_FLOW_NOT_NEGOTIATED;
+    /* The 44.1 kHz family has no MAT carrier; later frames follow the failed path. */
+    dts->hd_route.failed = TRUE;
+    dts->hd_route.reason = "TrueHD rate outside the 48 kHz family";
+    return gst_truehd_mat_fallback (decoder);
   }
   if (!self->synced) {
     self->synced = map.size >= 10

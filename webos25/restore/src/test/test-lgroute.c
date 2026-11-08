@@ -53,6 +53,26 @@ int lgroute_control_unmixed (void) { checks++; return unmixed_result; }
 static gchar luna_dir[] = "/tmp/lgroute-luna-XXXXXX", luna_send[64];
 #define LUNA_SEND luna_send
 
+/* Every luna-send call, with the thread that made it. */
+static GMutex calls_lock;
+static GPtrArray *calls;
+static GThread *call_thread[64];
+static int call_count;
+
+static gboolean
+record_spawn (const gchar *dir, gchar **argv, gchar **envp, GSpawnFlags flags,
+    GSpawnChildSetupFunc setup, gpointer data, gchar **out, gchar **err, gint *status, GError **error)
+{
+  g_mutex_lock (&calls_lock);
+  if (!calls) calls = g_ptr_array_new_with_free_func (g_free);
+  g_assert_cmpint (call_count, <, 64);
+  call_thread[call_count++] = g_thread_self ();
+  g_ptr_array_add (calls, g_strdup_printf ("%s %s", argv[5], argv[6]));
+  g_mutex_unlock (&calls_lock);
+  return g_spawn_sync (dir, argv, envp, flags, setup, data, out, err, status, error);
+}
+#define g_spawn_sync record_spawn
+
 /* Count LG input reports from the fake luna-send's log. */
 static int luna_count (const gchar *needle)
 {
@@ -86,6 +106,32 @@ read_or_graph (const gchar *filename, gchar **contents, gsize *length, GError **
 #undef open
 #undef write
 #undef close
+
+/* Wait for the luna worker to finish everything queued. */
+static void drain (void)
+{
+  for (int i = 0; i < 2000 && g_atomic_int_get (&outstanding); i++) g_usleep (10000);
+  g_assert_cmpint (g_atomic_int_get (&outstanding), ==, 0);
+}
+
+static int calls_matching (const gchar *needle)
+{
+  int n = 0;
+  g_mutex_lock (&calls_lock);
+  for (guint i = 0; calls && i < calls->len; i++)
+    if (strstr (g_ptr_array_index (calls, i), needle)) n++;
+  g_mutex_unlock (&calls_lock);
+  return n;
+}
+
+static void forget_calls (void)
+{
+  drain ();
+  g_mutex_lock (&calls_lock);
+  if (calls) g_ptr_array_set_size (calls, 0);
+  call_count = 0;
+  g_mutex_unlock (&calls_lock);
+}
 
 typedef struct { GstElement parent; gboolean pcm; } TestSink;
 typedef struct { GstElementClass parent; } TestSinkClass;
@@ -234,13 +280,76 @@ static void graph_tests (void)
   g_free (changed);
 }
 
+typedef struct { LgRoute *route; gint *go; } Disarmer;
+
+static gpointer disarm_thread (gpointer data)
+{
+  Disarmer *d = data;
+  while (!g_atomic_int_get (d->go)) g_thread_yield ();
+  lgroute_disarm (d->route);
+  return NULL;
+}
+
+static void async_tests (void)
+{
+  LgRoute route;
+  /* Luna calls leave the calling thread, in order: query, report, then the restore. */
+  reset (&route);
+  forget_calls ();
+  report_pcm (&route);
+  lgroute_disarm (&route);
+  drain ();
+  g_assert_cmpint (call_count, ==, 3);
+  for (int i = 0; i < call_count; i++) g_assert_true (call_thread[i] != g_thread_self ());
+  g_assert_nonnull (strstr (g_ptr_array_index (calls, 0), "getAudioInputProperty"));
+  g_assert_nonnull (strstr (g_ptr_array_index (calls, 1), "\"codec\":\"pcm\",\"channel\":\"8\""));
+  g_assert_nonnull (strstr (g_ptr_array_index (calls, 2), "\"codec\":\"dts\",\"immersive\":\"none\""));
+
+  /* No second report while one is in flight; once it ends the next is sent without a new query. */
+  reset (&route);
+  forget_calls ();
+  gint64 start = g_get_monotonic_time ();
+  report_pcm (&route); report_pcm (&route); report_pcm (&route);
+  g_assert_cmpint (g_get_monotonic_time () - start, <, 100 * G_TIME_SPAN_MILLISECOND);
+  drain ();
+  g_assert_cmpint (calls_matching ("getAudioInputProperty"), ==, 1);
+  g_assert_cmpint (calls_matching ("\"codec\":\"pcm\""), ==, 1);
+  report_pcm (&route);
+  drain ();
+  g_assert_cmpint (calls_matching ("getAudioInputProperty"), ==, 1);
+  g_assert_cmpint (calls_matching ("\"codec\":\"pcm\""), ==, 2);
+  lgroute_disarm (&route);
+  drain ();
+
+  /* Two threads disarming one route clean up once. */
+  for (int round = 0; round < 20; round++) {
+    reset (&route);
+    TestSink *sink = (TestSink *) g_object_ref (route.sink);
+    route.sinkpad = gst_pad_new ("racer", GST_PAD_SINK);
+    forget_calls ();
+    report_pcm (&route);
+    drain ();
+    g_assert_cmpint (calls_matching ("\"codec\":\"dts\""), ==, 0);
+    gint go = 0;
+    Disarmer d = { &route, &go };
+    GThread *a = g_thread_new ("disarm-a", disarm_thread, &d), *b = g_thread_new ("disarm-b", disarm_thread, &d);
+    g_atomic_int_set (&go, 1);
+    g_thread_join (a); g_thread_join (b);
+    drain ();
+    g_assert_cmpint (calls_matching ("\"codec\":\"dts\""), ==, 1);
+    g_assert_null (route.sink); g_assert_null (route.sinkpad);
+    g_assert_false (sink->pcm);
+    gst_object_unref (sink);
+  }
+}
+
 int main (int argc, char **argv)
 {
   gst_init (&argc, &argv);
   g_assert_nonnull (g_mkdtemp (luna_dir));
   g_snprintf (luna_send, sizeof luna_send, "%s/luna-send", luna_dir);
   gchar *script = g_strdup_printf ("#!/bin/sh\necho \"$5 $6\" >> %s/log\n"
-      "case $5 in *getAudioInputProperty) echo '{\"returnValue\":true,\"audioInputProperty\":["
+      "case $5 in *getAudioInputProperty) sleep 0.3; echo '{\"returnValue\":true,\"audioInputProperty\":["
       "{\"codec\":\"ac3\",\"pipelineId\":\"_other\",\"immersive\":\"none\"},"
       "{\"codec\":\"dts\",\"pipelineId\":\"_p1\",\"immersive\":\"none\"}]}' ;;"
       " *) echo '{\"returnValue\":true}' ;; esac\n", luna_dir);
@@ -331,23 +440,30 @@ int main (int argc, char **argv)
       "\"resource\":\"ADEC1\",\"sourceType\":\"MEDIA\"},\"categoryInfo\":{\"codec\":\"pcm\","
       "\"channel\":\"8\",\"immersive\":\"none\"}}";
   static const char restore[] = "\"categoryInfo\":{\"codec\":\"dts\",\"immersive\":\"none\"}}";
+  drain ();
   gchar *log = g_build_filename (luna_dir, "log", NULL);
   g_unlink (log); g_free (log);
   reset (&route);
   caps_event (&route); graph = after;
   g_assert_cmpint (luna_count (pcm), ==, 0);
   unmixed_result = 0;
-  /* Reported once the bypass exists, and again because LG is still mixing. */
+  /* Reported once the bypass exists; the re-report for LG still mixing finds that one in flight. */
   g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
-  g_assert_true (last_silent); g_assert_cmpint (luna_count (pcm), ==, 2);
+  g_assert_true (last_silent); drain (); g_assert_cmpint (luna_count (pcm), ==, 1);
+  route.next_check = g_get_monotonic_time () + 60 * G_TIME_SPAN_SECOND;
   g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
-  g_assert_true (last_silent); g_assert_cmpint (luna_count (pcm), ==, 2);
+  g_assert_true (last_silent); drain (); g_assert_cmpint (luna_count (pcm), ==, 1);
+  /* Still mixing at the next check: described again. */
+  route.next_check = 0;
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  g_assert_true (last_silent); drain (); g_assert_cmpint (luna_count (pcm), ==, 2);
   unmixed_result = 1;
   g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
   g_assert_false (last_silent);
   lgroute_disarm (&route);
+  drain ();
   g_assert_cmpint (luna_count (restore), ==, 1);
-  g_assert_cmpstr (route.pipeline, ==, "");
+  g_assert_null (route.session);
   /* Values reach a JSON payload; quotes are refused. */
   g_assert_false (token ("_p1\",\"x")); g_assert_false (token ("")); g_assert_true (token ("ADEC1"));
 
@@ -360,6 +476,7 @@ int main (int argc, char **argv)
   g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_DROP);
   g_assert_true (route.failed); lgroute_disarm (&route);
   handoff_tests ();
+  async_tests ();
   g_print ("LG route: bypass converter, carrier flags, CAPS changes and failure refusal pass\n");
   return 0;
 }

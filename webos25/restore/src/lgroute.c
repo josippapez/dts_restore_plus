@@ -16,6 +16,32 @@
 #define LUNA_SEND "/usr/bin/luna-send"
 #endif
 
+/* luna-send blocks for up to 2 s, so it never runs on a streaming thread: one
+ * ordered worker sends every request. A request owns copies of what it needs
+ * and shares only the session, so it never touches an LgRoute. */
+struct LgSession {
+  gint refs, reporting;
+  gchar pipeline[64], codec[32], immersive[16];   /* LG's own report, written by the worker only */
+};
+
+typedef struct {
+  LgSession *session;
+  gboolean restore;
+  gchar resource[16];
+} Request;
+
+/* Guards the LgRoute fields that name what is armed (sink, sinkpad, probe ids,
+ * session, resource), and the lazy worker. Never held across a GStreamer or luna call. */
+static GMutex route_lock;
+static GThreadPool *worker_pool;
+static gint outstanding;
+
+static void session_unref (LgSession *session)
+{
+  if (g_atomic_int_dec_and_test (&session->refs))
+    g_free (session);
+}
+
 /* One luna-send call; TRUE when LG replies returnValue:true. */
 static gboolean luna (const gchar *uri, const gchar *payload, gchar **reply)
 {
@@ -37,15 +63,16 @@ static gboolean token (const gchar *value)
 }
 
 /* audiod forwards this to UMI, which reapplies the digital output policy. */
-static gboolean input_set (LgRoute *route, const gchar *codec, const gchar *channel, const gchar *immersive)
+static gboolean input_set (const gchar *pipeline, const gchar *resource, const gchar *codec,
+    const gchar *channel, const gchar *immersive)
 {
-  if (!token (route->pipeline) || !token (route->resource) || !token (codec)
+  if (!token (pipeline) || !token (resource) || !token (codec)
       || !token (immersive) || (channel && !token (channel)))
     return FALSE;
   gchar *payload = g_strdup_printf ("{\"categoryType\":\"audioInputInfo\","
       "\"requestType\":\"setAudioInputInfo\",\"pipelineInfo\":{\"pipelineId\":\"%s\","
       "\"resource\":\"%s\",\"sourceType\":\"MEDIA\"},\"categoryInfo\":{\"codec\":\"%s\"%s%s%s,"
-      "\"immersive\":\"%s\"}}", route->pipeline, route->resource, codec,
+      "\"immersive\":\"%s\"}}", pipeline, resource, codec,
       channel ? ",\"channel\":\"" : "", channel ? channel : "", channel ? "\"" : "", immersive);
   gboolean ok = luna ("luna://com.webos.service.audio/tv/setQualityAttribute", payload, NULL);
   g_free (payload);
@@ -65,7 +92,7 @@ static gboolean field (const gchar *object, const gchar *key, gchar *value, gsiz
 }
 
 /* This pipeline's id (from -scom.webos.pipeline.<id>) and LG's own report for it. */
-static gboolean input_query (LgRoute *route)
+static gboolean input_query (LgSession *session)
 {
   static const gchar prefix[] = "-scom.webos.pipeline.";
   gchar *args = NULL, *reply = NULL;
@@ -74,10 +101,10 @@ static gboolean input_query (LgRoute *route)
     return FALSE;
   for (gchar *arg = args; arg < args + length; arg += strlen (arg) + 1)
     if (g_str_has_prefix (arg, prefix))
-      g_strlcpy (route->pipeline, arg + sizeof prefix - 1, sizeof route->pipeline);
+      g_strlcpy (session->pipeline, arg + sizeof prefix - 1, sizeof session->pipeline);
   g_free (args);
-  gchar *key = g_strdup_printf ("\"pipelineId\":\"%s\"", route->pipeline);
-  gboolean ok = token (route->pipeline)
+  gchar *key = g_strdup_printf ("\"pipelineId\":\"%s\"", session->pipeline);
+  gboolean ok = token (session->pipeline)
       && luna ("luna://com.webos.service.audio/tv/getAudioInputProperty", "{}", &reply);
   gchar *match = ok ? strstr (reply, key) : NULL, *object = match, *end;
   g_free (key);
@@ -85,11 +112,11 @@ static gboolean input_query (LgRoute *route)
     object--;
   if ((end = match ? strchr (match, '}') : NULL))
     *end = 0;
-  ok = end && field (object, "codec", route->codec, sizeof route->codec);
-  if (ok && !field (object, "immersive", route->immersive, sizeof route->immersive))
-    g_strlcpy (route->immersive, "none", sizeof route->immersive);
+  ok = end && field (object, "codec", session->codec, sizeof session->codec);
+  if (ok && !field (object, "immersive", session->immersive, sizeof session->immersive))
+    g_strlcpy (session->immersive, "none", sizeof session->immersive);
   g_free (reply);
-  if (!ok) route->pipeline[0] = 0;
+  if (!ok) session->pipeline[0] = 0;
   return ok;
 }
 
@@ -141,12 +168,81 @@ static gboolean configure_converter (void)
   return ok;
 }
 
+static void run_request (gpointer data, gpointer unused)
+{
+  Request *request = data;
+  LgSession *session = request->session;
+  (void) unused;
+  if (request->restore) {
+    if (session->pipeline[0])
+      input_set (session->pipeline, request->resource, session->codec, NULL, session->immersive);
+  } else {
+    if (session->pipeline[0] || input_query (session))
+      input_set (session->pipeline, request->resource, "pcm", "8", "none");
+    g_atomic_int_set (&session->reporting, 0);
+  }
+  session_unref (session);
+  g_free (request);
+  g_atomic_int_dec_and_test (&outstanding);
+}
+
+/* Takes the caller's session reference. */
+static void queue_request (LgSession *session, const gchar *resource, gboolean restore)
+{
+  Request *request = g_new0 (Request, 1);
+  request->session = session;
+  request->restore = restore;
+  g_strlcpy (request->resource, resource, sizeof request->resource);
+  g_mutex_lock (&route_lock);
+  if (!worker_pool)
+    worker_pool = g_thread_pool_new (run_request, NULL, 1, FALSE, NULL);
+  g_atomic_int_inc (&outstanding);
+  gboolean ok = g_thread_pool_push (worker_pool, request, NULL);
+  g_mutex_unlock (&route_lock);
+  if (!ok) {
+    if (!restore) g_atomic_int_set (&session->reporting, 0);
+    g_atomic_int_dec_and_test (&outstanding);
+    session_unref (session);
+    g_free (request);
+  }
+}
+
 /* LG mixes any codec missing from the receiver's short eARC list (DTS on most
- * soundbars); 8-channel PCM matches, so LG itself writes the unmixed output. */
+ * soundbars); 8-channel PCM matches, so LG itself writes the unmixed output.
+ * Asynchronous; while one report is in flight the next one is dropped. */
 static void report_pcm (LgRoute *route)
 {
-  if (route->resource[0] && (route->pipeline[0] || input_query (route)))
-    input_set (route, "pcm", "8", "none");
+  gchar resource[sizeof route->resource];
+  g_mutex_lock (&route_lock);
+  LgSession *session = route->session;
+  if (!route->resource[0]) {
+    g_mutex_unlock (&route_lock);
+    return;
+  }
+  if (!session) {
+    session = route->session = g_new0 (LgSession, 1);
+    session->refs = 1;
+  }
+  g_atomic_int_inc (&session->refs);
+  g_strlcpy (resource, route->resource, sizeof resource);
+  g_mutex_unlock (&route_lock);
+  if (g_atomic_int_compare_and_exchange (&session->reporting, 0, 1))
+    queue_request (session, resource, FALSE);
+  else
+    session_unref (session);
+}
+
+/* The sink is read under the lock but driven outside it, so a disarm on another
+ * thread can neither free it under us nor wait on a pad we are blocked in. */
+static void set_pcm (LgRoute *route, gboolean on)
+{
+  g_mutex_lock (&route_lock);
+  GstElement *sink = route->sink ? gst_object_ref (route->sink) : NULL;
+  g_mutex_unlock (&route_lock);
+  if (!sink)
+    return;
+  g_object_set (sink, "pcm-multi-ch", on, NULL);
+  gst_object_unref (sink);
 }
 
 static GstPadProbeReturn silence (GstPadProbeInfo *info)
@@ -179,7 +275,9 @@ static GstPadProbeReturn event_probe (GstPad *pad, GstPadProbeInfo *info, gpoint
     if (!is_carrier) {
       route->failed = TRUE;
       route->reason = "HD transport replaced by another format";
-      route->events = 0;
+      g_mutex_lock (&route_lock);
+      route->events = 0;   /* this probe removes itself */
+      g_mutex_unlock (&route_lock);
       lgroute_disarm (route);
       return GST_PAD_PROBE_REMOVE;
     }
@@ -190,7 +288,7 @@ static GstPadProbeReturn event_probe (GstPad *pad, GstPadProbeInfo *info, gpoint
     }
     route->first = TRUE;
     route->feeding = FALSE;
-    g_object_set (route->sink, "pcm-multi-ch", TRUE, NULL);
+    set_pcm (route, TRUE);
   }
   return GST_PAD_PROBE_OK;
 }
@@ -209,7 +307,7 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
     }
     route->first = FALSE;
     /* The first ES event must leave with the flag clear. */
-    g_object_set (route->sink, "pcm-multi-ch", FALSE, NULL);
+    set_pcm (route, FALSE);
     route->configured = configure_converter ();
     if (!route->configured) {
       route->failed = TRUE;
@@ -225,7 +323,7 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
     GST_PAD_PROBE_INFO_DATA (info) = buffer;
     GST_BUFFER_FLAG_UNSET (buffer, ES_FLAG);
     if (!route->feeding) {
-      g_object_set (route->sink, "pcm-multi-ch", TRUE, NULL);
+      set_pcm (route, TRUE);
       route->feeding = TRUE;
     }
   }
@@ -263,10 +361,14 @@ void lgroute_init (LgRoute *route, GstElement *element)
 
 gboolean lgroute_arm (LgRoute *route)
 {
-  if (route->sink)
+  g_mutex_lock (&route_lock);
+  gboolean armed = route->sink != NULL;
+  g_mutex_unlock (&route_lock);
+  if (armed)
     return !route->failed;
   if (route->failed || !lgroute_control_receiver () || lgroute_control_unmixed () < 0)
     return FALSE;
+  GstElement *sink = NULL;
   GstObject *top = gst_object_ref (route->element), *parent;
   while ((parent = gst_object_get_parent (top))) {
     gst_object_unref (top);
@@ -280,61 +382,87 @@ gboolean lgroute_arm (LgRoute *route)
         && result != GST_ITERATOR_ERROR;) {
       if (result == GST_ITERATOR_RESYNC) {
         gst_iterator_resync (iterator);
-        gst_clear_object (&route->sink);
+        gst_clear_object (&sink);
         count = 0;
         continue;
       }
       GstElement *element = g_value_get_object (&value);
       if (verified_sink (element) && !count++)
-        route->sink = gst_object_ref (element);
+        sink = gst_object_ref (element);
       g_value_reset (&value);
     }
     g_value_unset (&value);
     gst_iterator_free (iterator);
   }
   gst_object_unref (top);
-  if (count != 1 || !route->sink) {
+  if (count != 1 || !sink) {
     route->reason = "no unique verified LG sink in pipeline";
-    lgroute_disarm (route);
+    gst_clear_object (&sink);
     return FALSE;
   }
-  route->sinkpad = gst_element_get_static_pad (route->sink, "sink");
-  if (!route->sinkpad) { lgroute_disarm (route); return FALSE; }
-  GObjectClass *klass = G_OBJECT_GET_CLASS (route->sink);
+  GstPad *pad = gst_element_get_static_pad (sink, "sink");
+  if (!pad) { gst_object_unref (sink); return FALSE; }
+  gchar resource[sizeof route->resource] = "";
+  GObjectClass *klass = G_OBJECT_GET_CLASS (sink);
   if (g_object_class_find_property (klass, "index") && g_object_class_find_property (klass, "mixer")) {
     guint index = 0;
     gboolean mixer = FALSE;
-    g_object_get (route->sink, "index", &index, "mixer", &mixer, NULL);
-    g_snprintf (route->resource, sizeof route->resource, "%s%u", mixer ? "AMIXER" : "ADEC", index);
+    g_object_get (sink, "index", &index, "mixer", &mixer, NULL);
+    g_snprintf (resource, sizeof resource, "%s%u", mixer ? "AMIXER" : "ADEC", index);
   }
-  route->events = gst_pad_add_probe (route->sinkpad, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM, event_probe, route, NULL);
-  route->buffers = gst_pad_add_probe (route->sinkpad, GST_PAD_PROBE_TYPE_BUFFER, buffer_probe, route, NULL);
+  /* The probes run at once on sticky events, so the route is published first. */
+  g_mutex_lock (&route_lock);
+  route->sink = sink;
+  route->sinkpad = pad;
+  g_strlcpy (route->resource, resource, sizeof route->resource);
+  g_mutex_unlock (&route_lock);
+  gulong events = gst_pad_add_probe (pad, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM, event_probe, route, NULL);
+  gulong buffers = gst_pad_add_probe (pad, GST_PAD_PROBE_TYPE_BUFFER, buffer_probe, route, NULL);
+  g_mutex_lock (&route_lock);
+  route->events = events;
+  route->buffers = buffers;
+  g_mutex_unlock (&route_lock);
   /* A replay re-arms on a pad that already holds the carrier caps and may not resend them. */
-  GstCaps *current = gst_pad_get_current_caps (route->sinkpad), *carrier = lgroute_carrier_caps ();
+  GstCaps *current = gst_pad_get_current_caps (pad), *carrier = lgroute_carrier_caps ();
   if (current && gst_caps_is_equal (current, carrier)) {
     route->first = TRUE;
     route->feeding = FALSE;
-    g_object_set (route->sink, "pcm-multi-ch", TRUE, NULL);
+    set_pcm (route, TRUE);
   }
   gst_caps_unref (carrier);
   if (current) gst_caps_unref (current);
   return TRUE;
 }
 
+/* Callable from several threads at once (the sink's and the decoder's streaming
+ * threads, an old decoder's teardown): the first caller takes everything, so
+ * the probes are removed and LG's codec restored exactly once. */
 void lgroute_disarm (LgRoute *route)
 {
-  if (route->sinkpad) {
-    if (route->events) gst_pad_remove_probe (route->sinkpad, route->events);
-    if (route->buffers) gst_pad_remove_probe (route->sinkpad, route->buffers);
-  }
-  if (route->sink)
-    g_object_set (route->sink, "pcm-multi-ch", FALSE, NULL);
-  if (route->pipeline[0])
-    input_set (route, route->codec, NULL, route->immersive);
-  gst_clear_object (&route->sinkpad);
-  gst_clear_object (&route->sink);
+  gchar resource[sizeof route->resource];
+  g_mutex_lock (&route_lock);
+  GstElement *sink = route->sink;
+  GstPad *pad = route->sinkpad;
+  LgSession *session = route->session;
+  gulong events = route->events, buffers = route->buffers;
+  g_strlcpy (resource, route->resource, sizeof resource);
+  route->sink = NULL;
+  route->sinkpad = NULL;
+  route->session = NULL;
   route->events = route->buffers = 0;
   route->mixed_since = 0;
   route->first = route->feeding = route->configured = route->unmixed = FALSE;
-  route->pipeline[0] = route->resource[0] = 0;
+  route->resource[0] = 0;
+  g_mutex_unlock (&route_lock);
+  if (pad) {
+    if (events) gst_pad_remove_probe (pad, events);
+    if (buffers) gst_pad_remove_probe (pad, buffers);
+  }
+  if (sink)
+    g_object_set (sink, "pcm-multi-ch", FALSE, NULL);
+  /* Queued behind any report for this pipeline; it reads LG's codec from the session. */
+  if (session)
+    queue_request (session, resource, TRUE);
+  gst_clear_object (&pad);
+  gst_clear_object (&sink);
 }

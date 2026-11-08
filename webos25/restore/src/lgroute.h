@@ -4,6 +4,8 @@
 #include <gst/gst.h>
 #include "lgroute-control.h"
 
+typedef struct LgSession LgSession;
+
 typedef struct {
   GstElement *element;
   GstElement *sink;
@@ -12,7 +14,8 @@ typedef struct {
   gboolean first, feeding, configured, failed, unmixed;
   gint64 next_check, mixed_since;
   const gchar *reason;
-  gchar pipeline[64], resource[16], codec[32], immersive[16];
+  gchar resource[16];
+  LgSession *session;
 } LgRoute;
 
 void lgroute_init (LgRoute *route, GstElement *element);
