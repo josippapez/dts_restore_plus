@@ -235,6 +235,8 @@ test("HD sink allowlist accepts exact tested hashes only", function () {
   var fn = initFn("w25_pt_sink_verified");
   var known = "90dba3ef32704ce4096bf1e6045d2879d0c2192d507bc04d1e8e98437f420a43";
   ok(sh(fn + '\nw25_pt_sink_verified "' + known + '"'), "known sink");
+  var g2 = "792caa7e048a8550ec3c67e0fd4c9d94684d0633e0ff250a2bcbd0e29d538fe9"; // G2 33.22.95
+  ok(sh(fn + '\nw25_pt_sink_verified "' + g2 + '"'), "G2 33.22.95 sink");
   ["", "x", known.slice(1), "a".repeat(64)].forEach(function (hash) {
     assert.notEqual(sh(fn + '\nw25_pt_sink_verified "' + hash + '"').status, 0);
   });
