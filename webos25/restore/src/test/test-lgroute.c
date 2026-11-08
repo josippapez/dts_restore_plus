@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#define LGROUTE_RUN "/tmp/lgroute-test-run"
 #include "../lgroute.h"
 #include "../lgroute-graph.h"
 
@@ -236,6 +237,20 @@ send_event (LgRoute *route, GstEvent *event)
   return result;
 }
 
+static gboolean accept_event (GstPad *pad, GstObject *parent, GstEvent *event)
+{
+  (void) pad; (void) parent;
+  gst_event_unref (event);
+  return TRUE;
+}
+
+static GstFlowReturn accept_buffer (GstPad *pad, GstObject *parent, GstBuffer *buffer)
+{
+  (void) pad; (void) parent;
+  gst_buffer_unref (buffer);
+  return GST_FLOW_OK;
+}
+
 /* Resume and seek: a pad probe built as lgroute_arm builds it must see flushes. */
 static void resume_tests (void)
 {
@@ -317,6 +332,84 @@ static void resume_tests (void)
   unmixed_result = 0;
   g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
   g_assert_true (last_silent);
+  lgroute_disarm (&route);
+
+  /* 7. A track switch on a real pad: the new id comes without caps, because the
+   * carrier caps stay sticky. LG's sink restarts its renderer, so setup is redone. */
+  reset (&route);
+  pad = gst_pad_new ("switch", GST_PAD_SINK); source = gst_pad_new ("src", GST_PAD_SRC);
+  gst_pad_set_event_function (pad, accept_event);
+  gst_pad_set_chain_function (pad, accept_buffer);
+  g_assert_true (gst_pad_set_active (pad, TRUE));
+  g_assert_true (gst_pad_set_active (source, TRUE));
+  g_assert_cmpint (gst_pad_link (source, pad), ==, GST_PAD_LINK_OK);
+  route.sinkpad = gst_object_ref (pad);
+  route.events = gst_pad_add_probe (pad, EVENT_PROBE_MASK, event_probe, &route, NULL);
+  route.buffers = gst_pad_add_probe (pad, GST_PAD_PROBE_TYPE_BUFFER, buffer_probe, &route, NULL);
+  GstCaps *carrier_caps = lgroute_carrier_caps ();
+  GstSegment segment;
+  gst_segment_init (&segment, GST_FORMAT_TIME);
+  gst_pad_push_event (source, gst_event_new_stream_start ("track1"));
+  gst_pad_push_event (source, gst_event_new_caps (carrier_caps));
+  gst_pad_push_event (source, gst_event_new_segment (&segment));
+  graph = after;
+  formats_before = formats;
+  gst_pad_push (source, gst_buffer_new_allocate (NULL, 32768, NULL));
+  gst_pad_push (source, gst_buffer_new_allocate (NULL, 32768, NULL));
+  g_assert_true (route.configured); g_assert_cmpint (formats, ==, formats_before + 1);
+  gst_pad_push_event (source, gst_event_new_stream_start ("track2"));
+  g_assert_true (((TestSink *) route.sink)->pcm);   /* set before LG's sink reopens */
+  gst_pad_push (source, gst_buffer_new_allocate (NULL, 32768, NULL));
+  g_assert_false (route.failed); g_assert_true (route.configured);
+  g_assert_cmpint (formats, ==, formats_before + 2);
+  g_assert_false (((TestSink *) route.sink)->pcm);  /* the new FIRST leaves as ES */
+  gst_caps_unref (carrier_caps);
+  lgroute_disarm (&route);
+  gst_pad_unlink (source, pad);
+  gst_object_unref (source); gst_object_unref (pad);
+
+  /* 8. LG playing the carrier at a quarter of its rate (a CS after resume) fails
+   * over to decoding after three slow windows. */
+  reset (&route);
+  gst_element_set_state (route.sink, GST_STATE_PLAYING);
+  caps_event (&route); graph = after;
+  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
+  GstPadProbeReturn last = GST_PAD_PROBE_OK;
+  for (int window = 0; window < 3; window++) {
+    g_assert_false (route.failed);
+    route.window_start -= 2 * G_TIME_SPAN_SECOND;
+    for (int i = 0; i < 24; i++) last = carrier (&route, FALSE);
+  }
+  g_assert_cmpint (last, ==, GST_PAD_PROBE_DROP);
+  g_assert_true (route.failed);
+  g_assert_cmpstr (route.reason, ==, "LG plays the carrier too slowly");
+  gchar *log = NULL;
+  g_assert_true (g_file_get_contents (ROUTE_LOG, &log, NULL, NULL));
+  g_assert_nonnull (strstr (log, "failed, decoding instead: LG plays the carrier too slowly"));
+  g_free (log);
+  gst_element_set_state (route.sink, GST_STATE_NULL);
+  lgroute_disarm (&route);
+
+  /* 9. Normal pace, two slow windows, and a pause gap never fail the route. */
+  reset (&route);
+  gst_element_set_state (route.sink, GST_STATE_PLAYING);
+  caps_event (&route); graph = after;
+  carrier (&route, TRUE);
+  for (int i = 0; i < 24 * 3; i++) g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  for (int window = 0; window < 4; window++) {
+    route.window_start -= 2 * G_TIME_SPAN_SECOND;
+    if (window == 2) route.last_push -= G_TIME_SPAN_SECOND;   /* a pause between windows */
+    for (int i = 0; i < 24; i++) g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  }
+  g_assert_false (route.failed);
+  /* Not playing (paused, prerolling): never measured. */
+  gst_element_set_state (route.sink, GST_STATE_PAUSED);
+  for (int window = 0; window < 4; window++) {
+    route.window_start -= 2 * G_TIME_SPAN_SECOND;
+    for (int i = 0; i < 24; i++) g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  }
+  g_assert_false (route.failed);
+  gst_element_set_state (route.sink, GST_STATE_NULL);
   lgroute_disarm (&route);
 }
 
@@ -469,6 +562,8 @@ static void async_tests (void)
 int main (int argc, char **argv)
 {
   gst_init (&argc, &argv);
+  g_assert_cmpint (g_mkdir_with_parents (LGROUTE_RUN, 0700), ==, 0);
+  g_unlink (ROUTE_LOG);
   g_assert_nonnull (g_mkdtemp (luna_dir));
   g_snprintf (luna_send, sizeof luna_send, "%s/luna-send", luna_dir);
   /* The fake LG remembers the codec it was last given for _p1 (default dts). */

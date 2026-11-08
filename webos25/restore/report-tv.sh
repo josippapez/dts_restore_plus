@@ -251,4 +251,8 @@ fi
 echo
 echo "--- boot hook log (since the last restart) ---"
 if [ -f /tmp/dts25.log ]; then tail -n 30 /tmp/dts25.log; else echo "no boot hook log"; fi
+
+echo
+echo "--- DTS-HD/TrueHD eARC route log (since the last restart) ---"
+if [ -f /run/dts25/lgroute.log ]; then tail -n 60 /run/dts25/lgroute.log; else echo "no route log"; fi
 echo "=== end of report ==="

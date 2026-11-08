@@ -20,6 +20,32 @@ GST_DEBUG_CATEGORY_STATIC (lgroute_debug);
 #ifndef LUNA_SEND
 #define LUNA_SEND "/usr/bin/luna-send"
 #endif
+/* LG's debug config never routes our category to legacy-log, so testers only see this file. */
+#define ROUTE_LOG LGROUTE_RUN "/lgroute.log"
+/* The carrier's bytes per second: 192 kHz, 8 channels, 16 bit. */
+#define CARRIER_BYTES_PER_SECOND (192000 * 8 * 2)
+#define PACE_WINDOW (GST_SECOND / 4)
+
+static void note (const gchar *format, ...) G_GNUC_PRINTF (1, 2);
+static void note (const gchar *format, ...)
+{
+  FILE *log = fopen (ROUTE_LOG, "a");
+  if (log && fseek (log, 0, SEEK_END) == 0 && ftell (log) > 65536)
+    log = freopen (ROUTE_LOG, "w", log);
+  if (!log)
+    return;
+  GDateTime *now = g_date_time_new_now_local ();
+  gchar *when = g_date_time_format (now, "%T.%f");
+  g_date_time_unref (now);
+  va_list args;
+  va_start (args, format);
+  fprintf (log, "%.12s ", when);
+  vfprintf (log, format, args);
+  fputc ('\n', log);
+  va_end (args);
+  g_free (when);
+  fclose (log);
+}
 
 /* luna-send blocks for up to 2 s, so it never runs on a streaming thread: one
  * ordered worker sends every request. A request owns copies of what it needs
@@ -154,11 +180,26 @@ GstCaps *lgroute_carrier_caps (void)
       "data-bps", G_TYPE_INT, 16, NULL);
 }
 
+/* What LG's converter holds now, for the log: a lost setup shows as other rates. */
+static void note_converter (LgRoute *route, const gchar *when)
+{
+  gchar *path = g_strdup_printf ("/proc/aaudio/instances/%s/prop", route->converter), *prop = NULL;
+  if (route->converter[0] && g_file_get_contents (path, &prop, NULL, NULL)) {
+    g_strdelimit (prop, "\n", ' ');
+    note ("%s: converter %s %.700s", when, route->converter, prop);
+  } else {
+    note ("%s: converter %s unreadable", when, route->converter[0] ? route->converter : "none");
+  }
+  g_free (prop);
+  g_free (path);
+}
+
 /* PCMCVT_CMD_SET_ALLFMT: 192 kHz, 8 ch, 16-bit in and out; LG's gain is left alone. */
-static gboolean configure_converter (void)
+static gboolean configure_converter (LgRoute *route)
 {
   static const char cmd[] = "0x50020020 192000 8 16 0 0 192000 8 16\n";
-  gchar *graph = NULL, uid[9];
+  gchar *graph = NULL, *uid = route->converter;
+  uid[0] = 0;
   if (!g_file_get_contents (MODULE_GRAPH, &graph, NULL, NULL))
     return FALSE;
   gboolean ok = lgroute_bypass_converter (graph, uid);
@@ -274,13 +315,66 @@ static void route_fail (LgRoute *route, const gchar *reason)
   route->failed = TRUE;
   route->reason = reason;
   GST_WARNING_OBJECT (route->element, "lgroute: HD transport failed: %s", reason);
+  note ("failed, decoding instead: %s", reason);
+}
+
+static gboolean pad_has_carrier (GstPad *pad)
+{
+  GstCaps *current = pad ? gst_pad_get_current_caps (pad) : NULL, *carrier = lgroute_carrier_caps ();
+  gboolean same = current && gst_caps_is_equal (current, carrier);
+  gst_caps_unref (carrier);
+  if (current) gst_caps_unref (current);
+  return same;
+}
+
+static void restart_pace (LgRoute *route)
+{
+  route->window_start = route->last_push = 0;
+  route->window_media = 0;
+  route->slow_windows = 0;
+}
+
+/* LG plays the carrier at its own rate, so the pushes keep that pace. After a
+ * resume one TV took four times as long, fell 10 s behind and the receiver
+ * played noise: three slow windows in a row mean that, not a stall or a pause,
+ * which show up as a single long gap. */
+static gboolean carrier_slow (LgRoute *route, gsize size, gint64 now)
+{
+  g_mutex_lock (&route_lock);
+  GstElement *sink = route->sink ? gst_object_ref (route->sink) : NULL;
+  g_mutex_unlock (&route_lock);
+  gboolean playing = sink && GST_STATE (sink) == GST_STATE_PLAYING
+      && GST_STATE_PENDING (sink) == GST_STATE_VOID_PENDING;
+  if (sink) gst_object_unref (sink);
+  gint64 gap = now - route->last_push;
+  route->last_push = now;
+  if (!playing || !route->window_start || gap > 500 * G_TIME_SPAN_MILLISECOND) {
+    route->window_start = playing ? now : 0;
+    route->window_media = 0;
+    route->slow_windows = 0;
+    return FALSE;
+  }
+  route->window_media += gst_util_uint64_scale (size, GST_SECOND, CARRIER_BYTES_PER_SECOND);
+  if (route->window_media < PACE_WINDOW)
+    return FALSE;
+  guint64 took = (guint64) (now - route->window_start) * GST_USECOND;
+  if (took > 3 * route->window_media) {
+    route->slow_windows++;
+    note ("carrier slow: %" G_GUINT64_FORMAT " ms of audio took %" G_GUINT64_FORMAT " ms",
+        route->window_media / GST_MSECOND, took / GST_MSECOND);
+    if (route->slow_windows == 1) note_converter (route, "slow");
+  } else {
+    route->slow_windows = 0;
+  }
+  route->window_start = now;
+  route->window_media = 0;
+  return route->slow_windows >= 3;
 }
 
 static GstPadProbeReturn event_probe (GstPad *pad, GstPadProbeInfo *info, gpointer data)
 {
   LgRoute *route = data;
   GstEvent *event = GST_PAD_PROBE_INFO_EVENT (info);
-  (void) pad;
   GST_LOG_OBJECT (route->element, "lgroute: event %s (configured=%d unmixed=%d)",
       GST_EVENT_TYPE_NAME (event), route->configured, route->unmixed);
   if (GST_EVENT_TYPE (event) == GST_EVENT_STREAM_START) {
@@ -302,6 +396,16 @@ static GstPadProbeReturn event_probe (GstPad *pad, GstPadProbeInfo *info, gpoint
       g_strlcpy (route->stream_id, id, sizeof route->stream_id);
       route->configured = route->first = route->feeding = route->unmixed = FALSE;
       route->next_check = route->mixed_since = 0;
+      restart_pace (route);
+      /* Sticky caps outlive STREAM_START and identical caps are never sent
+       * again, so after a track switch the carrier already on the pad is this
+       * stream's caps. The flag must be set before LG's sink reopens. */
+      if (pad_has_carrier (pad)) {
+        route->first = TRUE;
+        set_pcm (route, TRUE);
+      }
+      note ("new stream \"%.60s\", route setup %s", id,
+          route->first ? "redone on the next buffer" : "waits for caps");
     }
     return GST_PAD_PROBE_OK;
   }
@@ -310,6 +414,8 @@ static GstPadProbeReturn event_probe (GstPad *pad, GstPadProbeInfo *info, gpoint
     GST_INFO_OBJECT (route->element, "lgroute: FLUSH_STOP, mixer state re-read before next carrier");
     route->next_check = 0;
     route->unmixed = FALSE;
+    restart_pace (route);
+    note_converter (route, "flush");
   }
   if (GST_EVENT_TYPE (event) == GST_EVENT_CAPS) {
     GstCaps *caps = NULL, *carrier = lgroute_carrier_caps ();
@@ -332,6 +438,7 @@ static GstPadProbeReturn event_probe (GstPad *pad, GstPadProbeInfo *info, gpoint
     GST_INFO_OBJECT (route->element, "lgroute: carrier CAPS, renderer setup pending");
     route->first = TRUE;
     route->feeding = FALSE;
+    restart_pace (route);
     set_pcm (route, TRUE);
   }
   return GST_PAD_PROBE_OK;
@@ -351,12 +458,13 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
     route->first = FALSE;
     /* The first ES event must leave with the flag clear. */
     set_pcm (route, FALSE);
-    route->configured = configure_converter ();
+    route->configured = configure_converter (route);
     if (!route->configured) {
       route_fail (route, "bypass converter missing, ambiguous, or not configurable");
       return GST_PAD_PROBE_DROP;
     }
     GST_INFO_OBJECT (route->element, "lgroute: bypass converter configured, first carrier buffer");
+    note_converter (route, "configured");
     /* The kernel routes the bypass to eARC only if it exists when LG writes the unmixed output. */
     report_pcm (route);
   } else {
@@ -383,13 +491,19 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
   if (unmixed == 0 && due)
     report_pcm (route);
   route->unmixed = unmixed > 0;
-  if (route->unmixed != was_unmixed)
+  if (route->unmixed != was_unmixed) {
     GST_INFO_OBJECT (route->element, "lgroute: eARC now %s (reading %d)",
         route->unmixed ? "unmixed, carrier passes" : "mixed or unavailable, sending silence", unmixed);
+    note ("eARC %s", route->unmixed ? "unmixed, carrier passes" : "mixed, sending silence");
+  }
   /* LG's policy rewrites can mix briefly; only a lasting mix means TV sound overlays the carrier. */
   if (unmixed < 0
       || (route->mixed_since && now - route->mixed_since >= G_TIME_SPAN_SECOND)) {
     route_fail (route, unmixed < 0 ? "eARC Pass Through unavailable" : "LG keeps eARC mixing on");
+    return GST_PAD_PROBE_DROP;
+  }
+  if (carrier_slow (route, gst_buffer_get_size (GST_PAD_PROBE_INFO_BUFFER (info)), now)) {
+    route_fail (route, "LG plays the carrier too slowly");
     return GST_PAD_PROBE_DROP;
   }
   if (due)
@@ -473,14 +587,12 @@ gboolean lgroute_arm (LgRoute *route)
   route->buffers = buffers;
   g_mutex_unlock (&route_lock);
   /* A replay re-arms on a pad that already holds the carrier caps and may not resend them. */
-  GstCaps *current = gst_pad_get_current_caps (pad), *carrier = lgroute_carrier_caps ();
-  if (current && gst_caps_is_equal (current, carrier)) {
+  if (pad_has_carrier (pad)) {
     route->first = TRUE;
     route->feeding = FALSE;
     set_pcm (route, TRUE);
   }
-  gst_caps_unref (carrier);
-  if (current) gst_caps_unref (current);
+  note ("armed on %s", resource[0] ? resource : "LG sink");
   return TRUE;
 }
 
@@ -504,7 +616,10 @@ void lgroute_disarm (LgRoute *route)
   route->first = route->feeding = route->configured = route->unmixed = FALSE;
   route->stream_id[0] = 0;
   route->resource[0] = 0;
+  restart_pace (route);
   g_mutex_unlock (&route_lock);
+  if (sink)
+    note ("disarmed");
   if (pad) {
     if (events) gst_pad_remove_probe (pad, events);
     if (buffers) gst_pad_remove_probe (pad, buffers);
