@@ -248,26 +248,19 @@
     if (appDtsCard) appDtsCard.hidden = !canW25Test;
     $("btnAppDtsOn").disabled  = !canW25Test || s.appDtsActive === true;
     $("btnAppDtsOff").disabled = !canW25Test || s.appDtsActive !== true;
-    // Only offer the restart while it would actually do something: asked for but
-    // not yet applied. Hidden the rest of the time so the card does not invite a
-    // pointless reboot.
-    // A restart is pending in either direction now, because neither Turn on nor
-    // Turn off changes the running value: asked for but not applied yet, or
-    // turned off while the old value is still live.
-    var pending = canW25Test && (s.appDtsRequested === true) !== (s.appDtsActive === true);
+    // Turn on and Turn off change the live value at once, and configd keeps it
+    // across restarts. A restart only helps when it was asked for but did not
+    // apply: the boot hook tries again.
+    var pending = canW25Test && s.appDtsRequested === true && s.appDtsActive !== true;
     $("btnAppDtsReboot").hidden   = !pending;
     $("btnAppDtsReboot").disabled = !pending;
     setVal("sEdidType", s.edidType || "—");
-    // Intent and effect are separate: the marker survives a reboot, the mount does
-    // not, so "asked for but not applied" is a state worth naming rather than
-    // showing a bare "no".
-    // Four states, because intent (marker) and effect (live value) move on
-    // different clocks: the effect only changes at boot.
     var appDtsText = s.appDtsActive
-      ? (s.appDtsRequested ? "yes" : "on until restart")
-      : (s.appDtsRequested ? "on — restart the TV to apply" : "no");
+      ? (s.appDtsRequested ? "yes" : "still on — press Turn off again")
+      : (s.appDtsRequested ? "on, but not applied — see Last attempt" : "no");
     setVal("sAppDts", appDtsText,
-      s.appDtsActive && s.appDtsRequested ? "ok" : (pending ? "warn" : null));
+      s.appDtsActive && s.appDtsRequested ? "ok"
+        : s.appDtsActive !== (s.appDtsRequested === true) ? "warn" : null);
     var last = s.appDtsLast;
     setVal("sAppDtsLast", last
       ? new Date(last.at * 1000).toLocaleString() + ": " + last.message

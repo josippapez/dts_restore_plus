@@ -25,6 +25,9 @@
 #   W25_PT=start|stop
 #                 only start or stop the DTS passthrough sound-output watcher
 #                 (the app's toggle), then exit.
+#   W25_APPDTS=on|off
+#                 only set or restore tv.model.edidType live (the app's "Show
+#                 DTS tracks in apps" toggle), print EDIDTYPE=<value> and exit.
 #   FORCE=1       explicit opt-in on a TV that is not in the verified table.
 #
 # Always exits 0: a non-zero webosbrew init script trips the failsafe that
@@ -104,7 +107,9 @@ EXPECT_GST=1.24
 #      fingerprinted (no stock.fp key, no drift check), and the registry proof
 #      requires mpegpsdemux only when our bind is live.
 #   46 verified set for the G2 on firmware 33.22.95.
-W25_GATE_VERSION=46
+#   47 the app-DTS opt-in sets tv.model.edidType live through configd's setConfigs
+#      (no bind, no configd restart); W25_APPDTS=on|off is the app's toggle.
+W25_GATE_VERSION=47
 FP=/var/lib/webosbrew/dts25/stock.fp
 # Where the installed copy of THIS script lives, and the boot hook that symlinks
 # to it. Named here, in the shared block, so the read-only probe can fingerprint
@@ -141,9 +146,8 @@ MYGC=/var/lib/webosbrew/truehd/gstcool.conf
 MYLIBS=/var/lib/webosbrew/truehd/libs:/var/lib/webosbrew/dts25/libs
 # APP-DTS opt-in: makes apps that gate on the TV's declared capability (Stremio
 # and Kodi both read tv.model.edidType) stop hiding DTS tracks. Off unless the
-# marker exists -- see the APPLY 2d block for why it is separate from Enable.
+# marker exists -- see "App DTS opt-in" below.
 APPDTS_FLAG=/var/lib/webosbrew/dts25/appdts.enabled
-APPDTS_LOCK=/tmp/dts25-appdts.lock
 # Outcome of every apply attempt. Kept out of /tmp: the boot log there is gone
 # by the next boot, which left no record of the boots where this did not apply.
 # appdts.last is one line, "<epoch> <on|skipped|failed> <message>", for the app.
@@ -155,7 +159,8 @@ APPDTS_HIST=/var/lib/webosbrew/dts25/appdts.log
 # fresh mount on every run and never unmounting on Disable.
 LLS=/tmp/var/run/tvconfig/lls/factorydb.json
 MYLLS=/var/lib/webosbrew/dts25/factorydb.override.json
-CONFIGD_DB=/var/preferences/configd_db.json
+# configd keeps values set through setConfigs here and applies them again at boot.
+CFG_USER=/var/preferences/configd_factory_db.json
 w25_log() { [ -n "${W25_LOG:-}" ] || return 0; echo "[dts25-gate $(date '+%Y-%m-%d %H:%M:%S')] $*" >> "${W25_LOG:-}" 2>&1; }
 # Unmount ONE bind target, falling back to a LAZY detach when it is busy.
 # Measured on a real C5: umount of /usr/lib/gstreamer-1.0/libgstlibav.so fails
@@ -744,6 +749,81 @@ w25_pt_start() {
   rm -f "$PT_RUN/stopping"
   ( w25_pt_watch ) </dev/null >/dev/null 2>&1 &
 }
+# --- App DTS opt-in (tv.model.edidType) -----------------------------------------
+# Stremio and Kodi read tv.model.edidType and hide DTS tracks unless it mentions
+# dts. It is a separate opt-in from Enable because edidType also feeds the EDID
+# the TV advertises over eARC and gates DTS on its HDMI inputs.
+#
+# configd's setConfigs changes the live value. Root may call it (the app's own
+# service identity may not) and nothing restarts: measured on a C5, configd,
+# audiooutputd, arccontroller and audiod kept their pids. configd records the
+# value as a user override in $CFG_USER and applies it again at every boot, so
+# Off must put the factory value back and drop that override. Apps up to 2.7.64
+# restarted configd instead, which could leave the TV without sound, volume or
+# Home keys until the next restart.
+#
+# luna-send prints its reply only to a terminal; script(1) gives it one.
+w25_luna() { script -q -e -c "luna-send -n 1 $1 '$2'" /dev/null 2>/dev/null; }
+w25_edid_get() {
+  w25_luna luna://com.webos.service.config/getConfigs '{"configNames":["tv.model.edidType"]}' |
+    sed -n 's/.*"tv.model.edidType":"\([^"]*\)".*/\1/p' | head -n1
+}
+# Success is the value reading back, not the call's own returnValue.
+w25_edid_set() {
+  w25_luna luna://com.webos.service.config/setConfigs "{\"configs\":{\"tv.model.edidType\":\"$1\"}}" >/dev/null
+  [ "$(w25_edid_get)" = "$1" ]
+}
+# The factory value, which Off restores.
+w25_edid_stock() { grep -o '"edidType":"[^"]*"' "$LLS" 2>/dev/null | head -n1 | sed 's/.*:"//; s/"$//'; }
+# Every outcome ends here, so none of them is silent: the boot log, a history
+# that survives reboots (last 50 lines), the line the app shows, and a toast.
+# $2 goes into the toast's JSON, so it must not contain a double quote.
+w25_appdts_report() {
+  w25_log "app-dts: $1: $2"
+  echo "$(date +%s) $1 $2" > "$APPDTS_LAST" 2>/dev/null
+  { tail -n 49 "$APPDTS_HIST" 2>/dev/null; echo "$(date '+%Y-%m-%d %H:%M:%S') $1 $2"; } > "$APPDTS_HIST.tmp" 2>/dev/null &&
+    mv -f "$APPDTS_HIST.tmp" "$APPDTS_HIST" 2>/dev/null
+  [ -n "${APPDTS_QUIET:-}" ] || toast "DTS Enabler: $2"
+}
+
+# The value to advertise for a stock edidType, or nothing when there is no safe one.
+# Only strings LG's own code knows are used: libextinput-service lists TrueHD,
+# TrueHD+dts and ac3+dts. A UR7500 reports ac3, not TrueHD.
+w25_appdts_target() {
+  case "$1" in
+    TrueHD) echo "TrueHD+dts" ;;
+    ac3) echo "ac3+dts" ;;
+  esac
+}
+w25_appdts_apply() {
+  [ -n "${W25_NO_APPDTS:-}" ] && return 0
+  [ -f "$APPDTS_FLAG" ] || return 0
+  CUR=$(w25_edid_get)
+  case $CUR in
+    *dts*) w25_appdts_report on "DTS tracks are on for apps."; return 0 ;;
+  esac
+  T=$(w25_appdts_target "$CUR")
+  if [ -z "$T" ]; then
+    w25_appdts_report failed "DTS tracks are off: this TV reports '${CUR:-nothing}', which has no known DTS form, so there was nothing to change."
+  elif w25_edid_set "$T"; then
+    w25_appdts_report on "DTS tracks are on for apps. Reopen Stremio or Kodi if it was already open."
+  else
+    w25_appdts_report failed "DTS tracks are off: the TV's settings service did not take the change."
+  fi
+}
+w25_appdts_off() {
+  # Apps up to 2.7.64 bound a patched copy over the factory file.
+  w25_umount "$LLS"
+  rm -f "$MYLLS" 2>/dev/null
+  STOCK=$(w25_edid_stock)
+  [ -n "$STOCK" ] || return 0
+  [ "$(w25_edid_get)" = "$STOCK" ] || w25_edid_set "$STOCK" || return 0
+  # Setting it back leaves the factory value pinned as an override. Drop the file
+  # when that is all it holds; configd reads it only at boot.
+  [ "$(tr -d ' \t\n' < "$CFG_USER" 2>/dev/null)" = "{\"com.webos.service.config\":{\"usrDefined\":[\"tv.model.edidType\"]},\"tv.model\":{\"edidType\":\"$STOCK\"}}" ] &&
+    rm -f "$CFG_USER"
+  return 0
+}
 # W25_PT=start|stop: only start or stop the watcher, for the app's toggle, so
 # turning passthrough on or off takes effect without a restart.
 if [ -n "${W25_PT:-}" ]; then
@@ -751,6 +831,17 @@ if [ -n "${W25_PT:-}" ]; then
     start) w25_pt_start ;;
     stop) w25_pt_stop || exit 1 ;;
   esac
+  exit 0
+fi
+# W25_APPDTS=on|off: the app's "Show DTS tracks in apps" toggle, applied at once.
+# On needs the marker the app has just written.
+if [ -n "${W25_APPDTS:-}" ]; then
+  APPDTS_QUIET=1
+  case $W25_APPDTS in
+    on) w25_appdts_apply ;;
+    off) w25_appdts_off ;;
+  esac
+  echo "EDIDTYPE=$(w25_edid_get)"
   exit 0
 fi
 # W25_STAND_DOWN=1: revert to stock and exit. Deliberately a mode of its own
@@ -925,319 +1016,18 @@ esac
 # --- APPLY 2b) gstcool.conf: give avdec_truehd a high SW rank so LG autoplugs it (not the HW path)
 [ -f "$MYGC" ] && ! grep -q " $GC " /proc/mounts 2>/dev/null && mount -n --bind "$MYGC" "$GC" 2>>$LOG
 # --- APPLY 2d) OPT-IN: tell apps this TV accepts DTS (tv.model.edidType) -------
-#     Kept OUT of Enable and gated on its own marker file. edidType is not a
-#     passive descriptor: arccontroller builds the EDID SADs the TV advertises
-#     over eARC from it and extinput gates HDMI-input DTS on it, so switching it
-#     changes what a connected AVR is told. That is a bigger claim than "decode
-#     DTS in our own pipeline" and needs its own consent.
-#
-#     edidType is factory data, not a rootfs config file: lowlevelstorage writes
-#     it into $LLS (tmpfs) and configd folds that in as the "Low-Level Storage
-#     Info" layer. Bind our edited copy over it, then drop configd's cache --
-#     configd only re-parses the layer dirs when the cache is gone. Both are
-#     rebuilt at boot, so this whole step re-runs cleanly every time.
-#
-#     Do NOT try the higher-priority /var/run/tvconfig/remote layer instead: it
-#     takes a selector that is empty on these sets, so configd logs
-#     "(Remote) : ReadOnly Type (Skipped)" and never reads it. Measured on a C5.
-# configd is a core service that much of the TV blocks on, and restarting it is
-# the only way to make it re-read the layer. Two rules keep that safe, both
-# learned the hard way on a C5 (2026-09-13): Enable ran this four times in 20
-# seconds, one restart landed on top of another mid-startup, and configd stuck in
-# `activating` with its cache deleted and never rebuilt -- which hung the app's
-# Enable and left the TV without configd.
-#
-#   1. Do nothing when the value is ALREADY what we want. Enable re-runs this
-#      script by design, so "already applied" must be free, not another restart.
-#   2. One at a time. mkdir is atomic on every filesystem here, so it is the lock.
-# True when the audio driver holds no connection for the main audio input.
-#
-# Killing configd takes audiooutputd down with it (Requires=configd, and it dies
-# on its own the moment configd's luna socket goes away). Every sndout connection
-# it held at that instant is ORPHANED: the driver keeps it, the replacement
-# audiooutputd has no record of it, and from then on every connect to that port
-# is refused with "already connected". Measured on a C5 (2026-09-17): six
-# `input 0x10` connections on ports 5-7 were orphaned exactly this way, with zero
-# matching disconnects, and on an earlier boot `input 0x1 port 1` went the same
-# way -- after which any stream uMS put on port 1 played silently until reboot.
-# There is no way to clear it from userspace: audiooutputd does not disconnect on
-# SIGTERM (measured -- a clean stop logs no sndout_disconnect at all), and
-# restarting audiooutputd, audiod and umediaserver all leave it in place.
-#
-# So the only defence is not to kill configd while the playback input is wired
-# up. `input 0x1` is main audio. Each call logs a start line ("sndout_connect
-# 3243: Start Connect output ...") and a completion line ("sndout_connect 3410:
-# output 0x1 input 0x1 port 1 ."); only the completion counts, and it is told
-# apart by "output" following the colon. Not by the line number: webOS 11.2
-# (43.21.77) logs the completions at 3491/3727 instead of 3410/3644, so a
-# line-number match saw no events there and read a held port as free.
-# "input 0x1 port" cannot match "input 0x10 port" -- the trailing space is what
-# separates them.
-#
-# Read the persisted kernel log, not dmesg: the ring buffer had already scrolled
-# past the boot-time connects by the time this runs (measured on a C5: dmesg
-# started at 15s, the connects were earlier), so dmesg shows a still-held port as
-# free -- the exact misread this guards against, which is why there is no dmesg
-# fallback. /var/log/legacy-log carries the same lines from 3s.
-#
-# ABSENCE OF A CONNECT IS NOT PROOF THE PORT IS FREE. The log is truncated at
-# boot but still rotates on size, and a rotation before this runs would leave the
-# connects in legacy-log.0.gz and the live file starting mid-boot -- "no events,
-# so idle", the misread again. So read one rotation back, and require the log to
-# reach back to within 2s of the moment audiooutputd started, since nothing could
-# have connected before that. If it does not, refuse rather than guess.
-#
-# Why 2s and not 0: on webOS 11.2 (43.21.77) the persisted log starts 0.5s AFTER
-# audiooutputd (2.78s vs 3.28s, owner report), so a strict check rejected every
-# boot and the opt-in always gave up after 20 minutes. audiooutputd does not touch
-# the driver that early: on a C5 its first alsasndout line of any kind came 15.5s
-# after it started (3.07s vs 18.63s), so 2s still covers every connect.
-w25_appdts_audio_idle() {
-  AOD_US=$(systemctl show -p ExecMainStartTimestampMonotonic --value audiooutputd.service 2>/dev/null)
-  # 0 means systemd has no start time for it (never started, or mid-restart) and
-  # must NOT be taken literally: every log reaches back past 0, so the coverage
-  # test below would reject every boot and the opt-in would never apply again.
-  case $AOD_US in '' | 0 | *[!0-9]*) AOD_US=10000000 ;; esac
-  { gzip -dc /var/log/legacy-log.0.gz 2>/dev/null
-    cat /var/log/legacy-log 2>/dev/null; } | awk -v aod="$AOD_US" '
-    first == "" && $2 ~ /^\[[0-9]+\.[0-9]+\]$/ { split($2, t, /[][]/); first = t[2] + 0 }
-    /alsasndout/ && /input 0x1 port/ {
-      if ($0 ~ /sndout_connect[ ]+[0-9]+: output /) st = 1
-      else if ($0 ~ /sndout_disconnect[ ]+[0-9]+: output /) st = 0
-      else next
-      for (i = 1; i <= NF; i++) {
-        if ($i == "output") out = $(i + 1)
-        if ($i == "port") p = $(i + 1)
-      }
-      sub(/\.$/, "", p)
-      held[out "/" p] = st
-    }
-    END {
-      if (first == "" || first > aod / 1000000 + 2) exit 1
-      n = 0; for (k in held) if (held[k]) n++
-      exit (n > 0)
-    }
-  '
-}
-
-# Every outcome ends here, so none of them is silent: the boot log, a history
-# that survives reboots (last 50 lines), the line the app shows, and a toast.
-# $2 goes into the toast's JSON, so it must not contain a double quote.
-w25_appdts_report() {
-  w25_log "app-dts: $1: $2"
-  echo "$(date +%s) $1 $2" > "$APPDTS_LAST" 2>/dev/null
-  { tail -n 49 "$APPDTS_HIST" 2>/dev/null; echo "$(date '+%Y-%m-%d %H:%M:%S') $1 $2"; } > "$APPDTS_HIST.tmp" 2>/dev/null &&
-    mv -f "$APPDTS_HIST.tmp" "$APPDTS_HIST" 2>/dev/null
-  toast "DTS Enabler: $2"
-}
-
-# The value to advertise for a stock edidType, or nothing when there is no safe one.
-# Only strings LG's own code knows are used: libextinput-service lists TrueHD,
-# TrueHD+dts and ac3+dts. A UR7500 reports ac3, not TrueHD.
-w25_appdts_target() {
-  case "$1" in
-    TrueHD) echo "TrueHD+dts" ;;
-    ac3) echo "ac3+dts" ;;
-  esac
-}
-w25_appdts_apply() {
-  # Never from inside Enable. Enable writes this script AND runs it while the app
-  # blocks on the result, so a configd restart in that path is a core service
-  # going down inside a call the UI is waiting on -- that is what left Enable
-  # spinning on "enabling DTS..." twice on a real C5 (2026-09-13). Enable does
-  # not need to do this work: the boot hook applies it every boot, and the app's
-  # own toggle applies it immediately when the user asks for it.
-  [ -n "${W25_NO_APPDTS:-}" ] && return 0
-  [ -f "$APPDTS_FLAG" ] || return 0
-  if [ ! -f "$LLS" ]; then
-    w25_appdts_report failed "DTS tracks are off this time: the TV's capability file $LLS was missing. Restart the TV to try again."
-    return 0
-  fi
-  # Rule 1 -- cheapest exit first, and the one that makes re-running Enable free.
-  if grep -q '"edidType"[[:space:]]*:[[:space:]]*"[^"]*dts' "$CONFIGD_DB" 2>/dev/null; then
-    w25_appdts_report on "DTS tracks are on for apps."
-    return 0
-  fi
-  # Bound but the cache still stock: an earlier run died between the two. The
-  # bound copy no longer matches the pattern below, so retrying cannot fix it.
-  if grep -q " $LLS " /proc/mounts 2>/dev/null; then
-    w25_appdts_report failed "DTS tracks are off: an earlier attempt stopped half-way. Restart the TV to try again."
-    return 0
-  fi
-  # Rule 1b -- WAIT FOR BOOT TO FINISH before touching configd. The Homebrew hook
-  # runs ~30s in while bootmode-normal-boot-done only goes active at ~45s
-  # (measured on a C5), so this was restarting a core service with systemd still
-  # bringing the system up. An owner reported the remote's Home button dead after
-  # every boot with this opt-in on, and it survived BOTH restart shapes -- the
-  # cascading one and the isolated one -- which points at the timing rather than
-  # at what else gets restarted. Bounded, and it applies anyway if the signal
-  # never arrives, so a firmware without this unit still gets the feature.
-  i=0
-  while [ "$i" -lt 180 ]; do
-    systemctl is-active bootmode-normal-boot-done.service >/dev/null 2>&1 && break
-    i=$((i + 1)); sleep 1
-  done
-  if [ "$i" -ge 180 ]; then
-    w25_log "app-dts: no boot-done signal after ${i}s -- applying anyway"
-  elif [ "$i" -gt 0 ]; then
-    w25_log "app-dts: waited ${i}s for boot to finish"
-  fi
-  # Rule 1c -- and wait for main audio to be unwired, see w25_appdts_audio_idle.
-  # Checked here rather than next to the kill so that giving up costs nothing:
-  # the bind mount and the cache patch have not happened yet. What is left
-  # between this check and the kill is one sed and one mount, well under a
-  # second. Unlike every other wait here this one gives up instead of applying
-  # anyway -- orphaning the playback port costs the TV all sound until the next
-  # reboot, which is worse than Stremio not listing DTS tracks for one session.
-  #
-  # This runs detached from the boot hook (see w25_appdts_start), so it can wait
-  # far longer than the 120s it used to: anything playing sound in the first two
-  # minutes (Live TV, an HDMI source, an app resumed at boot) used to cost the
-  # whole session its DTS tracks. 3s polls for up to 20 minutes.
-  i=0
-  while [ "$i" -lt 1200 ]; do
-    w25_appdts_audio_idle && break
-    [ "$i" = 0 ] && toast "DTS Enabler: DTS tracks will turn on once nothing is playing."
-    i=$((i + 3)); sleep 3
-  done
-  if [ "$i" -ge 1200 ]; then
-    w25_appdts_report skipped "DTS tracks are off this time: something kept playing for 20 minutes, and enabling them during playback would cost the TV its sound. Restart the TV to try again."
-    return 0
-  elif [ "$i" -gt 0 ]; then
-    w25_log "app-dts: waited ${i}s for main audio to go idle"
-  fi
-  # Rule 2 -- one at a time. mkdir is atomic everywhere here, so it is the lock.
-  # It must be STALE-SAFE: restarting configd kills whatever process tree the
-  # caller is running in (that is what the detached invocation below exists for),
-  # so a run CAN die holding this. A lock whose owner is gone would then block the
-  # feature until the next reboot. Record the pid and take over a dead one.
-  if ! mkdir "$APPDTS_LOCK" 2>/dev/null; then
-    OWNER=$(cat "$APPDTS_LOCK/pid" 2>/dev/null)
-    if [ -n "$OWNER" ] && [ -d "/proc/$OWNER" ]; then
-      # The owner reports its own outcome.
-      w25_log "app-dts: pid $OWNER holds the lock; skipped"
-      return 0
-    fi
-    w25_log "app-dts: took over a stale lock (owner ${OWNER:-unknown} is gone)"
-    rm -rf "$APPDTS_LOCK" 2>/dev/null
-    mkdir "$APPDTS_LOCK" 2>/dev/null || return 0
-  fi
-  # Not $$: in the detached subshell that is the boot hook's pid, which exits
-  # long before this does and would make a live lock look stale.
-  sh -c 'echo $PPID' > "$APPDTS_LOCK/pid" 2>/dev/null
-  EDID_STOCK=$(grep -o '"edidType":"[^"]*"' "$LLS" 2>/dev/null | head -n1 | sed 's/.*:"//; s/"$//')
-  EDID_DTS=$(w25_appdts_target "$EDID_STOCK")
-  if [ -n "$EDID_DTS" ] &&
-     sed "s/\"edidType\":\"$EDID_STOCK\"/\"edidType\":\"$EDID_DTS\"/" "$LLS" > "$MYLLS" 2>>$LOG &&
-     grep -q "\"edidType\":\"$EDID_DTS\"" "$MYLLS" 2>/dev/null; then
-    if mount -n --bind "$MYLLS" "$LLS" 2>>$LOG; then
-      # PATCH the cache, do NOT delete it. Deleting it makes configd rebuild its
-      # whole configuration from the layer dirs and republish every value -- and
-      # the OLED panel settings live in the same tv.model blob as edidType
-      # (defaultStdBacklight, digitalEye, eyeCurveDerivation, eyeSensorLEDGain,
-      # oledCPC, supportOledOffRsQuickStart). An owner reported the panel dimming
-      # after screen-off and staying dim until reboot, which is what that rebuild
-      # touches. Measured on a C5: with the cache present a restart logs ZERO
-      # parseFiles lines, so patching the one string changes exactly one key and
-      # leaves every other value byte-identical. It is also the fragile window
-      # that wedged configd, so this removes that too.
-      #
-      # The bind above still matters: it is what the NEXT boot reads before this
-      # runs, and it keeps the file and the cache telling the same story.
-      # Whatever the cache holds, not just the stock value: a hand-edited script
-      # left "ac3+dts+truehd" there on a UR7500, and a stock-only match kept it.
-      if sed -i "s/\"edidType\"\([[:space:]]*\):\([[:space:]]*\)\"[^\"]*\"/\"edidType\"\1:\2\"$EDID_DTS\"/" "$CONFIGD_DB" 2>>$LOG &&
-         grep -q "\"edidType\"[[:space:]]*:[[:space:]]*\"$EDID_DTS\"" "$CONFIGD_DB" 2>/dev/null; then
-        # Restart configd WITHOUT its dependents, and without the 90s stop timeout.
-        #
-        # Ten units Requires= configd -- pqcontroller (picture), videooutputd,
-        # audiooutputd, umediaserver among them. A plain `systemctl restart` (or a
-        # kill that trips Restart=on-failure) queues restart jobs for all of them,
-        # configd's own job waits behind that cascade for ~90s, and pqcontroller
-        # restarting is the "Auto Power Save for a minute and a half after boot"
-        # owners saw. Measured on a C5 with a 1s sampler of systemd's job queue.
-        #
-        # So: enqueue a stop for configd ONLY (--job-mode=ignore-dependencies keeps
-        # the cascade out; --no-block returns at once), SIGKILL it so that stop
-        # completes now instead of after the 90s SIGTERM timeout it ignores once it
-        # has subscribers, and start it alone the same way. A requested stop does
-        # not trigger Restart=on-failure, so nothing else moves. Measured: 2s, with
-        # pqcontroller/videooutputd/umediaserver/devicereset pids unchanged. The
-        # new configd loads its cache (0 parseFiles) so it serves the patched value.
-        # If it is not back in 20s, fall back to the slow known-good restart.
-        # Last look, because the wait above finished before the sed and the mount
-        # that got us here, and audiooutputd can wire main audio up in any of the
-        # moments in between. Undoing is the same sed backwards plus dropping the
-        # bind; the running configd never re-reads its cache, so the edit we are
-        # reverting was never visible to anything.
-        if ! w25_appdts_audio_idle; then
-          w25_log "app-dts: main audio came back before the restart -- skipped this boot"
-          sed -i "s/\"edidType\"\([[:space:]]*\):\([[:space:]]*\)\"$EDID_DTS\"/\"edidType\"\1:\2\"$EDID_STOCK\"/" "$CONFIGD_DB" 2>>$LOG
-          umount "$LLS" 2>/dev/null || umount -l "$LLS" 2>/dev/null
-          w25_appdts_report skipped "DTS tracks are off this time: audio started just before the switch, and enabling them during playback would cost the TV its sound. Restart the TV to try again."
-          rm -rf "$APPDTS_LOCK" 2>/dev/null
-          return 0
-        fi
-        T0=$(date +%s)
-        systemctl --job-mode=ignore-dependencies --no-block stop configd.service >/dev/null 2>>$LOG
-        systemctl kill -s KILL configd.service >/dev/null 2>>$LOG
-        systemctl --job-mode=ignore-dependencies start configd.service >/dev/null 2>>$LOG
-        i=0
-        while [ "$i" -lt 20 ]; do
-          P=$(systemctl show -p MainPID --value configd.service 2>/dev/null)
-          [ -n "$P" ] && [ "$P" != 0 ] && systemctl is-active configd.service >/dev/null 2>&1 && break
-          i=$((i + 1)); sleep 1
-        done
-        if [ "$i" -ge 20 ]; then
-          w25_log "app-dts: dependency-free restart not up after ${i}s; falling back to systemctl restart"
-          systemctl reset-failed configd.service >/dev/null 2>&1
-          systemctl restart configd.service >/dev/null 2>>$LOG
-          i=0
-          while [ "$i" -lt 45 ]; do systemctl is-active configd.service >/dev/null 2>&1 && break; i=$((i + 1)); sleep 1; done
-        fi
-        # Fail closed: a configd that still is not back gets the override taken
-        # away rather than left half-applied.
-        # "Active" is not "applied": check the cache the restarted configd serves
-        # from still carries the value, since that file is what apps get.
-        if systemctl is-active configd.service >/dev/null 2>&1; then
-          if grep -q '"edidType"[[:space:]]*:[[:space:]]*"[^"]*dts' "$CONFIGD_DB" 2>/dev/null; then
-            w25_log "app-dts: edidType -> $EDID_DTS (cache patched; configd back in $(( $(date +%s) - T0 ))s)"
-            w25_appdts_report on "DTS tracks are on for apps. Reopen Stremio or Kodi if it was already open."
-          else
-            w25_appdts_report failed "DTS tracks are off: the TV's settings service came back without the change. Restart the TV to try again."
-          fi
-        else
-          umount "$LLS" 2>/dev/null || umount -l "$LLS" 2>/dev/null
-          rm -f "$CONFIGD_DB" 2>>$LOG
-          systemctl reset-failed configd.service >/dev/null 2>&1
-          systemctl restart configd.service >/dev/null 2>>$LOG
-          w25_appdts_report failed "DTS tracks are off: the TV's settings service did not restart, so the change was undone. Restart the TV to try again."
-        fi
-      else
-        umount "$LLS" 2>/dev/null || umount -l "$LLS" 2>/dev/null
-        w25_appdts_report failed "DTS tracks are off: could not update $CONFIGD_DB."
-      fi
-    else
-      w25_appdts_report failed "DTS tracks are off: could not mount the patched capability file over $LLS."
-    fi
-  else
-    # Fail closed and leave no half-written copy: an unmatched sed would bind an
-    # unchanged file and look like configd refusing the override.
-    rm -f "$MYLLS" 2>/dev/null
-    w25_appdts_report failed "DTS tracks are off: this TV reports '${EDID_STOCK:-nothing}' in $LLS, which has no known DTS form, so there was nothing to change."
-  fi
-  # rm -rf, NOT rmdir: the lock dir holds a pid file, so rmdir always failed and
-  # every run leaked the lock. The stale-owner takeover above hid it -- the next
-  # run still worked -- which is why it survived a full boot test unnoticed.
-  rm -rf "$APPDTS_LOCK" 2>/dev/null
-}
-# Detached, so its waits (up to ~23 minutes) never hold up the rest of this hook
-# or Homebrew's run-parts, which keeps its failsafe flag armed until every hook
-# returns. stdio goes to /dev/null so nothing waits on our pipes.
+#     Detached, after boot has finished: this hook runs ~30s in, while
+#     bootmode-normal-boot-done only goes active at ~45s (measured on a C5).
+#     Bounded, and it applies anyway if the signal never arrives.
 w25_appdts_start() {
   [ -n "${W25_NO_APPDTS:-}" ] && return 0
   [ -f "$APPDTS_FLAG" ] || return 0
-  ( w25_appdts_apply ) </dev/null >/dev/null 2>&1 &
+  ( i=0
+    while [ "$i" -lt 180 ]; do
+      systemctl is-active bootmode-normal-boot-done.service >/dev/null 2>&1 && break
+      i=$((i + 1)); sleep 1
+    done
+    w25_appdts_apply ) </dev/null >/dev/null 2>&1 &
 }
 w25_appdts_start
 w25_pt_stop_soft

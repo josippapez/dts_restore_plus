@@ -19,10 +19,10 @@ function loadService(mocks) {
     "c2Config: c2Config, c2InitScriptBody: c2InitScriptBody," +
     "c2Enable: c2Enable, c2Disable: c2Disable, c2StatusProbe: c2StatusProbe," +
     "c2StatusBindsComplete: c2StatusBindsComplete, c2SelfTest: c2SelfTest," +
-    "DETECT_PROBE: DETECT_PROBE, w25EdidTarget: w25EdidTarget, w25InitScriptBody: w25InitScriptBody," +
+    "DETECT_PROBE: DETECT_PROBE, w25AppDtsSteps: w25AppDtsSteps, w25InitScriptBody: w25InitScriptBody," +
     "w25PtReceiver: w25PtReceiver, w25PassthroughSteps: w25PassthroughSteps, w25Enable: w25Enable," +
     "w25HdReadinessSteps: w25HdReadinessSteps, w25HdReason: w25HdReason," +
-    "w25Disable: w25Disable," +
+    "w25Disable: w25Disable, w25Uninstall: w25Uninstall," +
     "constants: {C2: PROFILE_C2," +
     "sets: C2_EXPECTED_SETS, matchSet: c2MatchSet," +
     "libav: C2_EXPECTED_SETS[0].libav, iso: C2_EXPECTED_SETS[0].iso, mkv: C2_EXPECTED_SETS[0].mkv}};";

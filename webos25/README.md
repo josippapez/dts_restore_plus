@@ -194,159 +194,36 @@ over `luna://com.webos.service.config`), and Kodi uses the same key for
 the patch active and working.
 
 The app's **Show DTS tracks in apps** card flips it to `TrueHD+dts`, or to `ac3+dts` on
-sets that report `ac3` (a UR7500 does). It is
-deliberately **not** part of Enable and defaults to off, because `arccontroller`
-builds the EDID SADs the TV advertises over eARC from the same value and
-`extinput` gates HDMI-input DTS on it — so it also changes what a connected
-receiver is told this TV accepts on its own inputs.
+sets that report `ac3` (a UR7500 does). It is deliberately **not** part of Enable and
+defaults to off, because `arccontroller` builds the EDID SADs the TV advertises over
+eARC from the same value and `extinput` gates HDMI-input DTS on it — so it can also
+change what a connected receiver is told this TV accepts on its own inputs.
 
-**Known issue: what breaks varies, and it is always cleared by a restart.** Across
-sessions on a C5 the same cause has produced a different victim each time: audio silent
-on every new pipeline; volume keys apparently dead (the key arrives and the OSD shows,
-nothing applies it); and, observed 2026-09-17 after a boot apply, the reverse -- volume
-adjusts fine but the on-screen volume bar stops appearing. GitHub issue #5 reports Home
-and Mute dead on a G5. All of it is reachable only with this opt-in on, none of it
-affects DTS or TrueHD playback, and a reboot always clears it. Not all of it is
-disruptive; the missing volume bar in particular is cosmetic.
+**How it is set (gate 47, app 2.7.65).** As root, through configd's own `setConfigs`
+— the same way the [LG G5 DTS project](https://github.com/dakenf/lg-g5-dts) sets it.
+The change is live and nothing restarts: measured on a C5, configd, `audiooutputd`,
+`arccontroller` and `audiod` kept their pids. The app's own service identity may not
+call `setConfigs` (`configd.internal`), so the app runs it through the boot script's
+`W25_APPDTS=on|off` mode on the Homebrew exec bridge. `luna-send` prints its reply only
+to a terminal, so the script wraps it in `script(1)`.
 
-**Known risk, and why this opt-in is off by default.** Applying it restarts configd,
-which `audiooutputd` `Requires=`, and `audiooutputd` dies the moment configd's luna
-socket goes away. Every `sndout` connection it was holding at that instant is
-**orphaned** in the kernel audio driver: the driver keeps it, the replacement
-`audiooutputd` has no record of it, and every later connect to that port is refused
-with `already connected`. Whatever needed that port is then dead until reboot. Measured
-on a C5 2026-09-17: `input 0x1 port 1` (main audio) was orphaned this way, and every
-stream uMS subsequently placed on port 1 played silent — which takes a second media
-pipeline to happen at all, so it can surface hours after the boot that caused it.
+configd keeps the value as a user override in `/var/preferences/configd_factory_db.json`
+and applies it again at every boot; the boot hook re-applies it too while the marker
+`/var/lib/webosbrew/dts25/appdts.enabled` exists. **Turn off** and **uninstall** set the
+factory value back (read from `/tmp/var/run/tvconfig/lls/factorydb.json`) and delete
+that override file when our key is all it holds.
 
-Nothing in userspace clears it. `audiooutputd` logs no `sndout_disconnect` on SIGTERM,
-so even a clean stop orphans what it holds, and restarting `audiooutputd`, `audiod` and
-`umediaserver` all leave the driver's record in place. Only a reboot does.
+**Every attempt reports its outcome.** A toast says whether DTS tracks turned on or
+failed and why. The same line goes to `/var/lib/webosbrew/dts25/appdts.last` (shown in
+the app as "Last attempt") and to a 50-line history in
+`/var/lib/webosbrew/dts25/appdts.log`.
 
-**Since gate 23 the boot hook refuses to create that state.** It waits for the main
-audio input to have no live connection before it touches configd, and if the window
-never opens it **skips the opt-in for that boot** rather than applying anyway —
-losing DTS tracks for one session beats losing the TV's sound until reboot. Since gate
-26 the apply runs detached from the boot hook and waits up to 20 minutes (it was 120s,
-so anything playing sound in the first two minutes cost the whole session its DTS
-tracks). The connection state is read from `/var/log/legacy-log`, not `dmesg`, whose
-ring buffer has already scrolled past the boot-time connects by then.
-
-**Every attempt reports its outcome.** A toast says whether DTS tracks turned on,
-were skipped, or failed and why. The same line goes to
-`/var/lib/webosbrew/dts25/appdts.last` (shown in the app as "Last attempt") and to a
-50-line history in `/var/lib/webosbrew/dts25/appdts.log`, which, unlike the boot log in
-`/tmp`, survives the reboot.
-
-GitHub issue #5 reports a related shape on a G5 (webOS 11.2.0) where Home and Mute die
-instead, which fits: on webOS 11 the key handlers are themselves configd clients. DTS
-and TrueHD playback are unaffected either way.
-
-**There is no way to make it stick without that restart.** `tv.model.edidType` comes
-from the configd layer `/var/run/tvconfig/lls` (priority 153), regenerated every boot by
-`lowlevelstorage` from a raw eMMC partition. Every layer that outranks it is either on
-the read-only rootfs overlay (`tooltype` 155, `product` 190, `broadcast` 195,
-`tvoverlay` 199, and `/mnt/platform-plugins` 156, which is `ro` even though the path is
-absent) or on tmpfs wiped at boot (`rmm` 154, `remote` 299). configd re-parses the layer
-dirs at boot rather than trusting its cache, so a patched cache does not survive either.
-The only persistent source is the factory partition, which is exactly what the rooting
-projects warn never to write.
-
-**Do not make this apply live.** It was tried in `webos25-2.37` and withdrawn.
-Applying it means restarting configd, and on a C5 that does not stop `audiooutputd`
-cleanly: it **aborts** (`Main process exited, code=killed, status=6/ABRT`). systemd
-restarts it, but the audio context is gone, every pipeline created afterwards logs
-`lgadec ERR: audio device is not opened` and plays silent, and the volume keys appear
-dead because the key arrives and the OSD shows but nothing is left to apply it.
-Restarting `audiooutputd`, `audiod` and `umediaserver` by hand does **not** recover it;
-only a reboot does. Measured on a C5 (webOS 10.3.1) on 2026-09-17. The same restart also
-runs at boot, which is where it is least harmful because nothing is playing yet, but it
-is the same hazard.
-
-**Both directions record intent and take effect at the next restart.** Turn on
-writes the marker file (and refreshes the installed boot script); Turn off removes
-the marker and drops the bind. Neither touches configd, so neither can hang the app:
-with the old `systemctl restart` the apply blocked for ~90s (see below), longer than
-the Homebrew exec bridge waits, and the UI sat on "turning on…" forever. The boot
-hook does the actual apply, verified end to end across a reboot. A **Restart TV
-now** button appears whenever a restart is the remaining step in either direction.
-
-`edidType` is factory data, not a rootfs config file: `lowlevelstorage` writes it
-into `/tmp/var/run/tvconfig/lls/factorydb.json` (tmpfs) and configd folds that in
-as its "Low-Level Storage Info" layer. The boot hook binds an edited copy over
-that file, changes the one `edidType` string inside
-`/var/preferences/configd_db.json` and restarts configd. Both are rebuilt at
-boot, so **removing the marker plus a reboot is a complete revert**, and the marker
-file `/var/lib/webosbrew/dts25/appdts.enabled` is what makes the hook re-apply it.
-
-**Patch that cache, never delete it.** A missing cache makes configd rebuild its
-whole configuration from the layer dirs and republish every value, and the OLED
-panel settings share the `tv.model` blob with `edidType` (`defaultStdBacklight`,
-`digitalEye`, `eyeCurveDerivation`, `eyeSensorLEDGain`, `oledCPC`,
-`supportOledOffRsQuickStart`). Measured on a C5: with the cache present a configd
-restart logs **zero** `parseFiles` lines, so patching the single string changes one
-key and leaves every other value byte-identical. (An owner reported the panel
-dimming after screen-off while the cache was still being deleted; that has not been
-re-tested since, so it is a suspect, not a confirmed cause.) Uninstall copies the
-pristine value back out of the factory file the same way; Turn off just removes the
-marker and lets the next boot re-read the stock file.
-
-**Applying it restarts configd, and how that restart is done is the whole story.**
-Ten units `Requires=configd.service`, among them `pqcontroller` (picture),
-`videooutputd`, `audiooutputd` and `umediaserver`. A plain `systemctl restart` queues
-restart jobs for all of them, configd's own job waits ~90s behind that cascade, and
-`pqcontroller` coming back is the "Auto Power Save for a minute and a half after every
-boot" an owner reported. Measured on a C5 with a 1-second sampler of systemd's job
-queue. Two other things compound it: configd ignores SIGTERM once it has subscribers,
-so the stop alone eats the 90s `TimeoutStopUSec`; and `systemctl kill` on its own trips
-`Restart=on-failure`, which cascades the same way.
-
-It also **waits for boot to finish first**. The Homebrew hook runs about 30s in
-while `bootmode-normal-boot-done` only goes active around 45s, so the apply was
-restarting a core service with systemd still bringing the system up. An owner
-reported the remote's Home button dead after every boot with the opt-in on, and it
-survived both the cascading restart and the isolated one, which points at the timing
-rather than at what else gets restarted. The wait is bounded and applies anyway if
-the signal never arrives.
-
-Why a restart at all: configd starts at 2.41s and `/var` mounts at 2.47s, so its
-cache is genuinely unreadable that early (`Cache file is accessible (0)`) and it
-always re-parses the layer dirs. There is no way to have the value in place before
-its first read.
-
-The hook therefore restarts configd **alone**:
-
-```sh
-systemctl --job-mode=ignore-dependencies --no-block stop configd.service   # configd only, returns at once
-systemctl kill -s KILL configd.service                                       # so that stop completes now
-systemctl --job-mode=ignore-dependencies start configd.service              # configd only
-```
-
-A requested stop does not trigger `Restart=on-failure`, and `ignore-dependencies` keeps
-every other unit out of the job queue. Measured at boot: hook at 36s, applied at 39s,
-configd back in **1s**, and `pqcontroller` / `videooutputd` / `audiooutputd` /
-`umediaserver` never restarted. The new configd loads its cache (zero `parseFiles`) so
-it serves the patched value from the first request. `setConfigs` would have avoided the
-restart entirely, but it sits behind the `configd.internal` ACG group, which
-`/usr/share/luna-service2/allowed_groups.json` grants to no trust level a homebrew
-service can hold.
-
-A boot-ordered systemd unit would avoid the restart entirely, but there is nowhere
-to put one: `/etc` and `/lib/systemd/system` are read-only squashfs, and the only
-writable unit directory is `/run/systemd/system`, which is tmpfs and gone before
-the next boot reads it.
-
-Two things measured on a real C5 that are easy to get wrong:
-
-- The higher-priority `/var/run/tvconfig/remote` layer declared in `layers.json`
-  looks like the natural place for an override, but its selector is empty on
-  these sets, so configd logs `(Remote) : ReadOnly Type (Skipped)` and never
-  reads it.
-- `/var/run` is a symlink to `/tmp/var/run`, so `/proc/mounts` records the bind
-  under the **resolved** path. Guards written against `/var/run/...` never match,
-  which stacks a new mount on every boot and never unmounts on Disable.
-
-This only changes which tracks apps offer. It is not a decoder change.
+**Why the old method is gone.** Up to app 2.7.64 the boot hook bound an edited
+`factorydb.json`, patched `configd_db.json` and restarted configd. That restart killed
+`audiooutputd` and could orphan the main audio port, so the TV could lose its sound,
+volume keys or Home and Mute buttons until the next restart (issue #5), and it needed a
+reboot to apply. After updating the app, press Turn on once so the TV gets the new boot
+script; the next restart clears what the old method left.
 
 ## Send DTS to a receiver (passthrough, opt-in)
 

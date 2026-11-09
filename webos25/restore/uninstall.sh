@@ -97,27 +97,10 @@ fi
 for T in "$CFG_LIVE" "$GC_LIVE" "$LGLIBAV" "$DMX_ISO" "$DMX_TSD" "$DMX_MKV" "$DMX_PSD" "$REG_TARGET" "$LLS_LIVE"; do
   w25_umount "$T"
 done
-# configd caches the folded-in layer values; drop the cache and let it re-read the
-# now-stock factory file, otherwise edidType keeps reading TrueHD+dts until reboot.
-if ! grep -q " $LLS_LIVE " /proc/mounts 2>/dev/null; then
-  # Patch the cached value back rather than deleting the cache. Deleting makes
-  # configd rebuild its whole configuration and republish the OLED panel keys that
-  # share the tv.model blob with edidType -- the reported cause of the panel
-  # dimming after screen-off. Copy the pristine value out of the (now unmounted)
-  # factory file instead of assuming what it was.
-  STOCK=$(grep -o '"edidType":"[^"]*"' "$LLS_LIVE" 2>/dev/null | head -n1 | sed 's/.*:"//; s/"$//')
-  if [ -n "$STOCK" ]; then
-    sed -i "s/\"edidType\"\([[:space:]]*\):\([[:space:]]*\)\"[^\"]*\"/\"edidType\"\1:\2\"$STOCK\"/" /var/preferences/configd_db.json 2>>"$LOG"
-  else
-    rm -f /var/preferences/configd_db.json 2>>"$LOG"
-  fi
-  # Dependency-free restart, same recipe as the APPLY 2d block in init_dts25.sh:
-  # a plain restart cascades into pqcontroller/audiooutputd/umediaserver and waits
-  # ~90s behind them. Stop configd alone, SIGKILL so the stop completes now, start
-  # it alone. 2s, nothing else restarted.
-  systemctl --job-mode=ignore-dependencies --no-block stop configd.service >/dev/null 2>>"$LOG"
-  systemctl kill -s KILL configd.service >/dev/null 2>>"$LOG"
-  systemctl --job-mode=ignore-dependencies start configd.service >/dev/null 2>>"$LOG" && log "app-dts: edidType reverted to ${STOCK:-stock}"
+# Show DTS tracks in apps: put the factory tv.model.edidType back and drop
+# configd's override. W25_APPDTS exists since 47.
+if [ "${STOP_VERSION:-0}" -ge 47 ] 2>/dev/null; then
+  W25_APPDTS=off sh "$STOP_SCRIPT" >/dev/null 2>&1 && log "app-dts: factory edidType restored"
 fi
 rm -f "$REG_TMP" 2>/dev/null
 

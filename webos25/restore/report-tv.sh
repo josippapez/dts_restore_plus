@@ -183,7 +183,8 @@ echo "sound_output=$(luna-send -n 1 -w 3000 luna://com.webos.settingsservice/get
   | grep -o '"soundOutput[A-Za-z]*" *: *"[^"]*"' | tr -d ' "' | tr '\n' ' ')"
 echo "watcher_sound_output=$(cat /run/dts25/sound-output 2>/dev/null)"
 # Apps and HDMI inputs offer DTS only if this mentions dts (Show DTS tracks).
-echo "edidType=$(grep -o '"edidType"[[:space:]]*:[[:space:]]*"[^"]*"' /var/preferences/configd_db.json 2>/dev/null | head -n1 | sed 's/.*:[[:space:]]*"//; s/"$//')"
+# The live value: the app sets it with setConfigs, which is not saved to disk.
+echo "edidType=$(script -q -e -c "luna-send -n 1 luna://com.webos.service.config/getConfigs '{\"configNames\":[\"tv.model.edidType\"]}'" /dev/null 2>/dev/null | sed -n 's/.*"tv.model.edidType":"\([^"]*\)".*/\1/p' | head -n1)"
 echo "appdts_last=$(head -n1 "$D/appdts.last" 2>/dev/null)"
 
 echo

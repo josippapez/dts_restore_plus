@@ -5,6 +5,7 @@ var assert = require("node:assert/strict");
 var fs = require("node:fs");
 var os = require("node:os");
 var path = require("node:path");
+var spawnSync = require("node:child_process").spawnSync;
 var {service, C, sh, write, run, ok, initFn, SERVICE} = require("./helpers");
 
 /* A registered dts_audiodec must not displace an exact-matched C2 profile.
@@ -102,67 +103,105 @@ test("a soft-float GStreamer 1.16 C1 selects the CX-payload profile", function (
   assert.strictEqual(service.compatVerdict("webos6-armel-gst116", {}), null);
 });
 
-/* Issue #7: a UR7500 reports edidType "ac3", and the opt-in only knew "TrueHD", so it
- * changed nothing. A hand edit there also left "ac3+dts+truehd" in configd's cache. */
-test("the DTS-tracks opt-in maps ac3 to ac3+dts and replaces any cached value", function () {
-  assert.strictEqual(service.w25EdidTarget("TrueHD", true), "TrueHD+dts");
-  assert.strictEqual(service.w25EdidTarget("ac3", true), "ac3+dts");
-  assert.strictEqual(service.w25EdidTarget("ac3+dts+truehd", true), "ac3+dts");
-  assert.strictEqual(service.w25EdidTarget("ac3+dts", false), "ac3");
-  assert.strictEqual(service.w25EdidTarget("TrueHD+dts", false), "TrueHD");
-  assert.strictEqual(service.w25EdidTarget("ac3", false), "ac3");
-
+/* Show DTS tracks in apps sets tv.model.edidType live through configd's
+ * setConfigs as root, the way the G5 project does: on a C5 nothing restarted and
+ * nothing was written to disk, where the old bind + configd restart could leave
+ * the TV without sound, volume or Home keys. Issue #7: a UR7500 reports "ac3". */
+function appDtsShell(stock, live, extra) {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dts-edid-"));
+  var lls = path.join(dir, "factorydb.json"), state = path.join(dir, "live"), calls = path.join(dir, "calls");
+  var user = path.join(dir, "configd_factory_db.json");
+  write(lls, '{"tv.model":{"edidType":"' + stock + '","oledCPC":1}}');
+  write(state, live);
+  write(path.join(dir, "flag"), "");
   var body = service.w25InitScriptBody().split("\n");
-  var fn = body.slice(body.indexOf("w25_appdts_target() {"));
-  fn = fn.slice(0, fn.indexOf("}") + 1);
-  function line(re) { var l = body.filter(function (x) { return re.test(x); }); assert.strictEqual(l.length, 1, String(re)); return l[0]; }
-  var getStock = line(/^\s*EDID_STOCK=\$\(grep/);
-  var getDts = line(/^\s*EDID_DTS=\$\(w25_appdts_target/);
-  var patchCache = line(/sed -i .*\[\^\\"\]\*.*\$EDID_DTS.*CONFIGD_DB/).replace(/^\s*if /, "").replace(/ &&\s*$/, "");
-  // The TV's busybox sed takes GNU-style -i; BSD sed needs an explicit empty suffix.
-  if (process.platform === "darwin") patchCache = patchCache.replace("sed -i ", "sed -i '' ");
-  function run(stockValue, cached) {
-    var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dts-edid-"));
-    var lls = path.join(dir, "factorydb.json"), db = path.join(dir, "configd_db.json");
-    write(lls, '{"tv.model":{"edidType":"' + stockValue + '","oledCPC":1}}');
-    write(db, '{"tv.model": {"edidType" : "' + cached + '", "oledCPC": 1}}');
-    var r = sh(["set -u", "LOG=/dev/null", "LLS=" + lls, "CONFIGD_DB=" + db].concat(fn, [getStock, getDts, patchCache, 'printf "%s" "$EDID_DTS"']).join("\n"));
-    assert.strictEqual(r.status, 0, r.stderr);
-    return { target: r.stdout, db: fs.readFileSync(db, "utf8") };
+  function oneLine(name) {
+    var l = body.filter(function (x) { return x.indexOf(name + "() { ") === 0; });
+    assert.strictEqual(l.length, 1, name);
+    return l[0];
   }
-  var ur = run("ac3", "ac3+dts+truehd");
-  assert.strictEqual(ur.target, "ac3+dts");
-  assert.strictEqual(ur.db, '{"tv.model": {"edidType" : "ac3+dts", "oledCPC": 1}}');
-  assert.strictEqual(run("TrueHD", "TrueHD").target, "TrueHD+dts");
-  assert.strictEqual(run("eac3", "eac3").target, "");
+  return {
+    calls: calls, state: state,
+    run: function (cmd) {
+      var r = sh([
+        "set -u", "LOG=/dev/null", "LLS=" + lls, "MYLLS=" + path.join(dir, "override"),
+        "APPDTS_FLAG=" + path.join(dir, "flag"), "APPDTS_LAST=" + path.join(dir, "last"),
+        "APPDTS_HIST=" + path.join(dir, "hist"), "CFG_USER=" + user,
+        "w25_log() { :; }", "toast() { :; }", "w25_umount() { :; }",
+        // A pty-backed luna-send: replies end in CRLF.
+        "script() {",
+        "  case \"$4\" in",
+        "    *getConfigs*) printf '{\"subscribed\":false,\"configs\":{\"tv.model.edidType\":\"%s\"},\"returnValue\":true}\\r\\n' \"$(cat " + state + ")\" ;;",
+        "    *setConfigs*) printf '%s' \"$4\" | sed 's/.*\"tv.model.edidType\":\"\\([^\"]*\\)\".*/\\1/' > " + state + "; echo set >> " + calls + ";",
+        "      [ -n \"${KEEP_USER:-}\" ] || printf '{\\n    \"com.webos.service.config\": {\\n        \"usrDefined\": [\\n            \"tv.model.edidType\"\\n        ]\\n    },\\n    \"tv.model\": {\\n        \"edidType\": \"%s\"\\n    }\\n}\\n' \"$(cat " + state + ")\" > " + user + ";",
+        "      printf '{\"returnValue\":true}\\r\\n' ;;",
+        "  esac",
+        "}",
+        oneLine("w25_luna"), initFn("w25_edid_get"), initFn("w25_edid_set"), oneLine("w25_edid_stock"),
+        initFn("w25_appdts_report"), initFn("w25_appdts_target"), initFn("w25_appdts_apply"), initFn("w25_appdts_off"),
+        extra || "", cmd, "cat " + path.join(dir, "last") + " 2>/dev/null; exit 0"
+      ].join("\n"));
+      assert.strictEqual(r.status, 0, r.stderr);
+      return r.stdout;
+    },
+    live: function () { return fs.readFileSync(state, "utf8"); },
+    user: user,
+    sets: function () { return fs.existsSync(calls) ? fs.readFileSync(calls, "utf8").split("\n").filter(Boolean).length : 0; }
+  };
+}
+
+test("the DTS-tracks opt-in sets the live value with setConfigs and reads it back", function () {
+  var t = appDtsShell("TrueHD", "TrueHD");
+  assert.match(t.run("w25_appdts_apply"), / on DTS tracks are on for apps\. Reopen/);
+  assert.strictEqual(t.live(), "TrueHD+dts");
+  t = appDtsShell("ac3", "ac3");
+  t.run("w25_appdts_apply");
+  assert.strictEqual(t.live(), "ac3+dts");
+  // Already on: nothing is written.
+  t = appDtsShell("TrueHD", "TrueHD+dts");
+  assert.match(t.run("w25_appdts_apply"), / on DTS tracks are on for apps\.$/m);
+  assert.strictEqual(t.sets(), 0);
+  // No known DTS form: nothing is written, and the reason is reported.
+  t = appDtsShell("eac3", "eac3");
+  assert.match(t.run("w25_appdts_apply"), / failed .*'eac3'/);
+  assert.strictEqual(t.sets(), 0);
+  // Without the marker the boot hook does nothing.
+  t = appDtsShell("TrueHD", "TrueHD");
+  t.run("rm -f \"$APPDTS_FLAG\"; w25_appdts_apply");
+  assert.strictEqual(t.live(), "TrueHD");
 });
 
-/* Issues #5 and #10: on webOS 11.2 (43.21.77) the driver logs its completions at
- * lines 3491/3727 instead of 3410/3644, and the persisted log starts 0.5s after
- * audiooutputd. The old check missed a held port on the first and refused every
- * boot on the second. */
-test("the audio-idle check reads webOS 11.2 logs", function () {
-  var fn = initFn("w25_appdts_audio_idle");
-  function line(ts, fnName, n, text) {
-    return "2026-10-25T20:21:34.148484Z [" + ts + "] kern.notice kernel alsasndout NOT (03107:03382) " +
-      fnName + "           " + n + ": " + text;
-  }
-  var connect = [line("3.279607580", "pmlog", 1, "boot"),
-    line("18.6", "sndout_connect", 3305, "Start Connect output 0x1 input 0x1 port 1."),
-    line("18.7", "sndout_connect", 3491, "output 0x1 input 0x1 port 1 .")];
-  var disconnect = [line("40.1", "sndout_disconnect", 3569, "Start Disconnect output 0x1 input 0x1 port 1 ."),
-    line("40.2", "sndout_disconnect", 3727, "output 0x1 input 0x1 port 1 .")];
-  function idle(lines, aodUs) {
-    var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dts-idle-"));
-    var log = path.join(dir, "legacy-log");
-    write(log, lines.join("\n") + "\n");
-    var r = sh(["systemctl() { echo " + aodUs + "; }", fn.split("/var/log/legacy-log").join(log), "w25_appdts_audio_idle"].join("\n"));
-    return r.status === 0;
-  }
-  assert.strictEqual(idle(connect.concat(disconnect), 2777195), true, "freed port, log 0.5s after audiooutputd");
-  assert.strictEqual(idle(connect, 2777195), false, "held port, log 0.5s after audiooutputd");
-  assert.strictEqual(idle(connect, 3000000), false, "held port, 11.2 line numbers");
-  assert.strictEqual(idle(connect.concat(disconnect), 279607), false, "log starts 3s after audiooutputd");
+test("turning the DTS-tracks opt-in off puts the factory value back and drops configd's override", function () {
+  var t = appDtsShell("TrueHD", "TrueHD+dts");
+  t.run("w25_appdts_off");
+  assert.strictEqual(t.live(), "TrueHD");
+  assert.strictEqual(fs.existsSync(t.user), false, "the override held only our key");
+  // Someone else's overrides stay.
+  t = appDtsShell("TrueHD", "TrueHD+dts");
+  var other = '{"com.webos.service.config":{"usrDefined":["tv.model.edidType","tv.hw.x"]},"tv.model":{"edidType":"TrueHD"}}';
+  write(t.user, other);
+  t.run("KEEP_USER=1 w25_appdts_off");
+  assert.strictEqual(fs.readFileSync(t.user, "utf8"), other);
+  t = appDtsShell("ac3", "ac3");
+  t.run("w25_appdts_off");
+  assert.strictEqual(t.sets(), 0, "already stock");
+});
+
+test("the DTS-tracks toggle installs the current boot script before using its mode", function () {
+  [true, false].forEach(function (on) {
+    var script = service.w25AppDtsSteps(on);
+    assert.strictEqual(spawnSync("sh", ["-n"], { input: script, encoding: "utf8" }).status, 0);
+    assert.ok(Buffer.byteLength(JSON.stringify({ command: script })) < 110 * 1024, "fits a luna message");
+    var install = script.indexOf("B64EOF\nchmod 0755");
+    var mode = script.indexOf("W25_APPDTS=" + (on ? "on" : "off") + " sh ");
+    assert.ok(install !== -1 && mode > install, "mode runs after the current script is written");
+  });
+  // Uninstall puts the factory value back while the script still exists.
+  var u = service.w25Uninstall();
+  assert.ok(u.indexOf("W25_APPDTS=off sh") !== -1 && u.indexOf("W25_APPDTS=off sh") < u.indexOf('rm -rf "'), "uninstall reverts before deleting");
+  var body = service.w25InitScriptBody();
+  var mode = body.indexOf('if [ -n "${W25_APPDTS:-}" ]; then');
+  assert.ok(mode !== -1 && mode < body.indexOf("# --- G) self-heal"), "W25_APPDTS mode exits before the apply path");
 });
 
 /* Issue #10: webOS 11 refuses the service's Homebrew Channel calls ("Message not
