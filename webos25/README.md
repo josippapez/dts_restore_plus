@@ -250,8 +250,10 @@ Media Player, through seeking, pausing and volume changes. Also tested over opti
 
 - **Only to a receiver.** `dtsdec` passes through only while the TV sends sound to
   `external_arc` (ARC/eARC) or `external_optical` (optical) with Digital Sound Out on
-  Pass Through or Auto. On the speakers, or any other output, it decodes as before. If the output changes during a video, the rest of
-  that video is silent rather than noise.
+  Pass Through or Auto. On the speakers, or any other output, it decodes as before. If the
+  output changes to the speakers or any other output during a video, the rest of that
+  video is silent rather than noise. Switching between ARC/eARC and optical keeps the
+  DTS core going; a full DTS-HD stream decodes for the rest of that video instead.
 - **Optical carries the core only.** S/PDIF has the bandwidth for the DTS 5.1 core and
   nothing more: DTS-HD MA, DTS:X and TrueHD need eARC.
 - **Core by default.** The experimental **Full DTS-HD / TrueHD** eARC opt-in uses
