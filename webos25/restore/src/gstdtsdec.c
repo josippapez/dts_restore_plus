@@ -148,10 +148,10 @@ enum
 #define DTS_MAKEUP_GAIN_CONF_PATH "/var/lib/webosbrew/dts25/gain.conf"
 
 /* webOS 25 patch: DTS core passthrough. LG sends every non-Dolby PCM stream to
- * an eARC/ARC receiver as a 2-channel 16-bit copy, so a decoded 5.1 track
+ * an eARC/ARC or optical receiver as a 2-channel 16-bit copy, so a decoded 5.1 track
  * arrives as stereo. Packed as IEC 61937 into that 16-bit stereo stream, the
  * DTS core gets through bit-exact for video playback (owner-tested on a G2 with
- * a Denon receiver: the receiver showed DTS). Opt-in by the marker file; the
+ * a Denon receiver, and over optical on a UA73: the receiver showed DTS). Opt-in by the marker file; the
  * boot hook's watcher keeps SOUND_OUTPUT as "<watcher pid> <soundOutput>
  * <soundOutputDigital>". A bitstream played on speakers is loud noise, so a
  * missing file, a dead watcher or any other output means decode as usual. */
@@ -888,12 +888,12 @@ gst_dtsdec_class_init (GstDtsDecClass * klass)
    *
    * webOS 25 patch: 0 = always decode, 1 (default) = pass the DTS core through
    * as IEC 61937 when the opt-in marker exists and the TV sends sound to an
-   * ARC/eARC receiver (Pass Through or Auto), 2 = always pass through (testing only:
+   * ARC/eARC or optical receiver (Pass Through or Auto), 2 = always pass through (testing only:
    * on speakers it is loud noise).
    */
   g_object_class_install_property (G_OBJECT_CLASS (klass), PROP_PASSTHROUGH,
       g_param_spec_int ("passthrough", "DTS passthrough",
-          "0 = decode, 1 = pass through to an ARC/eARC receiver when opted in, "
+          "0 = decode, 1 = pass through to an ARC/eARC/optical receiver when opted in, "
           "2 = always pass through", GST_DTSDEC_PASSTHROUGH_OFF,
           GST_DTSDEC_PASSTHROUGH_ALWAYS, GST_DTSDEC_PASSTHROUGH_AUTO,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
@@ -1651,8 +1651,10 @@ dts_hd_period_ok (gint core_period, gint hd_rate)
 }
 
 /* webOS 25 patch: TRUE when the boot hook's watcher, still alive, last saw the
- * TV sending sound to an ARC/eARC receiver with Digital Sound Out on Pass
- * Through or Auto. Anything else, a missing file included, is FALSE.
+ * TV sending sound to an ARC/eARC or optical receiver with Digital Sound Out
+ * on Pass Through or Auto. Anything else, a missing file included, is FALSE.
+ * Optical carries only this core; the HD carrier stays eARC-only
+ * (lgroute_control_receiver).
  * Auto counts because the settings service reports "auto" even with Pass
  * Through selected until playback starts (owner-measured on a G2: the real
  * value arrived 0.6s after the first video had already chosen to decode), and
@@ -1661,7 +1663,7 @@ static gboolean
 dts_sound_output_is_receiver (void)
 {
   gchar mode[64];
-  return lgroute_sound_output (mode)
+  return lgroute_core_output (mode)
       && (!strcmp (mode, "passThrough") || !strcmp (mode, "auto"));
 }
 

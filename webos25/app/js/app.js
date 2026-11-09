@@ -265,16 +265,18 @@
     $("btnPtOff").disabled = !canW25Test || s.passthroughRequested !== true;
     setVal("sPt", !s.passthroughRequested ? "off"
       : s.passthroughToReceiver ? "on — DTS goes to the receiver"
-      : "on — waiting for an ARC/eARC receiver",
+      : "on — waiting for an ARC/eARC or optical receiver",
       s.passthroughToReceiver ? "ok" : (s.passthroughRequested ? "warn" : null));
     setVal("sPtOut", s.passthroughOutput || "—");
     $("hdPassthrough").checked = s.passthroughHdRequested === true;
     $("hdPassthrough").disabled = !canW25Test
       || (!s.passthroughHdRequested && s.passthroughOutput !== "external_arc passThrough");
-    $("hdHowTo").hidden = !canW25Test || !s.passthroughRequested
+    var optical = /^external_optical /.test(s.passthroughOutput || "");
+    $("hdHowTo").hidden = !canW25Test || !s.passthroughRequested || optical
       || s.passthroughOutput === "external_arc passThrough";
     setVal("sHd", !s.passthroughHdRequested
         ? (s.passthroughOutput === "external_arc passThrough" ? "off"
+          : optical ? "off — needs eARC (optical carries only the DTS core)"
           : "off — needs passthrough on and Digital Sound Output on Pass Through")
       : !s.passthroughRequested ? "off — passthrough disabled"
       : s.passthroughHdReady ? "ready for eARC" : s.passthroughHdReason || "HD readiness unavailable",

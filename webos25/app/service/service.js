@@ -3875,6 +3875,8 @@ function w25HdReadinessSteps() {
 }
 
 function w25HdReason(reason, output) {
+  // Optical can never carry HD, so say that before any eARC readiness detail.
+  if (/^external_optical /.test(output || "")) return "DTS-HD needs eARC. Optical carries only the DTS core.";
   if (reason === "untested-sink") return "This TV's LG audio sink build is not on the tested list.";
   if (reason === "missing-helper") return "The eARC helper is missing. Enable DTS again to install it.";
   if (reason === "earc-unavailable") return "eARC is unavailable or its audio controls could not be verified.";
@@ -3891,7 +3893,7 @@ function w25PassthroughSteps(on, hd) {
   var lines = ["set -u", 'FLAG=' + W25_PT_FLAG];
   if (hd === true) {
     lines.push('[ -x ' + W25_DEST + '/lgroute-control ] || { echo "ERROR=The eARC helper is not installed. Enable DTS again to install it."; exit 1; }');
-    lines.push('[ "$(cut -d" " -f2- ' + W25_PT_RUN + '/sound-output 2>/dev/null)" = "external_arc passThrough" ] || { echo "ERROR=Turn passthrough on and set Sound > Advanced Settings > Digital Sound Output to Pass Through first."; exit 1; }');
+    lines.push('case "$(cut -d" " -f2- ' + W25_PT_RUN + '/sound-output 2>/dev/null)" in "external_arc passThrough") ;; "external_optical "*) echo "ERROR=DTS-HD needs eARC. Optical carries only the DTS core."; exit 1 ;; *) echo "ERROR=Turn passthrough on and set Sound > Advanced Settings > Digital Sound Output to Pass Through first."; exit 1 ;; esac');
   }
   // The current boot script carries the W25_PT mode; an older installed one
   // would ignore W25_PT and run a full apply instead.
@@ -3920,9 +3922,10 @@ function w25PassthroughSteps(on, hd) {
   return lines.join("\n");
 }
 
-/** "external_arc auto" -> true: the output dtsdec passes through to. */
+/** "external_arc auto" -> true: an output dtsdec passes the DTS core through to.
+ * Mirrors lgroute_core_output(): ARC/eARC or optical. HD stays eARC-only (w25HdOutput). */
 function w25PtReceiver(out) {
-  return /^external_arc (passThrough|auto)$/.test(out || "");
+  return /^external_(arc|optical) (passThrough|auto)$/.test(out || "");
 }
 
 service.register("setPassthrough", function (message) {
@@ -3956,7 +3959,7 @@ service.register("setPassthrough", function (message) {
             : "DTS-HD requested. " + w25HdReason(kv.HD_REASON, out))
           : hd === false ? "DTS-HD off: the receiver gets only the DTS core again."
           : w25PtReceiver(out) ? "Passthrough on: DTS goes to your receiver from the next video."
-          : "Passthrough on. It starts once the TV sends sound to an ARC/eARC receiver."
+          : "Passthrough on. It starts once the TV sends sound to an ARC/eARC or optical receiver."
       });
     });
   }).catch(function (e) {

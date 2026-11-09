@@ -48,20 +48,43 @@ static int valid (const long output[5])
       && (output[4] == 0 || output[4] == 1);
 }
 
-/* 1 when the live watcher reports an external_arc output; its Digital Sound Output mode goes to mode. */
-int lgroute_sound_output (char mode[64])
+/* 1 when the live watcher reports one of outputs (NULL-terminated); its
+ * Digital Sound Output mode goes to mode. */
+static int watched_output (const char *const outputs[], char mode[64])
 {
   long pid;
   char output[64], proc[64];
+  int i;
   FILE *file = fopen (LGROUTE_OUTPUT, "r");
   if (!file)
     return 0;
   int fields = fscanf (file, "%ld %63s %63s", &pid, output, mode);
   fclose (file);
-  if (fields != 3 || pid <= 0 || strcmp (output, "external_arc"))
+  if (fields != 3 || pid <= 0)
+    return 0;
+  for (i = 0; outputs[i] && strcmp (output, outputs[i]); i++)
+    ;
+  if (!outputs[i])
     return 0;
   snprintf (proc, sizeof proc, "/proc/%ld", pid);
   return access (proc, F_OK) == 0;
+}
+
+/* 1 when the live watcher reports an external_arc output (ARC or eARC), the
+ * only link wide enough for the HD carrier; its Digital Sound Output mode goes to mode. */
+int lgroute_sound_output (char mode[64])
+{
+  static const char *const arc[] = { "external_arc", NULL };
+  return watched_output (arc, mode);
+}
+
+/* 1 when the live watcher reports an output that carries the 2-channel
+ * IEC 61937 DTS core: ARC/eARC, or optical (S/PDIF). Optical is owner-tested on
+ * a 55UA73006LA (webOS 10.3.2, 33.31.80): the receiver showed DTS 5.1. */
+int lgroute_core_output (char mode[64])
+{
+  static const char *const core[] = { "external_arc", "external_optical", NULL };
+  return watched_output (core, mode);
 }
 
 int lgroute_control_receiver (void)

@@ -9,11 +9,17 @@ var spawnSync = require("node:child_process").spawnSync;
 var {service, sh, write, exe, run, ok, initFn, loadService, ROOT, SERVICE} = require("./helpers");
 
 /* Issue #12: the passthrough toggle. dtsdec only sends the bitstream to
- * external_arc with Pass Through or Auto; on speakers it would be loud noise. */
-test("the passthrough toggle only reports a receiver for external_arc", function () {
+ * external_arc or external_optical with Pass Through or Auto; on speakers it
+ * would be loud noise. */
+test("the passthrough toggle only reports a receiver for ARC/eARC or optical", function () {
   assert.strictEqual(service.w25PtReceiver("external_arc passThrough"), true);
   assert.strictEqual(service.w25PtReceiver("external_arc auto"), true);
   assert.strictEqual(service.w25PtReceiver("external_arc pcm"), false);
+  assert.strictEqual(service.w25PtReceiver("external_optical passThrough"), true);
+  assert.strictEqual(service.w25PtReceiver("external_optical auto"), true);
+  assert.strictEqual(service.w25PtReceiver("external_optical pcm"), false);
+  // Optical carries only the core: the HD carrier stays eARC-only.
+  assert.strictEqual(service.w25HdOutput("external_optical passThrough"), false);
   assert.strictEqual(service.w25PtReceiver("tv_external_speaker auto"), false);
   assert.strictEqual(service.w25PtReceiver(""), false);
   [true, false].forEach(function (on) {
@@ -207,6 +213,9 @@ test("HD readiness distinguishes sink builds, helper and eARC failures", functio
     assert.equal(service.w25HdReason("ready", "external_arc passThrough"), "");
     assert.match(service.w25HdReason("ready", "tv_speaker pcm"), /Pass Through/);
     assert.match(service.w25HdReason("ready", "external_arc auto"), /Advanced Settings > Digital Sound Output to Pass Through/);
+    // On optical the readiness probe reports earc-unavailable, never ready.
+    assert.match(service.w25HdReason("earc-unavailable", "external_optical passThrough"), /needs eARC/);
+    assert.match(service.w25HdReason("untested-sink", "external_optical auto"), /needs eARC/);
     ok(spawnSync("sh", ["-n"], {input: service.w25PassthroughSteps(true, true), encoding: "utf8"}), "HD toggle syntax");
   } finally {
     fs.rmSync(dir, {recursive: true, force: true});
@@ -225,6 +234,12 @@ test("HD can only be turned on in eARC Pass Through", function () {
       var r = sh(guard);
       assert.equal(/PASSED/.test(r.stdout), c[1], c[0] + ": " + r.stdout);
       if (!c[1]) assert.match(r.stdout, /ERROR=.*Pass Through/);
+    });
+    ["passThrough", "auto"].forEach(function (mode) {
+      write(path.join(dir, "sound-output"), "1 external_optical " + mode + "\n");
+      var r = sh(guard);
+      assert.doesNotMatch(r.stdout, /PASSED/, "optical " + mode);
+      assert.match(r.stdout, /ERROR=DTS-HD needs eARC/);
     });
   } finally {
     fs.rmSync(dir, {recursive: true, force: true});

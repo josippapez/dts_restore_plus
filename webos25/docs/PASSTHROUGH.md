@@ -25,6 +25,17 @@ second, the stream falls back to the core.
 Unknown sink builds refuse HD. The older investigation below describes the stock
 software-decoding path.
 
+## DTS core over optical
+
+Optical (S/PDIF) carries the DTS core as IEC 61937 in the same 48 kHz 16-bit
+stereo stream as ARC, as DVD players have always sent it. LG passes that PCM to
+the optical output unchanged for video playback: owner-tested on a 55UA73006LA
+(webOS 10.3.2, firmware 33.31.80) with Sound Out on Optical and Digital Sound Out
+on Pass Through, the receiver showed DTS 5.1. `dtsdec` therefore passes the core
+through when the watcher reports `external_optical` (`lgroute_core_output()`).
+The HD carrier needs eARC bandwidth, so `lgroute_control_receiver()` stays
+`external_arc`-only and optical never arms the HD route.
+
 ## Why
 
 1. **LG's GStreamer audio sink takes PCM only.** The only sink is `lgaudiosink`

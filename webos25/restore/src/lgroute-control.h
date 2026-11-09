@@ -17,4 +17,5 @@
 int lgroute_control_unmixed (void);
 int lgroute_control_receiver (void);
 int lgroute_sound_output (char mode[64]);
+int lgroute_core_output (char mode[64]);
 #endif
