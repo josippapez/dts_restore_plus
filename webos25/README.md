@@ -195,9 +195,11 @@ the patch active and working.
 
 The app's **Show DTS tracks in apps** card flips it to `TrueHD+dts`, or to `ac3+dts` on
 sets that report `ac3` (a UR7500 does). It is deliberately **not** part of Enable and
-defaults to off, because `arccontroller` builds the EDID SADs the TV advertises over
-eARC from the same value and `extinput` gates HDMI-input DTS on it — so it can also
-change what a connected receiver is told this TV accepts on its own inputs.
+defaults to off, because the TV builds the EDID it gives devices on its HDMI inputs
+from the same value. Measured on a C5: turning it on adds DTS and DTS-HD to the EDID of
+every HDMI input at once, and turning it off removes them. The TV cannot decode DTS that
+arrives over HDMI, so a streamer or player plugged into it may start sending DTS and go
+silent; set that device's audio output to Dolby Digital Plus or PCM.
 
 **How it is set (gate 47, app 2.7.65).** As root, through configd's own `setConfigs`
 — the same way the [LG G5 DTS project](https://github.com/dakenf/lg-g5-dts) sets it.
