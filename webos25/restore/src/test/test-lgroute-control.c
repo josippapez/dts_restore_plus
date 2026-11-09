@@ -33,11 +33,12 @@ static int fake_ioctl(int fd, unsigned long command, ...)
 #include "../lgroute-control.c"
 #undef ioctl
 
-static void sound_output(const char *mode)
+static void sound_output_on(const char *out,const char *mode)
 {
   FILE *f=fopen(LGROUTE_OUTPUT,"w");assert(f);
-  fprintf(f,"%ld external_arc %s\n",(long)getpid(),mode);fclose(f);
+  fprintf(f,"%ld %s %s\n",(long)getpid(),out,mode);fclose(f);
 }
+static void sound_output(const char *mode){sound_output_on("external_arc",mode);}
 int main(void)
 {
   assert(!mkdir(LGROUTE_RUN,0700)||errno==EEXIST);
@@ -55,8 +56,17 @@ int main(void)
   earc=0;assert(!ready(3,state));earc=1;
   output[2]=99;assert(!ready(3,state));output[2]=0;
   sound_output("auto");char mode[64];assert(lgroute_sound_output(mode)&&!strcmp(mode,"auto"));
+  assert(lgroute_core_output(mode)&&!strcmp(mode,"auto"));
+  /* Optical carries the DTS core, never the HD carrier. */
+  sound_output_on("external_optical","passThrough");
+  assert(lgroute_core_output(mode)&&!strcmp(mode,"passThrough"));
+  assert(!lgroute_sound_output(mode));assert(!lgroute_control_receiver());
+  sound_output_on("tv_speaker","passThrough");assert(!lgroute_core_output(mode));
+  FILE *f=fopen(LGROUTE_OUTPUT,"w");assert(f);fprintf(f,"0 external_optical passThrough\n");fclose(f);
+  assert(!lgroute_core_output(mode));
+  sound_output("auto");
   unlink(LGROUTE_PT);assert(!lgroute_control_receiver());
-  unlink(LGROUTE_HD);unlink(LGROUTE_OUTPUT);assert(!lgroute_sound_output(mode));
-  puts("LG mixer: ABI, Pass Through only, read-only mixer state and unavailable eARC pass");
+  unlink(LGROUTE_HD);unlink(LGROUTE_OUTPUT);assert(!lgroute_sound_output(mode));assert(!lgroute_core_output(mode));
+  puts("LG mixer: ABI, Pass Through only, optical core-only, read-only mixer state and unavailable eARC pass");
   return 0;
 }

@@ -240,17 +240,20 @@ script; the next restart clears what the old method left.
 
 ## Send DTS to a receiver (passthrough, opt-in)
 
-LG sends any non-Dolby PCM to an ARC/eARC receiver as a 2-channel 16-bit copy, so
-decoded DTS 5.1 reaches a receiver as stereo. Turning on **Send DTS to a receiver** in
+LG sends any non-Dolby PCM to an ARC/eARC or optical receiver as a 2-channel 16-bit
+copy, so decoded DTS 5.1 reaches a receiver as stereo. Turning on **Send DTS to a receiver** in
 the app makes `dtsdec` send the DTS core as IEC 61937 inside that 16-bit stereo stream
 instead of decoding it, and the receiver decodes real DTS 5.1. Tested on a G2 with a
 Denon AVC-X3800H over eARC: the receiver showed DTS in Plex Direct Play and in the
-Media Player, through seeking, pausing and volume changes.
+Media Player, through seeking, pausing and volume changes. Also tested over optical
+(S/PDIF) on a 55UA73006LA (webOS 10.3.2, firmware 33.31.80): the receiver showed DTS 5.1.
 
 - **Only to a receiver.** `dtsdec` passes through only while the TV sends sound to
-  `external_arc` with Digital Sound Out on Pass Through or Auto. On the speakers, or any
-  other output, it decodes as before. If the output changes during a video, the rest of
+  `external_arc` (ARC/eARC) or `external_optical` (optical) with Digital Sound Out on
+  Pass Through or Auto. On the speakers, or any other output, it decodes as before. If the output changes during a video, the rest of
   that video is silent rather than noise.
+- **Optical carries the core only.** S/PDIF has the bandwidth for the DTS 5.1 core and
+  nothing more: DTS-HD MA, DTS:X and TrueHD need eARC.
 - **Core by default.** The experimental **Full DTS-HD / TrueHD** eARC opt-in uses
   LG-managed routing on an exact sink-build allowlist, verified on a C2 with a Samsung
   Q995GF; DTS:X, Atmos and other TV/receiver combinations are unverified.
@@ -476,7 +479,8 @@ unchanged. **`.mp4` TrueHD remains unsupported** — `qtdemux.c` has no TrueHD/M
   own output stage:** internal speakers fold 5.1 into the built-in array, while **HDMI eARC to an AVR**
   carries the multichannel PCM subject to the "Digital Sound Output" setting. Optical/S-PDIF is a
   two-channel PCM link, so it cannot carry 5.1 from a decode-to-PCM path at all — eARC is the only
-  multichannel route out. Confirm 5.1 on an AVR's input display; this half is the TV's routing, not
+  multichannel PCM route out (over optical, **Send DTS to a receiver** sends the DTS 5.1 core as a
+  bitstream instead). Confirm 5.1 on an AVR's input display; this half is the TV's routing, not
   something this project measures.
 - **DTS-HD:** since webos25-2.43 `dtsdec` uses ffmpeg's `dca` decoder, which decodes DTS-HD MA
   **lossless** (XLL), DTS-HD HRA (XBR/X96), 7.1, 96/192 kHz and DTS Express, not just the 5.1

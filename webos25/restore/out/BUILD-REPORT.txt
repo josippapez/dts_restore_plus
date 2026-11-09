@@ -56,10 +56,10 @@ libgstdtsdec.so
                 gst_element_register_dtsdec, gst_plugin_dtsdec_register,
                 gst_plugin_dtsdec_get_desc, gst_truehd_mat_get_type and the
                 lgroute_* / lgroute_control_* helpers
-  size        : 3459268 bytes
-  md5         : f5ad9e9bf8dcc299fd348736df61715b
-  sha1        : 524f144784658b9ca4877264136600b1e5d30136
-  sha256      : 07456bc9bb093c4b995e77b42c5db1c9f8fbc736422c2af97440a9691dd31355
+  size        : 3459464 bytes
+  md5         : 30dbe7f990ba7e7b035b8a6280b80a3b
+  sha1        : 131d476eba5dac4c493ef73f0217c8b8f6b22772
+  sha256      : d3fb18174b506743fa8806276ecdf65780c1c9f4657011eb9a3488e1189cc77d
 
 lgroute-control
 ---------------
@@ -71,12 +71,12 @@ lgroute-control
   NEEDED      : libc.so.6
   purpose     : `--check` reads LG's "Sndout EARC OnOff" / "Sndout EARC
                 Outputtype" ALSA controls; it never writes them
-  size        : 8640 bytes
-  md5         : 52f745940dc07e109f10519165cb12e1
-  sha256      : 86c31c4bed17121739d990bec0467fa0cb46fdd22987cb6b9ae967caca5e890f
+  size        : 8900 bytes
+  md5         : fcd812b6995ab58d320c71d4ff887d45
+  sha256      : a037165c1645491488946d9317c889d46394c727f14e8758ffc31aaf7c3286cc
 
 switch-out/libgstadecswitch.so (built by build-switch.sh)
-  sha256      : c611dc24dc8751f8ecbd37f81630ac0b7ffe27bbd999592c9336a79a761431bc
+  sha256      : a4ea84d70687960caf5632c01834083e0edf7294e13c2f1275a4c03cec3f2327
 
 Replaces libgstdtsdec.so md5 41742e9ec2ce0754724b4d260c9fc09e (NEEDED
 libdca.so.0, RUNPATH /var/lib/webosbrew/dts25/libs) + libdca.so.0 md5
