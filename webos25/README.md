@@ -201,7 +201,8 @@ defaults to off.
 every HDMI input from the same value, so on its own the opt-in adds DTS and DTS-HD to
 all of them. The TV cannot decode DTS that arrives over HDMI: measured on a C5, a Google
 TV Streamer then sent a DTS 5.1 track as DTS and the TV stayed silent. So while the
-opt-in is on, `eim` preloads `libedidaudio.so` (`src/edidaudio.c`, built by
+opt-in is on, and the factory edidType has no `dts` (gate 49: a TV that ships with it
+keeps it on its inputs), `eim` preloads `libedidaudio.so` (`src/edidaudio.c`, built by
 `build-edid.sh`), which makes LG's EDID builder use the edidType without `+dts`. The
 HDMI EDIDs come out byte-identical to stock while apps still see `TrueHD+dts`. It is
 loaded through `/var/systemd/system/env/eim.env`, which LG's unit already reads, so it

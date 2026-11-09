@@ -185,6 +185,11 @@ test("the DTS-tracks opt-in keeps DTS off the HDMI inputs", function () {
   write(t.hooked, "");
   t.run("echo 'remap TrueHD+dts=4->3 ac3+dts=2->1' > \"$EDID_STATE\"; w25_appdts_apply");
   assert.deepStrictEqual(t.log(), []);
+  // A TV that ships with dts plays it from HDMI: its inputs keep it.
+  t = appDtsShell("TrueHD+dts", "TrueHD+dts");
+  assert.match(t.run("w25_appdts_apply"), / on DTS tracks are on for apps\.$/m);
+  assert.deepStrictEqual(t.log(), []);
+  assert.strictEqual(fs.existsSync(t.eimEnv), false);
   // A build whose table the hook does not recognise still turns DTS on, and says so.
   t = appDtsShell("TrueHD", "TrueHD");
   assert.match(t.run("VERDICT='off: table not recognised' w25_appdts_apply"), / on DTS tracks are on for apps\. .*HDMI devices are still told/);
