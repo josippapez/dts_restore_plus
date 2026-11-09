@@ -494,7 +494,9 @@
   }
 
   function doPassthrough(on, hd) {
-    toast(on ? "Turning on…" : "Turning off…", "busy");
+    // The DTS-HD box keeps passthrough on while it turns DTS-HD off.
+    toast(hd === undefined ? (on ? "Turning on…" : "Turning off…")
+      : hd ? "Turning on DTS-HD…" : "Turning off DTS-HD…", "busy");
     $("hdPassthrough").disabled = true;
     callService("setPassthrough", { enabled: on, hd: hd }).then(function (res) {
       toast(res.summary || res.errorText || (on ? "Turned on" : "Turned off"), res.returnValue ? "ok" : "err");
