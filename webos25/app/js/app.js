@@ -248,16 +248,10 @@
     if (appDtsCard) appDtsCard.hidden = !canW25Test;
     $("btnAppDtsOn").disabled  = !canW25Test || s.appDtsActive === true;
     $("btnAppDtsOff").disabled = !canW25Test || s.appDtsActive !== true;
-    // Turn on and Turn off change the live value at once, and configd keeps it
-    // across restarts. A restart only helps when it was asked for but did not
-    // apply: the boot hook tries again.
-    var pending = canW25Test && s.appDtsRequested === true && s.appDtsActive !== true;
-    $("btnAppDtsReboot").hidden   = !pending;
-    $("btnAppDtsReboot").disabled = !pending;
     setVal("sEdidType", s.edidType || "—");
     var appDtsText = s.appDtsActive
       ? (s.appDtsRequested ? "yes" : "still on — press Turn off again")
-      : (s.appDtsRequested ? "on, but not applied — see Last attempt" : "no");
+      : (s.appDtsRequested ? "not applied — press Turn on again" : "no");
     setVal("sAppDts", appDtsText,
       s.appDtsActive && s.appDtsRequested ? "ok"
         : s.appDtsActive !== (s.appDtsRequested === true) ? "warn" : null);
@@ -497,18 +491,6 @@
     }).catch(function (e) {
       toast("Could not change it: " + errText(e), "err");
       refreshStatus();
-    });
-  }
-
-  function doAppDtsReboot() {
-    // No second confirmation dialog: the button only appears when a restart is
-    // the remaining step, its label says exactly what it does, and it sits behind
-    // a deliberate Turn on.
-    toast("Restarting the TV…", "busy");
-    $("btnAppDtsReboot").disabled = true;
-    callService("rebootTv", {}).catch(function (e) {
-      toast("Could not restart: " + errText(e), "err");
-      $("btnAppDtsReboot").disabled = false;
     });
   }
 
@@ -894,7 +876,6 @@
     $("btnPlayTrueHd").addEventListener("click", function () { doPlay("truehd"); });
     $("btnAppDtsOn").addEventListener("click", function () { doAppDts(true); });
     $("btnAppDtsOff").addEventListener("click", function () { doAppDts(false); });
-    $("btnAppDtsReboot").addEventListener("click", doAppDtsReboot);
     $("btnPtOn").addEventListener("click", function () { doPassthrough(true); });
     $("btnPtOff").addEventListener("click", function () { doPassthrough(false); });
     $("hdPassthrough").addEventListener("change", function () {

@@ -3896,24 +3896,6 @@ service.register("setPassthrough", function (message) {
 
 /* setAppDts: {enabled:boolean}. webOS 25 only -- the C2/G2 payload has no
  * TrueHD decoder and its own gate is a different mechanism entirely. */
-/* rebootTv: restart the TV. Only useful when the app-DTS opt-in was turned on but
- * did not apply, because the boot hook tries again (see w25AppDtsSteps). Deliberately
- * a separate call with its own button rather than something Turn on does by
- * itself: the TV may be mid-playback, and rebooting it unasked is not a decision
- * this app gets to make.
- *
- * Detached on purpose. The reboot tears down the exec bridge this call came in
- * on, so waiting for it to "finish" would just look like another hang. */
-service.register("rebootTv", function (message) {
-  rootExec('setsid sh -c "sleep 1; systemctl reboot" >/dev/null 2>&1 &\necho OK\nexit 0')
-    .then(function () {
-      message.respond({ returnValue: true, summary: "Restarting the TV…" });
-    })
-    .catch(function (e) {
-      message.respond({ returnValue: false, errorText: e.errorText || e.message || String(e) });
-    });
-});
-
 service.register("setAppDts", function (message) {
   var want = !!(message.payload && message.payload.enabled);
   detectProfile().then(function (d) {
@@ -3937,8 +3919,6 @@ service.register("setAppDts", function (message) {
         profile: d.profile,
         enabled: want,
         edidType: edid,
-        appliedLive: live,
-        needsReboot: !live,
         summary: live
           ? (want ? "Apps will now be offered DTS tracks. Reopen Stremio or Kodi if it was open."
                   : "Back to stock: apps hide DTS tracks again.")
