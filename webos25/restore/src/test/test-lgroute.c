@@ -415,29 +415,136 @@ static void resume_tests (void)
   gst_element_set_state (route.sink, GST_STATE_NULL);
   lgroute_disarm (&route);
 
-  /* 10. A resume seeks right after setup (every logged resume: 17-26 ms): decode. */
+  /* 10. A resume seeks right after setup (every logged resume: 17-26 ms): the
+   * renderer restart waits for playback, and a restart that cannot happen decodes. */
   reset (&route);
   forget_calls ();
   caps_event (&route); graph = after;
   g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
   send_event (&route, gst_event_new_flush_stop (TRUE));
+  g_assert_false (route.failed); g_assert_true (route.restart_pending);
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  g_assert_true (last_silent);
+  gst_element_set_state (route.sink, GST_STATE_PLAYING);
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_DROP);   /* no pad to restart on */
   g_assert_true (route.failed);
-  g_assert_cmpstr (route.reason, ==, "seek right after the start (resume)");
-  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_DROP);
+  g_assert_cmpstr (route.reason, ==, "LG's renderer did not restart");
+  gst_element_set_state (route.sink, GST_STATE_NULL);
   lgroute_disarm (&route);
 
-  /* 11. LG rebuilt the renderer mid-play: our converter is gone, so decode. */
-  reset (&route);
-  forget_calls ();
-  caps_event (&route); graph = after;
-  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
-  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
-  g_assert_cmpint (g_rmdir (LGROUTE_INSTANCES "/04260026"), ==, 0);
-  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_DROP);
-  g_assert_true (route.failed);
-  g_assert_cmpstr (route.reason, ==, "LG rebuilt its audio path without our setup");
-  g_assert_cmpint (g_mkdir (LGROUTE_INSTANCES "/04260026", 0700), ==, 0);
-  lgroute_disarm (&route);
+}
+
+/* A route on a real linked pad, so probes see events sent to the pad. */
+static void wire (LgRoute *route, GstPad **pad, GstPad **source)
+{
+  *pad = gst_pad_new ("restart", GST_PAD_SINK); *source = gst_pad_new ("src", GST_PAD_SRC);
+  gst_pad_set_event_function (*pad, accept_event);
+  gst_pad_set_chain_function (*pad, accept_buffer);
+  g_assert_true (gst_pad_set_active (*pad, TRUE));
+  g_assert_true (gst_pad_set_active (*source, TRUE));
+  g_assert_cmpint (gst_pad_link (*source, *pad), ==, GST_PAD_LINK_OK);
+  route->sinkpad = gst_object_ref (*pad);
+  route->events = gst_pad_add_probe (*pad, EVENT_PROBE_MASK, event_probe, route, NULL);
+  route->buffers = gst_pad_add_probe (*pad, GST_PAD_PROBE_TYPE_BUFFER, buffer_probe, route, NULL);
+  GstCaps *caps = lgroute_carrier_caps ();
+  GstSegment segment;
+  gst_segment_init (&segment, GST_FORMAT_TIME);
+  gst_pad_push_event (*source, gst_event_new_stream_start ("movie"));
+  gst_pad_push_event (*source, gst_event_new_caps (caps));
+  gst_pad_push_event (*source, gst_event_new_segment (&segment));
+  gst_caps_unref (caps);
+}
+
+static void unwire (LgRoute *route, GstPad *pad, GstPad *source)
+{
+  gst_element_set_state (route->sink, GST_STATE_NULL);
+  lgroute_disarm (route);
+  gst_pad_unlink (source, pad);
+  gst_object_unref (source); gst_object_unref (pad);
+}
+
+/* The pushed buffer's first byte as LG's sink would get it (0 = silence). */
+static guint8 pushed_byte;
+static GstPadProbeReturn after_route (GstPad *pad, GstPadProbeInfo *info, gpointer data)
+{
+  (void) pad; (void) data;
+  gst_buffer_extract (GST_PAD_PROBE_INFO_BUFFER (info), 0, &pushed_byte, 1);
+  return GST_PAD_PROBE_OK;
+}
+
+static void push_carrier (GstPad *source)
+{
+  GstBuffer *buffer = gst_buffer_new_allocate (NULL, 32768, NULL);
+  gst_buffer_memset (buffer, 0, 0x5a, 32768);
+  GST_BUFFER_FLAG_SET (buffer, ES_FLAG);
+  gst_pad_push (source, buffer);
+}
+
+static gchar *pad_stream_id (GstPad *pad)
+{
+  GstEvent *event = gst_pad_get_sticky_event (pad, GST_EVENT_STREAM_START, 0);
+  const gchar *id = NULL;
+  gst_event_parse_stream_start (event, &id);
+  gchar *copy = g_strdup (id);
+  gst_event_unref (event);
+  return copy;
+}
+
+/* A resume or a rebuild restarts LG's renderer instead of decoding. */
+static void restart_tests (void)
+{
+  LgRoute route;
+  GstPad *pad, *source;
+
+  /* 12. Resume: silence while paused, then a new stream id makes LG restart its
+   * renderer and the setup is redone with a fresh start event. */
+  reset (&route); forget_calls ();
+  graph = after;
+  wire (&route, &pad, &source);
+  gst_pad_add_probe (pad, GST_PAD_PROBE_TYPE_BUFFER, after_route, NULL, NULL);
+  int formats_before = formats;
+  push_carrier (source);
+  push_carrier (source);
+  g_assert_true (route.configured); g_assert_cmpint (formats, ==, formats_before + 1);
+  gst_pad_push_event (source, gst_event_new_flush_start ());
+  gst_pad_push_event (source, gst_event_new_flush_stop (TRUE));
+  GstSegment segment;
+  gst_segment_init (&segment, GST_FORMAT_TIME);
+  gst_pad_push_event (source, gst_event_new_segment (&segment));
+  g_assert_false (route.failed); g_assert_true (route.restart_pending);
+  gst_element_set_state (route.sink, GST_STATE_PAUSED);
+  push_carrier (source);
+  g_assert_cmpint (pushed_byte, ==, 0);                 /* quiet until it plays */
+  g_assert_true (route.restart_pending);
+  gst_element_set_state (route.sink, GST_STATE_PLAYING);
+  push_carrier (source);
+  g_assert_false (route.failed); g_assert_false (route.restart_pending);
+  g_assert_true (route.configured); g_assert_cmpint (formats, ==, formats_before + 2);
+  g_assert_false (((TestSink *) route.sink)->pcm);    /* the new start leaves as ES */
+  gchar *id = pad_stream_id (pad);
+  g_assert_cmpstr (id, ==, "movie/lgroute-restart1");
+  g_free (id);
+  unwire (&route, pad, source);
+
+  /* 13. A rebuild mid-play restarts too, and only twice: the third gives up. */
+  reset (&route); forget_calls ();
+  graph = after;
+  wire (&route, &pad, &source);
+  gst_element_set_state (route.sink, GST_STATE_PLAYING);
+  push_carrier (source);
+  for (int rebuild = 1; rebuild <= 3; rebuild++) {
+    g_assert_cmpint (g_rmdir (LGROUTE_INSTANCES "/04260026"), ==, 0);
+    push_carrier (source);
+    g_assert_cmpint (g_mkdir (LGROUTE_INSTANCES "/04260026", 0700), ==, 0);
+    if (rebuild < 3) {
+      g_assert_false (route.failed); g_assert_true (route.configured);
+      g_assert_cmpuint (route.restarts, ==, rebuild);
+    } else {
+      g_assert_true (route.failed);
+      g_assert_cmpstr (route.reason, ==, "LG rebuilt its audio path without our setup");
+    }
+  }
+  unwire (&route, pad, source);
 }
 
 static void handoff_tests (void)
@@ -652,6 +759,7 @@ int main (int argc, char **argv)
   g_assert_true (route.failed); lgroute_disarm (&route);
 
   resume_tests ();
+  restart_tests ();
 
   reset (&route); caps_event (&route); graph = after; short_write = TRUE;
   g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_DROP);

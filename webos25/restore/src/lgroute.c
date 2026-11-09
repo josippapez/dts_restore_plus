@@ -335,11 +335,7 @@ static void restart_pace (LgRoute *route)
   route->slow_windows = 0;
 }
 
-/* LG plays the carrier at its own rate, so the pushes keep that pace. After a
- * resume one TV took four times as long, fell 10 s behind and the receiver
- * played noise: three slow windows in a row mean that, not a stall or a pause,
- * which show up as a single long gap. */
-static gboolean carrier_slow (LgRoute *route, gsize size, gint64 now)
+static gboolean sink_playing (LgRoute *route)
 {
   g_mutex_lock (&route_lock);
   GstElement *sink = route->sink ? gst_object_ref (route->sink) : NULL;
@@ -347,6 +343,45 @@ static gboolean carrier_slow (LgRoute *route, gsize size, gint64 now)
   gboolean playing = sink && GST_STATE (sink) == GST_STATE_PLAYING
       && GST_STATE_PENDING (sink) == GST_STATE_VOID_PENDING;
   if (sink) gst_object_unref (sink);
+  return playing;
+}
+
+/* After a resume or a rebuild, have LG's sink restart its renderer the way it
+ * does on a track switch, so the next buffer sends a fresh bitstream start.
+ * Twice at most; after that the decoder takes over. */
+static gboolean restart_wanted (LgRoute *route, const gchar *why)
+{
+  if (route->restarts >= 2)
+    return FALSE;
+  route->restart_pending = TRUE;
+  note ("%s: restarting LG's renderer once the sink plays", why);
+  return TRUE;
+}
+
+/* A new stream id is what makes LG's sink close, reopen and restart the
+ * renderer; event_probe sees it too and redoes our setup on the next buffer. */
+static gboolean restart_renderer (LgRoute *route)
+{
+  g_mutex_lock (&route_lock);
+  GstPad *pad = route->sinkpad ? gst_object_ref (route->sinkpad) : NULL;
+  g_mutex_unlock (&route_lock);
+  if (!pad)
+    return FALSE;
+  route->restart_pending = FALSE;
+  gchar *id = g_strdup_printf ("%.100s/lgroute-restart%u", route->stream_id, ++route->restarts);
+  gboolean sent = gst_pad_send_event (pad, gst_event_new_stream_start (id));
+  g_free (id);
+  gst_object_unref (pad);
+  return sent && route->first;
+}
+
+/* LG plays the carrier at its own rate, so the pushes keep that pace. After a
+ * resume one TV took four times as long, fell 10 s behind and the receiver
+ * played noise: three slow windows in a row mean that, not a stall or a pause,
+ * which show up as a single long gap. */
+static gboolean carrier_slow (LgRoute *route, gsize size, gint64 now)
+{
+  gboolean playing = sink_playing (route);
   gint64 gap = now - route->last_push;
   route->last_push = now;
   if (!playing || !route->window_start || gap > 500 * G_TIME_SPAN_MILLISECOND) {
@@ -418,9 +453,10 @@ static GstPadProbeReturn event_probe (GstPad *pad, GstPadProbeInfo *info, gpoint
     /* A resume seeks right after the route starts. Every resume a tester logged
      * flushed within 30 ms of the setup and then stayed silent or played noise,
      * while seeks later in playback kept working: decode instead. */
-    if (route->configured && g_get_monotonic_time () - route->configured_at < G_TIME_SPAN_SECOND)
-      route_fail (route, "seek right after the start (resume)");
-    else
+    if (route->configured && g_get_monotonic_time () - route->configured_at < G_TIME_SPAN_SECOND) {
+      if (!restart_wanted (route, "seek right after the start (resume)"))
+        route_fail (route, "seek right after the start (resume)");
+    } else
       note ("flush, converter %s %s", route->converter, converter_present (route) ? "present" : "gone");
   }
   if (GST_EVENT_TYPE (event) == GST_EVENT_CAPS) {
@@ -456,6 +492,27 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
   (void) pad;
   if (route->failed)
     return GST_PAD_PROBE_DROP;
+  if (route->configured && !route->restart_pending && !converter_present (route)
+      && !restart_wanted (route, "LG rebuilt its audio path")) {
+    route_fail (route, "LG rebuilt its audio path without our setup");
+    return GST_PAD_PROBE_DROP;
+  }
+  if (route->restart_pending) {
+    if (!sink_playing (route)) {
+      /* The restart starts LG's renderer at once, so it waits for playback;
+       * until then the receiver gets silence, typed PCM like any carrier. */
+      GstBuffer *buffer = gst_buffer_make_writable (GST_PAD_PROBE_INFO_BUFFER (info));
+      if (!buffer)
+        return GST_PAD_PROBE_DROP;
+      GST_PAD_PROBE_INFO_DATA (info) = buffer;
+      GST_BUFFER_FLAG_UNSET (buffer, ES_FLAG);
+      return silence (info);
+    }
+    if (!restart_renderer (route)) {
+      route_fail (route, "LG's renderer did not restart");
+      return GST_PAD_PROBE_DROP;
+    }
+  }
   if (!route->configured) {
     if (!route->first) {
       route_fail (route, "carrier arrived before renderer caps");
@@ -475,10 +532,6 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
     /* The kernel routes the bypass to eARC only if it exists when LG writes the unmixed output. */
     report_pcm (route);
   } else {
-    if (!converter_present (route)) {
-      route_fail (route, "LG rebuilt its audio path without our setup");
-      return GST_PAD_PROBE_DROP;
-    }
     GstBuffer *buffer = gst_buffer_make_writable (GST_PAD_PROBE_INFO_BUFFER (info));
     if (!buffer)
       return GST_PAD_PROBE_DROP;
@@ -625,6 +678,8 @@ void lgroute_disarm (LgRoute *route)
   route->events = route->buffers = 0;
   route->mixed_since = 0;
   route->first = route->feeding = route->configured = route->unmixed = FALSE;
+  route->restart_pending = FALSE;
+  route->restarts = 0;
   route->stream_id[0] = 0;
   route->resource[0] = 0;
   restart_pace (route);
