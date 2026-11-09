@@ -12,7 +12,7 @@ typedef struct {
   GstPad *sinkpad;
   gulong events, buffers;
   gboolean first, feeding, configured, failed, unmixed;
-  gint64 next_check, mixed_since;
+  gint64 next_check, mixed_since, configured_at;
   gint64 window_start, last_push;   /* carrier pace check */
   guint64 window_media;
   guint slow_windows;

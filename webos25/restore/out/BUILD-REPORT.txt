@@ -56,10 +56,10 @@ libgstdtsdec.so
                 gst_element_register_dtsdec, gst_plugin_dtsdec_register,
                 gst_plugin_dtsdec_get_desc, gst_truehd_mat_get_type and the
                 lgroute_* / lgroute_control_* helpers
-  size        : 3459108 bytes
-  md5         : 2a447a585250ce578bf63df17bdaa1eb
-  sha1        : f0007781fb59f127054ad17721a8e4771a5a4598
-  sha256      : 52012dfb62e72472c930f397c122652ab68ce2d7b2b79730b685518f91d9b109
+  size        : 3459012 bytes
+  md5         : 91354a879c5d6a41daca4dce5cd50168
+  sha1        : cf2eb775dd8bf1509c077c8bd37f569386a9a8bf
+  sha256      : 4e3bea5f2b53667af17f18253737cc1ff71a25f769b9982be00c71062871fd4b
 
 lgroute-control
 ---------------
@@ -102,9 +102,9 @@ CPU: a 3.8 s 5.1 MA file takes 0.37 s user (libdca build: 2.40 s); the 258 s
 DTS-HD/TrueHD to eARC (opt-in, PR #23): heard by ear on a C2 OLED42C27LA
 (33.31.68) and a C2 OLED55C21LA (webOS 10.3.1) with a Samsung Q995GF, per the PR.
 DTS:X, Atmos and other TVs are not verified.
-The webos25-2.61 build (track-switch re-setup, pace fail-safe, route log) decodes
-the four self-test files bit-identically to the 2.60 build on the C5; its eARC
-route is not verified on a receiver.
+The webos25-2.62 build adds the resume and renderer-rebuild fallbacks to the
+eARC route; DTS/TrueHD decoding is unchanged from 2.60. The eARC route is not
+verified on a receiver.
 
 This report is maintained by hand: update it whenever out/libgstdtsdec.so is
 rebuilt (build.sh prints the ABI values above).

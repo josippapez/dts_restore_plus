@@ -10,6 +10,9 @@
 #include <unistd.h>
 
 #define MODULE_GRAPH "/proc/aaudio/dot_module_connection"
+#ifndef LGROUTE_INSTANCES
+#define LGROUTE_INSTANCES "/proc/aaudio/instances"
+#endif
 #define SINK_PLUGIN "/usr/lib/gstreamer-1.0/libgstlgaudiosink.so"
 #define ES_FLAG (1u << 21)
 /* Flushes are not GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM; a seek or resume sends them. */
@@ -180,18 +183,16 @@ GstCaps *lgroute_carrier_caps (void)
       "data-bps", G_TYPE_INT, 16, NULL);
 }
 
-/* What LG's converter holds now, for the log: a lost setup shows as other rates. */
-static void note_converter (LgRoute *route, const gchar *when)
+/* LG builds a new converter whenever it rebuilds the renderer. The rebuilt one
+ * lacks our setup, and LG's next start event describes plain PCM because the
+ * carrier needs pcm-multi-ch on (lgao_push_first_event), so the receiver gets
+ * noise. One such rebuild was seen mid-play after a resume. */
+static gboolean converter_present (LgRoute *route)
 {
-  gchar *path = g_strdup_printf ("/proc/aaudio/instances/%s/prop", route->converter), *prop = NULL;
-  if (route->converter[0] && g_file_get_contents (path, &prop, NULL, NULL)) {
-    g_strdelimit (prop, "\n", ' ');
-    note ("%s: converter %s %.700s", when, route->converter, prop);
-  } else {
-    note ("%s: converter %s unreadable", when, route->converter[0] ? route->converter : "none");
-  }
-  g_free (prop);
+  gchar *path = g_strdup_printf (LGROUTE_INSTANCES "/%s", route->converter);
+  gboolean present = route->converter[0] && g_file_test (path, G_FILE_TEST_IS_DIR);
   g_free (path);
+  return present;
 }
 
 /* PCMCVT_CMD_SET_ALLFMT: 192 kHz, 8 ch, 16-bit in and out; LG's gain is left alone. */
@@ -206,7 +207,7 @@ static gboolean configure_converter (LgRoute *route)
   g_free (graph);
   if (!ok)
     return FALSE;
-  gchar *path = g_strdup_printf ("/proc/aaudio/instances/%s/cmd", uid);
+  gchar *path = g_strdup_printf (LGROUTE_INSTANCES "/%s/cmd", uid);
   int fd = open (path, O_WRONLY | O_CLOEXEC);
   g_free (path);
   ok = fd >= 0 && write (fd, cmd, sizeof cmd - 1) == (ssize_t) (sizeof cmd - 1);
@@ -362,7 +363,6 @@ static gboolean carrier_slow (LgRoute *route, gsize size, gint64 now)
     route->slow_windows++;
     note ("carrier slow: %" G_GUINT64_FORMAT " ms of audio took %" G_GUINT64_FORMAT " ms",
         route->window_media / GST_MSECOND, took / GST_MSECOND);
-    if (route->slow_windows == 1) note_converter (route, "slow");
   } else {
     route->slow_windows = 0;
   }
@@ -415,7 +415,13 @@ static GstPadProbeReturn event_probe (GstPad *pad, GstPadProbeInfo *info, gpoint
     route->next_check = 0;
     route->unmixed = FALSE;
     restart_pace (route);
-    note_converter (route, "flush");
+    /* A resume seeks right after the route starts. Every resume a tester logged
+     * flushed within 30 ms of the setup and then stayed silent or played noise,
+     * while seeks later in playback kept working: decode instead. */
+    if (route->configured && g_get_monotonic_time () - route->configured_at < G_TIME_SPAN_SECOND)
+      route_fail (route, "seek right after the start (resume)");
+    else
+      note ("flush, converter %s %s", route->converter, converter_present (route) ? "present" : "gone");
   }
   if (GST_EVENT_TYPE (event) == GST_EVENT_CAPS) {
     GstCaps *caps = NULL, *carrier = lgroute_carrier_caps ();
@@ -464,10 +470,15 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
       return GST_PAD_PROBE_DROP;
     }
     GST_INFO_OBJECT (route->element, "lgroute: bypass converter configured, first carrier buffer");
-    note_converter (route, "configured");
+    route->configured_at = g_get_monotonic_time ();
+    note ("configured converter %s", route->converter);
     /* The kernel routes the bypass to eARC only if it exists when LG writes the unmixed output. */
     report_pcm (route);
   } else {
+    if (!converter_present (route)) {
+      route_fail (route, "LG rebuilt its audio path without our setup");
+      return GST_PAD_PROBE_DROP;
+    }
     GstBuffer *buffer = gst_buffer_make_writable (GST_PAD_PROBE_INFO_BUFFER (info));
     if (!buffer)
       return GST_PAD_PROBE_DROP;

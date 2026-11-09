@@ -7,6 +7,7 @@
 #include <string.h>
 #include <unistd.h>
 #define LGROUTE_RUN "/tmp/lgroute-test-run"
+#define LGROUTE_INSTANCES "/tmp/lgroute-test-run/instances"
 #include "../lgroute.h"
 #include "../lgroute-graph.h"
 
@@ -40,7 +41,7 @@ write_property (int fd, const void *buffer, size_t size)
 {
   g_assert_cmpint (fd, ==, 123);
   if (!writes_ok) return -1;
-  g_assert_cmpstr (destination, ==, "/proc/aaudio/instances/04260026/cmd");
+  g_assert_cmpstr (destination, ==, LGROUTE_INSTANCES "/04260026/cmd");
   static const char expected[] = "0x50020020 192000 8 16 0 0 192000 8 16\n";
   g_assert_cmpmem (buffer, size, expected, sizeof expected - 1);
   if (short_write) return size - 1;
@@ -328,7 +329,9 @@ static void resume_tests (void)
   caps_event (&route); graph = after;
   g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
   g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  route.configured_at -= 2 * G_TIME_SPAN_SECOND;   /* a seek well into playback */
   send_event (&route, gst_event_new_flush_stop (TRUE));
+  g_assert_false (route.failed);
   unmixed_result = 0;
   g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
   g_assert_true (last_silent);
@@ -410,6 +413,30 @@ static void resume_tests (void)
   }
   g_assert_false (route.failed);
   gst_element_set_state (route.sink, GST_STATE_NULL);
+  lgroute_disarm (&route);
+
+  /* 10. A resume seeks right after setup (every logged resume: 17-26 ms): decode. */
+  reset (&route);
+  forget_calls ();
+  caps_event (&route); graph = after;
+  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
+  send_event (&route, gst_event_new_flush_stop (TRUE));
+  g_assert_true (route.failed);
+  g_assert_cmpstr (route.reason, ==, "seek right after the start (resume)");
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_DROP);
+  lgroute_disarm (&route);
+
+  /* 11. LG rebuilt the renderer mid-play: our converter is gone, so decode. */
+  reset (&route);
+  forget_calls ();
+  caps_event (&route); graph = after;
+  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  g_assert_cmpint (g_rmdir (LGROUTE_INSTANCES "/04260026"), ==, 0);
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_DROP);
+  g_assert_true (route.failed);
+  g_assert_cmpstr (route.reason, ==, "LG rebuilt its audio path without our setup");
+  g_assert_cmpint (g_mkdir (LGROUTE_INSTANCES "/04260026", 0700), ==, 0);
   lgroute_disarm (&route);
 }
 
@@ -562,7 +589,7 @@ static void async_tests (void)
 int main (int argc, char **argv)
 {
   gst_init (&argc, &argv);
-  g_assert_cmpint (g_mkdir_with_parents (LGROUTE_RUN, 0700), ==, 0);
+  g_assert_cmpint (g_mkdir_with_parents (LGROUTE_INSTANCES "/04260026", 0700), ==, 0);
   g_unlink (ROUTE_LOG);
   g_assert_nonnull (g_mkdtemp (luna_dir));
   g_snprintf (luna_send, sizeof luna_send, "%s/luna-send", luna_dir);
