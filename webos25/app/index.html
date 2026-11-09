@@ -212,10 +212,10 @@
           Makes Stremio and Kodi offer DTS tracks. Takes effect at once; reopen the
           app if it was open.
         </p>
-        <p class="muted note-warn">
-          It also tells devices on the TV's HDMI ports, like a streamer, that the TV
-          accepts DTS, which it can't play from HDMI. If one goes silent, set its
-          audio output to Dolby Digital Plus or PCM.
+        <p class="muted">
+          Devices on the TV's HDMI ports aren't told about DTS, since the TV can't
+          play it from HDMI. One that was already plugged in picks this up after a
+          replug or a TV restart.
         </p>
         <div class="row">
           <button id="btnAppDtsOn"  class="btn focusable" data-nav disabled>Turn on</button>

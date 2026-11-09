@@ -109,7 +109,9 @@ EXPECT_GST=1.24
 #   46 verified set for the G2 on firmware 33.22.95.
 #   47 the app-DTS opt-in sets tv.model.edidType live through configd's setConfigs
 #      (no bind, no configd restart); W25_APPDTS=on|off is the app's toggle.
-W25_GATE_VERSION=47
+#   48 with the app-DTS opt-in on, eim preloads libedidaudio.so so the HDMI-input
+#      EDIDs keep LG's stock audio list (no DTS).
+W25_GATE_VERSION=48
 FP=/var/lib/webosbrew/dts25/stock.fp
 # Where the installed copy of THIS script lives, and the boot hook that symlinks
 # to it. Named here, in the shared block, so the read-only probe can fingerprint
@@ -786,6 +788,46 @@ w25_appdts_report() {
   [ -n "${APPDTS_QUIET:-}" ] || toast "DTS Enabler: $2"
 }
 
+# eim builds every HDMI input's EDID from edidType too, so with the opt-in on,
+# devices on those inputs were told the TV takes DTS, which it cannot play from
+# HDMI (measured on a C5: a streamer sent DTS 5.1 and the TV stayed silent).
+# libedidaudio.so makes eim build them from the edidType without "+dts". eim's
+# unit reads $EIM_ENV, whose LD_PRELOAD replaces the unit's own, so LG's preload
+# is listed again. The file persists, so eim has the hook from boot; changing it
+# needs an eim restart, which restarts arccontroller too. Devices already plugged
+# in re-read the EDID only on a replug or a TV restart.
+EIM_ENV=/var/systemd/system/env/eim.env
+EIM_UNIT=/etc/systemd/system/eim.service
+MYEDID=/var/lib/webosbrew/dts25/libedidaudio.so
+EDID_STATE=/run/dts25/edidaudio
+w25_eim_hooked() { grep -q libedidaudio "/proc/$(pidof eim | cut -d' ' -f1)/maps" 2>/dev/null; }
+w25_hdmi_hook_on() {
+  [ -f "$MYEDID" ] || return 1
+  if [ -f "$EIM_ENV" ] && ! grep -q libedidaudio "$EIM_ENV"; then
+    w25_log "app-dts: $EIM_ENV is not ours, left alone"
+    return 1
+  fi
+  LGPRE=$(sed -n 's/^Environment=LD_PRELOAD=\$LD_PRELOAD://p' "$EIM_UNIT" 2>/dev/null | head -n1)
+  echo "LD_PRELOAD=$MYEDID${LGPRE:+:$LGPRE}" > "$EIM_ENV" || return 1
+  if ! w25_eim_hooked; then
+    rm -f "$EDID_STATE"
+    systemctl restart eim
+  fi
+  # The hook writes its verdict the first time eim builds an EDID.
+  i=0
+  while [ ! -s "$EDID_STATE" ] && [ "$i" -lt 15 ]; do i=$((i + 1)); sleep 1; done
+  w25_log "app-dts: HDMI EDID hook: $(cat "$EDID_STATE" 2>/dev/null || echo 'no verdict')"
+  grep -q '^remap' "$EDID_STATE" 2>/dev/null
+}
+w25_hdmi_hook_off() {
+  grep -q libedidaudio "$EIM_ENV" 2>/dev/null || return 0
+  rm -f "$EIM_ENV"
+  if w25_eim_hooked; then systemctl restart eim; fi
+  return 0
+}
+# Appended to the "on" message when the HDMI inputs could not be kept DTS-free.
+HDMI_NOTE=" HDMI devices are still told the TV takes DTS: if one goes silent, set its audio output to Dolby Digital Plus or PCM."
+
 # The value to advertise for a stock edidType, or nothing when there is no safe one.
 # Only strings LG's own code knows are used: libextinput-service lists TrueHD,
 # TrueHD+dts and ac3+dts. A UR7500 reports ac3, not TrueHD.
@@ -800,14 +842,21 @@ w25_appdts_apply() {
   [ -f "$APPDTS_FLAG" ] || return 0
   CUR=$(w25_edid_get)
   case $CUR in
-    *dts*) w25_appdts_report on "DTS tracks are on for apps."; return 0 ;;
+    *dts*)
+      NOTE=; w25_hdmi_hook_on || NOTE=$HDMI_NOTE
+      w25_appdts_report on "DTS tracks are on for apps.$NOTE"; return 0 ;;
   esac
   T=$(w25_appdts_target "$CUR")
   if [ -z "$T" ]; then
     w25_appdts_report failed "DTS tracks are off: this TV reports '${CUR:-nothing}', which has no known DTS form, so there was nothing to change."
-  elif w25_edid_set "$T"; then
-    w25_appdts_report on "DTS tracks are on for apps. Reopen Stremio or Kodi if it was already open."
+    return 0
+  fi
+  # The hook goes in first, so the EDID eim rebuilds for "+dts" never lists DTS.
+  NOTE=; w25_hdmi_hook_on || NOTE=$HDMI_NOTE
+  if w25_edid_set "$T"; then
+    w25_appdts_report on "DTS tracks are on for apps. Reopen Stremio or Kodi if it was already open.$NOTE"
   else
+    w25_hdmi_hook_off
     w25_appdts_report failed "DTS tracks are off: the TV's settings service did not take the change."
   fi
 }
@@ -818,6 +867,8 @@ w25_appdts_off() {
   STOCK=$(w25_edid_stock)
   [ -n "$STOCK" ] || return 0
   [ "$(w25_edid_get)" = "$STOCK" ] || w25_edid_set "$STOCK" || return 0
+  # Only once edidType is back, so the eim restart never builds a "+dts" EDID.
+  w25_hdmi_hook_off
   # Setting it back leaves the factory value pinned as an override. Drop the file
   # when that is all it holds; configd reads it only at boot.
   [ "$(tr -d ' \t\n' < "$CFG_USER" 2>/dev/null)" = "{\"com.webos.service.config\":{\"usrDefined\":[\"tv.model.edidType\"]},\"tv.model\":{\"edidType\":\"$STOCK\"}}" ] &&

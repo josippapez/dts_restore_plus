@@ -114,20 +114,38 @@ function appDtsShell(stock, live, extra) {
   write(lls, '{"tv.model":{"edidType":"' + stock + '","oledCPC":1}}');
   write(state, live);
   write(path.join(dir, "flag"), "");
+  var eimEnv = path.join(dir, "eim.env"), hooked = path.join(dir, "hooked"), myEdid = path.join(dir, "libedidaudio.so");
+  write(myEdid, "");
+  write(path.join(dir, "eim.service"), "[Service]\nEnvironment=LD_PRELOAD=$LD_PRELOAD:/usr/lib/libsystrim.so.3\nExecStart=/usr/sbin/eim\n");
   var body = service.w25InitScriptBody().split("\n");
   function oneLine(name) {
     var l = body.filter(function (x) { return x.indexOf(name + "() { ") === 0; });
     assert.strictEqual(l.length, 1, name);
     return l[0];
   }
+  function assignment(name) {
+    var l = body.filter(function (x) { return x.indexOf(name + "=") === 0; });
+    assert.strictEqual(l.length, 1, name);
+    return l[0];
+  }
   return {
-    calls: calls, state: state,
+    calls: calls, state: state, eimEnv: eimEnv, hooked: hooked, myEdid: myEdid,
     run: function (cmd) {
       var r = sh([
         "set -u", "LOG=/dev/null", "LLS=" + lls, "MYLLS=" + path.join(dir, "override"),
         "APPDTS_FLAG=" + path.join(dir, "flag"), "APPDTS_LAST=" + path.join(dir, "last"),
         "APPDTS_HIST=" + path.join(dir, "hist"), "CFG_USER=" + user,
-        "w25_log() { :; }", "toast() { :; }", "w25_umount() { :; }",
+        "EIM_ENV=" + eimEnv, "EIM_UNIT=" + path.join(dir, "eim.service"), "MYEDID=" + myEdid,
+        "EDID_STATE=" + path.join(dir, "edid-state"),
+        "w25_log() { :; }", "toast() { :; }", "w25_umount() { :; }", "sleep() { :; }",
+        // eim loads the hook only when its env file names it, and the hook then
+        // writes its verdict ($VERDICT, a remap by default).
+        "w25_eim_hooked() { [ -f " + hooked + " ]; }",
+        "systemctl() {",
+        "  echo \"systemctl $*\" >> " + calls,
+        "  if grep -q libedidaudio \"$EIM_ENV\" 2>/dev/null; then : > " + hooked + "; echo \"${VERDICT:-remap TrueHD+dts=4->3 ac3+dts=2->1}\" > \"$EDID_STATE\"",
+        "  else rm -f " + hooked + "; fi",
+        "}",
         // A pty-backed luna-send: replies end in CRLF.
         "script() {",
         "  case \"$4\" in",
@@ -138,6 +156,7 @@ function appDtsShell(stock, live, extra) {
         "  esac",
         "}",
         oneLine("w25_luna"), initFn("w25_edid_get"), initFn("w25_edid_set"), oneLine("w25_edid_stock"),
+        initFn("w25_hdmi_hook_on"), initFn("w25_hdmi_hook_off"), assignment("HDMI_NOTE"),
         initFn("w25_appdts_report"), initFn("w25_appdts_target"), initFn("w25_appdts_apply"), initFn("w25_appdts_off"),
         extra || "", cmd, "cat " + path.join(dir, "last") + " 2>/dev/null; exit 0"
       ].join("\n"));
@@ -146,9 +165,56 @@ function appDtsShell(stock, live, extra) {
     },
     live: function () { return fs.readFileSync(state, "utf8"); },
     user: user,
-    sets: function () { return fs.existsSync(calls) ? fs.readFileSync(calls, "utf8").split("\n").filter(Boolean).length : 0; }
+    log: function () { return fs.existsSync(calls) ? fs.readFileSync(calls, "utf8").split("\n").filter(Boolean) : []; },
+    sets: function () { return this.log().filter(function (l) { return l === "set"; }).length; }
   };
 }
+
+/* With the opt-in on, eim built the HDMI-input EDIDs from "+dts" too, and a
+ * streamer sent DTS the TV can't play from HDMI (silent). The hook keeps them
+ * stock; it must be in eim before edidType gains "+dts" and stay until it loses it. */
+test("the DTS-tracks opt-in keeps DTS off the HDMI inputs", function () {
+  var t = appDtsShell("TrueHD", "TrueHD");
+  var out = t.run("w25_appdts_apply");
+  assert.deepStrictEqual(t.log(), ["systemctl restart eim", "set"], "hook first, then edidType");
+  assert.strictEqual(fs.readFileSync(t.eimEnv, "utf8"), "LD_PRELOAD=" + t.myEdid + ":/usr/lib/libsystrim.so.3\n");
+  assert.doesNotMatch(out, /HDMI devices/);
+  // Boot: eim already loaded it from the env file, so it is not restarted.
+  t = appDtsShell("TrueHD", "TrueHD+dts");
+  write(t.eimEnv, "LD_PRELOAD=" + t.myEdid + "\n");
+  write(t.hooked, "");
+  t.run("echo 'remap TrueHD+dts=4->3 ac3+dts=2->1' > \"$EDID_STATE\"; w25_appdts_apply");
+  assert.deepStrictEqual(t.log(), []);
+  // A build whose table the hook does not recognise still turns DTS on, and says so.
+  t = appDtsShell("TrueHD", "TrueHD");
+  assert.match(t.run("VERDICT='off: table not recognised' w25_appdts_apply"), / on DTS tracks are on for apps\. .*HDMI devices are still told/);
+  assert.strictEqual(t.live(), "TrueHD+dts");
+  // No hook staged, or someone else's env file: eim is left alone.
+  t = appDtsShell("TrueHD", "TrueHD");
+  fs.unlinkSync(t.myEdid);
+  assert.match(t.run("w25_appdts_apply"), /HDMI devices are still told/);
+  assert.deepStrictEqual(t.log(), ["set"]);
+  t = appDtsShell("TrueHD", "TrueHD");
+  write(t.eimEnv, "FOO=1\n");
+  t.run("w25_appdts_apply");
+  assert.strictEqual(fs.readFileSync(t.eimEnv, "utf8"), "FOO=1\n");
+  assert.deepStrictEqual(t.log(), ["set"]);
+});
+
+test("turning the DTS-tracks opt-in off resets edidType before eim drops the hook", function () {
+  var t = appDtsShell("TrueHD", "TrueHD+dts");
+  write(t.eimEnv, "LD_PRELOAD=" + t.myEdid + "\n");
+  write(t.hooked, "");
+  t.run("w25_appdts_off");
+  assert.deepStrictEqual(t.log(), ["set", "systemctl restart eim"]);
+  assert.strictEqual(fs.existsSync(t.eimEnv), false);
+  // Someone else's env file stays.
+  t = appDtsShell("TrueHD", "TrueHD+dts");
+  write(t.eimEnv, "FOO=1\n");
+  t.run("w25_appdts_off");
+  assert.strictEqual(fs.readFileSync(t.eimEnv, "utf8"), "FOO=1\n");
+  assert.deepStrictEqual(t.log(), ["set"]);
+});
 
 test("the DTS-tracks opt-in sets the live value with setConfigs and reads it back", function () {
   var t = appDtsShell("TrueHD", "TrueHD");

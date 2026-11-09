@@ -195,11 +195,21 @@ the patch active and working.
 
 The app's **Show DTS tracks in apps** card flips it to `TrueHD+dts`, or to `ac3+dts` on
 sets that report `ac3` (a UR7500 does). It is deliberately **not** part of Enable and
-defaults to off, because the TV builds the EDID it gives devices on its HDMI inputs
-from the same value. Measured on a C5: turning it on adds DTS and DTS-HD to the EDID of
-every HDMI input at once, and turning it off removes them. The TV cannot decode DTS that
-arrives over HDMI, so a streamer or player plugged into it may start sending DTS and go
-silent; set that device's audio output to Dolby Digital Plus or PCM.
+defaults to off.
+
+**HDMI inputs keep their stock audio list (gate 48).** LG's `eim` builds the EDID for
+every HDMI input from the same value, so on its own the opt-in adds DTS and DTS-HD to
+all of them. The TV cannot decode DTS that arrives over HDMI: measured on a C5, a Google
+TV Streamer then sent a DTS 5.1 track as DTS and the TV stayed silent. So while the
+opt-in is on, `eim` preloads `libedidaudio.so` (`src/edidaudio.c`, built by
+`build-edid.sh`), which makes LG's EDID builder use the edidType without `+dts`. The
+HDMI EDIDs come out byte-identical to stock while apps still see `TrueHD+dts`. It is
+loaded through `/var/systemd/system/env/eim.env`, which LG's unit already reads, so it
+is there from boot. The hook only remaps when it finds LG's own edidType table in
+`libhdmi-conn-protocol` and leaves any other build alone; the app then says HDMI devices
+are still told about DTS. Turning the opt-in on or off restarts `eim` once (LG's
+`arccontroller` restarts with it). A device that was already plugged in sees the change
+after a replug or a TV restart.
 
 **How it is set (gate 47, app 2.7.65).** As root, through configd's own `setConfigs`
 — the same way the [LG G5 DTS project](https://github.com/dakenf/lg-g5-dts) sets it.

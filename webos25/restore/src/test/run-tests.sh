@@ -302,5 +302,10 @@ else
 fi
 
 echo
+echo "=== 14. HDMI EDID hook: find libhdmi-conn-protocol's edidType numbers ==="
+$CC -std=c11 -O2 -Wall -Wextra -Werror -o "$WORK/test-edidaudio" "$HERE/test-edidaudio.c"
+"$WORK/test-edidaudio"
+
+echo
 echo "=== ALL CHECKS PASSED ==="
 exit 0

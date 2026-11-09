@@ -59,7 +59,7 @@ jobs:
           cd webos25/restore
           for f in out/libgstdtsdec.so out/lgroute-control \
                    truehd-out/libgstlibav.so \
-                   switch-out/libgstadecswitch.so \
+                   switch-out/libgstadecswitch.so edid-out/libedidaudio.so \
                    demux-out/libgstisomp4.so demux-out/libgstmpegtsdemux.so \
                    demux-out/libgstmatroska.so demux-out/libgstmpegpsdemux.so; do
             [ -f "$f" ] || { echo "MISSING committed binary: $f"; exit 1; }
@@ -116,6 +116,7 @@ jobs:
           cd webos25/app
           cp -f  ../restore/out/libgstdtsdec.so                                   payload/webos25/
           cp -f  ../restore/switch-out/libgstadecswitch.so                        payload/webos25/
+          cp -f  ../restore/edid-out/libedidaudio.so                              payload/webos25/
           cp -f  ../restore/out/lgroute-control                                 payload/webos25/
           cp -Pf ../restore/truehd-out/libgstlibav.so                             payload/webos25-truehd/
           cp -Pf ../restore/truehd-out/libav*.so* ../restore/truehd-out/libsw*.so* payload/webos25-truehd/

@@ -186,6 +186,9 @@ echo "watcher_sound_output=$(cat /run/dts25/sound-output 2>/dev/null)"
 # The live value: the app sets it with setConfigs, which is not saved to disk.
 echo "edidType=$(script -q -e -c "luna-send -n 1 luna://com.webos.service.config/getConfigs '{\"configNames\":[\"tv.model.edidType\"]}'" /dev/null 2>/dev/null | sed -n 's/.*"tv.model.edidType":"\([^"]*\)".*/\1/p' | head -n1)"
 echo "appdts_last=$(head -n1 "$D/appdts.last" 2>/dev/null)"
+echo "eim_env=$(cat /var/systemd/system/env/eim.env 2>/dev/null)"
+echo "eim_hooked=$(grep -c libedidaudio "/proc/$(pidof eim | cut -d' ' -f1)/maps" 2>/dev/null)"
+echo "edid_hook=$(cat /run/dts25/edidaudio 2>/dev/null)"
 
 echo
 echo "--- computed profile (what the app will pick) ---"

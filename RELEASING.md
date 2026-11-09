@@ -15,6 +15,7 @@ gst/                          four LG GStreamer 1.14.4 legacy plugins (CX/C2 app
 webos25/restore/out/         libgstdtsdec.so                     (DTS decoder, ffmpeg dca static)
 webos25/restore/truehd-out/  libgstlibav.so + libav*/libsw*      (TrueHD/MLP)
 webos25/restore/switch-out/  libgstadecswitch.so                 (track A stream-switch bin)
+webos25/restore/edid-out/    libedidaudio.so                     (eim hook: no DTS in HDMI EDIDs)
 webos25/restore/demux-out/   libgstisomp4.so, libgstmpegtsdemux.so (mp4/ts/m2ts DTS,
                               MP4 Dolby Vision profile 7), libgstmatroska.so (MKV DV profile 7)
 ```
@@ -169,6 +170,7 @@ cd webos25/app
 rm -f  payload/webos25/libdca.so.0     # left by pre-2.43 builds; would be packaged unused
 cp -f  ../restore/out/libgstdtsdec.so                                    payload/webos25/
 cp -f  ../restore/switch-out/libgstadecswitch.so                        payload/webos25/
+cp -f  ../restore/edid-out/libedidaudio.so                              payload/webos25/
 cp -Pf ../restore/truehd-out/libgstlibav.so ../restore/truehd-out/libav*.so* \
        ../restore/truehd-out/libsw*.so*                                 payload/webos25-truehd/
 cp -f  ../restore/demux-out/libgstisomp4.so ../restore/demux-out/libgstmpegtsdemux.so \
