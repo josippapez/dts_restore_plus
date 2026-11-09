@@ -11,7 +11,7 @@ typedef struct {
   GstElement *sink;
   GstPad *sinkpad;
   gulong events, buffers;
-  gboolean first, feeding, configured, failed, unmixed, restart_pending;
+  gboolean first, feeding, configured, failed, unmixed, restart_pending, waiting, draining, own;
   guint restarts;
   gint64 next_check, mixed_since, configured_at;
   gint64 window_start, last_push;   /* carrier pace check */

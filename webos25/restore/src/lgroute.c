@@ -4,9 +4,12 @@
 #define _GNU_SOURCE
 #include "lgroute.h"
 #include "lgroute-graph.h"
+#include <dirent.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <unistd.h>
 
 #define MODULE_GRAPH "/proc/aaudio/dot_module_connection"
@@ -14,6 +17,13 @@
 #define LGROUTE_INSTANCES "/proc/aaudio/instances"
 #endif
 #define SINK_PLUGIN "/usr/lib/gstreamer-1.0/libgstlgaudiosink.so"
+#ifndef LGROUTE_AREN
+#define LGROUTE_AREN "/dev/lg/aren0"
+#endif
+/* _IOR('R', 0x23, u32): the last module of this renderer's bypass chain, its
+ * lipsync. A passive read (aren_get_tail_uid, renderer_get_uid_bypass_tail);
+ * the same number in the 33.31.x kernels of the C5, G5 and G2/C2. */
+#define AREN_GET_BYPASS_TAIL_UID 0x80045223u
 #define ES_FLAG (1u << 21)
 /* Flushes are not GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM; a seek or resume sends them. */
 #define EVENT_PROBE_MASK (GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM | GST_PAD_PROBE_TYPE_EVENT_FLUSH)
@@ -208,15 +218,49 @@ static gboolean converter_present (LgRoute *route)
   return present;
 }
 
+/* LG's sink keeps the one /dev/lg/aren0 descriptor of this process open for as
+ * long as its renderer exists; nothing else here opens that device. */
+static gboolean own_bypass_tail (gchar uid[9])
+{
+  DIR *dir = opendir ("/proc/self/fd");
+  int fd = -1, count = 0;
+  for (struct dirent *entry; dir && (entry = readdir (dir));) {
+    gchar path[64], target[64];
+    g_snprintf (path, sizeof path, "/proc/self/fd/%s", entry->d_name);
+    ssize_t n = readlink (path, target, sizeof target - 1);
+    if (n > 0 && (target[n] = 0, !strcmp (target, LGROUTE_AREN)) && count++ == 0)
+      fd = atoi (entry->d_name);
+  }
+  if (dir) closedir (dir);
+  guint32 tail = 0;
+  if (count != 1 || ioctl (fd, AREN_GET_BYPASS_TAIL_UID, &tail) < 0 || !tail || tail == G_MAXUINT32)
+    return FALSE;
+  g_snprintf (uid, 9, "%08x", tail);
+  return TRUE;
+}
+
 /* PCMCVT_CMD_SET_ALLFMT: 192 kHz, 8 ch, 16-bit in and out; LG's gain is left alone. */
 static gboolean configure_converter (LgRoute *route)
 {
   static const char cmd[] = "0x50020020 192000 8 16 0 0 192000 8 16\n";
-  gchar *graph = NULL, *uid = route->converter;
+  gchar *graph = NULL, *uid = route->converter, tail[9];
   uid[0] = 0;
   if (!g_file_get_contents (MODULE_GRAPH, &graph, NULL, NULL))
     return FALSE;
-  gboolean ok = lgroute_bypass_converter (graph, uid);
+  /* Another loaded pipeline can hold a PCM bypass chain of its own (the app's
+   * sample player left one, and a movie in another app then found two). The
+   * kernel names ours by its lipsync. Once it has, and the graph shows that
+   * lipsync, a chain ending anywhere else belongs to someone else: without a
+   * converter on ours, LG did not build our PCM bypass, and the only chain in
+   * the graph must not be taken for it. Where the kernel cannot say, the one
+   * chain in the graph is ours, as before. */
+  gchar *node = own_bypass_tail (tail) ? g_strdup_printf ("lipsync_%s_", tail) : NULL;
+  gboolean own = node && strstr (graph, node);
+  gboolean ok = lgroute_bypass_converter (graph, own ? tail : NULL, uid);
+  if (own && !ok)
+    note ("this renderer's bypass (lipsync %s) has no PCM converter", tail);
+  route->own = own;
+  g_free (node);
   g_free (graph);
   if (!ok)
     return FALSE;
@@ -245,8 +289,14 @@ static void run_request (gpointer data, gpointer unused)
     else
       input_set (session->pipeline, request->resource, session->codec, NULL, session->immersive);
   } else {
-    if (session->pipeline[0] || input_query (session))
-      input_set (session->pipeline, request->resource, "pcm", "8", "none");
+    /* A G2 stream was still mixed 1.7 s after this report, where every other
+     * one unmixed: the reply says whether LG took it. */
+    if (!session->pipeline[0] && !input_query (session))
+      note ("LG does not report this pipeline, 8-channel PCM not described");
+    else
+      note ("described %s to LG as 8-channel PCM: %s", request->resource,
+          input_set (session->pipeline, request->resource, "pcm", "8", "none")
+          ? "accepted" : "refused");
     g_atomic_int_set (&session->reporting, 0);
   }
   session_unref (session);
@@ -478,6 +528,9 @@ static GstPadProbeReturn event_probe (GstPad *pad, GstPadProbeInfo *info, gpoint
     gboolean is_carrier = gst_caps_is_equal (caps, carrier);
     gst_caps_unref (carrier);
     if (!is_carrier) {
+      /* The earlier stream's own caps, queued like its buffers. */
+      if (route->waiting)
+        return GST_PAD_PROBE_OK;
       route_fail (route, "HD transport replaced by another format");
       g_mutex_lock (&route_lock);
       route->events = 0;   /* this probe removes itself */
@@ -485,6 +538,7 @@ static GstPadProbeReturn event_probe (GstPad *pad, GstPadProbeInfo *info, gpoint
       lgroute_disarm (route);
       return GST_PAD_PROBE_REMOVE;
     }
+    route->waiting = FALSE;
     if (route->configured) {
       /* Identical caps do not make LG's sink reopen the renderer. */
       GST_INFO_OBJECT (route->element, "lgroute: repeated carrier CAPS, route kept");
@@ -528,6 +582,17 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
   }
   if (!route->configured) {
     if (!route->first) {
+      /* The route arms on the new track's first frame, while the previous
+       * track's buffers are still queued in LG's playsink (its aqueue) ahead
+       * of our caps: until those arrive, a buffer is the old track's and
+       * passes untouched. A tester's G5 logged "armed" and this failure
+       * 8-22 ms apart on every switch back to TrueHD and on a DTS track switch. */
+      if (route->waiting) {
+        if (!route->draining)
+          note ("earlier stream still draining, passed through");
+        route->draining = TRUE;
+        return GST_PAD_PROBE_OK;
+      }
       route_fail (route, "carrier arrived before renderer caps");
       return GST_PAD_PROBE_DROP;
     }
@@ -541,7 +606,7 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
     }
     GST_INFO_OBJECT (route->element, "lgroute: bypass converter configured, first carrier buffer");
     route->configured_at = g_get_monotonic_time ();
-    note ("configured converter %s", route->converter);
+    note ("configured converter %s%s", route->converter, route->own ? " of this renderer" : "");
     /* The kernel routes the bypass to eARC only if it exists when LG writes the unmixed output. */
     report_pcm (route);
   } else {
@@ -560,6 +625,11 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
   /* Read on every buffer: LG can switch eARC back to mixed at any time, and a mixed
    * eARC plays the carrier as noise. It is one cheap ALSA ioctl read. */
   int unmixed = lgroute_control_receiver () ? lgroute_control_unmixed () : -1;
+  /* The sink takes no buffers while it prerolls or is paused, so that time says
+   * nothing about LG's mixer. A G2 read "mixed" on the preroll buffer and gave
+   * up on the next one, 1.7 s later, without the second it is meant to wait. */
+  if (route->mixed_since && now - route->last_push > 500 * G_TIME_SPAN_MILLISECOND)
+    route->mixed_since = 0;
   if (unmixed > 0)
     route->mixed_since = 0;
   else if (!route->mixed_since && unmixed == 0)
@@ -587,6 +657,31 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
     route->next_check = now + 250 * G_TIME_SPAN_MILLISECOND;
   /* Mixed eARC would play the carrier as noise; send silence until LG unmixes. */
   return route->unmixed ? GST_PAD_PROBE_OK : silence (info);
+}
+
+/* The factories of the sinks under top, for the route log. */
+static gchar *sink_names (GstObject *top)
+{
+  GString *names = g_string_new (NULL);
+  GstIterator *iterator = GST_IS_BIN (top) ? gst_bin_iterate_recurse (GST_BIN (top)) : NULL;
+  GValue value = G_VALUE_INIT;
+  GstIteratorResult result;
+  while (iterator && (result = gst_iterator_next (iterator, &value)) != GST_ITERATOR_DONE
+      && result != GST_ITERATOR_ERROR) {
+    if (result == GST_ITERATOR_RESYNC) {
+      gst_iterator_resync (iterator);
+      g_string_truncate (names, 0);
+      continue;
+    }
+    GstElement *element = g_value_get_object (&value);
+    GstElementFactory *factory = gst_element_get_factory (element);
+    if (!GST_IS_BIN (element) && GST_OBJECT_FLAG_IS_SET (element, GST_ELEMENT_FLAG_SINK))
+      g_string_append_printf (names, " %s", factory ? GST_OBJECT_NAME (factory) : "?");
+    g_value_reset (&value);
+  }
+  g_value_unset (&value);
+  if (iterator) gst_iterator_free (iterator);
+  return g_string_free (names, FALSE);
 }
 
 void lgroute_init (LgRoute *route, GstElement *element)
@@ -625,7 +720,7 @@ gboolean lgroute_arm (LgRoute *route)
     gst_object_unref (top);
     top = parent;
   }
-  unsigned count = 0;
+  unsigned count = 0, total = 0;
   if (GST_IS_BIN (top)) {
     GstIterator *iterator = gst_bin_iterate_all_by_element_factory_name (GST_BIN (top), "audiosink");
     GValue value = G_VALUE_INIT;
@@ -634,10 +729,11 @@ gboolean lgroute_arm (LgRoute *route)
       if (result == GST_ITERATOR_RESYNC) {
         gst_iterator_resync (iterator);
         gst_clear_object (&sink);
-        count = 0;
+        count = total = 0;
         continue;
       }
       GstElement *element = g_value_get_object (&value);
+      total++;
       if (verified_sink (element) && !count++)
         sink = gst_object_ref (element);
       g_value_reset (&value);
@@ -645,13 +741,24 @@ gboolean lgroute_arm (LgRoute *route)
     g_value_unset (&value);
     gst_iterator_free (iterator);
   }
-  gst_object_unref (top);
   if (count != 1 || !sink) {
     route->reason = "no unique verified LG sink in pipeline";
-    note ("not armed: %u verified LG sinks in the pipeline", count);
+    /* Testers' opens logged 0 verified sinks, once in a pipeline that armed on
+     * a later track. What decides the fix: LG's sink present but not the
+     * verified build, no audio sink yet (and the pipeline starting, playing or
+     * stopping), or another sink in its place. */
+    gchar *sinks = sink_names (top);
+    note ("not armed: %u verified LG sinks in the pipeline (%u audiosink elements; %s is %s, going %s; sinks:%s)",
+        count, total, GST_OBJECT_NAME (top),
+        GST_IS_ELEMENT (top) ? gst_element_state_get_name (GST_STATE (top)) : "?",
+        GST_IS_ELEMENT (top) ? gst_element_state_get_name (GST_STATE_PENDING (top)) : "?",
+        sinks[0] ? sinks : " none");
+    g_free (sinks);
+    gst_object_unref (top);
     gst_clear_object (&sink);
     return FALSE;
   }
+  gst_object_unref (top);
   GstPad *pad = gst_element_get_static_pad (sink, "sink");
   if (!pad) { gst_object_unref (sink); return FALSE; }
   gchar resource[sizeof route->resource] = "";
@@ -662,7 +769,9 @@ gboolean lgroute_arm (LgRoute *route)
     g_object_get (sink, "index", &index, "mixer", &mixer, NULL);
     g_snprintf (resource, sizeof resource, "%s%u", mixer ? "AMIXER" : "ADEC", index);
   }
-  /* The probes run at once on sticky events, so the route is published first. */
+  /* The probes run at once on sticky events, so the route is published first.
+   * Until our caps reach the sink, what arrives there is the earlier stream's. */
+  route->waiting = TRUE;
   g_mutex_lock (&route_lock);
   route->sink = sink;
   route->sinkpad = pad;
@@ -677,7 +786,7 @@ gboolean lgroute_arm (LgRoute *route)
   /* A replay re-arms on a pad that already holds the carrier caps and may not resend them. */
   if (pad_has_carrier (pad)) {
     route->first = TRUE;
-    route->feeding = FALSE;
+    route->feeding = route->waiting = FALSE;
     set_pcm (route, TRUE);
   }
   note ("armed on %s", resource[0] ? resource : "LG sink");
@@ -702,7 +811,7 @@ void lgroute_disarm (LgRoute *route)
   route->events = route->buffers = 0;
   route->mixed_since = 0;
   route->first = route->feeding = route->configured = route->unmixed = FALSE;
-  route->restart_pending = FALSE;
+  route->restart_pending = route->waiting = route->draining = FALSE;
   route->restarts = 0;
   route->stream_id[0] = 0;
   route->resource[0] = 0;

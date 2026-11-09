@@ -3860,7 +3860,7 @@ var W25_HD_FLAG = W25_DEST + "/passthrough-hd";
 
 /* The newest route log lines, for testers without SSH to photograph. */
 function w25RouteLogSteps() {
-  return 'tail -n 40 ' + W25_PT_RUN + '/lgroute.log 2>/dev/null; exit 0';
+  return 'tail -n 80 ' + W25_PT_RUN + '/lgroute.log 2>/dev/null; exit 0';
 }
 
 function w25HdReadinessSteps() {

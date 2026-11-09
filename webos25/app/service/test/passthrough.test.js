@@ -272,13 +272,13 @@ test("HD sink allowlist accepts exact tested hashes only", function () {
 });
 
 /* Testers without SSH photograph the newest route log lines from the app. */
-test("the receiver log shows the last 40 route log lines and nothing else", function () {
+test("the receiver log shows the last 80 route log lines and nothing else", function () {
   var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dts-routelog-"));
   var lines = [];
-  for (var i = 1; i <= 50; i++) lines.push("line " + i);
+  for (var i = 1; i <= 90; i++) lines.push("line " + i);
   write(path.join(dir, "lgroute.log"), lines.join("\n") + "\n");
   var script = service.w25RouteLogSteps();
-  assert.match(script, /^tail -n 40 \/run\/dts25\/lgroute\.log /);
+  assert.match(script, /^tail -n 80 \/run\/dts25\/lgroute\.log /);
   var r = sh(script.replace("/run/dts25", dir));
   assert.strictEqual(r.status, 0);
   assert.strictEqual(r.stdout, lines.slice(10).join("\n") + "\n");

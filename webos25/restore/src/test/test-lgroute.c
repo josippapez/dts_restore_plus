@@ -1,13 +1,19 @@
 #define _GNU_SOURCE
 #include <gst/gst.h>
 #include <glib/gstdio.h>
+#include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <stdarg.h>
+#include <stdlib.h>
+#include <sys/ioctl.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 #define LGROUTE_RUN "/tmp/lgroute-test-run"
 #define LGROUTE_INSTANCES "/tmp/lgroute-test-run/instances"
+/* LG's renderer device is a plain file here; the kernel's answer is aren_tail. */
+#define LGROUTE_AREN "/tmp/lgroute-test-run/aren0"
 #include "../lgroute.h"
 #include "../lgroute-graph.h"
 
@@ -99,11 +105,29 @@ read_or_graph (const gchar *filename, gchar **contents, gsize *length, GError **
     return g_file_get_contents (filename, contents, length, error);
   return read_graph (filename, contents, length, error);
 }
+/* AREN_GET_BYPASS_TAIL_UID; 0 fails like a kernel without it. */
+static guint32 aren_tail;
+
+static int
+aren_ioctl (int fd, unsigned long request, ...)
+{
+  va_list args;
+  (void) fd;
+  g_assert_cmphex (request, ==, 0x80045223u);
+  va_start (args, request);
+  guint32 *tail = va_arg (args, guint32 *);
+  va_end (args);
+  if (!aren_tail) { errno = ENOTTY; return -1; }
+  *tail = aren_tail;
+  return 0;
+}
+#define ioctl aren_ioctl
 #define g_file_get_contents read_or_graph
 #define open open_property
 #define write write_property
 #define close close_property
 #include "../lgroute.c"
+#undef ioctl
 #undef g_file_get_contents
 #undef open
 #undef write
@@ -217,7 +241,7 @@ static void reset (LgRoute *route)
   route->sink = g_object_new (test_sink_get_type (), NULL);
   g_strlcpy (route->resource, "ADEC1", sizeof route->resource);
   graph = before; graph_ok = receiver = writes_ok = TRUE; graph_reads = 0; unmixed_result = 1;
-  short_write = FALSE;
+  short_write = FALSE; aren_tail = 0;
 }
 
 static gchar *replace_text (const gchar *text, const gchar *old, const gchar *replacement)
@@ -547,6 +571,112 @@ static void restart_tests (void)
   unwire (&route, pad, source);
 }
 
+/* A track switch: the route arms on the new track's first frame while the
+ * previous track's buffers are still queued in LG's playsink ahead of our caps
+ * (a tester's G5: "armed on ADEC0", then "carrier arrived before renderer
+ * caps" 8-22 ms later). Those buffers are not ours and pass untouched. */
+static void stale_buffer_tests (void)
+{
+  LgRoute route;
+  /* LG's sink pad has a template that takes PCM and the carrier; a templateless
+   * pad would refuse the second caps (gst_pad_query_caps_default uses the current ones). */
+  static GstStaticPadTemplate any_sink =
+      GST_STATIC_PAD_TEMPLATE ("sink", GST_PAD_SINK, GST_PAD_ALWAYS, GST_STATIC_CAPS_ANY);
+  reset (&route); forget_calls (); graph = after;
+  GstPad *pad = gst_pad_new_from_static_template (&any_sink, "stale"), *source = gst_pad_new ("src", GST_PAD_SRC);
+  gst_pad_set_event_function (pad, accept_event);
+  gst_pad_set_chain_function (pad, accept_buffer);
+  g_assert_true (gst_pad_set_active (pad, TRUE));
+  g_assert_true (gst_pad_set_active (source, TRUE));
+  g_assert_cmpint (gst_pad_link (source, pad), ==, GST_PAD_LINK_OK);
+  /* The old track: decoded stereo PCM, flowing before the route exists. */
+  GstCaps *pcm = gst_caps_from_string ("audio/x-raw,format=S16LE,rate=48000,channels=2,layout=interleaved");
+  GstSegment segment;
+  gst_segment_init (&segment, GST_FORMAT_TIME);
+  gst_pad_push_event (source, gst_event_new_stream_start ("old"));
+  gst_pad_push_event (source, gst_event_new_caps (pcm));
+  gst_pad_push_event (source, gst_event_new_segment (&segment));
+  gst_caps_unref (pcm);
+  gst_pad_push (source, gst_buffer_new_allocate (NULL, 4096, NULL));
+  /* The new track's decoder arms, as lgroute_arm does: the pad's caps are not the carrier. */
+  route.waiting = TRUE;
+  route.sinkpad = gst_object_ref (pad);
+  route.events = gst_pad_add_probe (pad, EVENT_PROBE_MASK, event_probe, &route, NULL);
+  route.buffers = gst_pad_add_probe (pad, GST_PAD_PROBE_TYPE_BUFFER, buffer_probe, &route, NULL);
+  g_assert_false (pad_has_carrier (pad));
+  gst_pad_add_probe (pad, GST_PAD_PROBE_TYPE_BUFFER, after_route, NULL, NULL);
+  int formats_before = formats, checks_before = checks;
+  /* Two more old buffers drain from LG's queue: untouched, and the route still waits. */
+  for (int i = 0; i < 2; i++) {
+    GstBuffer *old = gst_buffer_new_allocate (NULL, 4096, NULL);
+    gst_buffer_memset (old, 0, 0x5a, 4096);
+    g_assert_cmpint (gst_pad_push (source, old), ==, GST_FLOW_OK);
+    g_assert_cmpuint (pushed_byte, ==, 0x5a);
+  }
+  g_assert_false (route.failed); g_assert_false (route.configured);
+  g_assert_cmpint (checks, ==, checks_before);
+  g_assert_false (((TestSink *) route.sink)->pcm);
+  /* The new track reaches the sink: stream id, carrier caps, then carrier. */
+  GstCaps *carrier_caps = lgroute_carrier_caps ();
+  gst_pad_push_event (source, gst_event_new_stream_start ("new"));
+  gst_pad_push_event (source, gst_event_new_caps (carrier_caps));
+  gst_pad_push_event (source, gst_event_new_segment (&segment));
+  gst_caps_unref (carrier_caps);
+  g_assert_true (((TestSink *) route.sink)->pcm);
+  push_carrier (source);
+  g_assert_false (route.failed); g_assert_true (route.configured);
+  g_assert_cmpint (formats, ==, formats_before + 1);
+  g_assert_false (((TestSink *) route.sink)->pcm);   /* the first ES event left with the flag clear */
+  push_carrier (source);
+  g_assert_true (((TestSink *) route.sink)->pcm);
+  gchar *log = NULL;
+  g_assert_true (g_file_get_contents (ROUTE_LOG, &log, NULL, NULL));
+  g_assert_nonnull (strstr (log, "earlier stream still draining, passed through"));
+  g_free (log);
+  unwire (&route, pad, source);
+
+  /* A second switch inside LG's queue (Dolby for under a second, then back):
+   * the Dolby track's own caps are still queued behind the first track's
+   * buffers when the route arms. They are not a replacement of our carrier. */
+  reset (&route); graph = after;
+  pad = gst_pad_new_from_static_template (&any_sink, "stale2"); source = gst_pad_new ("src", GST_PAD_SRC);
+  gst_pad_set_event_function (pad, accept_event);
+  gst_pad_set_chain_function (pad, accept_buffer);
+  g_assert_true (gst_pad_set_active (pad, TRUE));
+  g_assert_true (gst_pad_set_active (source, TRUE));
+  g_assert_cmpint (gst_pad_link (source, pad), ==, GST_PAD_LINK_OK);
+  pcm = gst_caps_from_string ("audio/x-raw,format=S16LE,rate=48000,channels=2,layout=interleaved");
+  gst_pad_push_event (source, gst_event_new_stream_start ("first"));
+  gst_pad_push_event (source, gst_event_new_caps (pcm));
+  gst_pad_push_event (source, gst_event_new_segment (&segment));
+  gst_caps_unref (pcm);
+  gst_pad_push (source, gst_buffer_new_allocate (NULL, 4096, NULL));
+  route.waiting = TRUE;
+  route.sinkpad = gst_object_ref (pad);
+  route.events = gst_pad_add_probe (pad, EVENT_PROBE_MASK, event_probe, &route, NULL);
+  route.buffers = gst_pad_add_probe (pad, GST_PAD_PROBE_TYPE_BUFFER, buffer_probe, &route, NULL);
+  gst_pad_push (source, gst_buffer_new_allocate (NULL, 4096, NULL));
+  GstCaps *dolby = gst_caps_from_string ("audio/x-raw,format=S32LE,rate=48000,channels=10,layout=interleaved");
+  gst_pad_push_event (source, gst_event_new_stream_start ("dolby"));
+  gst_pad_push_event (source, gst_event_new_caps (dolby));
+  gst_caps_unref (dolby);
+  g_assert_cmpint (gst_pad_push (source, gst_buffer_new_allocate (NULL, 4096, NULL)), ==, GST_FLOW_OK);
+  g_assert_false (route.failed); g_assert_nonnull (route.sink);
+  carrier_caps = lgroute_carrier_caps ();
+  gst_pad_push_event (source, gst_event_new_stream_start ("back"));
+  gst_pad_push_event (source, gst_event_new_caps (carrier_caps));
+  gst_caps_unref (carrier_caps);
+  push_carrier (source);
+  g_assert_false (route.failed); g_assert_true (route.configured);
+  /* Once our caps are there, another format does replace the carrier. */
+  pcm = gst_caps_from_string ("audio/x-raw,format=S16LE,rate=48000,channels=2,layout=interleaved");
+  gst_pad_push_event (source, gst_event_new_caps (pcm));
+  gst_caps_unref (pcm);
+  g_assert_true (route.failed); g_assert_null (route.sink);
+  gst_pad_unlink (source, pad);
+  gst_object_unref (source); gst_object_unref (pad);
+}
+
 static void handoff_tests (void)
 {
   for (unsigned sequence = 0; sequence < 3; sequence++) {
@@ -593,21 +723,86 @@ static void handoff_tests (void)
 static void graph_tests (void)
 {
   gchar uid[9] = "";
-  g_assert_true (lgroute_bypass_converter (after, uid));
+  g_assert_true (lgroute_bypass_converter (after, NULL, uid));
   g_assert_cmpstr (uid, ==, "04260026");
-  g_assert_false (lgroute_bypass_converter (before, uid));
+  g_assert_false (lgroute_bypass_converter (before, NULL, uid));
   /* the main head is srcbin -> lipsync without an rts; it is never chosen */
   gchar *changed = replace_text (after, "rts_0425000a_000000001891f88e_out0 ->", "queue_0418000a_000000001891f88e_out0 ->");
-  g_assert_false (lgroute_bypass_converter (changed, uid));
+  g_assert_false (lgroute_bypass_converter (changed, NULL, uid));
   g_free (changed);
   changed = replace_text (after, "}\n",
       "rts_042500ff_0000000000000001_out0 -> srcbin_042600ff_0000000000000002_in0;\n"
       "srcbin_042600ff_0000000000000001_out0 -> lipsync_042300ff_0000000000000002_in0;\n}\n");
-  g_assert_false (lgroute_bypass_converter (changed, uid));
+  g_assert_false (lgroute_bypass_converter (changed, NULL, uid));
+  g_assert_true (lgroute_bypass_converter (changed, "04230035", uid));
+  g_assert_cmpstr (uid, ==, "04260026");
+  g_assert_true (lgroute_bypass_converter (changed, "042300ff", uid));
+  g_assert_cmpstr (uid, ==, "042600ff");
+  g_assert_false (lgroute_bypass_converter (changed, "04230034", uid));
   g_free (changed);
   changed = replace_text (after, "rts_0425000a_000000001891f88e_out0 ->", "gluepw_08130001_out ->");
-  g_assert_false (lgroute_bypass_converter (changed, uid));
+  g_assert_false (lgroute_bypass_converter (changed, NULL, uid));
   g_free (changed);
+}
+
+/* Another loaded pipeline's bypass chain in LG's graph. A tester's movie found
+ * two after the app's sample player had left one, and decoded ("bypass
+ * converter missing, ambiguous, or not configurable"). The renderer's own
+ * descriptor says which chain is ours. /proc/self/fd is Linux's. */
+static void ownership_tests (void)
+{
+#ifdef __linux__
+  LgRoute route;
+  gchar *two = replace_text (after, "}\n",
+      "rts_042500ff_0000000000000001_out0 -> srcbin_042600ff_0000000000000002_in0;\n"
+      "srcbin_042600ff_0000000000000001_out0 -> lipsync_042300ff_0000000000000002_in0;\n}\n");
+  int device = open (LGROUTE_AREN, O_RDWR | O_CREAT, 0600);
+  g_assert_cmpint (device, >=, 0);
+
+  /* The kernel cannot say: two chains still refuse. */
+  reset (&route); caps_event (&route); graph = two;
+  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_DROP);
+  g_assert_true (route.failed); lgroute_disarm (&route);
+
+  /* It names our lipsync: the converter feeding it is the one configured
+   * (write_property checks the path). */
+  reset (&route); caps_event (&route); graph = two; aren_tail = 0x04230035;
+  int formats_before = formats;
+  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
+  g_assert_true (route.configured); g_assert_cmpstr (route.converter, ==, "04260026");
+  g_assert_cmpint (formats, ==, formats_before + 1);
+  lgroute_disarm (&route);
+
+  /* Ours is LG's ES bypass (queue -> lipsync), so LG built no PCM bypass for
+   * this renderer: the one chain in the graph is the other pipeline's. */
+  gchar *theirs = replace_text (after, "}\n",
+      "queue_04180027_0000000000000001_out0 -> lipsync_04230029_0000000000000002_in0;\n}\n");
+  reset (&route); caps_event (&route); graph = theirs; aren_tail = 0x04230029;
+  formats_before = formats;
+  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_DROP);
+  g_assert_true (route.failed); g_assert_cmpint (formats, ==, formats_before);
+  lgroute_disarm (&route);
+
+  /* A number that is no lipsync in the graph says nothing: the one chain, as before. */
+  reset (&route); caps_event (&route); graph = after; aren_tail = 0x12345678;
+  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
+  g_assert_cmpstr (route.converter, ==, "04260026");
+  lgroute_disarm (&route);
+
+  /* Two descriptors on the device: which is the sink's is not ours to guess. */
+  int second = open (LGROUTE_AREN, O_RDWR);
+  g_assert_cmpint (second, >=, 0);
+  reset (&route); caps_event (&route); graph = two; aren_tail = 0x04230035;
+  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_DROP);
+  lgroute_disarm (&route);
+  close (second); close (device);
+
+  gchar *log = NULL;
+  g_assert_true (g_file_get_contents (ROUTE_LOG, &log, NULL, NULL));
+  g_assert_nonnull (strstr (log, "configured converter 04260026 of this renderer"));
+  g_assert_nonnull (strstr (log, "this renderer's bypass (lipsync 04230029) has no PCM converter"));
+  g_free (log); g_free (two); g_free (theirs);
+#endif
 }
 
 typedef struct { LgRoute *route; gint *go; } Disarmer;
@@ -760,6 +955,8 @@ int main (int argc, char **argv)
 
   resume_tests ();
   restart_tests ();
+  stale_buffer_tests ();
+  ownership_tests ();
 
   reset (&route); caps_event (&route); graph = after; short_write = TRUE;
   g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_DROP);
@@ -783,6 +980,22 @@ int main (int argc, char **argv)
   g_assert_true (route.failed); g_assert_cmpstr (route.reason, ==, "LG keeps eARC mixing on");
   lgroute_disarm (&route);
 
+  /* The preroll wait is not LG mixing for a second: a G2 configured its DTS-HD
+   * route at 00:11:51.245, got its next buffer at 00:11:52.975 and gave up on
+   * it. That buffer starts the second, and describes the carrier again. */
+  reset (&route); forget_calls (); caps_event (&route); graph = after; unmixed_result = 0;
+  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
+  drain ();
+  route.mixed_since -= 1730 * G_TIME_SPAN_MILLISECOND; route.last_push -= 1730 * G_TIME_SPAN_MILLISECOND;
+  route.next_check = 0;
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  g_assert_false (route.failed); g_assert_true (last_silent);
+  drain (); g_assert_cmpint (calls_matching ("\"codec\":\"pcm\""), ==, 2);
+  route.mixed_since -= G_TIME_SPAN_SECOND; route.next_check = 0;
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_DROP);
+  g_assert_cmpstr (route.reason, ==, "LG keeps eARC mixing on");
+  lgroute_disarm (&route);
+
   /* Carrier is silence until LG unmixes; a mix re-reports PCM; disarm restores LG's codec. */
   static const char pcm[] = "tv/setQualityAttribute {\"categoryType\":\"audioInputInfo\","
       "\"requestType\":\"setAudioInputInfo\",\"pipelineInfo\":{\"pipelineId\":\"_p1\","
@@ -799,6 +1012,10 @@ int main (int argc, char **argv)
   /* Reported once the bypass exists; the re-report for LG still mixing finds that one in flight. */
   g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
   g_assert_true (last_silent); drain (); g_assert_cmpint (luna_count (pcm), ==, 1);
+  gchar *reply = NULL;
+  g_assert_true (g_file_get_contents (ROUTE_LOG, &reply, NULL, NULL));
+  g_assert_nonnull (strstr (reply, "described ADEC1 to LG as 8-channel PCM: accepted"));
+  g_free (reply);
   route.next_check = g_get_monotonic_time () + 60 * G_TIME_SPAN_SECOND;
   g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
   g_assert_true (last_silent); drain (); g_assert_cmpint (luna_count (pcm), ==, 1);
@@ -842,6 +1059,22 @@ int main (int argc, char **argv)
     g_assert_nonnull (strstr (refusals, "not armed: gave up earlier on this track (LG plays the carrier too slowly)"));
     g_assert_nonnull (strstr (refusals, "not armed: sound output is not a receiver"));
     g_free (refusals);
+  }
+  /* No LG sink: the route log says what the pipeline holds and what state it is in. */
+  {
+    GstElement *pipeline = gst_pipeline_new ("player"), *decoder = gst_bin_new ("decoder");
+    GstElement *other = gst_element_factory_make ("fakesink", NULL);
+    g_assert_nonnull (other);
+    gst_bin_add_many (GST_BIN (pipeline), decoder, other, NULL);
+    LgRoute fresh;
+    lgroute_init (&fresh, decoder);
+    g_assert_false (lgroute_arm (&fresh));
+    gchar *refusal = NULL;
+    g_assert_true (g_file_get_contents (ROUTE_LOG, &refusal, NULL, NULL));
+    g_assert_nonnull (strstr (refusal, "not armed: 0 verified LG sinks in the pipeline "
+        "(0 audiosink elements; player is NULL, going VOID_PENDING; sinks: fakesink)"));
+    g_free (refusal);
+    gst_object_unref (pipeline);
   }
   handoff_tests ();
   async_tests ();

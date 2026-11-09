@@ -56,10 +56,10 @@ libgstdtsdec.so
                 gst_element_register_dtsdec, gst_plugin_dtsdec_register,
                 gst_plugin_dtsdec_get_desc, gst_truehd_mat_get_type and the
                 lgroute_* / lgroute_control_* helpers
-  size        : 3459464 bytes
-  md5         : 30dbe7f990ba7e7b035b8a6280b80a3b
-  sha1        : 131d476eba5dac4c493ef73f0217c8b8f6b22772
-  sha256      : d3fb18174b506743fa8806276ecdf65780c1c9f4657011eb9a3488e1189cc77d
+  size        : 3463940 bytes
+  md5         : 93d0a1d7768251565bf0de2d4f151397
+  sha1        : d915fb69c8ee60997c19f2f19363012175799fb2
+  sha256      : f607e6f1f0c00dc2ae2b1515c0781b965b57703860c4cdcb89d3fbc694bd9973
 
 lgroute-control
 ---------------
@@ -110,6 +110,13 @@ decoder that is not on a working HD route, and logs every passthrough decision
 and route refusal to /run/dts25/lgroute.log. On the C5 it decodes the three app
 test files (DTS-HD MA 5.1 .m2ts/.ts, DTS in .mp4) bit-identically to the
 previous build; the eARC route is not verified on a receiver.
+The webos25-2.69 build lets the previous track's queued audio play out after a
+track switch instead of giving up the HD route, does not count LG's preroll
+pause as eARC mixing, picks the bypass converter of its own renderer when the
+kernel names it (PR #24), and logs more detail when the route cannot arm or
+LG's reply to the 8-channel PCM description. On the C5 it loads (dtsdec and
+truehdmat register) and decodes the three app test files bit-identically to
+the 2.66 and 2.68 builds; the eARC route is not verified on a receiver.
 
 This report is maintained by hand: update it whenever out/libgstdtsdec.so is
 rebuilt (build.sh prints the ABI values above).
