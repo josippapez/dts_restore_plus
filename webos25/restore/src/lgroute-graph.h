@@ -22,7 +22,7 @@ static gboolean lgroute_graph_node (const gchar *token, gchar impl[32], gchar ui
 }
 
 /* The single srcbin fed by an rts and feeding a lipsync: LG's PCM bypass converter. */
-static gboolean lgroute_bypass_converter (const gchar *graph, gchar uid[9])
+static gboolean lgroute_bypass_converter (const gchar *graph, const gchar *lipsync, gchar uid[9])
 {
   gchar fed[8][9], feeding[8][9];
   guint n_fed = 0, n_feeding = 0, matches = 0;
@@ -34,7 +34,8 @@ static gboolean lgroute_bypass_converter (const gchar *graph, gchar uid[9])
       continue;
     if (!strcmp (impl_a, "rts") && !strcmp (impl_b, "srcbin") && n_fed < 8)
       strcpy (fed[n_fed++], uid_b);
-    if (!strcmp (impl_a, "srcbin") && !strcmp (impl_b, "lipsync") && n_feeding < 8)
+    if (!strcmp (impl_a, "srcbin") && !strcmp (impl_b, "lipsync")
+      && (!lipsync || !strcmp (uid_b, lipsync)) && n_feeding < 8)
       strcpy (feeding[n_feeding++], uid_a);
   }
   g_strfreev (lines);

@@ -7,9 +7,9 @@ is no longer built or shipped. The values below were read from the committed
 binaries, not from a rebuild.
 
 Built reproducibly by build.sh:
-  host        : debian:12-slim --platform linux/arm64, apt pinned to the Debian
+  host        : debian:12-slim --platform linux/amd64, apt pinned to the Debian
                 snapshot 20250601T000000Z (Pin-Priority 1001 + dist-upgrade
-                --allow-downgrades, so the arm64 base libs match their armel
+                --allow-downgrades, so the amd64 base libs match their armel
                 counterparts), armel foreign architecture
   toolchain   : arm-linux-gnueabi-gcc (Debian bookworm, soft-float EABI5)
   plugin      : src/gstdtsdec.c, vendored from gst-plugins-bad 1.22.0 ext/dts,
@@ -56,10 +56,10 @@ libgstdtsdec.so
                 gst_element_register_dtsdec, gst_plugin_dtsdec_register,
                 gst_plugin_dtsdec_get_desc, gst_truehd_mat_get_type and the
                 lgroute_* / lgroute_control_* helpers
-  size        : 3459268 bytes
-  md5         : f5ad9e9bf8dcc299fd348736df61715b
-  sha1        : 524f144784658b9ca4877264136600b1e5d30136
-  sha256      : 07456bc9bb093c4b995e77b42c5db1c9f8fbc736422c2af97440a9691dd31355
+  size        : 3463520 bytes
+  md5         : 9d710f3f6af7ef64a110cc50b29c582d
+  sha1        : 03464b057696bb0256f25562aff08521c79ae0bb
+  sha256      : efa29fc170b838bc75cbc779358175c000347b705cc11a902aed497bbe6a2081
 
 lgroute-control
 ---------------
@@ -110,6 +110,27 @@ decoder that is not on a working HD route, and logs every passthrough decision
 and route refusal to /run/dts25/lgroute.log. On the C5 it decodes the three app
 test files (DTS-HD MA 5.1 .m2ts/.ts, DTS in .mp4) bit-identically to the
 previous build; the eARC route is not verified on a receiver.
+
+Ownership-only rebuild (2026-11-09, based on webos25-2.67)
+--------------------------------------------------------
+Uses the current process's existing /dev/lg/aren0 descriptor to read its
+bypass tail UID and select the converter feeding that lipsync. If ownership
+cannot identify a converter, the old unique-chain lookup remains the fallback.
+No application cleanup, track-switch guard, restart changes or debug logging.
+
+Host: test-lgroute and test-dtsdec-track pass. The graph regression checks
+selection with a second pipeline's bypass present and rejection of an unknown
+tail. ABI checks above pass; no FFmpeg symbols are exported.
+
+On the rooted C2 at 192.168.178.31, this exact artifact was loaded explicitly
+from a scratch directory with a separate GStreamer registry. DTS MP4, TS and
+M2TS and the TrueHD MKV sample decoded to WAV bit-identically to the installed
+build, without replacing it. The earlier ownership-only implementation was
+receiver-confirmed by the tester with Nuvio after reproducing the leftover
+sample-pipeline failure. That earlier binary predates the upstream track-
+redecision change; it is not receiver verification of this exact rebuild.
+TrueHD TS/M2TS, DTS-HD MA 7.1 and full receiver playback of this exact rebuild
+remain unverified. The AAC/commentary -> DTS issue is separate and unresolved.
 
 This report is maintained by hand: update it whenever out/libgstdtsdec.so is
 rebuilt (build.sh prints the ABI values above).

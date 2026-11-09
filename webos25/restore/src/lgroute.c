@@ -4,9 +4,12 @@
 #define _GNU_SOURCE
 #include "lgroute.h"
 #include "lgroute-graph.h"
+#include <dirent.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <unistd.h>
 
 #define MODULE_GRAPH "/proc/aaudio/dot_module_connection"
@@ -14,6 +17,8 @@
 #define LGROUTE_INSTANCES "/proc/aaudio/instances"
 #endif
 #define SINK_PLUGIN "/usr/lib/gstreamer-1.0/libgstlgaudiosink.so"
+#define LGROUTE_AREN "/dev/lg/aren0"
+#define AREN_GET_BYPASS_TAIL_UID 0x80045223u
 #define ES_FLAG (1u << 21)
 /* Flushes are not GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM; a seek or resume sends them. */
 #define EVENT_PROBE_MASK (GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM | GST_PAD_PROBE_TYPE_EVENT_FLUSH)
@@ -208,15 +213,35 @@ static gboolean converter_present (LgRoute *route)
   return present;
 }
 
+static gboolean own_bypass_tail (gchar uid[9])
+{
+  DIR *dir = opendir ("/proc/self/fd");
+  int fd = -1, count = 0;
+  for (struct dirent *entry; dir && (entry = readdir (dir));) {
+    gchar path[64], target[64];
+    g_snprintf (path, sizeof path, "/proc/self/fd/%s", entry->d_name);
+    ssize_t n = readlink (path, target, sizeof target - 1);
+    if (n > 0 && (target[n] = 0, !strcmp (target, LGROUTE_AREN)) && count++ == 0)
+      fd = atoi (entry->d_name);
+  }
+  if (dir) closedir (dir);
+  guint32 tail = 0;
+  if (count != 1 || ioctl (fd, AREN_GET_BYPASS_TAIL_UID, &tail) < 0 || !tail || tail == G_MAXUINT32)
+    return FALSE;
+  g_snprintf (uid, 9, "%08x", tail);
+  return TRUE;
+}
+
 /* PCMCVT_CMD_SET_ALLFMT: 192 kHz, 8 ch, 16-bit in and out; LG's gain is left alone. */
 static gboolean configure_converter (LgRoute *route)
 {
   static const char cmd[] = "0x50020020 192000 8 16 0 0 192000 8 16\n";
-  gchar *graph = NULL, *uid = route->converter;
+  gchar *graph = NULL, *uid = route->converter, tail[9];
   uid[0] = 0;
   if (!g_file_get_contents (MODULE_GRAPH, &graph, NULL, NULL))
     return FALSE;
-  gboolean ok = lgroute_bypass_converter (graph, uid);
+  gboolean ok = (own_bypass_tail (tail) && lgroute_bypass_converter (graph, tail, uid))
+      || lgroute_bypass_converter (graph, NULL, uid);
   g_free (graph);
   if (!ok)
     return FALSE;

@@ -593,20 +593,25 @@ static void handoff_tests (void)
 static void graph_tests (void)
 {
   gchar uid[9] = "";
-  g_assert_true (lgroute_bypass_converter (after, uid));
+  g_assert_true (lgroute_bypass_converter (after, NULL, uid));
   g_assert_cmpstr (uid, ==, "04260026");
-  g_assert_false (lgroute_bypass_converter (before, uid));
+  g_assert_false (lgroute_bypass_converter (before, NULL, uid));
   /* the main head is srcbin -> lipsync without an rts; it is never chosen */
   gchar *changed = replace_text (after, "rts_0425000a_000000001891f88e_out0 ->", "queue_0418000a_000000001891f88e_out0 ->");
-  g_assert_false (lgroute_bypass_converter (changed, uid));
+  g_assert_false (lgroute_bypass_converter (changed, NULL, uid));
   g_free (changed);
   changed = replace_text (after, "}\n",
       "rts_042500ff_0000000000000001_out0 -> srcbin_042600ff_0000000000000002_in0;\n"
       "srcbin_042600ff_0000000000000001_out0 -> lipsync_042300ff_0000000000000002_in0;\n}\n");
-  g_assert_false (lgroute_bypass_converter (changed, uid));
+  g_assert_false (lgroute_bypass_converter (changed, NULL, uid));
+  g_assert_true (lgroute_bypass_converter (changed, "04230035", uid));
+  g_assert_cmpstr (uid, ==, "04260026");
+  g_assert_true (lgroute_bypass_converter (changed, "042300ff", uid));
+  g_assert_cmpstr (uid, ==, "042600ff");
+  g_assert_false (lgroute_bypass_converter (changed, "04230034", uid));
   g_free (changed);
   changed = replace_text (after, "rts_0425000a_000000001891f88e_out0 ->", "gluepw_08130001_out ->");
-  g_assert_false (lgroute_bypass_converter (changed, uid));
+  g_assert_false (lgroute_bypass_converter (changed, NULL, uid));
   g_free (changed);
 }
 
