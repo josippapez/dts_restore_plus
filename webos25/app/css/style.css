@@ -101,6 +101,17 @@ html, body {
 }
 .muted { color: var(--muted); font-size: 23px; }
 .note-warn { color: var(--warn); margin-top: 18px; }
+.log {
+  font-family: "Consolas", monospace;
+  font-size: 18px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 520px;
+  overflow-y: auto;
+  background: rgba(255,255,255,.06);
+  padding: 12px;
+  border-radius: 6px;
+}
 code {
   font-family: "Consolas", monospace;
   background: rgba(255,255,255,.06);

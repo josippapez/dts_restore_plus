@@ -255,3 +255,20 @@ test("HD sink allowlist accepts exact tested hashes only", function () {
     assert.notEqual(sh(fn + '\nw25_pt_sink_verified "' + hash + '"').status, 0);
   });
 });
+
+/* Testers without SSH photograph the newest route log lines from the app. */
+test("the receiver log shows the last 40 route log lines and nothing else", function () {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dts-routelog-"));
+  var lines = [];
+  for (var i = 1; i <= 50; i++) lines.push("line " + i);
+  write(path.join(dir, "lgroute.log"), lines.join("\n") + "\n");
+  var script = service.w25RouteLogSteps();
+  assert.match(script, /^tail -n 40 \/run\/dts25\/lgroute\.log /);
+  var r = sh(script.replace("/run/dts25", dir));
+  assert.strictEqual(r.status, 0);
+  assert.strictEqual(r.stdout, lines.slice(10).join("\n") + "\n");
+  // No log yet: empty output, still a success.
+  r = sh(script.replace("/run/dts25", path.join(dir, "missing")));
+  assert.strictEqual(r.status, 0);
+  assert.strictEqual(r.stdout, "");
+});

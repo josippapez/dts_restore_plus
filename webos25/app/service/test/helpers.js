@@ -21,7 +21,7 @@ function loadService(mocks) {
     "c2StatusBindsComplete: c2StatusBindsComplete, c2SelfTest: c2SelfTest," +
     "DETECT_PROBE: DETECT_PROBE, w25AppDtsSteps: w25AppDtsSteps, w25InitScriptBody: w25InitScriptBody," +
     "w25PtReceiver: w25PtReceiver, w25PassthroughSteps: w25PassthroughSteps, w25Enable: w25Enable," +
-    "w25HdReadinessSteps: w25HdReadinessSteps, w25HdReason: w25HdReason," +
+    "w25HdReadinessSteps: w25HdReadinessSteps, w25HdReason: w25HdReason, w25RouteLogSteps: w25RouteLogSteps," +
     "w25Disable: w25Disable, w25Uninstall: w25Uninstall," +
     "constants: {C2: PROFILE_C2," +
     "sets: C2_EXPECTED_SETS, matchSet: c2MatchSet," +

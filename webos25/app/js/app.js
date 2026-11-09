@@ -876,6 +876,16 @@
     $("btnPlayTrueHd").addEventListener("click", function () { doPlay("truehd"); });
     $("btnAppDtsOn").addEventListener("click", function () { doAppDts(true); });
     $("btnAppDtsOff").addEventListener("click", function () { doAppDts(false); });
+    $("btnRouteLog").addEventListener("click", function () {
+      var box = $("routeLog");
+      box.hidden = false;
+      box.textContent = "Reading…";
+      callService("routeLog", {}).then(function (r) {
+        box.textContent = r.log ? r.log : "No receiver log yet. Play something with the receiver on, then try again.";
+      }, function (e) {
+        box.textContent = "Could not read the log: " + (e && (e.errorText || e.message) || e);
+      });
+    });
     $("btnPtOn").addEventListener("click", function () { doPassthrough(true); });
     $("btnPtOff").addEventListener("click", function () { doPassthrough(false); });
     $("hdPassthrough").addEventListener("change", function () {

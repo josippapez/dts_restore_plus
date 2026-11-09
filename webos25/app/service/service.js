@@ -3858,6 +3858,11 @@ var W25_PT_FLAG = W25_DEST + "/passthrough";
 var W25_PT_RUN = "/run/dts25";
 var W25_HD_FLAG = W25_DEST + "/passthrough-hd";
 
+/* The newest route log lines, for testers without SSH to photograph. */
+function w25RouteLogSteps() {
+  return 'tail -n 40 ' + W25_PT_RUN + '/lgroute.log 2>/dev/null; exit 0';
+}
+
 function w25HdReadinessSteps() {
   return [
     'HD_REASON=ready',
@@ -4056,6 +4061,14 @@ service.register("setMakeupGain", function (message) {
  * decoders' own fault-tolerant parsing; never fails on a bad/missing file.
  * The preset is derived from (drc, drc_boost, drc_cut) via presetFromConfig
  * since the config contract has no separate "preset" key. */
+service.register("routeLog", function (message) {
+  rootExec(w25RouteLogSteps()).then(function (r) {
+    message.respond({ returnValue: true, log: r.stdout || "" });
+  }).catch(function (e) {
+    message.respond({ returnValue: false, errorText: e.errorText || e.message || String(e) });
+  });
+});
+
 service.register("getMakeupGain", function (message) {
   detectProfile().then(function (d) {
     if (d.profile !== PROFILE_W25) {
