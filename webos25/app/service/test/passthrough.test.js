@@ -231,6 +231,20 @@ test("HD can only be turned on in eARC Pass Through", function () {
   }
 });
 
+/* Discussion #17: 2.60 allowlisted the G2 33.22.95 sink for DTS-HD but not its
+ * plugins, so Enable still said "Unsupported TV". */
+test("the verified set covers the G2 on firmware 33.22.95", function () {
+  var script = [
+    initFn("w25_fp_differs"), initFn("w25_verdict"),
+    "w25_fp_get() { :; }", "w25_product_id() { echo OLED55G26LA; }",
+    "GST_MM_NOW=1.24 M_LIBAV=ff330d3578ce83da402d686f4b5ad5c4",
+    "M_ISOMP4=09d6385016be02c4552e719f3a01ef52 M_MPEGTS=b0380d3c66d382c15504b81b09ff94bd",
+    "w25_verdict", 'echo "$VERDICT|$LABEL"'
+  ].join("\n");
+  var r = sh(script);
+  assert.strictEqual(r.stdout.trim(), "verified|LG G2 OLED55G26LA (webOS 10.2.2, GStreamer 1.24.0)", r.stderr);
+});
+
 test("HD sink allowlist accepts exact tested hashes only", function () {
   var fn = initFn("w25_pt_sink_verified");
   var known = "90dba3ef32704ce4096bf1e6045d2879d0c2192d507bc04d1e8e98437f420a43";
