@@ -824,6 +824,25 @@ int main (int argc, char **argv)
   g_assert_cmpint (caps_event (&route), ==, GST_PAD_PROBE_OK);
   g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_DROP);
   g_assert_true (route.failed); lgroute_disarm (&route);
+  /* A track that gave up refuses to arm and the route log says why; a route
+   * reset for the next track (dtsdec does this on a switch) checks again. */
+  {
+    LgRoute fresh;
+    lgroute_init (&fresh, NULL);
+    fresh.failed = TRUE;
+    fresh.reason = "LG plays the carrier too slowly";
+    g_assert_false (lgroute_arm (&fresh));
+    lgroute_init (&fresh, NULL);
+    g_assert_false (fresh.failed);
+    receiver = FALSE;
+    g_assert_false (lgroute_arm (&fresh));
+    receiver = TRUE;
+    gchar *refusals = NULL;
+    g_assert_true (g_file_get_contents (ROUTE_LOG, &refusals, NULL, NULL));
+    g_assert_nonnull (strstr (refusals, "not armed: gave up earlier on this track (LG plays the carrier too slowly)"));
+    g_assert_nonnull (strstr (refusals, "not armed: sound output is not a receiver"));
+    g_free (refusals);
+  }
   handoff_tests ();
   async_tests ();
   g_print ("LG route: bypass converter, carrier flags, CAPS changes and failure refusal pass\n");

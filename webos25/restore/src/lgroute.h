@@ -26,4 +26,6 @@ void lgroute_init (LgRoute *route, GstElement *element);
 gboolean lgroute_arm (LgRoute *route);
 void lgroute_disarm (LgRoute *route);
 GstCaps *lgroute_carrier_caps (void);
+/* One line in the tester-visible route log. */
+void lgroute_log (const gchar *format, ...) G_GNUC_PRINTF (1, 2);
 #endif

@@ -307,5 +307,10 @@ $CC -std=c11 -O2 -Wall -Wextra -Werror -o "$WORK/test-edidaudio" "$HERE/test-edi
 "$WORK/test-edidaudio"
 
 echo
+echo "=== 15. dtsdec decides passthrough again on a track switch ==="
+$CC -std=c11 -O2 -Wall -Wextra -Werror -o "$WORK/test-dtsdec-track" "$HERE/test-dtsdec-track.c"
+"$WORK/test-dtsdec-track"
+
+echo
 echo "=== ALL CHECKS PASSED ==="
 exit 0

@@ -29,8 +29,7 @@ GST_DEBUG_CATEGORY_STATIC (lgroute_debug);
 #define CARRIER_BYTES_PER_SECOND (192000 * 8 * 2)
 #define PACE_WINDOW (GST_SECOND / 4)
 
-static void note (const gchar *format, ...) G_GNUC_PRINTF (1, 2);
-static void note (const gchar *format, ...)
+static void vnote (const gchar *format, va_list args)
 {
   FILE *log = fopen (ROUTE_LOG, "a");
   if (log && fseek (log, 0, SEEK_END) == 0 && ftell (log) > 65536)
@@ -40,14 +39,28 @@ static void note (const gchar *format, ...)
   GDateTime *now = g_date_time_new_now_local ();
   gchar *when = g_date_time_format (now, "%T.%f");
   g_date_time_unref (now);
-  va_list args;
-  va_start (args, format);
   fprintf (log, "%.12s ", when);
   vfprintf (log, format, args);
   fputc ('\n', log);
-  va_end (args);
   g_free (when);
   fclose (log);
+}
+
+static void note (const gchar *format, ...) G_GNUC_PRINTF (1, 2);
+static void note (const gchar *format, ...)
+{
+  va_list args;
+  va_start (args, format);
+  vnote (format, args);
+  va_end (args);
+}
+
+void lgroute_log (const gchar *format, ...)
+{
+  va_list args;
+  va_start (args, format);
+  vnote (format, args);
+  va_end (args);
 }
 
 /* luna-send blocks for up to 2 s, so it never runs on a streaming thread: one
@@ -594,8 +607,18 @@ gboolean lgroute_arm (LgRoute *route)
   g_mutex_unlock (&route_lock);
   if (armed)
     return !route->failed;
-  if (route->failed || !lgroute_control_receiver () || lgroute_control_unmixed () < 0)
+  if (route->failed) {
+    note ("not armed: gave up earlier on this track (%s)", route->reason ? route->reason : "?");
     return FALSE;
+  }
+  if (!lgroute_control_receiver ()) {
+    note ("not armed: sound output is not a receiver");
+    return FALSE;
+  }
+  if (lgroute_control_unmixed () < 0) {
+    note ("not armed: eARC Pass Through unavailable");
+    return FALSE;
+  }
   GstElement *sink = NULL;
   GstObject *top = gst_object_ref (route->element), *parent;
   while ((parent = gst_object_get_parent (top))) {
@@ -625,6 +648,7 @@ gboolean lgroute_arm (LgRoute *route)
   gst_object_unref (top);
   if (count != 1 || !sink) {
     route->reason = "no unique verified LG sink in pipeline";
+    note ("not armed: %u verified LG sinks in the pipeline", count);
     gst_clear_object (&sink);
     return FALSE;
   }

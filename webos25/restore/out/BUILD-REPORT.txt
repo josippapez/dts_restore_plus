@@ -56,10 +56,10 @@ libgstdtsdec.so
                 gst_element_register_dtsdec, gst_plugin_dtsdec_register,
                 gst_plugin_dtsdec_get_desc, gst_truehd_mat_get_type and the
                 lgroute_* / lgroute_control_* helpers
-  size        : 3459160 bytes
-  md5         : 67021c39f4dac356aa3dc58b421e8e8d
-  sha1        : f78536670b808cc437c7e62cffae71f16cd5f9a1
-  sha256      : ba7aef6e2adff53b2ff187c56624fa626c0b079d2f750d43d6924a27570dc8b3
+  size        : 3459268 bytes
+  md5         : f5ad9e9bf8dcc299fd348736df61715b
+  sha1        : 524f144784658b9ca4877264136600b1e5d30136
+  sha256      : 07456bc9bb093c4b995e77b42c5db1c9f8fbc736422c2af97440a9691dd31355
 
 lgroute-control
 ---------------
@@ -105,6 +105,11 @@ DTS:X, Atmos and other TVs are not verified.
 The webos25-2.64 build restarts LG's renderer after a resume or a renderer
 rebuild (twice at most, then it decodes); DTS/TrueHD decoding is unchanged from
 2.60. The eARC route is not verified on a receiver.
+This build also decides DTS passthrough again when a new track starts on a
+decoder that is not on a working HD route, and logs every passthrough decision
+and route refusal to /run/dts25/lgroute.log. On the C5 it decodes the three app
+test files (DTS-HD MA 5.1 .m2ts/.ts, DTS in .mp4) bit-identically to the
+previous build; the eARC route is not verified on a receiver.
 
 This report is maintained by hand: update it whenever out/libgstdtsdec.so is
 rebuilt (build.sh prints the ABI values above).

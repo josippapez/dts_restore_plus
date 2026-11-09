@@ -119,6 +119,7 @@
 #include <libavutil/opt.h>
 
 #include "gstdtsdec.h"
+#include "dtsdec-track.h"
 
 /* webOS: LG's audiosink accepts only integer PCM (no F32/F64). Every FFmpeg
  * output format is converted to float per DRC block, then to S32LE
@@ -1059,7 +1060,22 @@ gst_dtsdec_sink_event (GstAudioDecoder * dec, GstEvent * event)
 {
   GstDtsDec *dts = GST_DTSDEC (dec);
   gboolean eos = GST_EVENT_TYPE (event) == GST_EVENT_EOS;
-  gboolean ret = GST_AUDIO_DECODER_CLASS (gst_dtsdec_parent_class)->sink_event (dec, event);
+  gboolean ret;
+
+  /* A tester's DTS:X stayed core DTS after a track switch until a restart. */
+  if (GST_EVENT_TYPE (event) == GST_EVENT_STREAM_START) {
+    const gchar *id = NULL;
+    gst_event_parse_stream_start (event, &id);
+    if (dtsdec_redecide_on_track (dts->stream_id, id, dts->pt_decided, dts->pt_hd,
+            dts->hd_route.failed)) {
+      lgroute_log ("dts: new track, deciding passthrough again");
+      gst_dtsdec_hd_stop (dts, TRUE);
+      lgroute_init (&dts->hd_route, GST_ELEMENT (dts));
+    }
+    g_free (dts->stream_id);
+    dts->stream_id = g_strdup (id);
+  }
+  ret = GST_AUDIO_DECODER_CLASS (gst_dtsdec_parent_class)->sink_event (dec, event);
 
   /* A replay seeks this same pipeline; decide and arm again instead of sending an unrouted carrier. */
   if (eos && dts->pt_hd)
@@ -1077,6 +1093,7 @@ gst_dtsdec_stop (GstAudioDecoder * dec)
   GST_DEBUG_OBJECT (dec, "stop");
 
   gst_dtsdec_hd_close (dts);
+  g_clear_pointer (&dts->stream_id, g_free);
   avcodec_free_context (&dts->avctx);
   av_frame_free (&dts->frame);
   av_packet_free (&dts->pkt);
@@ -1811,13 +1828,15 @@ gst_dtsdec_passthrough_decide (GstDtsDec * dts, const guint8 * d, gsize size)
   period = dts_iec61937_pack (d, size, NULL, 0);
   if (period == 0) {
     GST_INFO_OBJECT (dts, "passthrough: not a 48 kHz DTS core, decoding");
+    lgroute_log ("dts: not a 48 kHz DTS core, decoding");
     return FALSE;
   }
 
-  if (!dts_hd_period_ok (period, DTS_HD_RATE))
+  if (!dts_hd_period_ok (period, DTS_HD_RATE)) {
     GST_INFO_OBJECT (dts, "passthrough: %d-byte core period is too long for "
         "DTS-HD at %d Hz, core only", period, DTS_HD_RATE);
-  else if (gst_dtsdec_hd_open (dts, AV_CODEC_ID_DTS)) {
+    lgroute_log ("dts: %d-byte core period too long for HD, core only", period);
+  } else if (gst_dtsdec_hd_open (dts, AV_CODEC_ID_DTS)) {
     if (gst_dtsdec_hd_set_caps (dts)) {
       dts->pt_active = TRUE;
       dts->pt_hd = TRUE;
@@ -1826,10 +1845,14 @@ gst_dtsdec_passthrough_decide (GstDtsDec * dts, const guint8 * d, gsize size)
       dts->pt_checked = g_get_monotonic_time ();
       GST_INFO_OBJECT (dts, "passthrough: sending whole DTS frames as "
           "IEC 61937 type IV at %d Hz", DTS_HD_RATE);
+      lgroute_log ("dts: HD, whole %" G_GSIZE_FORMAT "-byte frames", size);
       return FALSE;
     }
     GST_WARNING_OBJECT (dts, "passthrough: ES caps refused, core only");
+    lgroute_log ("dts: HD caps refused, core only");
     gst_dtsdec_hd_close (dts);
+  } else {
+    lgroute_log ("dts: HD route not armed, core only");
   }
 
   gst_audio_info_init (&info);
@@ -1902,6 +1925,7 @@ gst_dtsdec_handle_frame (GstAudioDecoder * bdec, GstBuffer * buffer)
   }
   if (dts->pt_hd && dts->hd_route.failed) {
     GST_WARNING_OBJECT (dts, "HD route failed (%s), decoding", dts->hd_route.reason);
+    lgroute_log ("dts: decoding instead (%s)", dts->hd_route.reason);
     gst_dtsdec_hd_stop (dts, FALSE);
   }
   if (dts->pt_active) {
@@ -2147,6 +2171,7 @@ static gboolean
 gst_truehd_mat_stop (GstAudioDecoder * decoder)
 {
   gst_dtsdec_hd_close (GST_DTSDEC (decoder));
+  g_clear_pointer (&GST_DTSDEC (decoder)->stream_id, g_free);
   return TRUE;
 }
 
@@ -2188,6 +2213,8 @@ gst_truehd_mat_fallback (GstAudioDecoder * decoder)
   GstDtsDec *dts = GST_DTSDEC (decoder);
   gint result;
 
+  lgroute_log ("truehd: decoding instead (%s)",
+      dts->hd_route.reason ? dts->hd_route.reason : "HD route not armed");
   gst_dtsdec_hd_close (dts);
   gst_element_post_message (GST_ELEMENT (dts),
       gst_message_new_element (GST_OBJECT (dts),

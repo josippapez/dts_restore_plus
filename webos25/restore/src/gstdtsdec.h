@@ -122,6 +122,7 @@ struct _GstDtsDec {
   struct AVFormatContext *spdif;	/* FFmpeg's spdif muxer, pt_hd only */
   LgRoute        hd_route;
   guint64        hd_silence;
+  gchar         *stream_id;	/* upstream track, to spot a track switch */
 
   struct AVCodecContext *avctx;
   struct AVFrame *frame;
