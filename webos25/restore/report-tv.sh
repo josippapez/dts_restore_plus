@@ -300,4 +300,8 @@ for p in /var/lib/lg-dts-native /var/lib/lg-dts-core /sys/module/gh_dts_native /
     /run/systemd/system/umediaserver.service.d; do
   [ -e "$p" ] && echo "present=$p $(ls "$p" 2>/dev/null | tr '\n' ' ')"
 done
+# A tester's helper bind-mounts another model's DSP firmware over LG's and reloads it.
+fw=$(grep -o ' /lib/firmware/audio_[^ ]*' /proc/mounts 2>/dev/null | tr -d '\n')
+[ -n "$fw" ] && echo "audio DSP firmware replaced:$fw" || echo "audio DSP firmware: LG's own"
+echo "DSP decoders: $(ls /proc/aaudio/processors/dsp0/ 2>/dev/null | grep '^dec_' | tr '\n' ' ')"
 echo "=== end of report ==="
