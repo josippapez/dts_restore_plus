@@ -146,6 +146,23 @@ GST_REGISTRY), so the live bind-mounts were never touched:
     DTS-HD MA in .ts   (188-byte stride)
     DTS-HD MA in .m2ts (192-byte BDAV stride)
 
+HDMV TrueHD and AC-3 compatibility tracks
+-----------------------------------------
+patch-hdmv-truehd-ac3.py publishes TrueHD followed by its AC-3 compatibility
+track for HDMV PMT type 0x83. Both outputs share one physical PID and reassemble
+their own PES substream. An empty AC-3 slot keeps later track indices aligned
+with FFmpeg.
+
+  libgstmpegtsdemux.so SHA256 fea0d51f4e06fece578e256df9bc2188b0adeac1a5cf8ec27eb9c86ca2ac6a08
+  ELF32 ARM EABI5 soft-float, e_flags 0x05000200, maximum GLIBC 2.7
+
+The rebuilt ARM plugin was exercised with GStreamer 1.24 under QEMU. The
+stream collection matched FFprobe order, the AC-3 caps and both audio payloads
+matched the fixtures, and TrueHD-only input kept the empty compatibility slot.
+Non-HDMV input exposed no companion. The owner also confirmed the AC-3 fix
+on an LG G3 with local test IPK 2.7.79. That package used the same AC-3
+patch and additionally included the Dolby Vision profile 7 STDL TS change.
+
 Dolby Vision profile 7 MKV validation (real LG C5, webOS 10.3.1, 2026-09-28)
 -----------------------------------------------------------------------------
 Installed with install.sh (bind + stock.fp libgstmatroska= + APPLIED=verified;

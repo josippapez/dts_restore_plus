@@ -133,6 +133,9 @@ if grep -n 'target_pes_substream = 0x71' "$TSDEMUX"; then
 fi
 echo "=== DTS-HD patch OK (both BD DTS substreams passed on) ==="
 
+# Expose the HDMV TrueHD PID's AC-3 compatibility audio in PMT order.
+python3 "$(dirname "$0")/patch-hdmv-truehd-ac3.py" "$TSDEMUX"
+
 # ---------------------------------------------------------------------------
 # DOLBY VISION PROFILE 7 (MKV) PATCHES -- two changes to matroska-demux.c:
 #
