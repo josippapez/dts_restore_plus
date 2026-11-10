@@ -17,6 +17,9 @@
 #define LGROUTE_INSTANCES "/proc/aaudio/instances"
 #endif
 #define SINK_PLUGIN "/usr/lib/gstreamer-1.0/libgstlgaudiosink.so"
+#ifndef LGROUTE_SINK_WAIT
+#define LGROUTE_SINK_WAIT (2 * G_TIME_SPAN_SECOND)
+#endif
 #ifndef LGROUTE_AREN
 #define LGROUTE_AREN "/dev/lg/aren0"
 #endif
@@ -38,6 +41,11 @@ GST_DEBUG_CATEGORY_STATIC (lgroute_debug);
 /* The carrier's bytes per second: 192 kHz, 8 channels, 16 bit. */
 #define CARRIER_BYTES_PER_SECOND (192000 * 8 * 2)
 #define PACE_WINDOW (GST_SECOND / 4)
+#ifndef LGROUTE_SNDOUT
+#define LGROUTE_SNDOUT "/proc/lgtv-driver/audio/sndout"
+#endif
+/* This TV's kernel has reported its bypass route in LGROUTE_SNDOUT since boot. */
+#define BYPASS_SEEN LGROUTE_RUN "/bypass-seen"
 
 static void vnote (const gchar *format, va_list args)
 {
@@ -373,6 +381,67 @@ static GstPadProbeReturn silence (GstPadProbeInfo *info)
   return GST_PAD_PROBE_OK;
 }
 
+/* The [ARC] section of LG's sound-output status, or NULL. */
+static gchar *arc_status (void)
+{
+  gchar *file = NULL, *section, *end;
+  if (!g_file_get_contents (LGROUTE_SNDOUT, &file, NULL, NULL))
+    return NULL;
+  section = strstr (file, "[ARC]\n");
+  if (section && (end = strstr (section, "\n[")))
+    *end = 0;
+  section = g_strdup (section);
+  g_free (file);
+  return section;
+}
+
+static gboolean arc_value (const gchar *status, const gchar *name, gchar value[32])
+{
+  gchar *key = g_strdup_printf ("\n%s=", name);
+  const gchar *found = status ? strstr (status, key) : NULL;
+  if (found) {
+    found += strlen (key);
+    g_strlcpy (value, found, MIN (strcspn (found, "\n") + 1, 32));
+  }
+  g_free (key);
+  return found != NULL;
+}
+
+/* LG's own account of its ARC/eARC output, for the route log: receiver testers
+ * mostly send this log, and it is where the kernel says what it did. */
+static gchar *lg_output (void)
+{
+  static const gchar *const names[] = { "ArcMode", "OutputCodec", "OutputChannel", "Mute", "Underflow" };
+  GString *text = g_string_new (NULL);
+  gchar *status = arc_status (), value[32];
+  for (guint i = 0; i < G_N_ELEMENTS (names); i++)
+    if (arc_value (status, names[i], value))
+      g_string_append_printf (text, " %s=%s", names[i], value);
+  g_free (status);
+  if (text->len)
+    g_string_prepend (text, "; LG output:");
+  return g_string_free (text, FALSE);
+}
+
+/* The route LG's kernel took to the ARC/eARC output: 1 = its bypass (renderer
+ * bypass port -> mixer bypass port -> output, shown as "Pass-Through"), 0 = its
+ * mixer or an encoder (shown as that output codec), -1 = not shown. */
+static int lg_bypassing (void)
+{
+  static const gchar *const mixed[] = { "PCM", "DD", "DDP", "AAC", "MAT" };
+  gchar *status = arc_status (), codec[32];
+  int state = -1;
+  if (arc_value (status, "OutputCodec", codec)) {
+    if (!strcmp (codec, "Pass-Through"))
+      state = 1;
+    for (guint i = 0; i < G_N_ELEMENTS (mixed); i++)
+      if (!strcmp (codec, mixed[i]))
+        state = 0;
+  }
+  g_free (status);
+  return state;
+}
+
 /* Every give-up goes through here so a tester's log names the reason. */
 static void route_fail (LgRoute *route, const gchar *reason)
 {
@@ -459,8 +528,10 @@ static gboolean carrier_slow (LgRoute *route, gsize size, gint64 now)
   guint64 took = (guint64) (now - route->window_start) * GST_USECOND;
   if (took > 3 * route->window_media) {
     route->slow_windows++;
-    note ("carrier slow: %" G_GUINT64_FORMAT " ms of audio took %" G_GUINT64_FORMAT " ms",
-        route->window_media / GST_MSECOND, took / GST_MSECOND);
+    gchar *lg = lg_output ();
+    note ("carrier slow: %" G_GUINT64_FORMAT " ms of audio took %" G_GUINT64_FORMAT " ms, sending silence%s",
+        route->window_media / GST_MSECOND, took / GST_MSECOND, lg);
+    g_free (lg);
   } else {
     route->slow_windows = 0;
   }
@@ -502,7 +573,8 @@ static GstPadProbeReturn event_probe (GstPad *pad, GstPadProbeInfo *info, gpoint
         route->first = TRUE;
         set_pcm (route, TRUE);
       }
-      note ("new stream \"%.60s\", route setup %s", id,
+      /* The end of the id tells tracks and our own restarts apart. */
+      note ("new stream \"%.60s\", route setup %s", id + (strlen (id) > 60 ? strlen (id) - 60 : 0),
           route->first ? "redone on the next buffer" : "waits for caps");
     }
     return GST_PAD_PROBE_OK;
@@ -607,6 +679,13 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
     GST_INFO_OBJECT (route->element, "lgroute: bypass converter configured, first carrier buffer");
     route->configured_at = g_get_monotonic_time ();
     note ("configured converter %s%s", route->converter, route->own ? " of this renderer" : "");
+    /* After a track switch LG's renderer keeps the old track's pace: a G3 and
+     * another tester's TV played every such carrier four times too slowly. Restart it, as
+     * after a resume. */
+    if (route->draining) {
+      route->draining = FALSE;
+      restart_wanted (route, "track switch");
+    }
     /* The kernel routes the bypass to eARC only if it exists when LG writes the unmixed output. */
     report_pcm (route);
   } else {
@@ -625,6 +704,20 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
   /* Read on every buffer: LG can switch eARC back to mixed at any time, and a mixed
    * eARC plays the carrier as noise. It is one cheap ALSA ioctl read. */
   int unmixed = lgroute_control_receiver () ? lgroute_control_unmixed () : -1;
+  /* LG's mixer word is what LG asked for, not what the kernel did. A tester's
+   * TV log had LG's mixer taking the carrier as 8-channel PCM, its queue full,
+   * while the word read unmixed: white noise at the receiver. The kernel's
+   * status names the route it took. It counts once this TV has shown its
+   * bypass there, so a kernel that words it differently changes nothing. */
+  if (unmixed > 0 && (due || !route->unmixed)) {
+    int bypassing = lg_bypassing ();
+    if (bypassing > 0 && access (BYPASS_SEEN, F_OK))
+      g_file_set_contents (BYPASS_SEEN, "", 0, NULL);
+    route->in_mixer = bypassing == 0 && !access (BYPASS_SEEN, F_OK);
+  }
+  gboolean in_mixer = unmixed > 0 && route->in_mixer;
+  if (in_mixer)
+    unmixed = 0;
   /* The sink takes no buffers while it prerolls or is paused, so that time says
    * nothing about LG's mixer. A G2 read "mixed" on the preroll buffer and gave
    * up on the next one, 1.7 s later, without the second it is meant to wait. */
@@ -641,12 +734,16 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
   if (route->unmixed != was_unmixed) {
     GST_INFO_OBJECT (route->element, "lgroute: eARC now %s (reading %d)",
         route->unmixed ? "unmixed, carrier passes" : "mixed or unavailable, sending silence", unmixed);
-    note ("eARC %s", route->unmixed ? "unmixed, carrier passes" : "mixed, sending silence");
+    gchar *lg = lg_output ();
+    note ("eARC %s%s", route->unmixed ? "unmixed, carrier passes" : in_mixer
+        ? "unmixed but LG's mixer has the carrier, sending silence" : "mixed, sending silence", lg);
+    g_free (lg);
   }
   /* LG's policy rewrites can mix briefly; only a lasting mix means TV sound overlays the carrier. */
   if (unmixed < 0
       || (route->mixed_since && now - route->mixed_since >= G_TIME_SPAN_SECOND)) {
-    route_fail (route, unmixed < 0 ? "eARC Pass Through unavailable" : "LG keeps eARC mixing on");
+    route_fail (route, unmixed < 0 ? "eARC Pass Through unavailable"
+        : in_mixer ? "LG keeps the carrier in its mixer" : "LG keeps eARC mixing on");
     return GST_PAD_PROBE_DROP;
   }
   if (carrier_slow (route, gst_buffer_get_size (GST_PAD_PROBE_INFO_BUFFER (info)), now)) {
@@ -655,8 +752,10 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
   }
   if (due)
     route->next_check = now + 250 * G_TIME_SPAN_MILLISECOND;
-  /* Mixed eARC would play the carrier as noise; send silence until LG unmixes. */
-  return route->unmixed ? GST_PAD_PROBE_OK : silence (info);
+  /* Mixed eARC would play the carrier as noise, and so does a carrier LG plays
+   * at the wrong speed (a tester heard seconds of it before the third slow
+   * window): send silence until LG unmixes and the pace is back. */
+  return route->unmixed && !route->slow_windows ? GST_PAD_PROBE_OK : silence (info);
 }
 
 /* The factories of the sinks under top, for the route log. */
@@ -695,6 +794,34 @@ void lgroute_init (LgRoute *route, GstElement *element)
   route->element = element;
 }
 
+/* The first verified LG sink under top; count the verified ones, total every audiosink. */
+static GstElement *find_sink (GstObject *top, unsigned *count, unsigned *total)
+{
+  GstElement *sink = NULL;
+  *count = *total = 0;
+  if (!GST_IS_BIN (top))
+    return NULL;
+  GstIterator *iterator = gst_bin_iterate_all_by_element_factory_name (GST_BIN (top), "audiosink");
+  GValue value = G_VALUE_INIT;
+  for (GstIteratorResult result; (result = gst_iterator_next (iterator, &value)) != GST_ITERATOR_DONE
+      && result != GST_ITERATOR_ERROR;) {
+    if (result == GST_ITERATOR_RESYNC) {
+      gst_iterator_resync (iterator);
+      gst_clear_object (&sink);
+      *count = *total = 0;
+      continue;
+    }
+    GstElement *element = g_value_get_object (&value);
+    ++*total;
+    if (verified_sink (element) && !(*count)++)
+      sink = gst_object_ref (element);
+    g_value_reset (&value);
+  }
+  g_value_unset (&value);
+  gst_iterator_free (iterator);
+  return sink;
+}
+
 gboolean lgroute_arm (LgRoute *route)
 {
   g_mutex_lock (&route_lock);
@@ -721,26 +848,15 @@ gboolean lgroute_arm (LgRoute *route)
     top = parent;
   }
   unsigned count = 0, total = 0;
-  if (GST_IS_BIN (top)) {
-    GstIterator *iterator = gst_bin_iterate_all_by_element_factory_name (GST_BIN (top), "audiosink");
-    GValue value = G_VALUE_INIT;
-    for (GstIteratorResult result; (result = gst_iterator_next (iterator, &value)) != GST_ITERATOR_DONE
-        && result != GST_ITERATOR_ERROR;) {
-      if (result == GST_ITERATOR_RESYNC) {
-        gst_iterator_resync (iterator);
-        gst_clear_object (&sink);
-        count = total = 0;
-        continue;
-      }
-      GstElement *element = g_value_get_object (&value);
-      total++;
-      if (verified_sink (element) && !count++)
-        sink = gst_object_ref (element);
-      g_value_reset (&value);
-    }
-    g_value_unset (&value);
-    gst_iterator_free (iterator);
-  }
+  /* A first frame can arrive before LG's playsink has built its audio chain: a
+   * tester's DTS:X opened as core DTS ("0 audiosink elements; playbin3-2 is
+   * READY, going PAUSED"), and on a G5 the sink came 100-300 ms later. */
+  gint64 deadline = g_get_monotonic_time () + LGROUTE_SINK_WAIT;
+  GstPad *input = gst_element_get_static_pad (route->element, "sink");
+  while (!(sink = find_sink (top, &count, &total)) && !total
+      && g_get_monotonic_time () < deadline && !(input && GST_PAD_IS_FLUSHING (input)))
+    g_usleep (50 * G_TIME_SPAN_MILLISECOND);
+  gst_clear_object (&input);
   if (count != 1 || !sink) {
     route->reason = "no unique verified LG sink in pipeline";
     /* Testers' opens logged 0 verified sinks, once in a pipeline that armed on
@@ -789,7 +905,12 @@ gboolean lgroute_arm (LgRoute *route)
     route->feeding = route->waiting = FALSE;
     set_pcm (route, TRUE);
   }
-  note ("armed on %s", resource[0] ? resource : "LG sink");
+  /* What LG's renderer is set up for when a track switch arms the route. */
+  GstCaps *playing = gst_pad_get_current_caps (pad);
+  gchar *was = playing && !route->first ? gst_caps_to_string (playing) : NULL;
+  note ("armed on %s%s%.200s", resource[0] ? resource : "LG sink", was ? ", sink has " : "", was ? was : "");
+  g_free (was);
+  if (playing) gst_caps_unref (playing);
   return TRUE;
 }
 
@@ -811,7 +932,7 @@ void lgroute_disarm (LgRoute *route)
   route->events = route->buffers = 0;
   route->mixed_since = 0;
   route->first = route->feeding = route->configured = route->unmixed = FALSE;
-  route->restart_pending = route->waiting = route->draining = FALSE;
+  route->restart_pending = route->waiting = route->draining = route->in_mixer = FALSE;
   route->restarts = 0;
   route->stream_id[0] = 0;
   route->resource[0] = 0;

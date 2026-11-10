@@ -56,10 +56,10 @@ libgstdtsdec.so
                 gst_element_register_dtsdec, gst_plugin_dtsdec_register,
                 gst_plugin_dtsdec_get_desc, gst_truehd_mat_get_type and the
                 lgroute_* / lgroute_control_* helpers
-  size        : 3463940 bytes
-  md5         : 93d0a1d7768251565bf0de2d4f151397
-  sha1        : d915fb69c8ee60997c19f2f19363012175799fb2
-  sha256      : f607e6f1f0c00dc2ae2b1515c0781b965b57703860c4cdcb89d3fbc694bd9973
+  size        : 3468412 bytes
+  md5         : 0a90904e8f09bcee92ac4de85faaf0a3
+  sha1        : 3b1baa9f986d62e61ace74c7f4064d0d91e6d4ec
+  sha256      : 923edb2c742226387838c82fe67a355b9488d6c66e69b7f6beae82d841d38cf5
 
 lgroute-control
 ---------------
@@ -117,6 +117,19 @@ kernel names it (PR #24), and logs more detail when the route cannot arm or
 LG's reply to the 8-channel PCM description. On the C5 it loads (dtsdec and
 truehdmat register) and decodes the three app test files bit-identically to
 the 2.66 and 2.68 builds; the eARC route is not verified on a receiver.
+The next build (2026-11-10) restarts LG's renderer once after a track switch
+(two testers' TVs, one a G3, played every such carrier four times too slowly, then fell
+back to decoding), waits up to 2 s for LG's audio sink when a track's first
+frame comes before the pipeline has one (a tester's DTS:X opened as core DTS;
+Glasshouse measured the sink 100-300 ms later on a G5), sends silence while
+LG plays the carrier too slowly (a tester heard white noise through slow
+windows that never came three in a row), sends silence while the kernel feeds
+eARC from LG's mixer instead of its bypass (read from /proc/lgtv-driver/audio/
+sndout once the TV has shown "Pass-Through" there; a tester's log had the mixer
+taking the carrier while the mixer word read unmixed) and falls back after a
+second of it, and logs what the sink was playing when a switch arms and LG's
+own ARC output state. On the C5 it loads and decodes the three app test files
+bit-identically to the 2.69 build; the eARC route is not verified on a receiver.
 
 This report is maintained by hand: update it whenever out/libgstdtsdec.so is
 rebuilt (build.sh prints the ABI values above).

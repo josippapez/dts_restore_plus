@@ -22,6 +22,14 @@ the mixer. The carrier stays silent until eARC is unmixed, and LG's own report i
 restored at end of stream. Nothing writes LG's mixer; if LG keeps mixing on for a
 second, the stream falls back to the core.
 
+LG's mixer word is only its request. The kernel says which route it took in
+`/proc/lgtv-driver/audio/sndout`: `[ARC] OutputCodec=Pass-Through` is the bypass,
+a codec name (`PCM`, `MAT`, ...) means the mixer or an encoder feeds eARC, and a
+carrier sent that way is white noise at the receiver. Once a TV has shown
+`Pass-Through` there since boot (`/run/dts25/bypass-seen`), the carrier is silent
+whenever the kernel is not on the bypass, and falls back after a second of it.
+The carrier is also silent while LG plays it too slowly.
+
 Unknown sink builds refuse HD. The older investigation below describes the stock
 software-decoding path.
 

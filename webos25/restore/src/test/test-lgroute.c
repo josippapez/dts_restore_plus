@@ -14,6 +14,8 @@
 #define LGROUTE_INSTANCES "/tmp/lgroute-test-run/instances"
 /* LG's renderer device is a plain file here; the kernel's answer is aren_tail. */
 #define LGROUTE_AREN "/tmp/lgroute-test-run/aren0"
+#define LGROUTE_SINK_WAIT (600 * G_TIME_SPAN_MILLISECOND)
+#define LGROUTE_SNDOUT "/tmp/lgroute-test-run/sndout"
 #include "../lgroute.h"
 #include "../lgroute-graph.h"
 
@@ -177,6 +179,7 @@ static void test_sink_class_init (TestSinkClass *klass)
   GObjectClass *object = G_OBJECT_CLASS (klass);
   object->set_property = set_property; object->get_property = get_property;
   g_object_class_install_property (object, 1, g_param_spec_boolean ("pcm-multi-ch", "pcm", "pcm", FALSE, G_PARAM_READWRITE));
+  gst_element_class_set_static_metadata (GST_ELEMENT_CLASS (klass), "test sink", "Sink/Audio", "stands in for LG's sink", "test");
 }
 static void test_sink_init (TestSink *self) { (void) self; }
 
@@ -439,6 +442,95 @@ static void resume_tests (void)
   gst_element_set_state (route.sink, GST_STATE_NULL);
   lgroute_disarm (&route);
 
+  /* 9b. While the last window was slow the receiver gets silence, not a carrier
+   * LG plays at the wrong speed: a tester heard white noise through slow
+   * windows that never came three in a row. Normal pace brings the carrier back. */
+  reset (&route);
+  gst_element_set_state (route.sink, GST_STATE_PLAYING);
+  caps_event (&route); graph = after;
+  carrier (&route, TRUE);
+  route.window_start -= 2 * G_TIME_SPAN_SECOND;
+  for (int i = 0; i < 24; i++) g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  g_assert_cmpuint (route.slow_windows, ==, 1);
+  g_assert_true (last_silent);
+  for (int i = 0; i < 24; i++) g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  g_assert_cmpuint (route.slow_windows, ==, 0);
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  g_assert_false (last_silent);
+  g_assert_false (route.failed);
+  gst_element_set_state (route.sink, GST_STATE_NULL);
+  lgroute_disarm (&route);
+
+  /* 9c. The route log carries LG's own account of its ARC output, from the
+   * [ARC] section only. The file has a C5's layout; the values are made up. */
+  g_assert_true (g_file_set_contents (LGROUTE_SNDOUT,
+      "[SPK]\nOpen=1\nMute=1\nUnderflow=8\n\n[OPTIC]\nOutputCodec=PCM\nUnderflow=1\n\n"
+      "[ARC]\nOpen=1\nArcOnOff=1\nArcMode=EARC\nOutputCodec=MAT\nOutputChannel=8\nGain=0x800000\n"
+      "Mute=0\nDelay=0\nUnderflow=3\n\n[EARC]\nEArcOnOff=On\nUnderflow=0\n", -1, NULL));
+  reset (&route);
+  g_unlink (ROUTE_LOG);
+  caps_event (&route); graph = after;
+  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
+  log = NULL;
+  g_assert_true (g_file_get_contents (ROUTE_LOG, &log, NULL, NULL));
+  g_assert_nonnull (strstr (log, "eARC unmixed, carrier passes; LG output: ArcMode=EARC OutputCodec=MAT "
+      "OutputChannel=8 Mute=0 Underflow=3\n"));
+  g_free (log);
+  g_unlink (LGROUTE_SNDOUT);
+  lgroute_disarm (&route);
+
+  /* 9d. LG's mixer word is its request; the kernel's status says which route
+   * it took. A tester's TV log had LG's mixer taking the carrier as 8-channel
+   * PCM, its queue full, while the word read unmixed: white noise. */
+#define ARC_STATUS(codec) "[SPK]\nOpen=1\n\n[ARC]\nOpen=1\nArcMode=BYPASS\nOutputCodec=" codec \
+    "\nOutputChannel=0\nMute=0\nUnderflow=0\n\n[EARC]\nEArcOnOff=On\n"
+  g_unlink (BYPASS_SEEN);
+  /* Until this TV has shown its bypass in that status, the status decides nothing. */
+  g_assert_true (g_file_set_contents (LGROUTE_SNDOUT, ARC_STATUS ("PCM"), -1, NULL));
+  reset (&route);
+  caps_event (&route); graph = after;
+  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  g_assert_false (last_silent);
+  g_assert_false (g_file_test (BYPASS_SEEN, G_FILE_TEST_EXISTS));
+  lgroute_disarm (&route);
+  /* A play on LG's bypass route is remembered. */
+  g_assert_true (g_file_set_contents (LGROUTE_SNDOUT, ARC_STATUS ("Pass-Through"), -1, NULL));
+  reset (&route);
+  caps_event (&route); graph = after;
+  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  g_assert_false (last_silent);
+  g_assert_true (g_file_test (BYPASS_SEEN, G_FILE_TEST_EXISTS));
+  /* From then on, a carrier LG keeps in its mixer goes out as silence... */
+  g_assert_true (g_file_set_contents (LGROUTE_SNDOUT, ARC_STATUS ("PCM"), -1, NULL));
+  g_unlink (ROUTE_LOG);
+  route.next_check = 0;
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  g_assert_true (last_silent);
+  g_assert_false (route.failed);
+  /* ...comes back when LG takes the bypass route again... */
+  g_assert_true (g_file_set_contents (LGROUTE_SNDOUT, ARC_STATUS ("Pass-Through"), -1, NULL));
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  g_assert_false (last_silent);
+  /* ...and after a second of it the decoder takes over. */
+  g_assert_true (g_file_set_contents (LGROUTE_SNDOUT, ARC_STATUS ("PCM"), -1, NULL));
+  route.next_check = 0;
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  g_assert_true (last_silent);
+  route.mixed_since -= 2 * G_TIME_SPAN_SECOND;
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_DROP);
+  g_assert_true (route.failed);
+  g_assert_cmpstr (route.reason, ==, "LG keeps the carrier in its mixer");
+  log = NULL;
+  g_assert_true (g_file_get_contents (ROUTE_LOG, &log, NULL, NULL));
+  g_assert_nonnull (strstr (log, "eARC unmixed but LG's mixer has the carrier, sending silence; LG output: "
+      "ArcMode=BYPASS OutputCodec=PCM"));
+  g_free (log);
+  g_unlink (LGROUTE_SNDOUT);
+  g_unlink (BYPASS_SEEN);
+  lgroute_disarm (&route);
+
   /* 10. A resume seeks right after setup (every logged resume: 17-26 ms): the
    * renderer restart waits for playback, and a restart that cannot happen decodes. */
   reset (&route);
@@ -456,6 +548,13 @@ static void resume_tests (void)
   gst_element_set_state (route.sink, GST_STATE_NULL);
   lgroute_disarm (&route);
 
+}
+
+static gpointer add_sink_late (gpointer pipeline)
+{
+  g_usleep (150 * G_TIME_SPAN_MILLISECOND);
+  gst_bin_add (GST_BIN (pipeline), gst_element_factory_make ("audiosink", NULL));
+  return NULL;
 }
 
 /* A route on a real linked pad, so probes see events sent to the pad. */
@@ -623,15 +722,27 @@ static void stale_buffer_tests (void)
   gst_pad_push_event (source, gst_event_new_segment (&segment));
   gst_caps_unref (carrier_caps);
   g_assert_true (((TestSink *) route.sink)->pcm);
+  gst_element_set_state (route.sink, GST_STATE_PLAYING);
   push_carrier (source);
   g_assert_false (route.failed); g_assert_true (route.configured);
   g_assert_cmpint (formats, ==, formats_before + 1);
   g_assert_false (((TestSink *) route.sink)->pcm);   /* the first ES event left with the flag clear */
+  /* LG's renderer still runs at the old track's pace (two testers' TVs, one a G3,
+   * played every such carrier four times too slowly): it is restarted, once. */
+  g_assert_true (route.restart_pending);
+  push_carrier (source);
+  g_assert_cmpuint (route.restarts, ==, 1);
+  g_assert_false (route.failed); g_assert_true (route.configured);
+  g_assert_cmpint (formats, ==, formats_before + 2);
+  g_assert_false (((TestSink *) route.sink)->pcm);
   push_carrier (source);
   g_assert_true (((TestSink *) route.sink)->pcm);
+  g_assert_false (route.restart_pending);
+  g_assert_cmpuint (route.restarts, ==, 1);
   gchar *log = NULL;
   g_assert_true (g_file_get_contents (ROUTE_LOG, &log, NULL, NULL));
   g_assert_nonnull (strstr (log, "earlier stream still draining, passed through"));
+  g_assert_nonnull (strstr (log, "track switch: restarting LG's renderer once the sink plays"));
   g_free (log);
   unwire (&route, pad, source);
 
@@ -1073,6 +1184,28 @@ int main (int argc, char **argv)
     g_assert_true (g_file_get_contents (ROUTE_LOG, &refusal, NULL, NULL));
     g_assert_nonnull (strstr (refusal, "not armed: 0 verified LG sinks in the pipeline "
         "(0 audiosink elements; player is NULL, going VOID_PENDING; sinks: fakesink)"));
+    g_free (refusal);
+    gst_object_unref (pipeline);
+  }
+  /* The first frame can come before playsink has built its audio chain (a
+   * tester's DTS:X opened as core DTS; a G5's sink came 100-300 ms later):
+   * arming waits for an audiosink instead of refusing at once. */
+  {
+    GstElement *pipeline = gst_pipeline_new ("player"), *decoder = gst_bin_new ("decoder");
+    gst_bin_add (GST_BIN (pipeline), decoder);
+    g_assert_true (gst_element_register (NULL, "audiosink", GST_RANK_NONE, test_sink_get_type ()));
+    GThread *late = g_thread_new ("late-sink", add_sink_late, pipeline);
+    LgRoute fresh;
+    lgroute_init (&fresh, decoder);
+    gint64 start = g_get_monotonic_time ();
+    g_assert_false (lgroute_arm (&fresh));   /* found, but not LG's verified build */
+    gint64 waited = g_get_monotonic_time () - start;
+    g_thread_join (late);
+    g_assert_cmpint (waited, >=, 100 * G_TIME_SPAN_MILLISECOND);
+    g_assert_cmpint (waited, <, 500 * G_TIME_SPAN_MILLISECOND);
+    gchar *refusal = NULL;
+    g_assert_true (g_file_get_contents (ROUTE_LOG, &refusal, NULL, NULL));
+    g_assert_nonnull (strstr (refusal, "(1 audiosink elements; player is"));
     g_free (refusal);
     gst_object_unref (pipeline);
   }
