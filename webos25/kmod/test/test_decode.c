@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../earc_decode.h"
+#include "../earc_hdmi.h"
 
 
 static int failures;
@@ -28,6 +29,9 @@ struct kernel {
     ed_u64 *addresses;  /* sorted, unique, core kernel only */
     size_t address_count;
     struct earc_code code[EF_COUNT];
+    ed_u64 stext, etext;              /* as in kallsyms */
+    struct earc_code hdmi[HF_COUNT];  /* HDMI-set functions (optional) */
+    ed_u64 hdmi_size[HF_COUNT];       /* their kallsyms sizes, valid or not */
 };
 
 static const char *names[EF_COUNT] = {
@@ -39,6 +43,16 @@ static const int analysed[EF_COUNT] = {
 #define EARC_ANALYSED(name, analysed) analysed,
     EARC_FUNCTIONS(EARC_ANALYSED)
 #undef EARC_ANALYSED
+};
+static const char *hdmi_names[HF_COUNT] = {
+#define HDMI_NAME(name, analysed) #name,
+    EARC_HDMI_FUNCTIONS(HDMI_NAME)
+#undef HDMI_NAME
+};
+static const int hdmi_analysed[HF_COUNT] = {
+#define HDMI_ANALYSED(name, analysed) analysed,
+    EARC_HDMI_FUNCTIONS(HDMI_ANALYSED)
+#undef HDMI_ANALYSED
 };
 
 static int compare_address(const void *a, const void *b) {
@@ -90,6 +104,7 @@ static int load_kernel(struct kernel *k, const char *dir) {
     for (i = 0, n = 0; i < k->count; i++)
         if (!strcmp(k->symbols[i].name, "_stext")) { n++; k->base = k->symbols[i].address; }
     if (n != 1 || k->image_size < 16) { printf("FAIL %s: _stext found %zu times\n", dir, n); return -1; }
+    k->stext = k->base;
     {
         ed_u64 text_offset = 0;
         for (i = 0; i < 8; i++) text_offset |= (ed_u64)k->image[8 + i] << (8 * i);
@@ -113,6 +128,74 @@ static int load_kernel(struct kernel *k, const char *dir) {
         k->code[i].words = (const ed_u32 *)(k->image + (address - k->base));
         k->code[i].count = (ed_u32)((end - address) / 4);
     }
+    /* HDMI-set functions, built as the loader and the module build them: one
+     * kallsyms line, the size up to the next greater core-kernel symbol, then
+     * the module's own validity rule. A missing or invalid one stays zero. */
+    for (i = 0; i < k->count; i++)
+        if (!strcmp(k->symbols[i].name, "_etext")) k->etext = k->symbols[i].address;
+    for (i = 0; i < HF_COUNT; i++) {
+        size_t j, found = 0;
+        ed_u64 address = 0, end = 0;
+        for (j = 0; j < k->count; j++)
+            if (!strcmp(k->symbols[j].name, hdmi_names[i])) { found++; address = k->symbols[j].address; }
+        if (found != 1 || !address) continue;
+        for (j = 0; j < k->address_count && hdmi_analysed[i]; j++)
+            if (k->addresses[j] > address) { end = k->addresses[j]; break; }
+        k->hdmi_size[i] = end ? end - address : 0;
+        if (!earc_hdmi_valid(address, k->hdmi_size[i], hdmi_analysed[i], k->stext, k->etext)) continue;
+        if (hdmi_analysed[i] && (address < k->base || end - k->base > k->image_size)) continue;
+        k->hdmi[i].address = address;
+        if (!hdmi_analysed[i]) continue;
+        k->hdmi[i].words = (const ed_u32 *)(k->image + (address - k->base));
+        k->hdmi[i].count = (ed_u32)(k->hdmi_size[i] / 4);
+    }
+    return 1;
+}
+
+/* A kernel-image pointer as it is after boot: the raw value, or, when that is
+ * zero, the R_AARCH64_RELATIVE addend applied at boot (6.12 images). */
+static ed_u64 hdmi_u64(const struct kernel *k, ed_u64 address) {
+    ed_u64 value = 0, i;
+    if (address < k->base || address - k->base + 8 > k->image_size) return 0;
+    memcpy(&value, k->image + (address - k->base), 8);
+    if (value) return value;
+    for (i = 0; i + 24 <= k->image_size; i += 8) {
+        ed_u64 off, info, add;
+        memcpy(&off, k->image + i, 8);
+        if (off != address) continue;
+        memcpy(&info, k->image + i + 8, 8);
+        if (info != 0x403) continue;
+        memcpy(&add, k->image + i + 16, 8);
+        return add;
+    }
+    return 0;
+}
+
+/* Consecutive table entries that point to a printable C string, as the module
+ * counts them. */
+static unsigned int hdmi_entries(const struct kernel *k, ed_u64 table) {
+    unsigned int n = 0;
+    if (!table) return 0;
+    while (n < 32) {
+        ed_u64 p = hdmi_u64(k, table + 8 * n), o;
+        size_t e;
+        if (p < k->etext || p - k->etext >= 0x4000000ULL || p < k->base || p - k->base >= k->image_size) break;
+        o = p - k->base;
+        for (e = o; e < k->image_size && e < o + 80 && k->image[e] >= 32 && k->image[e] < 127; e++) {}
+        if (e == o || e >= k->image_size || k->image[e] != 0) break;
+        n++;
+    }
+    return n;
+}
+
+/* The break-hook walk's memory read, on the image. */
+static int image_read(void *context, ed_u64 address, unsigned int width, ed_u64 *value) {
+    const struct kernel *k = context;
+    ed_u32 word;
+    if (address < k->base || address - k->base + width > k->image_size) return 0;
+    if (width == 8) { *value = hdmi_u64(k, address); return 1; }
+    memcpy(&word, k->image + (address - k->base), 4);
+    *value = word;
     return 1;
 }
 
@@ -224,6 +307,388 @@ static int run_oracle(const struct oracle *o, const struct kernel *k, struct ear
     return failures == before;
 }
 
+/* ---- HDMI-set oracle (keyed by kernel sha256) ---- */
+/* Each row was checked against an independent static derivation of the same
+ * image (the review's), not taken from this decoder: every 5.4 value, and on
+ * 6.12 everything but the name-table address, for which that derivation gave
+ * the site offsets, the three instruction words and the six entries. The G2
+ * 33.31.68 row is the tester's CS kernel and also equals the addresses compiled
+ * into its modules. adec_base is the slot array (struct + 32); the independent
+ * derivation frames it 32 lower with offsets 32 higher, the same addresses.
+ * What one pattern fixes for a whole generation is asserted per generation:
+ * mask +20, ADEC stride 96 / codec +20 / open +8 / started +10, break fn +16 /
+ * immediate +24 / mask +26, HD bound 4, six name entries, and the sites: 5.4
+ * shape 1 at +0x48 / +0x148 / +0x108, 6.12 shape 2 at +0x60 / +0x68 / +0xf0. */
+struct hdmi_oracle {
+    const char *sha256, *label;
+    int generation;
+    ed_u64 set_output, adec_base, adec1_open, adec1_started, adec1_codec;
+    ed_u64 break_list, break_fn, step_fn, patch_text, kprobe_reg, kprobe_unreg, cpu_lock, cpu_unlock;
+    ed_u64 nonpcm_phys, cb, name_table;
+};
+static const struct hdmi_oracle hdmi_oracles[] = {
+    {"49859c6561689f7fb62d683eed77c9e0d415b8a62fbf6b374626a2a1d5e44f94", "C5 33.31.68", 0,
+     0xffffffc010cd5a60ULL, 0xffffffc01262a238ULL, 0xffffffc01262a2a0ULL, 0xffffffc01262a2a2ULL, 0xffffffc01262a2acULL,
+     0xffffffc011a54090ULL, 0xffffffc01108b410ULL, 0xffffffc01108b300ULL, 0xffffffc01108b070ULL, 0xffffffc01017e7e0ULL, 0xffffffc01017dbc0ULL, 0xffffffc0100b8ed0ULL, 0xffffffc0100b9004ULL,
+     0x262a9bcULL, 0xffffffc010cb3d44ULL, 0xffffffc0115493d8ULL},
+    {"c219532590e1d691a459ef8c0faab95745d04d36b6cbee4a32685409f3e7460e", "G5 33.31.69", 0,
+     0xffffffc010f5e550ULL, 0xffffffc01264ce48ULL, 0xffffffc01264ceb0ULL, 0xffffffc01264ceb2ULL, 0xffffffc01264cebcULL,
+     0xffffffc011f94090ULL, 0xffffffc011330bc0ULL, 0xffffffc011330ab0ULL, 0xffffffc011330820ULL, 0xffffffc01017e7e0ULL, 0xffffffc01017dbc0ULL, 0xffffffc0100b8ed0ULL, 0xffffffc0100b9004ULL,
+     0x264d5c4ULL, 0xffffffc010f3c834ULL, 0xffffffc011a11698ULL},
+    {"0606410b32b19fd10f77bb3bdd9b5c618380c717076638418169b7e7bbff80db", "G2 33.31.68 (CS)", 0,
+     0xffffffc010cd44e0ULL, 0xffffffc012605218ULL, 0xffffffc012605280ULL, 0xffffffc012605282ULL, 0xffffffc01260528cULL,
+     0xffffffc011b04090ULL, 0xffffffc011088cd0ULL, 0xffffffc011088bc0ULL, 0xffffffc011088930ULL, 0xffffffc01017e7e0ULL, 0xffffffc01017dbc0ULL, 0xffffffc0100b8ed0ULL, 0xffffffc0100b9004ULL,
+     0x260594cULL, 0xffffffc010cb2d54ULL, 0xffffffc0115ea500ULL},
+    {"53c3cb3d1f23a3da5e698df0a39848e850bbaa26692978e85845a12530775085", "C5 43.21.77", 1,
+     0xffffffc080f5f4acULL, 0xffffffc082efedb8ULL, 0xffffffc082efee20ULL, 0xffffffc082efee22ULL, 0xffffffc082efee2cULL,
+     0xffffffc082284890ULL, 0xffffffc0813e3c94ULL, 0xffffffc0813e3bfcULL, 0xffffffc0813e3a4cULL, 0xffffffc08013c404ULL, 0xffffffc08013b760ULL, 0xffffffc08003f4c0ULL, 0xffffffc08003f9acULL,
+     0x2eff5bcULL, 0xffffffc080f39bb8ULL, 0xffffffc08190e0d0ULL},
+    {"b19d1c3df9c5315a84314d9d817c080996ea037d967c68d76e11eba66da50cb2", "C5 43.21.73", 1,
+     0xffffffc080f5f4acULL, 0xffffffc082efedb8ULL, 0xffffffc082efee20ULL, 0xffffffc082efee22ULL, 0xffffffc082efee2cULL,
+     0xffffffc082284890ULL, 0xffffffc0813e1694ULL, 0xffffffc0813e15fcULL, 0xffffffc0813e144cULL, 0xffffffc08013c404ULL, 0xffffffc08013b760ULL, 0xffffffc08003f4c0ULL, 0xffffffc08003f9acULL,
+     0x2eff5bcULL, 0xffffffc080f39bb8ULL, 0xffffffc08190e0d0ULL},
+    {"44fe793cee4fe916a1896ba2f377fe38aac78137688d6137ad23253b5d8ded32", "G5 43.21.71", 1,
+     0xffffffc080fb3f2cULL, 0xffffffc0829fef20ULL, 0xffffffc0829fef88ULL, 0xffffffc0829fef8aULL, 0xffffffc0829fef94ULL,
+     0xffffffc0824b4890ULL, 0xffffffc0814479d4ULL, 0xffffffc08144793cULL, 0xffffffc08144778cULL, 0xffffffc08013c404ULL, 0xffffffc08013b760ULL, 0xffffffc08003f4c0ULL, 0xffffffc08003f9acULL,
+     0x29ff71cULL, 0xffffffc080f8e638ULL, 0xffffffc081b11e00ULL},
+    {"859189a41f6d3de71bfdd0bf47afaae257a539443e958c26f489d9e63c86dd5d", "G5 43.21.77", 1,
+     0xffffffc080fb3ff4ULL, 0xffffffc0829fef20ULL, 0xffffffc0829fef88ULL, 0xffffffc0829fef8aULL, 0xffffffc0829fef94ULL,
+     0xffffffc0824b4890ULL, 0xffffffc081447a94ULL, 0xffffffc0814479fcULL, 0xffffffc08144784cULL, 0xffffffc08013c404ULL, 0xffffffc08013b760ULL, 0xffffffc08003f4c0ULL, 0xffffffc08003f9acULL,
+     0x29ff71cULL, 0xffffffc080f8e700ULL, 0xffffffc081b11e00ULL},
+    {"ef593fd32dfa6f1b95efda3bd55a02b9a71485f2db078c49dd4cd53eb3d92e0a", "G2 43.21.74", 1,
+     0xffffffc080f5ef70ULL, 0xffffffc082ec8d90ULL, 0xffffffc082ec8df8ULL, 0xffffffc082ec8dfaULL, 0xffffffc082ec8e04ULL,
+     0xffffffc082324890ULL, 0xffffffc0813deed4ULL, 0xffffffc0813dee3cULL, 0xffffffc0813dec8cULL, 0xffffffc08013c404ULL, 0xffffffc08013b760ULL, 0xffffffc08003f4c0ULL, 0xffffffc08003f9acULL,
+     0x2ec9564ULL, 0xffffffc080f3a168ULL, 0xffffffc0819af178ULL},
+};
+
+static ed_u64 kernel_symbol(const struct kernel *k, const char *name) {
+    size_t i;
+    for (i = 0; i < k->count; i++) if (!strcmp(k->symbols[i].name, name)) return k->symbols[i].address;
+    return 0;
+}
+
+static void check_reason(const char *label, const char *what, const char *reason) {
+    if (!reason) return;
+    printf("FAIL %s: hdmi %s not available: %s\n", label, what, reason);
+    failures++;
+}
+
+static int run_hdmi_oracle(const struct hdmi_oracle *o, const struct kernel *k, ed_u64 nonpcm, struct earc_hdmi_layout *h) {
+    static const ed_u64 site[2][3] = {{0x48, 0x148, 0x108}, {0x60, 0x68, 0xf0}};
+    struct earc_hdmi_walk walk;
+    int before = failures;
+    earc_hdmi_decode(k->hdmi, nonpcm, k->stext & ~0xfffffULL, h);
+    check(o->label, "hdmi gate state (stock)", h->gate_state, GATE_STOCK);
+    check_reason(o->label, "set_output", h->set_output_reason);
+    check(o->label, "hdmi set_output", h->set_output, o->set_output);
+    check(o->label, "hdmi mask offset", h->mask_offset, 20);
+    check_reason(o->label, "adec", h->adec_reason);
+    check(o->label, "hdmi adec base", h->adec_base, o->adec_base);
+    check(o->label, "hdmi adec stride", h->adec_stride, 96);
+    check(o->label, "hdmi adec codec offset", h->adec_codec_off, 20);
+    check(o->label, "hdmi adec open offset", h->adec_open_off, 8);
+    check(o->label, "hdmi adec started offset", h->adec_started_off, 10);
+    check(o->label, "hdmi adec1 open", h->adec1_open, o->adec1_open);
+    check(o->label, "hdmi adec1 started", h->adec1_started, o->adec1_started);
+    check(o->label, "hdmi adec1 codec", h->adec1_codec, o->adec1_codec);
+    check_reason(o->label, "cb_output_status", h->cb_reason);
+    check(o->label, "hdmi cb_output_status", h->cb_output_status, o->cb);
+    check(o->label, "hdmi hd shape", (ed_u64)h->hd_shape, (ed_u64)o->generation + 1);
+    check(o->label, "hdmi hd compare", h->hd_compare, o->cb + site[o->generation][0]);
+    check(o->label, "hdmi hd compare word", h->hd_compare_word, 0x710010df);
+    check(o->label, "hdmi hd compare bound", h->hd_compare_bound, 4);
+    check(o->label, "hdmi hd supported branch", h->hd_supported_branch, o->cb + site[o->generation][1]);
+    check(o->label, "hdmi hd supported word", h->hd_supported_word, 0xb9004666);
+    check(o->label, "hdmi hd name load", h->hd_name_load, o->cb + site[o->generation][2]);
+    check(o->label, "hdmi hd name word", h->hd_name_word, 0xf8647847);
+    check(o->label, "hdmi name table", h->name_table, o->name_table);
+    check(o->label, "hdmi name table entries", hdmi_entries(k, h->name_table), 6);
+    check_reason(o->label, "break hooks", h->break_reason);
+    check(o->label, "hdmi break list head", h->break_list_head, o->break_list);
+    check(o->label, "hdmi break fn offset", h->break_fn_offset, 16);
+    check(o->label, "hdmi break immediate/mask derived", (ed_u64)h->break_fields_known, 1);
+    check(o->label, "hdmi break immediate offset", h->break_imm_offset, 24);
+    check(o->label, "hdmi break mask offset", h->break_mask_offset, 26);
+    check(o->label, "hdmi kprobe handler", h->break_fn, o->break_fn);
+    check(o->label, "hdmi kprobe step handler", h->step_fn, o->step_fn);
+    check(o->label, "hdmi kretprobe handler (6.12 only)", h->kret_fn, kernel_symbol(k, "kretprobe_breakpoint_handler"));
+    check(o->label, "hdmi kretprobe handler present", h->kret_fn != 0, (ed_u64)o->generation);
+    check(o->label, "hdmi register_break", h->break_register, kernel_symbol(k, "register_kernel_break_hook"));
+    check(o->label, "hdmi unregister_break", h->break_unregister, kernel_symbol(k, "unregister_kernel_break_hook"));
+    check(o->label, "hdmi patch_text", h->patch_text, o->patch_text);
+    check(o->label, "hdmi register_kprobe", h->kprobe_register, o->kprobe_reg);
+    check(o->label, "hdmi unregister_kprobe", h->kprobe_unregister, o->kprobe_unreg);
+    check(o->label, "hdmi cpus_read_lock", h->cpus_read_lock, o->cpu_lock);
+    check(o->label, "hdmi cpus_read_unlock", h->cpus_read_unlock, o->cpu_unlock);
+    check(o->label, "hdmi nonpcm physical", h->nonpcm_physical, o->nonpcm_phys);
+    /* The module's walk, on the image: before boot the list is empty (the head
+     * points at itself; on 6.12 through its relocation). */
+    earc_hdmi_walk_list(h, k->etext, k->etext + 0x4000000ULL, image_read, (void *)k, &walk);
+    check(o->label, "hdmi image walk status (complete)", (ed_u64)walk.status, HW_COMPLETE);
+    check(o->label, "hdmi image walk nodes", walk.count, 0);
+    if (failures == before) printf("PASS %s: HDMI set equals the oracle\n", o->label);
+    return failures == before;
+}
+
+/* _set_output of every capture, with its kallsyms size, must pass the rule the
+ * module applies before it scans a function (2544 bytes on the C5: above the
+ * engine's 4 * ED_MAX_INSNS, which once rejected it on a TV only). */
+static void hdmi_validity_test(const struct kernel *k) {
+    ed_u64 address = kernel_symbol(k, "_set_output"), size = k->hdmi_size[HF__set_output];
+    if (earc_hdmi_valid(address, size, 1, k->stext, k->etext) && k->hdmi[HF__set_output].count == size / 4)
+        printf("PASS %s: hdmi _set_output (%llu bytes) passes the loader validity rule\n", k->dir, size);
+    else { printf("FAIL %s: hdmi _set_output (%llu bytes at %#llx) fails the loader validity rule\n", k->dir, size, address); failures++; }
+}
+
+static void hdmi_rule_test(void) {
+    const ed_u64 stext = 0x1000, etext = 0x100000, a = 0x2000;
+    if (earc_hdmi_valid(a, 2544, 1, stext, etext) && earc_hdmi_valid(a, 4 * HF_MAX_INSNS, 1, stext, etext) &&
+        earc_hdmi_valid(a, 0, 0, stext, etext) && !earc_hdmi_valid(a + 2, 8, 1, stext, etext) &&
+        !earc_hdmi_valid(stext - 4, 8, 1, stext, etext) && !earc_hdmi_valid(etext, 8, 1, stext, etext) &&
+        !earc_hdmi_valid(a, 0, 1, stext, etext) && !earc_hdmi_valid(a, 6, 1, stext, etext) &&
+        !earc_hdmi_valid(etext - 4, 8, 1, stext, etext) && !earc_hdmi_valid(a, 4 * HF_MAX_INSNS + 4, 1, stext, etext) &&
+        !earc_hdmi_valid(0, 0, 0, stext, etext))
+        printf("PASS hdmi validity rule: takes 2544 bytes and the tracker's maximum; rejects misaligned, outside text, empty, odd, past _etext, oversized\n");
+    else { printf("FAIL hdmi validity rule\n"); failures++; }
+}
+
+/* ---- the break-hook walk, on a list built in test memory ---- */
+#define FAKE_BASE 0xffffffc012000000ULL
+struct fake_memory { ed_u64 words[256]; int stray; };
+static int fake_read(void *context, ed_u64 address, unsigned int width, ed_u64 *value) {
+    struct fake_memory *m = context;
+    if (address < FAKE_BASE || address - FAKE_BASE + width > sizeof(m->words)) { m->stray = 1; return 0; }
+    *value = 0;
+    memcpy(value, (const char *)m->words + (address - FAKE_BASE), width);
+    return 1;
+}
+/* Node i: 32 bytes at FAKE_BASE + 64 + 32 * i, as struct break_hook {next, prev, fn, imm:16, mask:16}. */
+static ed_u64 fake_node(struct fake_memory *m, unsigned int i, ed_u64 next, ed_u64 fn, ed_u32 word) {
+    m->words[8 + 4 * i] = next;
+    m->words[8 + 4 * i + 2] = fn;
+    m->words[8 + 4 * i + 3] = word;
+    return FAKE_BASE + 64 + 32 * i;
+}
+static void walk_case(const char *what, struct fake_memory *m, int status, unsigned int count, ed_u64 stop, int saw_break, int saw_step) {
+    struct earc_hdmi_layout l;
+    struct earc_hdmi_walk w;
+    memset(&l, 0, sizeof(l));
+    l.break_list_head = FAKE_BASE;
+    l.break_fn_offset = 16;
+    l.break_word_offset = 24;
+    l.break_fn = 0xffffffc011000100ULL;
+    l.step_fn = 0xffffffc011000200ULL;
+    m->stray = 0;
+    earc_hdmi_walk_list(&l, FAKE_BASE, FAKE_BASE + sizeof(m->words), fake_read, m, &w);
+    if (w.status == status && w.count == count && (status == HW_COMPLETE || w.stop == stop) && w.saw_break == saw_break &&
+        w.saw_step == saw_step && !m->stray)
+        printf("PASS hdmi walk (%s): status %d, %u node(s)\n", what, w.status, w.count);
+    else {
+        printf("FAIL hdmi walk (%s): status %d count %u stop %#llx break %d step %d stray read %d\n", what, w.status, w.count,
+               w.stop, w.saw_break, w.saw_step, m->stray);
+        failures++;
+    }
+}
+static void hdmi_walk_tests(void) {
+    static struct fake_memory m;
+    const ed_u64 break_fn = 0xffffffc011000100ULL, step_fn = 0xffffffc011000200ULL, module = 0xffffffc008a01000ULL;
+    unsigned int i;
+    memset(&m, 0, sizeof(m));
+    m.words[0] = FAKE_BASE;
+    walk_case("empty list", &m, HW_COMPLETE, 0, 0, 0, 0);
+    memset(&m, 0, sizeof(m));
+    m.words[0] = fake_node(&m, 0, fake_node(&m, 1, FAKE_BASE, step_fn, 6), break_fn, 4);
+    walk_case("complete, both kprobe handlers linked", &m, HW_COMPLETE, 2, 0, 1, 1);
+    memset(&m, 0, sizeof(m));
+    m.words[0] = fake_node(&m, 0, module, 0xffffffc011000300ULL, 0x800);
+    walk_case("leaves the image for a module's node, which is not read", &m, HW_OUTSIDE, 1, module, 0, 0);
+    memset(&m, 0, sizeof(m));
+    for (i = 0; i < 40; i++) fake_node(&m, i, i == 39 ? FAKE_BASE : FAKE_BASE + 64 + 32 * (i + 1), 0xffffffc011000300ULL, 0);
+    m.words[0] = FAKE_BASE + 64;
+    walk_case("longer than the 32-node cap", &m, HW_CAPPED, 32, FAKE_BASE + 64 + 32 * 32, 0, 0);
+    memset(&m, 0, sizeof(m));
+    m.words[0] = fake_node(&m, 0, FAKE_BASE + 64 + 32 + 4, break_fn, 4);
+    walk_case("misaligned next pointer", &m, HW_MISALIGNED, 1, FAKE_BASE + 64 + 32 + 4, 1, 0);
+}
+
+#define NOP 0xd503201fU
+
+/* ---- HDMI refusal tests ---- */
+static struct earc_hdmi_layout hdmi_last;  /* what the last hdmi_refuse decoded */
+
+/* Copies the HDMI functions, lets mutate change one of them, decodes, and
+ * requires reason() to contain expect, or, if expect is null, to be null. */
+static void hdmi_refuse(const struct kernel *k, enum earc_hdmi_function which, const char *what, const char *expect,
+                        int (*mutate)(ed_u32 *w, ed_u32 n, const struct earc_code *f, const struct earc_hdmi_layout *good),
+                        const char *(*reason)(const struct earc_hdmi_layout *), ed_u64 nonpcm, const struct earc_hdmi_layout *good) {
+    struct earc_code code[HF_COUNT];
+    ed_u32 *copy;
+    const char *got;
+    memcpy(code, k->hdmi, sizeof(code));
+    copy = malloc(4 * code[which].count);
+    memcpy(copy, code[which].words, 4 * code[which].count);
+    if (!mutate(copy, code[which].count, &code[which], good)) {
+        printf("FAIL hdmi refusal (%s): the instruction to mutate was not found\n", what);
+        failures++;
+        free(copy);
+        return;
+    }
+    code[which].words = copy;
+    earc_hdmi_decode(code, nonpcm, k->stext & ~0xfffffULL, &hdmi_last);
+    got = reason(&hdmi_last);
+    if (expect ? got && strstr(got, expect) : !got) printf("PASS hdmi refusal (%s): %s\n", what, got ? got : "still derived");
+    else { printf("FAIL hdmi refusal (%s): got %s\n", what, got ? got : "acceptance"); failures++; }
+    free(copy);
+}
+
+static const char *gate_reason(const struct earc_hdmi_layout *h) {
+    return h->gate_state == GATE_UNKNOWN ? "gate state unknown" : h->gate_state == GATE_BREAKPOINT ? "gate holds a breakpoint" : 0;
+}
+static const char *setout_reason(const struct earc_hdmi_layout *h) { return h->set_output_reason; }
+static const char *adec_reason(const struct earc_hdmi_layout *h) { return h->adec_reason; }
+static const char *cb_reason(const struct earc_hdmi_layout *h) { return h->cb_reason; }
+static const char *break_reason(const struct earc_hdmi_layout *h) { return h->break_reason; }
+
+#define HDMI_MUTATION(name) \
+    static int name(ed_u32 *w, ed_u32 n, const struct earc_code *f, const struct earc_hdmi_layout *g)
+#define HDMI_UNUSED (void)w; (void)n; (void)f; (void)g
+
+/* mov w0,#0 -> mov w0,#2: neither the stock gate nor the switched one. */
+HDMI_MUTATION(gate_third_value) { HDMI_UNUSED; w[0] = 0x52800040U; return 1; }
+/* The first instruction -> brk #4, what a kprobe plants. */
+HDMI_MUTATION(entry_kprobe) { HDMI_UNUSED; w[0] = HF_KPROBE_BRK; return 1; }
+/* ldr wT,[x1,#mask] -> the same load from x9, which is not an argument. */
+HDMI_MUTATION(mask_base_not_argument) {
+    ed_u32 i;
+    (void)f;
+    for (i = 0; i < n; i++)
+        if ((w[i] & 0xffc003e0U) == 0xb9400020U && ((w[i] >> 10) & 0xfff) * 4 == g->mask_offset) { w[i] = (w[i] & ~0x3e0U) | (9U << 5); return 1; }
+    return 0;
+}
+/* The first cmp wA,wB after the mask load -> cmp wA,#1: wA is another word of
+ * argument 1 (descriptor+52), now also compared with an immediate. */
+HDMI_MUTATION(second_mask_candidate) {
+    ed_u32 i, seen = 0;
+    (void)f;
+    for (i = 0; i < n; i++) {
+        if ((w[i] & 0xffc003e0U) == 0xb9400020U && ((w[i] >> 10) & 0xfff) * 4 == g->mask_offset) seen = 1;
+        else if (seen && (w[i] & 0xff20fc1fU) == 0x6b00001fU) { w[i] = 0x7100041fU | (w[i] & 0x3e0U); return 1; }
+    }
+    return 0;
+}
+/* add xS,xB,xA,lsl #5 -> lsl #6: not the slot scaling the decoder knows. */
+HDMI_MUTATION(adec_scaling) {
+    ed_u32 i;
+    HDMI_UNUSED;
+    for (i = 0; i < n; i++)
+        if ((w[i] & 0xffe0fc00U) == 0x8b001400U) { w[i] = (w[i] & ~(0x3fU << 10)) | (6U << 10); return 1; }
+    return 0;
+}
+/* cmp wI,#1 (before b.hi) -> nop. */
+HDMI_MUTATION(adec_no_bound) {
+    ed_u32 i;
+    HDMI_UNUSED;
+    for (i = 0; i + 1 < n; i++)
+        if ((w[i] & 0xfffffc1fU) == 0x7100041fU && (w[i + 1] & 0xff00001fU) == 0x54000008U) { w[i] = NOP; return 1; }
+    return 0;
+}
+/* The codec store: the first str wT,[xS,#off] after `add xS,xB,xA,lsl #5`. */
+static ed_u32 adec_store(const ed_u32 *w, ed_u32 n) {
+    ed_u32 i, j;
+    for (i = 0; i < n; i++)
+        if ((w[i] & 0xffe0fc00U) == 0x8b001400U) {
+            for (j = i + 1; j < n; j++)
+                if ((w[j] & 0xffc00000U) == 0xb9000000U && ((w[j] >> 5) & 31) == (w[i] & 31)) return j;
+            return n;
+        }
+    return n;
+}
+HDMI_MUTATION(adec_no_store) { ed_u32 s = adec_store(w, n); (void)f; (void)g; if (s >= n) return 0; w[s] = NOP; return 1; }
+/* The instruction after the codec store -> the same store at slot+24. */
+HDMI_MUTATION(adec_two_stores) {
+    ed_u32 s = adec_store(w, n);
+    (void)f; (void)g;
+    if (s + 1 >= n) return 0;
+    w[s + 1] = (w[s] & ~(0xfffU << 10)) | (6U << 10);
+    return 1;
+}
+/* The acceptance branch (b.ls on 5.4, b.ne on 6.12) -> b.eq. */
+HDMI_MUTATION(cb_branch_condition) {
+    ed_u32 c = (ed_u32)((g->hd_compare - f->address) / 4);
+    if (c + 1 >= n) return 0;
+    w[c + 1] &= ~15U;
+    return 1;
+}
+/* A second acceptance. 5.4: `cmp codec,#bound+1; b.ls supported` written on the
+ * fall-through of the first. 6.12: the b.eq after the chain's first compare of
+ * the codec, which goes to the supported store, -> b.ls. */
+HDMI_MUTATION(cb_second_compare) {
+    ed_u32 c = (ed_u32)((g->hd_compare - f->address) / 4), i;
+    if (g->hd_shape == 1) {
+        if (c + 3 >= n) return 0;
+        w[c + 2] = (w[c] & ~(0xfffU << 10)) | ((ed_u32)(g->hd_compare_bound + 1) << 10);
+        w[c + 3] = 0x54000009U | ((ed_u32)(((g->hd_supported_branch - (f->address + 4ULL * (c + 3))) >> 2) & 0x7ffff) << 5);
+        return 1;
+    }
+    for (i = 0; i < c; i++)
+        if ((w[i] & 0xffc003ffU) == (w[c] & 0xffc003ffU) && (w[i + 1] & 0xff00001fU) == 0x54000000U) { w[i + 1] |= 9; return 1; }
+    return 0;
+}
+HDMI_MUTATION(cb_no_name_load) {
+    ed_u32 i = (ed_u32)((g->hd_name_load - f->address) / 4);
+    if (i >= n) return 0;
+    w[i] = NOP;
+    return 1;
+}
+/* brk #4 at the compare and at the name load, the two sites the tester's HD
+ * module probes. */
+HDMI_MUTATION(cb_two_probes) {
+    ed_u32 c = (ed_u32)((g->hd_compare - f->address) / 4), l = (ed_u32)((g->hd_name_load - f->address) / 4);
+    if (c >= n || l >= n) return 0;
+    w[c] = w[l] = HF_KPROBE_BRK;
+    return 1;
+}
+/* The first RET -> brk #0x800, what the compiler emits for BUG(). */
+HDMI_MUTATION(cb_bug_brk) {
+    ed_u32 i;
+    (void)f; (void)g;
+    for (i = 0; i < n; i++)
+        if (w[i] == 0xd65f03c0U) { w[i] = 0xd4210000U; return 1; }
+    return 0;
+}
+/* ldr x2,[x1,#56]! -> nop. */
+HDMI_MUTATION(break_no_head_load) {
+    ed_u32 i;
+    (void)f; (void)g;
+    for (i = 0; i < n; i++)
+        if ((w[i] & 0xffe00c00U) == 0xf8400c00U) { w[i] = NOP; return 1; }
+    return 0;
+}
+
+static void hdmi_refusal_tests(const struct kernel *k, ed_u64 nonpcm, const struct earc_hdmi_layout *good) {
+    printf("-- hdmi refusal tests on %s\n", k->dir);
+    hdmi_refuse(k, HF_aud_hal_dts_supported, "gate changed to a third value", "gate state unknown", gate_third_value, gate_reason, nonpcm, good);
+    hdmi_refuse(k, HF_aud_hal_dts_supported, "kprobe breakpoint on the gate", "gate holds a breakpoint", entry_kprobe, gate_reason, nonpcm, good);
+    hdmi_refuse(k, HF__set_output, "kprobe breakpoint at the _set_output entry", "entry holds a breakpoint", entry_kprobe, setout_reason, nonpcm, good);
+    hdmi_refuse(k, HF__set_output, "mask load base is not argument 1", "no 32-bit load from argument 1", mask_base_not_argument, setout_reason, nonpcm, good);
+    hdmi_refuse(k, HF__set_output, "a second argument-1 word compared with an immediate", "more than one argument-1 word", second_mask_candidate, setout_reason, nonpcm, good);
+    hdmi_refuse(k, HF_alsa_decoder_codec, "ADEC slot scaling lsl #5 -> #6", "not found in alsa_decoder_codec", adec_scaling, adec_reason, nonpcm, good);
+    hdmi_refuse(k, HF_alsa_decoder_start, "ADEC slot scaling changed in alsa_decoder_start only", "not found in alsa_decoder_start", adec_scaling, adec_reason, nonpcm, good);
+    hdmi_refuse(k, HF_alsa_decoder_codec, "ADEC index bound check removed", "bound check", adec_no_bound, adec_reason, nonpcm, good);
+    hdmi_refuse(k, HF_alsa_decoder_codec, "codec store removed", "codec store", adec_no_store, adec_reason, nonpcm, good);
+    hdmi_refuse(k, HF_alsa_decoder_codec, "a second 32-bit store through the slot", "more than one 32-bit store", adec_two_stores, adec_reason, nonpcm, good);
+    hdmi_refuse(k, HF__cb_output_status, "acceptance branch condition changed", "no event-codec acceptance compare", cb_branch_condition, cb_reason, nonpcm, good);
+    hdmi_refuse(k, HF__cb_output_status, "a second acceptance compare", "more than one event-codec acceptance", cb_second_compare, cb_reason, nonpcm, good);
+    hdmi_refuse(k, HF__cb_output_status, "name load removed", "codec-name table load", cb_no_name_load, cb_reason, nonpcm, good);
+    hdmi_refuse(k, HF__cb_output_status, "kprobe breakpoints at the compare and the name load", "holds a breakpoint", cb_two_probes, cb_reason, nonpcm, good);
+    check("hdmi refusal", "breakpoints counted", hdmi_last.hd_brk_count, 2);
+    check("hdmi refusal", "first breakpoint offset", hdmi_last.hd_brk_offset,
+          (good->hd_compare < good->hd_name_load ? good->hd_compare : good->hd_name_load) - good->cb_output_status);
+    hdmi_refuse(k, HF__cb_output_status, "brk #0x800 (BUG) is not a probe", 0, cb_bug_brk, cb_reason, nonpcm, good);
+    check("hdmi refusal", "compare unchanged by a BUG brk", hdmi_last.hd_compare, good->hd_compare);
+    hdmi_refuse(k, HF_register_kernel_break_hook, "list-head load removed", "list-head load", break_no_head_load, break_reason, nonpcm, good);
+}
+
 /* Copies one function, lets mutate change it, and requires a refusal whose
  * reason contains expected. */
 static void refuse(const struct kernel *k, enum earc_function which, const char *what, const char *expected,
@@ -247,8 +712,6 @@ static void refuse(const struct kernel *k, enum earc_function which, const char 
     else { printf("FAIL refusal (%s): got %s\n", what, error ? error : "acceptance"); failures++; }
     free(copy);
 }
-
-#define NOP 0xd503201fU
 
 /* str wN, [xM, #nonpcm_offset] -> nop */
 static int drop_nonpcm_store(ed_u32 *w, ed_u32 n, const struct earc_layout *l) {
@@ -517,12 +980,14 @@ static void generation_test(const char *family, const struct earc_layout *a, con
 int main(int argc, char **argv) {
     struct kernel kernels[16];
     struct earc_layout layouts[16];
+    struct earc_hdmi_layout hdmi_layout;
     /* The first decoded oracle kernel of each (generation, family). */
-    int first[2][3] = {{-1, -1, -1}, {-1, -1, -1}}, refused[2] = {0, 0};
+    int first[2][3] = {{-1, -1, -1}, {-1, -1, -1}}, refused[2] = {0, 0}, hdmi_refused[2] = {0, 0};
     int i, n = 0;
     for (i = 1; i + 2 < argc && n < 16; i += 3) {
         const char *sha = argv[i + 1], *dir = argv[i + 2];
         const struct oracle *o = 0;
+        const struct hdmi_oracle *ho = 0;
         size_t j;
         int loaded;
         if (strcmp(argv[i], "--kernel")) { printf("FAIL usage: test_decode [--kernel SHA256 DIR]...\n"); return 2; }
@@ -531,6 +996,8 @@ int main(int argc, char **argv) {
         if (!loaded) continue;
         for (j = 0; j < sizeof(oracles) / sizeof(oracles[0]); j++)
             if (!strcmp(oracles[j].sha256, sha)) o = &oracles[j];
+        for (j = 0; j < sizeof(hdmi_oracles) / sizeof(hdmi_oracles[0]); j++)
+            if (!strcmp(hdmi_oracles[j].sha256, sha)) ho = &hdmi_oracles[j];
         if (o) {
             if (run_oracle(o, &kernels[n], &layouts[n])) {
                 if (first[o->generation][o->family] < 0) first[o->generation][o->family] = n;
@@ -541,6 +1008,15 @@ int main(int argc, char **argv) {
             if (error) printf("INFO %s: refused: %s\n", dir, error);
             else { printf("INFO %s: decoded (no oracle)\n", dir); print_layout(dir, &layouts[n]); }
         }
+        /* The HDMI oracle runs whenever its sha matches, with or without an
+         * earc oracle for the same image (the CS kernel has an HDMI oracle but
+         * no earc one). layouts[n].nonpcm is set by run_oracle or the decode
+         * above. */
+        hdmi_validity_test(&kernels[n]);
+        if (ho && run_hdmi_oracle(ho, &kernels[n], layouts[n].nonpcm, &hdmi_layout) && !hdmi_refused[ho->generation]) {
+            hdmi_refusal_tests(&kernels[n], layouts[n].nonpcm, &hdmi_layout);
+            hdmi_refused[ho->generation] = 1;
+        }
         n++;
     }
     if (argc < 2 || (argc - 1) % 3) { printf("FAIL usage: test_decode [--kernel SHA256 DIR]...\n"); return 2; }
@@ -549,6 +1025,8 @@ int main(int argc, char **argv) {
         else printf("SKIP %s C5/G5 difference test: needs both oracle kernels\n", i ? "6.12" : "5.4");
         if (!refused[i]) printf("SKIP %s refusal tests: no oracle kernel decoded\n", i ? "6.12" : "5.4");
     }
+    hdmi_rule_test();
+    hdmi_walk_tests();
     if (first[0][0] >= 0 && first[1][0] >= 0) generation_test("C5", &layouts[first[0][0]], &layouts[first[1][0]]);
     else printf("SKIP C5 5.4/6.12 difference test: needs both oracle kernels\n");
     if (first[0][1] >= 0 && first[1][1] >= 0) generation_test("G5", &layouts[first[0][1]], &layouts[first[1][1]]);

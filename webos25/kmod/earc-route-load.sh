@@ -69,6 +69,17 @@ FUNCTIONS = [
     ('aud_hal_set_arc_sample_rate', 0), ('_bm_find_block_by_block_info', 0), ('_bm_get_block_port', 0),
     ('_bm_connect_block_locked', 0), ('mutex_lock', 0), ('mutex_unlock', 0)]
 
+# Mirrors EARC_HDMI_FUNCTIONS in earc_hdmi.h: (name, analysed). Optional: a
+# missing one disables only the HDMI audit, so it is not passed and does not
+# refuse the load (the module reports it "not available").
+HDMI_FUNCTIONS = [
+    ('aud_hal_dts_supported', 1), ('_set_output', 1), ('_cb_output_status', 1),
+    ('alsa_decoder_codec', 1), ('alsa_decoder_start', 1),
+    ('register_kernel_break_hook', 1), ('call_break_hook', 1), ('unregister_kernel_break_hook', 0),
+    ('kprobe_breakpoint_handler', 0), ('kprobe_breakpoint_ss_handler', 0), ('kretprobe_breakpoint_handler', 0),
+    ('aarch64_insn_patch_text', 0), ('register_kprobe', 0), ('unregister_kprobe', 0),
+    ('cpus_read_lock', 0), ('cpus_read_unlock', 0)]
+
 
 def fail(reason):
     print(reason)
@@ -119,7 +130,7 @@ if stock[1:] != abi:
 if ours != stock:
     fail('module ABI ' + repr(ours) + ' differs from the stock module ' + repr(stock))
 
-wanted = {name for name, _ in FUNCTIONS} | {'_stext', '_etext'}
+wanted = {name for name, _ in FUNCTIONS} | {name for name, _ in HDMI_FUNCTIONS} | {'_stext', '_etext'}
 found = {}
 core = set()
 with open('/proc/kallsyms') as kallsyms:
@@ -154,9 +165,42 @@ for name, analysed in FUNCTIONS:
         if not following:
             fail('kallsyms: nothing follows ' + name)
         output.append('sz_%s=%d' % (name, following[0] - address))
+
+
+def optional_symbol(name):
+    matches = found.get(name, [])
+    if len(matches) != 1:
+        return None
+    address, kind, is_core = matches[0]
+    if not is_core or kind not in 'Tt' or not address:
+        return None
+    return address
+
+
+# HDMI set: pass what is present; skip (do not fail) anything missing.
+for name, analysed in HDMI_FUNCTIONS:
+    address = optional_symbol(name)
+    if address is None:
+        continue
+    output.append('fn_%s=%#x' % (name, address))
+    if analysed:
+        following = [value for value in core if value > address]
+        if following:
+            output.append('sz_%s=%d' % (name, following[0] - address))
 print(' '.join(output))
 PY
 ) || refuse "$parameters"
+
+# Report other DTS tools present (never a refusal): the audit reads live state,
+# and another tool's kprobes/gate change what is seen. A tester greps one line.
+report_tool() {  # report_tool TEXT
+  echo "earc-route: other-tool: $1"
+}
+[ -d /var/lib/lg-dts-core ] && report_tool "lg-dts-core present at /var/lib/lg-dts-core (enabled=$([ -f /var/lib/lg-dts-core/enabled ] && echo yes || echo no))"
+[ -d /var/lib/lg-dts-native ] && report_tool "glasshouse gh_dts_native present at /var/lib/lg-dts-native"
+for mod in dts_gate dts_core_route gh_dts_native; do
+  [ -e "/sys/module/$mod" ] && report_tool "module $mod is loaded"
+done
 
 # The kernel's own refusal reasons are in dmesg; keep only lines from this run.
 before=$(dmesg | grep -c 'earc_route:' || true)

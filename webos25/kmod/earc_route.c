@@ -33,6 +33,7 @@
 #define EARC_PRINTK_SYMBOL "printk"
 #endif
 #include "earc_decode.h"
+#include "earc_hdmi.h"
 
 typedef unsigned long u64;
 typedef unsigned int u32;
@@ -80,6 +81,31 @@ static void (*const volatile imported_mutex_lock)(void *) = mutex_lock;
 static void (*const volatile imported_mutex_unlock)(void *) = mutex_unlock;
 
 static struct earc_layout layout;
+
+/* HDMI-passthrough audit set (optional): the loader passes fn_/sz_ for each.
+ * These are read and printed in the audit only; none is called, and the service
+ * functions (patch_text, kprobe, cpu locks) are addresses only. A missing or
+ * invalid HDMI symbol disables only the HDMI audit, never the route. */
+#define EARC_HDMI_ADDRESS(name, analysed) static unsigned long fn_##name;
+EARC_HDMI_FUNCTIONS(EARC_HDMI_ADDRESS)
+#undef EARC_HDMI_ADDRESS
+#define EARC_HDMI_SIZE_1(name) static unsigned int sz_##name;
+#define EARC_HDMI_SIZE_0(name)
+#define EARC_HDMI_SIZE(name, analysed) EARC_HDMI_SIZE_##analysed(name)
+EARC_HDMI_FUNCTIONS(EARC_HDMI_SIZE)
+#undef EARC_HDMI_SIZE
+static const struct {
+    const char *name;
+    unsigned long *address;
+    unsigned int *size;
+} hdmi_functions[HF_COUNT] = {
+#define EARC_HDMI_SIZE_POINTER_1(name) &sz_##name
+#define EARC_HDMI_SIZE_POINTER_0(name) 0
+#define EARC_HDMI_ROW(name, analysed) {#name, &fn_##name, EARC_HDMI_SIZE_POINTER_##analysed(name)},
+    EARC_HDMI_FUNCTIONS(EARC_HDMI_ROW)
+#undef EARC_HDMI_ROW
+};
+static struct earc_hdmi_layout hdmi;
 
 #define BM_GET ((block_fn)fn_bm_get_block_info_by_index)
 #define FIND_BLOCK ((void *(*)(void *))fn__bm_find_block_by_block_info)
@@ -512,6 +538,137 @@ static void print_decoded(void) {
            layout.clock_channel_callback_offset);
 }
 
+/* A derived HDMI data address must be aligned and lie in the kernel's data,
+ * the 64 MiB after _etext, as check_layout requires of the others, before
+ * anything is read through it. size is how many bytes are read there. */
+#define HDMI_DATA_SPAN 0x4000000UL
+static int hdmi_addr_ok(unsigned long address, unsigned long align, unsigned long size) {
+    return !(address & (align - 1)) && address >= fn__etext && address - fn__etext < HDMI_DATA_SPAN &&
+        HDMI_DATA_SPAN - (address - fn__etext) >= size;
+}
+
+/* Count consecutive table entries that are pointers to a printable C string of
+ * fewer than 80 bytes, bounds-checked, capped. Read-only. */
+static unsigned int hdmi_name_entries(unsigned long table) {
+    unsigned int count = 0, i;
+    while (count < 32 && hdmi_addr_ok(table + 8UL * count, 8, 8)) {
+        unsigned long p = *(volatile unsigned long *)(table + 8UL * count);
+        const volatile u8 *s = (const volatile u8 *)p;
+        if (!hdmi_addr_ok(p, 1, 80)) break;
+        for (i = 0; i < 80 && s[i] >= 32 && s[i] < 127; i++) {}
+        if (!i || i >= 80 || s[i] != 0) break;
+        count++;
+    }
+    return count;
+}
+
+/* The break-hook walk's memory read. earc_hdmi_walk_list only passes addresses
+ * inside the bound it was given, the same one hdmi_addr_ok checks. */
+static int hdmi_read(void *context, ed_u64 address, unsigned int width, ed_u64 *value) {
+    (void)context;
+    *value = width == 8 ? *(volatile unsigned long *)address : *(volatile u32 *)address;
+    return 1;
+}
+
+static const char *gate_state_name(int state) {
+    return state == GATE_STOCK ? "stock(returns 0)" : state == GATE_SWITCHED ? "switched(returns 1; another tool active)" :
+        state == GATE_BREAKPOINT ? "breakpoint(another tool is probing it)" : "unknown";
+}
+
+/* Read-only HDMI-passthrough audit. Derives the HDMI set from LG's code and
+ * prints it; reads a few live data words (ADEC 1's state, the codec-name
+ * table, the kernel-image nodes of the break-hook list) through the derived,
+ * bounds-checked addresses. Writes nothing, calls nothing new, imports nothing.
+ * A missing symbol or unmatched pattern is reported, never a refusal. */
+static void hdmi_audit(void) {
+    static struct earc_hdmi_walk walk;
+    struct earc_code code[HF_COUNT];
+    unsigned int i, missing = 0;
+    for (i = 0; i < HF_COUNT; i++) {
+        unsigned long address = *hdmi_functions[i].address;
+        unsigned int size = hdmi_functions[i].size ? *hdmi_functions[i].size : 0;
+        int ok = earc_hdmi_valid(address, size, hdmi_functions[i].size != 0, fn__stext, fn__etext);
+        code[i].address = ok ? address : 0;
+        code[i].words = (ok && hdmi_functions[i].size) ? (const ed_u32 *)address : 0;
+        code[i].count = (ok && hdmi_functions[i].size) ? size / 4 : 0;
+        if (ok || (i == HF_kretprobe_breakpoint_handler && !address)) continue;  /* kretprobe handler: 6.12 only */
+        missing++;
+        printk("\0016earc_route: hdmi symbol %s missing or out of range (%lx size %u)\n", hdmi_functions[i].name, address, size);
+    }
+    earc_hdmi_decode(code, layout.nonpcm, fn__stext & ~0xfffffUL, &hdmi);
+
+    printk("\0016earc_route: hdmi gate %s addr=%llx words=%08x %08x\n",
+           gate_state_name(hdmi.gate_state), hdmi.gate, hdmi.gate_words[0], hdmi.gate_words[1]);
+    printk("\0016earc_route: hdmi service patch_text=%llx register_kprobe=%llx unregister_kprobe=%llx cpus_read_lock=%llx cpus_read_unlock=%llx\n",
+           hdmi.patch_text, hdmi.kprobe_register, hdmi.kprobe_unregister, hdmi.cpus_read_lock, hdmi.cpus_read_unlock);
+    if (!hdmi.set_output_reason)
+        printk("\0016earc_route: hdmi set_output=%llx first=%08x mask-offset=%llu (0x20 means eARC)\n",
+               hdmi.set_output, hdmi.set_output_first_word, hdmi.mask_offset);
+    else
+        printk("\0016earc_route: hdmi set_output not available: %s (addr=%llx first=%08x)\n",
+               hdmi.set_output_reason, hdmi.set_output, hdmi.set_output_first_word);
+    if (!hdmi.adec_reason) {
+        printk("\0016earc_route: hdmi adec table=%llx stride=%llu codec=+%llu open=+%llu started=+%llu\n",
+               hdmi.adec_base, hdmi.adec_stride, hdmi.adec_codec_off, hdmi.adec_open_off, hdmi.adec_started_off);
+        if (hdmi_addr_ok(hdmi.adec1_codec, 4, 4) && hdmi_addr_ok(hdmi.adec1_open, 1, 1) && hdmi_addr_ok(hdmi.adec1_started, 1, 1))
+            printk("\0016earc_route: hdmi adec1 codec@%llx=%u open@%llx=%u started@%llx=%u\n",
+                   hdmi.adec1_codec, *(volatile u32 *)hdmi.adec1_codec, hdmi.adec1_open, *(volatile u8 *)hdmi.adec1_open,
+                   hdmi.adec1_started, *(volatile u8 *)hdmi.adec1_started);
+        else
+            printk("\0013earc_route: hdmi adec1 address out of range codec=%llx open=%llx started=%llx\n",
+                   hdmi.adec1_codec, hdmi.adec1_open, hdmi.adec1_started);
+    } else {
+        printk("\0016earc_route: hdmi adec not available: %s\n", hdmi.adec_reason);
+    }
+    if (!hdmi.cb_reason) {
+        printk("\0016earc_route: hdmi cb_output_status=%llx shape=%d (%s) hd-compare=%llx bound=%llu hd-supported=%llx\n",
+               hdmi.cb_output_status, hdmi.hd_shape, hdmi.hd_shape == 1 ? "cmp; b.ls to supported" : "cmp; b.ne falls into supported",
+               hdmi.hd_compare, hdmi.hd_compare_bound, hdmi.hd_supported_branch);
+        printk("\0016earc_route: hdmi cb name-load=%llx table=%llx entries=%u\n",
+               hdmi.hd_name_load, hdmi.name_table, hdmi_name_entries(hdmi.name_table));
+    } else if (hdmi.hd_brk_count) {
+        printk("\0016earc_route: hdmi cb_output_status=%llx not available: %s: %u breakpoint(s), first at +%llu\n",
+               hdmi.cb_output_status, hdmi.cb_reason, hdmi.hd_brk_count, hdmi.hd_brk_offset);
+    } else {
+        printk("\0016earc_route: hdmi cb_output_status=%llx not available: %s\n", hdmi.cb_output_status, hdmi.cb_reason);
+    }
+    if (!hdmi.break_reason) {
+        /* imm and mask named only if they are the two halves of the word after fn. */
+        int fields = hdmi.break_fields_known && hdmi.break_imm_offset == hdmi.break_word_offset &&
+            hdmi.break_mask_offset == hdmi.break_word_offset + 2;
+        earc_hdmi_walk_list(&hdmi, fn__etext, fn__etext + HDMI_DATA_SPAN, hdmi_read, (void *)0, &walk);
+        printk("\0016earc_route: hdmi break list=%llx register=%llx unregister=%llx fn=+%llu imm=+%llu mask=+%llu\n",
+               hdmi.break_list_head, hdmi.break_register, hdmi.break_unregister, hdmi.break_fn_offset,
+               hdmi.break_imm_offset, hdmi.break_mask_offset);
+        printk("\0016earc_route: hdmi break handlers kprobe=%llx kprobe-ss=%llx kretprobe=%llx\n",
+               hdmi.break_fn, hdmi.step_fn, hdmi.kret_fn);
+        for (i = 0; i < walk.count; i++) {
+            if (fields)
+                printk("\0016earc_route: hdmi break node%u=%llx fn=%llx imm=%u mask=%x\n", i, walk.nodes[i].address,
+                       walk.nodes[i].fn, walk.nodes[i].word & 0xffff, walk.nodes[i].word >> 16);
+            else
+                printk("\0016earc_route: hdmi break node%u=%llx fn=%llx word-after-fn=%08x\n", i, walk.nodes[i].address,
+                       walk.nodes[i].fn, walk.nodes[i].word);
+        }
+        if (walk.status == HW_OUTSIDE && walk.stop == hdmi.break_list_head)
+            printk("\0013earc_route: hdmi break list head %llx is outside the kernel image\n", walk.stop);
+        else if (walk.status == HW_OUTSIDE)
+            printk("\0016earc_route: hdmi break list continues outside the kernel image at %llx\n", walk.stop);
+        else if (walk.status != HW_COMPLETE)
+            printk("\0016earc_route: hdmi break walk stopped before %llx\n", walk.stop);
+        printk("\0016earc_route: hdmi break walk %s nodes=%u kprobe=%d kprobe-ss=%d kretprobe=%d\n",
+               walk.status == HW_COMPLETE ? "complete" : walk.status == HW_OUTSIDE ? "incomplete(leaves image)" :
+               walk.status == HW_MISALIGNED ? "incomplete(misaligned next)" :
+               walk.status == HW_CAPPED ? "incomplete(more than 32 nodes)" : "incomplete(unreadable)",
+               walk.count, walk.saw_break, walk.saw_step, walk.saw_kret);
+    } else {
+        printk("\0016earc_route: hdmi break hooks not available: %s\n", hdmi.break_reason);
+    }
+    printk("\0016earc_route: hdmi nonpcm virtual=%llx physical=%llx\n", hdmi.nonpcm_virtual, hdmi.nonpcm_physical);
+    if (missing)
+        printk("\0016earc_route: hdmi passthrough: not available: %u symbol(s) missing\n", missing);
+}
+
 static int apply(void) {
     int connected;
     void *current_source = (void *)0;
@@ -609,6 +766,7 @@ int init_module(void) {
            WORD(nonpcm), WORD(rate), WORD(channel_count), WORD(acmod), WORD(control) & 7, WORD(cs0), WORD(cs2));
     if (mode == 0) {
         audit();
+        hdmi_audit();
         printk("\0016earc_route: audit complete; unloading\n");
         return -125;
     }
@@ -672,8 +830,14 @@ _Static_assert(sizeof(struct target_parameter) == 40, "parameter size");
 #define EARC_PARAMETERS(name, analysed) \
     {"fn_" #name, &__this_module, &ulong_operations, 0, -1, 0, &fn_##name}, \
     EARC_SIZE_PARAMETER_##analysed(name)
+#define EARC_HDMI_SIZE_PARAMETER_1(name) {"sz_" #name, &__this_module, &uint_operations, 0, -1, 0, &sz_##name},
+#define EARC_HDMI_SIZE_PARAMETER_0(name)
+#define EARC_HDMI_PARAMETERS(name, analysed) \
+    {"fn_" #name, &__this_module, &ulong_operations, 0, -1, 0, &fn_##name}, \
+    EARC_HDMI_SIZE_PARAMETER_##analysed(name)
 static const struct target_parameter parameters[] __attribute__((section("__param"), aligned(8), used)) = {
     EARC_FUNCTIONS(EARC_PARAMETERS)
+    EARC_HDMI_FUNCTIONS(EARC_HDMI_PARAMETERS)
     {"fn__stext", &__this_module, &ulong_operations, 0, -1, 0, &fn__stext},
     {"fn__etext", &__this_module, &ulong_operations, 0, -1, 0, &fn__etext},
     {"mode", &__this_module, &uint_operations, 0400, -1, 0, &mode},

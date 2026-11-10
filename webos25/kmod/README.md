@@ -14,10 +14,18 @@ The loader passes each LG function's address and size from `/proc/kallsyms`, and
 the module derives every data address and struct offset from LG's own code when
 it loads. If anything does not match, it refuses to load.
 
+The audit (`mode=0`) also derives, read-only, the set an HDMI-input -> eARC
+passthrough feature would need (`earc_hdmi.h`), by symbol name and one exact
+pattern each, and prints it on `earc_route: hdmi` lines. This is the audit half
+only: nothing is probed, hooked or patched, no new kernel function is called and
+no import is added. A missing HDMI symbol or unmatched pattern is reported "not
+available", never a refusal, so the eARC route still loads.
+
 Status: both builds host-tested against the kernels listed under Test; the 6.12
-build has never run on a TV. Neither `.ko` is committed (`out/` is ignored).
-Neither generation uses MODVERSIONS (no `__versions`, no CRCs) or BTI, so no
-`-mbranch-protection` flag is needed; both kernels have PAC on.
+build has never run on a TV, and the HDMI audit has never run on a TV at all.
+Neither `.ko` is committed (`out/` is ignored). Neither generation uses
+MODVERSIONS (no `__versions`, no CRCs) or BTI, so no `-mbranch-protection` flag
+is needed; both kernels have PAC on.
 
 ## Files
 
@@ -25,6 +33,7 @@ Neither generation uses MODVERSIONS (no `__versions`, no CRCs) or BTI, so no
 |---|---|
 | `earc_decode.h` | Freestanding AArch64 decoder and derivations, shared by the module and the test |
 | `earc_route.c` | The module: parameter checks, decode, audit (`mode=0`) or route (`mode=1`) |
+| `earc_hdmi.h` | The HDMI passthrough audit's derivations and its break-hook list walk, shared by the module and the test |
 | `build.sh`, `build.py` | Container build plus ABI, import and export checks against kernel captures |
 | `earc-route-load.sh` | TV-side loader (root, busybox sh + python3) |
 | `test/run.sh`, `test/test_decode.c` | Host test: sha-keyed oracles, refusal tests, C5/G5 and 5.4/6.12 differences |
@@ -66,6 +75,52 @@ its format block, HAL mode values 6/7 and the CS0 bits). Also the renderer's
 derivable from the analysed functions. `aimc_send_command` and
 `aud_hal_set_arc_sample_rate` are trusted from kallsyms alone. The callback is
 only compared, so a wrong value refuses the route.
+
+## HDMI passthrough audit (derived, read-only; never run on a TV)
+
+`earc_hdmi.h` derives what an HDMI-input -> eARC passthrough feature would later
+need, for the audit to print. `_cb_output_status` goes through the engine above.
+`_set_output` (larger than `ED_MAX_INSNS`), the ADEC table (its index is a value
+loaded from a control struct, which the engine's argument-scaled value cannot
+hold) and the break-hook functions go through a small tracker that is sound per
+basic block: it forgets every register at each branch target, and declines a
+function with an indirect branch or a branch that leaves it. Each value below
+comes from one exact pattern; none, or two candidates, is "not available".
+
+The loader passes the HDMI functions like the others. One rule validates them
+(`earc_hdmi_valid`, used by the module and the test): aligned, inside
+`[_stext, _etext)`, and for analysed ones a non-zero multiple-of-4 size that
+does not pass `_etext` and is at most 16 KiB.
+
+| Value | Derived from |
+|---|---|
+| DTS gate and its state | `aud_hal_dts_supported`'s two words: stock (`mov w0,#0; ret`), switched (`mov w0,#1; ret`: another tool is active), a breakpoint (another tool is probing it), or unknown |
+| `_set_output` kprobe site, mask offset | its first word (a kprobe can sit on it; any `brk` there is reported as another tool's probe), and the offset of the only 32-bit load from a copy of argument 1 whose loaded register is compared with an immediate (0x14). That 0x20 in that word means eARC is fixed in the source |
+| ADEC table base, stride, codec/open/started | `alsa_decoder_codec`: `slot = constant + index * stride` from `sbfiz x,xI,#1,#32; add x,x,wI,sxtw; add xS,<constant>,x,lsl #5` (stride 96), the index being the value `cmp wI,#1; b.hi` checked in the same block; codec is the only 32-bit store through the slot, open the only byte offset loaded through it. `alsa_decoder_start` must form the same base and stride and load exactly two slot bytes, open and started. ADEC 1 = base + stride |
+| `_cb_output_status` DTS-HD sites | the event codec is the word loaded from argument 0. Exactly one compare of it with an immediate is the acceptance: shape 1 (5.4) `cmp codec,#4; b.ls` to the 32-bit store of the codec, shape 2 (6.12) the last compare of the chain `cmp #2; b.eq; b.ls; cmp #3; b.eq; cmp #4; b.ne`, whose `b.ne` falls through into that store. The store is the supported branch; the one `ldr x,[constant, codec, lsl #3]` is the name load and gives the table |
+| break-hook list head, hook fields | `register_kernel_break_hook`: its only pre-indexed 64-bit load from a constant base. `call_break_hook`, which must compute the same head: its one `blr`, the one `ldr xN,[xN]` (the node), the one 64-bit load from the node into the `blr` register (`fn`, +16), and, of the node's two 16-bit loads, the one `cmp x, w, uxth` compares (immediate, +24) and the other (mask, +26) |
+| kprobe handlers, service symbols | by name: `kprobe_breakpoint_handler`, `kprobe_breakpoint_ss_handler`, `kretprobe_breakpoint_handler` (6.12 only), `aarch64_insn_patch_text`, `cpus_read_{lock,unlock}`, `[un]register_kprobe`, `[un]register_kernel_break_hook`. In the kernels' ksymtab: `[un]register_kprobe`, `cpus_read_{lock,unlock}`; not exported: the patch function and the break-hook pair |
+| non-PCM word, physical | `struct earc_layout.nonpcm` minus `_stext & ~0xfffff`: the image is loaded at physical 0 plus its text offset (`/proc/iomem` on the C5: `00088000-0197ffff : Kernel code`) |
+
+Any `brk #4` (what a kprobe plants) inside `_cb_output_status` is reported with
+its offset as another tool's probe, before the pattern is judged; `brk #0x800`
+(`BUG()`) is not.
+
+Live reads, all through derived addresses inside the 64 MiB after `_etext`,
+nothing written: ADEC 1's codec, open and started; the name table's entries and
+strings; and the break-hook list. That walk starts at the head and reads, for at
+most 32 nodes, only `next`, `fn` and the word after `fn`, and only from nodes
+inside the kernel image: those are static objects that are never freed, and
+removing a node rewrites one `next` pointer, so no RCU is needed. It stops at
+the first node outside the image (another module's) without reading it. It
+prints each image node and whether the walk was complete and met the kprobe
+handlers, which is how the audit says whether they are registered. The stock
+hook objects are not derived: `arch_init_kprobes`, which names them, is init
+text and is freed after boot.
+
+lg-g5-dts (G5 33.30.80) reads the non-PCM word at physical 0x264d5bc; on G5
+33.31.x it is 0x264d5c4. Its ADEC 1 addresses are 8 below ours as well: the
+data moved by 8 between those firmwares, it is the same word.
 
 ## Build
 
@@ -134,6 +189,23 @@ where expected in each generation (rate +104/+96, acmod +108/+100, NONPCM
 layout (stride 0x60/0x70, mutex +0x38/+0x48, callback +32/+40, object rate
 +12/+8, channel count none/+12) and in no HAL offset.
 
+The HDMI set has its own sha-keyed oracle, asserted whenever its image is given,
+with or without an eARC oracle for it: the kernels above plus the tester's
+CS kernel (G2 33.31.68, whose values are also the ones its `.ko` files use).
+The rows were checked against an independent static derivation. `_set_output`
+of every capture must pass the validity rule with its kallsyms size (2308 to
+2544 bytes). The break-hook walk runs on each image (the list is empty before
+boot) and on lists built in test memory: complete with both kprobe handlers,
+leaving the image, longer than the cap, a misaligned `next`. Refusal tests, on
+the first oracle kernel of each generation, each require their own reason: the
+gate changed to a third value; `brk #4` on the gate, at the `_set_output` entry
+and at both probed `_cb_output_status` sites; `brk #0x800` there not counted;
+the mask load from a non-argument register; a second mask candidate; the ADEC
+scaling changed (in either function), its bound check removed, the codec store
+removed, a second store through the slot; the acceptance branch condition
+changed, a second acceptance compare, the name load removed; the list-head load
+removed.
+
 ## Load (on the TV, as root)
 
 ```sh
@@ -157,6 +229,13 @@ The loader refuses unless:
   has the same vermagic and layout;
 - every needed symbol is in `/proc/kallsyms` exactly once, in the core kernel,
   with type T/t (`_etext`: T/t/D/d) and a non-zero address.
+
+The HDMI audit's symbols are optional: one that is missing is not passed and
+only that part of the audit says so. Before loading, the loader prints one
+`earc-route: other-tool:` line for each other DTS tool it sees, without
+refusing: `/var/lib/lg-dts-core` (and whether its `enabled` file exists),
+Glasshouse's `/var/lib/lg-dts-native`, and loaded modules `dts_gate`,
+`dts_core_route` and `gh_dts_native`.
 
 It then runs `insmod` once and prints one result line. The module re-checks
 every address against `[_stext, _etext)`, compares `fn_mutex_lock` and
