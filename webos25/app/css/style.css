@@ -180,6 +180,12 @@ code {
 .toast--err  { border-color: var(--danger); color: #fecaca; }
 .toast--busy { border-color: var(--warn); }
 
+/* ---- Support card (static; no focusable children) ---- */
+.support { display: flex; align-items: center; gap: 32px; }
+.support h2 { margin-bottom: 8px; }
+.support p { margin: 0; }
+.support__qr { flex: none; width: 148px; height: 148px; border-radius: 8px; image-rendering: pixelated; }
+
 /* ---- Foot bar ---- */
 .footbar { margin-top: 24px; font-size: 21px; }
 
