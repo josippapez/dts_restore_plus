@@ -1194,10 +1194,16 @@ int main (int argc, char **argv)
     GstElement *pipeline = gst_pipeline_new ("player"), *decoder = gst_bin_new ("decoder");
     gst_bin_add (GST_BIN (pipeline), decoder);
     g_assert_true (gst_element_register (NULL, "audiosink", GST_RANK_NONE, test_sink_get_type ()));
-    GThread *late = g_thread_new ("late-sink", add_sink_late, pipeline);
     LgRoute fresh;
     lgroute_init (&fresh, decoder);
+    /* Not while the pipeline is closing: a tester's log had the wait run for
+     * 1.75 s after a file was closed ("playbin3-0 is READY, going NULL"). */
     gint64 start = g_get_monotonic_time ();
+    g_assert_false (lgroute_arm (&fresh));
+    g_assert_cmpint (g_get_monotonic_time () - start, <, 100 * G_TIME_SPAN_MILLISECOND);
+    g_assert_cmpint (gst_element_set_state (pipeline, GST_STATE_PAUSED), !=, GST_STATE_CHANGE_FAILURE);
+    GThread *late = g_thread_new ("late-sink", add_sink_late, pipeline);
+    start = g_get_monotonic_time ();
     g_assert_false (lgroute_arm (&fresh));   /* found, but not LG's verified build */
     gint64 waited = g_get_monotonic_time () - start;
     g_thread_join (late);
@@ -1207,6 +1213,7 @@ int main (int argc, char **argv)
     g_assert_true (g_file_get_contents (ROUTE_LOG, &refusal, NULL, NULL));
     g_assert_nonnull (strstr (refusal, "(1 audiosink elements; player is"));
     g_free (refusal);
+    gst_element_set_state (pipeline, GST_STATE_NULL);
     gst_object_unref (pipeline);
   }
   handoff_tests ();

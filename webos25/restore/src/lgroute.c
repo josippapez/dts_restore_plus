@@ -850,10 +850,13 @@ gboolean lgroute_arm (LgRoute *route)
   unsigned count = 0, total = 0;
   /* A first frame can arrive before LG's playsink has built its audio chain: a
    * tester's DTS:X opened as core DTS ("0 audiosink elements; playbin3-2 is
-   * READY, going PAUSED"), and on a G5 the sink came 100-300 ms later. */
+   * READY, going PAUSED"), and on a G5 the sink came 100-300 ms later. Only
+   * while the pipeline starts or runs: in one going to NULL the sink is gone
+   * for good, and a tester's log had this wait hold a closing file for 1.75 s. */
   gint64 deadline = g_get_monotonic_time () + LGROUTE_SINK_WAIT;
   GstPad *input = gst_element_get_static_pad (route->element, "sink");
-  while (!(sink = find_sink (top, &count, &total)) && !total
+  gboolean starting = GST_IS_ELEMENT (top) && GST_STATE_TARGET (top) >= GST_STATE_PAUSED;
+  while (!(sink = find_sink (top, &count, &total)) && !total && starting
       && g_get_monotonic_time () < deadline && !(input && GST_PAD_IS_FLUSHING (input)))
     g_usleep (50 * G_TIME_SPAN_MILLISECOND);
   gst_clear_object (&input);

@@ -57,9 +57,9 @@ libgstdtsdec.so
                 gst_plugin_dtsdec_get_desc, gst_truehd_mat_get_type and the
                 lgroute_* / lgroute_control_* helpers
   size        : 3468412 bytes
-  md5         : 0a90904e8f09bcee92ac4de85faaf0a3
-  sha1        : 3b1baa9f986d62e61ace74c7f4064d0d91e6d4ec
-  sha256      : 923edb2c742226387838c82fe67a355b9488d6c66e69b7f6beae82d841d38cf5
+  md5         : 3a0fd84f72a5bb3d2a9c241eed0bd382
+  sha1        : 02df296ba9b4dfab634761d26a81936174810a4a
+  sha256      : 5d05ac6966215eb06ff5b09c5c6d8e9e5c94639e4387292f485edf4c025c360f
 
 lgroute-control
 ---------------
@@ -130,6 +130,10 @@ taking the carrier while the mixer word read unmixed) and falls back after a
 second of it, and logs what the sink was playing when a switch arms and LG's
 own ARC output state. On the C5 it loads and decodes the three app test files
 bit-identically to the 2.69 build; the eARC route is not verified on a receiver.
+The build after webos25-2.70 (2026-11-10) waits for LG's audio sink only while
+the pipeline starts or runs (a tester's log had the wait hold a closing file
+for 1.75 s); it decodes the three app test files bit-identically to 2.70 on
+the C5.
 
 This report is maintained by hand: update it whenever out/libgstdtsdec.so is
 rebuilt (build.sh prints the ABI values above).
