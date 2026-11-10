@@ -133,6 +133,15 @@ if grep -n 'target_pes_substream = 0x71' "$TSDEMUX"; then
 fi
 echo "=== DTS-HD patch OK (both BD DTS substreams passed on) ==="
 
+# Include Dolby Vision profile 7 STDL in the existing TS/M2TS HEVC caps branch.
+perl - "$TSDEMUX" <<'DV7TS_PL'
+use strict; use warnings;
+local $/; my $f = shift; open my $fh, '<', $f or die "$f: $!"; my $s = <$fh>; close $fh;
+my $n = ($s =~ s{(      case 6:\n)(?=      case 8:\n        \*caps = gst_caps_new_simple \("video/x-h265",)}{$1      case 7:\n}g);
+die "DV7 TS PATCH FAILED: expected 1 HEVC caps anchor in $f, got $n\n" if $n != 1;
+open my $out, '>', $f or die "$f: $!"; print $out $s; close $out;
+DV7TS_PL
+
 # ---------------------------------------------------------------------------
 # DOLBY VISION PROFILE 7 (MKV) PATCHES -- two changes to matroska-demux.c:
 #
