@@ -200,3 +200,20 @@ the same mechanism tsdemux has and which the shipped patch already survives.
 Bound over /usr/lib/gstreamer-1.0/libgstmpegpsdemux.so only when staged AND that
 file exists; not fingerprinted and not a reason to refuse. Needs an on-TV check
 that the stock file exists at that path and that a DTS .vob plays.
+
+Dolby Vision profile 7 RPU normalization (libgstvideoparsersbad.so)
+------------------------------------------------------------------
+The HEVC parser applies patch-p7-rpu-state.py to the LG GStreamer 1.24
+source. The patch initializes the Dolby metadata for base-layer playback
+and starts each stream with its own active-area state. Activation checks the
+installed RPU library against the supported native ABI.
+
+  sha256   : 5ab54958adb02382b8d79fddc885cc80849a1dcdbebf30288e5a7cfb1a349e57
+  ABI      : ARM EABI5 soft-float, e_flags 0x05000200, maximum GLIBC 2.4
+  NEEDED   : GStreamer and GLib libraries, libdl.so.2, libc.so.6
+
+The owner verified this exact parser artifact on a webOS 25 TV using local
+test package 2.7.77 with the device profile enabled. Profile 7 FEL played
+correctly as the first title after a cold boot and after profile 5. A
+full-frame P7 title also cleared the active area from a preceding title
+with RPU letterbox offsets.
