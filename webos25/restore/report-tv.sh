@@ -279,6 +279,9 @@ for c in "Sndout EARC OnOff" "Sndout EARC Outputtype"; do
 done
 # LG's own account of the output: PCM or bitstream mode, channels, underflows.
 sed -n '/^\[ARC\]/,/^$/p; /^\[EARC\]/,/^$/p' /proc/lgtv-driver/audio/sndout 2>/dev/null | tr '\n' ' '; echo
+# LG picks the eARC output from this. A tester's DD+ Atmos track played as stereo
+# PCM while LG's output word asked for plain Dolby Digital.
+echo "LG says is playing: $(luna-send -n 1 -w 3000 luna://com.webos.service.audio/tv/getAudioInputProperty '{}' </dev/null 2>/dev/null | grep -o '"audioInputProperty":.*' | cut -c1-400)"
 # A soundbar on eARC that lacks DTS-HD or TrueHD cannot play the lossless carrier.
 echo "receiver says it takes:"
 luna-send -n 1 -w 3000 luna://com.webos.service.arccontroller/getARCState '{}' </dev/null 2>/dev/null \
