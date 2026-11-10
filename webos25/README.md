@@ -167,8 +167,9 @@ verbatim and symlinked from `/var/lib/webosbrew/init.d/restore_dts25`):
    Dolby Digital core plus a DD+ extension, as on the Dolby Atmos demo discs). LG
    has such a track as plain `ac3`, asks the receiver link for Dolby Digital and
    ends up sending stereo PCM, with or without this tool. For a few seconds after
-   each E-AC-3 track starts, the bin rewrites that label to `eac3`, so LG passes
-   the DD+ (Atmos) bitstream through. The track still starts as PCM for a moment.
+   each Dolby track starts, the bin looks at LG's label and rewrites `ac3` with
+   Atmos (which plain Dolby Digital cannot carry) to `eac3`, so LG passes the DD+
+   Atmos bitstream through. The track still starts as PCM for a moment.
 
    **A `decproxy` is never taken to NULL while playback is running.** Switching
    away from Dolby parks it instead: unlinked and locked, but still alive and

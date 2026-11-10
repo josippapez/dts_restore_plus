@@ -204,16 +204,22 @@ gst_adecswitch_is_decproxy (GstElement * element)
  *
  * Such a track is an AC-3 core frame plus an E-AC-3 dependent substream
  * (MakeMKV writes it as A_EAC3, MediaInfo calls it "Blu-ray Disc" profile).
- * LG's audio service labels it by the core: a tester's CS had the 2016 Dolby
- * Atmos demo disc's E-AC-3 JOC track as codec "ac3", immersive "atmos", with
- * this payload on and off. LG then asks eARC for plain Dolby Digital, cannot
- * bypass an E-AC-3 decoder that way, and the receiver gets stereo PCM. Writing
- * "eac3" for the pipeline gave Atmos on the tester's soundbar. LG writes its
- * own label again at every track selection, and once more when its decoder
- * announces itself (starfish-media-pipeline resubmits on a changed codec-name
- * or immersive value, and the decoder's codec-name wins over the track's), so
- * each E-AC-3 track start is watched for a few seconds and corrected as often
- * as LG writes "ac3". The call is the one lgroute.c makes for its carrier.
+ * Upstream ac3parse names a stream by its first frame's bsid and skips
+ * dependent frames (gstac3parse.c:469-477, :628), so the caps here are most
+ * likely audio/x-ac3 (a check keyed on audio/x-eac3 never fired for a tester).
+ * LG's audio service has the track as "ac3", while LG's decoder still finds
+ * the Atmos objects: a tester's CS reported codec "ac3", immersive "atmos"
+ * for the 2016 Dolby Atmos demo disc's E-AC-3 JOC track, with this payload on
+ * and off. LG then asks eARC for plain Dolby Digital, cannot bypass an E-AC-3
+ * decoder that way, and the receiver gets stereo PCM. Writing "eac3" for the
+ * pipeline gave Atmos on the tester's soundbar.
+ *
+ * Plain AC-3 cannot carry Atmos, so "ac3" with "atmos" is that case. LG writes
+ * its label at every track selection and again when its decoder reports
+ * (starfish-media-pipeline resubmits on a changed codec-name or immersive
+ * value), so each Dolby track start is watched for a few seconds and corrected
+ * as often as LG writes that pair. The call is the one lgroute.c makes for its
+ * carrier.
  * ------------------------------------------------------------------------- */
 #ifndef LUNA_SEND
 #define LUNA_SEND "/usr/bin/luna-send"
@@ -221,42 +227,21 @@ gst_adecswitch_is_decproxy (GstElement * element)
 #define LABEL_POLLS 16
 #define LABEL_POLL_US (300 * G_TIME_SPAN_MILLISECOND)
 
-/* What LG reports for @pipeline in a getAudioInputProperty @reply: 1 = "ac3",
- * with LG's immersive value copied out; 0 = "eac3" already; -1 = anything else
- * (not listed yet, another track's codec, our own PCM carrier label). */
-static gint
-gst_adecswitch_label_state (const gchar * reply, const gchar * pipeline,
-    gchar immersive[16])
+/* TRUE when a getAudioInputProperty @reply has @pipeline as codec "ac3" with
+ * immersive "atmos". */
+static gboolean
+gst_adecswitch_label_wrong (const gchar * reply, const gchar * pipeline)
 {
-  static const gchar codec_key[] = "\"codec\":\"", immersive_key[] = "\"immersive\":\"";
   gchar *key = g_strdup_printf ("\"pipelineId\":\"%s\"", pipeline);
-  const gchar *match = strstr (reply, key), *start = match, *end, *codec, *value;
-  gsize length;
+  const gchar *match = strstr (reply, key), *start = match, *end;
 
   g_free (key);
   while (start != NULL && start > reply && *start != '{')
     start--;
   end = match != NULL ? strchr (match, '}') : NULL;
-  codec = end != NULL ? g_strstr_len (start, end - start, codec_key) : NULL;
-  if (codec == NULL)
-    return -1;
-  codec += sizeof codec_key - 1;
-  if (g_str_has_prefix (codec, "eac3\""))
-    return 0;
-  if (!g_str_has_prefix (codec, "ac3\""))
-    return -1;
-  g_strlcpy (immersive, "none", 16);
-  value = g_strstr_len (start, end - start, immersive_key);
-  if (value != NULL) {
-    value += sizeof immersive_key - 1;
-    length = strcspn (value, "\"");
-    /* It goes back into a JSON payload: letters, digits, _ . - only. */
-    if (length == 0 || length >= 16 || length != strspn (value,
-            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-"))
-      return -1;
-    g_strlcpy (immersive, value, length + 1);
-  }
-  return 1;
+  return end != NULL
+      && g_strstr_len (start, end - start, "\"codec\":\"ac3\"") != NULL
+      && g_strstr_len (start, end - start, "\"immersive\":\"atmos\"") != NULL;
 }
 
 static gboolean
@@ -365,35 +350,34 @@ typedef struct
 } LabelCheck;
 
 /* Its own thread: LG lists a pipeline up to a few seconds after it starts,
- * and "eac3" seen early can still turn into "ac3" when the decoder reports. */
+ * and its decoder's report can change the label after that. */
 static gpointer
 gst_adecswitch_label_thread (gpointer data)
 {
   LabelCheck *check = data;
   GstAdecSwitch *self = check->self;
-  gchar pipeline[64], immersive[16], resource[16];
+  gchar pipeline[64], resource[16];
 
   for (guint i = 0; i < LABEL_POLLS && gst_adecswitch_pipeline_id (pipeline); i++) {
     gchar *reply = NULL;
-    gint state;
+    gboolean wrong;
 
     g_usleep (LABEL_POLL_US);
     if (g_atomic_int_get (&self->label_serial) != check->serial)
       break;
-    state = gst_adecswitch_luna
+    wrong = gst_adecswitch_luna
         ("luna://com.webos.service.audio/tv/getAudioInputProperty", "{}", &reply)
-        ? gst_adecswitch_label_state (reply, pipeline, immersive) : -1;
+        && gst_adecswitch_label_wrong (reply, pipeline);
     g_free (reply);
-    if (state == 1 && gst_adecswitch_resource (self, resource)) {
+    if (wrong && gst_adecswitch_resource (self, resource)) {
       gchar *payload = g_strdup_printf ("{\"categoryType\":\"audioInputInfo\","
           "\"requestType\":\"setAudioInputInfo\",\"pipelineInfo\":{\"pipelineId\":\"%s\","
           "\"resource\":\"%s\",\"sourceType\":\"MEDIA\"},\"categoryInfo\":{\"codec\":\"eac3\","
-          "\"immersive\":\"%s\"}}", pipeline, resource, immersive);
+          "\"immersive\":\"atmos\"}}", pipeline, resource);
       gboolean ok = gst_adecswitch_luna
           ("luna://com.webos.service.audio/tv/setQualityAttribute", payload, NULL);
-      gchar *text = g_strdup_printf ("dolby: LG had this Dolby Digital Plus track as "
-          "plain ac3 (immersive %s), corrected to eac3 on %s: %s", immersive, resource,
-          ok ? "accepted" : "refused");
+      gchar *text = g_strdup_printf ("dolby: LG had this Atmos track as plain ac3, "
+          "corrected to eac3 on %s: %s", resource, ok ? "accepted" : "refused");
 
       GST_INFO_OBJECT (self, "%s", text);
       gst_adecswitch_note (text);
@@ -714,13 +698,13 @@ gst_adecswitch_sink_event_probe (GstPad *pad, GstPadProbeInfo *info, gpointer da
   if (GST_EVENT_TYPE (event) != GST_EVENT_CAPS)
     return GST_PAD_PROBE_OK;
   gst_event_parse_caps (event, &caps);
+  factory = gst_adecswitch_factory_for_caps (caps);
   {
     gint serial = g_atomic_int_add (&self->label_serial, 1) + 1;
 
-    if (gst_structure_has_name (gst_caps_get_structure (caps, 0), "audio/x-eac3"))
+    if (!g_strcmp0 (factory, DECPROXY_FACTORY))
       gst_adecswitch_check_label (self, serial);
   }
-  factory = gst_adecswitch_factory_for_caps (caps);
   if (self->caps && gst_caps_is_equal (self->caps, caps)
       && !g_strcmp0 (factory, "truehdmat")
       && !g_strcmp0 (self->decoder_factory, "avdec_truehd"))

@@ -76,7 +76,7 @@ lgroute-control
   sha256      : a037165c1645491488946d9317c889d46394c727f14e8758ffc31aaf7c3286cc
 
 switch-out/libgstadecswitch.so (built by build-switch.sh)
-  sha256      : 25eb9c814527d159b89629ecd5446c0829be24dbcdabb60daec705ef52a93845
+  sha256      : fc2029da9c1631e9bd62f4d65fe47df332e9fe5e7bfc1cec0f813538462f4bd5
 
 Replaces libgstdtsdec.so md5 41742e9ec2ce0754724b4d260c9fc09e (NEEDED
 libdca.so.0, RUNPATH /var/lib/webosbrew/dts25/libs) + libdca.so.0 md5
@@ -133,14 +133,19 @@ bit-identically to the 2.69 build; the eARC route is not verified on a receiver.
 The build after webos25-2.70 (2026-11-10) waits for LG's audio sink only while
 the pipeline starts or runs (a tester's log had the wait hold a closing file
 for 1.75 s); it decodes the three app test files bit-identically to 2.70 on
-the C5. The adecswitch built with it watches each E-AC-3 track start for a
-few seconds and rewrites LG's "ac3" label to "eac3": LG has a Blu-ray style
-Dolby Digital Plus track (AC-3 core plus E-AC-3 substream) as ac3, asks eARC
-for plain Dolby Digital and sends stereo PCM; a tester's soundbar showed Atmos
-once the label was corrected by hand. On the C5, in LG's Media Player, a
-faked "ac3 atmos" label on an E-AC-3 track was corrected within half a second
-(twice), a correctly labelled E-AC-3 track and a real AC-3 track were left
-alone, and nothing crashed. Not verified on a receiver.
+the C5. The adecswitch of webos25-2.71 watched each E-AC-3 track start and
+rewrote LG's "ac3" label to "eac3". The tester's receiver log showed no
+correction. Upstream ac3parse names a stream by its first frame, so a Blu-ray
+style Dolby Digital Plus track (AC-3 core plus E-AC-3 substream) most likely
+reaches adecswitch as audio/x-ac3 (not seen directly), which would also be
+why LG has it as ac3.
+The adecswitch after 2.71 watches every Dolby track start for a few seconds
+and rewrites LG's label to "eac3" when LG has the track as "ac3" with
+immersive "atmos" (plain AC-3 cannot carry Atmos). The tester's soundbar
+showed Atmos once that label was corrected by hand. On the C5, in LG's Media
+Player, a faked "ac3 atmos" label on an AC-3 track was corrected within half
+a second (twice); a real AC-3 track and a correctly labelled E-AC-3 track
+were left alone. Not verified on a receiver.
 
 This report is maintained by hand: update it whenever out/libgstdtsdec.so is
 rebuilt (build.sh prints the ABI values above).
