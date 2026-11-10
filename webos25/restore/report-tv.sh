@@ -184,7 +184,7 @@ echo "sound_output=$(luna-send -n 1 -w 3000 luna://com.webos.settingsservice/get
 echo "watcher_sound_output=$(cat /run/dts25/sound-output 2>/dev/null)"
 # Apps and HDMI inputs offer DTS only if this mentions dts (Show DTS tracks).
 # The live value: the app sets it with setConfigs, which is not saved to disk.
-echo "edidType=$(script -q -e -c "luna-send -n 1 luna://com.webos.service.config/getConfigs '{\"configNames\":[\"tv.model.edidType\"]}'" /dev/null 2>/dev/null | sed -n 's/.*"tv.model.edidType":"\([^"]*\)".*/\1/p' | head -n1)"
+echo "edidType=$(script -q -e -c "luna-send -n 1 luna://com.webos.service.config/getConfigs '{\"configNames\":[\"tv.model.edidType\"]}'" /dev/null </dev/null 2>/dev/null | sed -n 's/.*"tv.model.edidType":"\([^"]*\)".*/\1/p' | head -n1)"
 echo "appdts_last=$(head -n1 "$D/appdts.last" 2>/dev/null)"
 echo "eim_env=$(cat /var/systemd/system/env/eim.env 2>/dev/null)"
 echo "eim_hooked=$(grep -c libedidaudio "/proc/$(pidof eim | cut -d' ' -f1)/maps" 2>/dev/null)"
@@ -259,4 +259,42 @@ if [ -f /tmp/dts25.log ]; then tail -n 30 /tmp/dts25.log; else echo "no boot hoo
 echo
 echo "--- DTS-HD/TrueHD eARC route log (since the last restart) ---"
 if [ -f /run/dts25/lgroute.log ]; then tail -n 200 /run/dts25/lgroute.log; else echo "no route log"; fi
+
+# What LG's side did with the route. Every receiver report so far needed a
+# follow-up asking for these by hand.
+echo
+echo "--- LG audio sink: renderer restarts and what it told the DSP (last 40) ---"
+grep -a -E "lgao_push_first_event|Caps is first or updated|same caps for normal|Connect ES Renderer|Restart renderer|Set pcm" \
+  /var/log/legacy-log 2>/dev/null | sed 's/^[^T]*T\([0-9:.]*\)Z.*) /\1 /' | cut -c1-600 | tail -n 40
+
+echo
+echo "--- audio DSP crashes ---"
+{ zcat /var/log/audio_dspdump_dmesg0.gz 2>/dev/null; cat /var/log/legacy-log 2>/dev/null; } \
+  | grep -a -E "Exception: cause|eform_flush|is DEAD" | cut -c1-300 | tail -n 10
+
+echo
+echo "--- eARC state ---"
+for c in "Sndout EARC OnOff" "Sndout EARC Outputtype"; do
+  echo "$c=$(amixer -c0 cget name="$c" 2>/dev/null | sed -n 's/.*: values=//p')"
+done
+# LG's own account of the output: PCM or bitstream mode, channels, underflows.
+sed -n '/^\[ARC\]/,/^$/p; /^\[EARC\]/,/^$/p' /proc/lgtv-driver/audio/sndout 2>/dev/null | tr '\n' ' '; echo
+# A soundbar on eARC that lacks DTS-HD or TrueHD cannot play the lossless carrier.
+echo "receiver says it takes:"
+luna-send -n 1 -w 3000 luna://com.webos.service.arccontroller/getARCState '{}' </dev/null 2>/dev/null \
+  | grep -o -E '"(arcActivation|audioDeviceType|earcMatProfile|earcATMOS)":[^,}]*|"(earcCapability|advancedEarcCapability)":\[[^]]*\]'
+echo "bypass chains:"
+grep -o -E "(rts|srcbin)_[0-9a-f]+_[0-9a-f]+_out0 -> (srcbin|lipsync)_[0-9a-f]+" /proc/aaudio/dot_module_connection 2>/dev/null
+echo "media pipelines loaded (another app holding audio can block the route):"
+ps w 2>/dev/null | grep "[p]ipeline_process" | sed 's/.*pipeline_process//' | cut -c1-120
+
+# A tester's TV had Glasshouse's DTS forwarding switched on next to this tool:
+# it re-ranks the decoders and takes the eARC output itself.
+echo
+echo "--- other audio tools on this TV ---"
+echo "boot hooks: $(ls /var/lib/webosbrew/init.d/ 2>/dev/null | tr '\n' ' ')"
+for p in /var/lib/lg-dts-native /var/lib/lg-dts-core /sys/module/gh_dts_native /sys/module/dts_core_route /sys/module/dts_gate \
+    /run/systemd/system/umediaserver.service.d; do
+  [ -e "$p" ] && echo "present=$p $(ls "$p" 2>/dev/null | tr '\n' ' ')"
+done
 echo "=== end of report ==="
