@@ -367,7 +367,8 @@ var W25_COMPAT_SH = [
   "#      EDIDs keep LG's stock audio list (no DTS).",
   "#   49 ...but not on a TV whose factory edidType already lists dts.",
   "#   50 DTS-HD/TrueHD over eARC allowed on the G3's LG sink build (33.31.68).",
-  "W25_GATE_VERSION=50",
+  "#   51 verified stock plugin set for the G3 on firmware 33.31.68.",
+  "W25_GATE_VERSION=51",
   "FP=/var/lib/webosbrew/dts25/stock.fp",
   "# Where the installed copy of THIS script lives, and the boot hook that symlinks",
   "# to it. Named here, in the shared block, so the read-only probe can fingerprint",
@@ -708,6 +709,10 @@ var W25_COMPAT_SH = [
   "# CS: the same o22 binary set as the C2/G2 rows (firmware 33.31.68). An OLED55CS6LA",
   "# passed all four self-tests and played the DTS and TrueHD test files with sound.",
   "1.24|0fd6d65ac9e3a78b393a615eaff8ac0b|cf4d9bb9e3c3ad83f1a75a399d2f0b93|772fb3b29e224423035eec9e93615b23|OLED*CS*|LG CS OLED55CS6LA (webOS 10.3.1, GStreamer 1.24.0)",
+  "# G3 on firmware 33.31.68: the same stock plugin hashes as the C2/G2 rows above.",
+  "# The owner of an OLED77G36LA passed all four self-tests and confirmed audio",
+  "# playback with the bundled DTS and TrueHD test files.",
+  "1.24|0fd6d65ac9e3a78b393a615eaff8ac0b|cf4d9bb9e3c3ad83f1a75a399d2f0b93|772fb3b29e224423035eec9e93615b23|OLED*G3*|LG G3 OLED77G36LA (webOS 10.3.1, GStreamer 1.24.0)",
   "# G2 on webOS 10.2.2 (firmware 33.22.95): its own builds of all three plugins",
   "# (owner report). An OLED55G26LA played DTS-HD MA 5.1 and TrueHD 7.1 decoded and",
   "# as bitstream to a Denon AVR-S770H after opting in.",
@@ -1894,30 +1899,23 @@ var DETECT_PROBE = [
   '    arch_tag="$LOADER"; [ "$arch_tag" = "unknown" ] && arch_tag=$(uname -m 2>/dev/null || echo arch)',
   '    PROFILE="unknown-gst${GST_MM}-${arch_tag}" ;;',
   'esac',
-  '# A registered dts_audiodec means LG ships a working DTS decoder on this set, but',
-  '# that alone does NOT mean there is nothing to do: on 2023 sets the decoder is',
-  '# present while the Matroska `enable-dts` gate is OFF, so DTS is built in but',
-  '# disabled and the app IS needed. Split the two cases on the measured gate.',
-  '# Deliberately behavioral, not a model list. webOS 25 and CX are unaffected:',
-  '# neither registers dts_audiodec, and our payload adds dtsdec/avdec_dca, never',
-  '# dts_audiodec.',
-  // ...but a registered dts_audiodec is NOT proof of a usable decoder. On the C2
-  // family the element registers while libgstlibav.so is a 128 KB stub with no
-  // decoder internals at all (see FIRMWARE-COMPATIBILITY.md), so "built in but
-  // disabled" is false there and this override was stealing the exact-matched C2
-  // profile -- the owner in issue #1 matched all eleven C2 gates and still got the
-  // `gated` screen with no opt-in. An exact identity+hash match against a firmware
-  // we extracted and confirmed has no decoder outranks "an element is registered",
-  // so never let the behavioral guess displace it.
-  // The C2-family diagnostic profile is excluded for the same reason: it is the only
-  // profile that reports WHICH C2 gate missed (C2_GATE_FAIL), and letting the override
-  // relabel it made that message unreachable on screen for precisely the TVs it was
-  // written for -- the owner in issue #1 never saw it.
-  'case "$PROFILE" in webos22-o22-gst118|webos22-o22-c2-diagnostic) C2_KEEP=1 ;; *) C2_KEEP=0 ;; esac',
-  'if [ "$HAS_DTS_AUDIODEC" = "yes" ] && [ "$C2_KEEP" = 0 ]; then',
-  '  if [ "$DCA_RANK" = "0" ]; then PROFILE=native-dts-gated',
-  '  else PROFILE=native-dts; fi',
-  'fi',
+  // Use the native DTS heuristic as a fallback. The G3 on GStreamer 1.24
+  // still registers dts_audiodec with avdec_dca at rank 0. Relabelling it as
+  // native-dts-gated hides Enable before the webOS 25 compatibility check can
+  // evaluate the stock plugin hashes and model ID.
+  // Keep the C2 restore and diagnostic profiles too. On that family, registration
+  // can coexist with a stub libgstlibav.so, and relabelling hides the failed C2
+  // checks that the diagnostic profile reports (issue #1).
+  // On profiles that fall through, the measured rank still distinguishes native
+  // DTS from the gated case seen on older C3 firmware. Keep report-tv.sh in sync.
+  'case "$PROFILE" in',
+  '  webos22-o22-gst118|webos22-o22-c2-diagnostic|webos25-armel-gst124) ;;',
+  '  *)',
+  '    if [ "$HAS_DTS_AUDIODEC" = "yes" ]; then',
+  '      if [ "$DCA_RANK" = "0" ]; then PROFILE=native-dts-gated',
+  '      else PROFILE=native-dts; fi',
+  '    fi ;;',
+  'esac',
   'echo "PROFILE=$PROFILE"',
   ''
 ].concat(c2InspectorLines(c2Config()), [

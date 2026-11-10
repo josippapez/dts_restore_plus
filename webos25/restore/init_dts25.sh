@@ -113,7 +113,8 @@ EXPECT_GST=1.24
 #      EDIDs keep LG's stock audio list (no DTS).
 #   49 ...but not on a TV whose factory edidType already lists dts.
 #   50 DTS-HD/TrueHD over eARC allowed on the G3's LG sink build (33.31.68).
-W25_GATE_VERSION=50
+#   51 verified stock plugin set for the G3 on firmware 33.31.68.
+W25_GATE_VERSION=51
 FP=/var/lib/webosbrew/dts25/stock.fp
 # Where the installed copy of THIS script lives, and the boot hook that symlinks
 # to it. Named here, in the shared block, so the read-only probe can fingerprint
@@ -454,6 +455,10 @@ w25_verdict() {
 # CS: the same o22 binary set as the C2/G2 rows (firmware 33.31.68). An OLED55CS6LA
 # passed all four self-tests and played the DTS and TrueHD test files with sound.
 1.24|0fd6d65ac9e3a78b393a615eaff8ac0b|cf4d9bb9e3c3ad83f1a75a399d2f0b93|772fb3b29e224423035eec9e93615b23|OLED*CS*|LG CS OLED55CS6LA (webOS 10.3.1, GStreamer 1.24.0)
+# G3 on firmware 33.31.68: the same stock plugin hashes as the C2/G2 rows above.
+# The owner of an OLED77G36LA passed all four self-tests and confirmed audio
+# playback with the bundled DTS and TrueHD test files.
+1.24|0fd6d65ac9e3a78b393a615eaff8ac0b|cf4d9bb9e3c3ad83f1a75a399d2f0b93|772fb3b29e224423035eec9e93615b23|OLED*G3*|LG G3 OLED77G36LA (webOS 10.3.1, GStreamer 1.24.0)
 # G2 on webOS 10.2.2 (firmware 33.22.95): its own builds of all three plugins
 # (owner report). An OLED55G26LA played DTS-HD MA 5.1 and TrueHD 7.1 decoded and
 # as bitstream to a Denon AVR-S770H after opting in.

@@ -16,7 +16,7 @@ var {service, C, sh, write, run, ok, initFn, SERVICE} = require("./helpers");
  * C2 family that element registers over a 128 KB stub with no decoder internals,
  * so the override must yield to the exact gate -- while still firing for C3/C4,
  * where the decoder is real and the demuxer gate is the actual problem. */
-test("dts_audiodec override yields to an exact C2 match but still fires elsewhere", function () {
+test("native DTS detection preserves the webOS 25 and C2 profiles", function () {
   var probe = service.DETECT_PROBE;
   var start = probe.indexOf("# --- PROFILE SELECTION ---");
   var end = probe.indexOf('echo "PROFILE=$PROFILE"');
@@ -50,6 +50,13 @@ test("dts_audiodec override yields to an exact C2 match but still fires elsewher
     gst: "1.18.5", hw: "HE_DTV_W22O_AFABATPU", pid: "OLED55CS6LA",
     audiodec: "yes", rank: "0"
   }), C.C2, "an exact C2 match must not be relabelled native-dts-gated");
+
+  // The updated G3 keeps the webOS 25 restore path even with the stock DTS element
+  // registered. The separate compatibility check decides whether Enable can run.
+  assert.strictEqual(profileFor({
+    gst: "1.24.0", hw: "HE_DTV_W23O_AFABATAA", pid: "OLED77G36LA",
+    webos: "10.3.1", fw: "33.31.68", audiodec: "yes", rank: "0"
+  }), "webos25-armel-gst124");
 
   // C3: decoder is real, demuxer gate off -> the override is correct here.
   assert.strictEqual(profileFor({
