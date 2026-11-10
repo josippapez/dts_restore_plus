@@ -15,6 +15,7 @@ typedef struct {
   gboolean in_mixer;   /* the kernel feeds eARC from LG's mixer, whatever the mixer word says */
   guint restarts;
   gint64 next_check, mixed_since, configured_at;
+  gint64 restart_after;   /* a track-switch restart waits until LG has settled */
   gint64 window_start, last_push;   /* carrier pace check */
   guint64 window_media;
   guint slow_windows;

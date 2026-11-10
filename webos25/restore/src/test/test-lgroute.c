@@ -730,6 +730,14 @@ static void stale_buffer_tests (void)
   /* LG's renderer still runs at the old track's pace (two testers' TVs, one a G3,
    * played every such carrier four times too slowly): it is restarted, once. */
   g_assert_true (route.restart_pending);
+  /* Not at once: LG has just restarted the renderer itself for the new track.
+   * A tester's TV froze twice, and once found no converter, when ours followed
+   * 10-20 ms later. Until LG has settled the receiver gets silence. */
+  push_carrier (source);
+  g_assert_cmpuint (route.restarts, ==, 0);
+  g_assert_true (route.restart_pending);
+  g_assert_cmpuint (pushed_byte, ==, 0);
+  route.restart_after = 0;
   push_carrier (source);
   g_assert_cmpuint (route.restarts, ==, 1);
   g_assert_false (route.failed); g_assert_true (route.configured);

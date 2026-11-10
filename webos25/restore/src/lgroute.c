@@ -41,6 +41,8 @@ GST_DEBUG_CATEGORY_STATIC (lgroute_debug);
 /* The carrier's bytes per second: 192 kHz, 8 channels, 16 bit. */
 #define CARRIER_BYTES_PER_SECOND (192000 * 8 * 2)
 #define PACE_WINDOW (GST_SECOND / 4)
+/* How long after LG's own track-change restart ours may follow. */
+#define RESTART_SETTLE (500 * G_TIME_SPAN_MILLISECOND)
 #ifndef LGROUTE_SNDOUT
 #define LGROUTE_SNDOUT "/proc/lgtv-driver/audio/sndout"
 #endif
@@ -486,6 +488,7 @@ static gboolean restart_wanted (LgRoute *route, const gchar *why)
   if (route->restarts >= 2)
     return FALSE;
   route->restart_pending = TRUE;
+  route->restart_after = 0;
   note ("%s: restarting LG's renderer once the sink plays", why);
   return TRUE;
 }
@@ -637,7 +640,7 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
     return GST_PAD_PROBE_DROP;
   }
   if (route->restart_pending) {
-    if (!sink_playing (route)) {
+    if (!sink_playing (route) || g_get_monotonic_time () < route->restart_after) {
       /* The restart starts LG's renderer at once, so it waits for playback;
        * until then the receiver gets silence, typed PCM like any carrier. */
       GstBuffer *buffer = gst_buffer_make_writable (GST_PAD_PROBE_INFO_BUFFER (info));
@@ -684,7 +687,12 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
      * after a resume. */
     if (route->draining) {
       route->draining = FALSE;
-      restart_wanted (route, "track switch");
+      /* LG has restarted the renderer itself for the new track a moment ago
+       * and is still rewiring its output. A tester's TV, with ours following
+       * 10-20 ms later, twice hung in the restart with LG's audio driver
+       * locked (TV audio gone until a reboot) and once found no converter. */
+      if (restart_wanted (route, "track switch"))
+        route->restart_after = route->configured_at + RESTART_SETTLE;
     }
     /* The kernel routes the bypass to eARC only if it exists when LG writes the unmixed output. */
     report_pcm (route);
@@ -937,6 +945,7 @@ void lgroute_disarm (LgRoute *route)
   route->first = route->feeding = route->configured = route->unmixed = FALSE;
   route->restart_pending = route->waiting = route->draining = route->in_mixer = FALSE;
   route->restarts = 0;
+  route->restart_after = 0;
   route->stream_id[0] = 0;
   route->resource[0] = 0;
   restart_pace (route);

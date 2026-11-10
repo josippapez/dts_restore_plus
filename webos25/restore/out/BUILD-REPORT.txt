@@ -57,9 +57,9 @@ libgstdtsdec.so
                 gst_plugin_dtsdec_get_desc, gst_truehd_mat_get_type and the
                 lgroute_* / lgroute_control_* helpers
   size        : 3468412 bytes
-  md5         : 3a0fd84f72a5bb3d2a9c241eed0bd382
-  sha1        : 02df296ba9b4dfab634761d26a81936174810a4a
-  sha256      : 5d05ac6966215eb06ff5b09c5c6d8e9e5c94639e4387292f485edf4c025c360f
+  md5         : 329270fad8843286e2fa654c17d8b425
+  sha1        : caa8ffde8e8e43bae326916c5639d1c44a72dda4
+  sha256      : f6791bfcfeae44541bcc4545a2014a368fc228ba248c1ac867869259ccf3d0e9
 
 lgroute-control
 ---------------
@@ -146,6 +146,15 @@ showed Atmos once that label was corrected by hand. On the C5, in LG's Media
 Player, a faked "ac3 atmos" label on an AC-3 track was corrected within half
 a second (twice); a real AC-3 track and a correctly labelled E-AC-3 track
 were left alone. Not verified on a receiver.
+The build after webos25-2.72 (2026-11-10) holds its own renderer restart
+after a track switch until 500 ms after LG's, sending silence meanwhile. With
+the two 10-20 ms apart, a tester's CS three times failed a switch from a Dolby
+Digital Plus track to TrueHD: once no bypass converter was found (PCM
+fallback) and twice the restart never finished, with LG's audio driver locked
+and no TV audio until a reboot. Four other switches in the same log were
+fine, so the wait is a best guess at the cause. On the C5 it loads and decodes
+the three app test files bit-identically to the 2.72 build; the eARC route is
+not verified on a receiver.
 
 This report is maintained by hand: update it whenever out/libgstdtsdec.so is
 rebuilt (build.sh prints the ABI values above).
