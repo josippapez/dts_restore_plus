@@ -38,6 +38,8 @@
 
 #include "gstadecswitch.h"
 #include "lgroute-control.h"
+#include <stdio.h>
+#include <string.h>
 
 GST_DEBUG_CATEGORY_STATIC (adecswitch_debug);
 #define GST_CAT_DEFAULT adecswitch_debug
@@ -195,6 +197,223 @@ gst_adecswitch_is_decproxy (GstElement * element)
 
   return factory != NULL
       && !g_strcmp0 (GST_OBJECT_NAME (factory), DECPROXY_FACTORY);
+}
+
+/* ---------------------------------------------------------------------------
+ * LG's label for a Blu-ray style Dolby Digital Plus track.
+ *
+ * Such a track is an AC-3 core frame plus an E-AC-3 dependent substream
+ * (MakeMKV writes it as A_EAC3, MediaInfo calls it "Blu-ray Disc" profile).
+ * LG's audio service labels it by the core: a tester's CS had the 2016 Dolby
+ * Atmos demo disc's E-AC-3 JOC track as codec "ac3", immersive "atmos", with
+ * this payload on and off. LG then asks eARC for plain Dolby Digital, cannot
+ * bypass an E-AC-3 decoder that way, and the receiver gets stereo PCM. Writing
+ * "eac3" for the pipeline gave Atmos on the tester's soundbar. LG writes its
+ * own label again at every track selection, and once more when its decoder
+ * announces itself (starfish-media-pipeline resubmits on a changed codec-name
+ * or immersive value, and the decoder's codec-name wins over the track's), so
+ * each E-AC-3 track start is watched for a few seconds and corrected as often
+ * as LG writes "ac3". The call is the one lgroute.c makes for its carrier.
+ * ------------------------------------------------------------------------- */
+#ifndef LUNA_SEND
+#define LUNA_SEND "/usr/bin/luna-send"
+#endif
+#define LABEL_POLLS 16
+#define LABEL_POLL_US (300 * G_TIME_SPAN_MILLISECOND)
+
+/* What LG reports for @pipeline in a getAudioInputProperty @reply: 1 = "ac3",
+ * with LG's immersive value copied out; 0 = "eac3" already; -1 = anything else
+ * (not listed yet, another track's codec, our own PCM carrier label). */
+static gint
+gst_adecswitch_label_state (const gchar * reply, const gchar * pipeline,
+    gchar immersive[16])
+{
+  static const gchar codec_key[] = "\"codec\":\"", immersive_key[] = "\"immersive\":\"";
+  gchar *key = g_strdup_printf ("\"pipelineId\":\"%s\"", pipeline);
+  const gchar *match = strstr (reply, key), *start = match, *end, *codec, *value;
+  gsize length;
+
+  g_free (key);
+  while (start != NULL && start > reply && *start != '{')
+    start--;
+  end = match != NULL ? strchr (match, '}') : NULL;
+  codec = end != NULL ? g_strstr_len (start, end - start, codec_key) : NULL;
+  if (codec == NULL)
+    return -1;
+  codec += sizeof codec_key - 1;
+  if (g_str_has_prefix (codec, "eac3\""))
+    return 0;
+  if (!g_str_has_prefix (codec, "ac3\""))
+    return -1;
+  g_strlcpy (immersive, "none", 16);
+  value = g_strstr_len (start, end - start, immersive_key);
+  if (value != NULL) {
+    value += sizeof immersive_key - 1;
+    length = strcspn (value, "\"");
+    /* It goes back into a JSON payload: letters, digits, _ . - only. */
+    if (length == 0 || length >= 16 || length != strspn (value,
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-"))
+      return -1;
+    g_strlcpy (immersive, value, length + 1);
+  }
+  return 1;
+}
+
+static gboolean
+gst_adecswitch_luna (const gchar * uri, const gchar * payload, gchar ** reply)
+{
+  const gchar *argv[] = { LUNA_SEND, "-n", "1", "-w", "2000", uri, payload, NULL };
+  /* LG's LD_PRELOAD in the media pipeline breaks luna-send. */
+  gchar **env = g_environ_unsetenv (g_get_environ (), "LD_PRELOAD"), *out = NULL;
+  gboolean ok = g_spawn_sync (NULL, (gchar **) argv, env, G_SPAWN_STDERR_TO_DEV_NULL,
+      NULL, NULL, &out, NULL, NULL, NULL) && out != NULL
+      && strstr (out, "\"returnValue\":true") != NULL;
+
+  g_strfreev (env);
+  if (reply != NULL)
+    *reply = out;
+  else
+    g_free (out);
+  return ok;
+}
+
+/* This process's pipeline id, from -scom.webos.pipeline.<id>. */
+static gboolean
+gst_adecswitch_pipeline_id (gchar id[64])
+{
+  static const gchar prefix[] = "-scom.webos.pipeline.";
+  gchar *args = NULL;
+  gsize length = 0;
+
+  id[0] = 0;
+  if (!g_file_get_contents ("/proc/self/cmdline", &args, &length, NULL))
+    return FALSE;
+  for (gchar * arg = args; arg < args + length; arg += strlen (arg) + 1)
+    if (g_str_has_prefix (arg, prefix))
+      g_strlcpy (id, arg + sizeof prefix - 1, 64);
+  g_free (args);
+  return id[0] != 0 && id[strspn (id,
+          "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")] == 0;
+}
+
+/* LG keys its reports by the audio sink's resource: ADEC<n> or AMIXER<n>. */
+static gboolean
+gst_adecswitch_resource (GstAdecSwitch * self, gchar resource[16])
+{
+  GstObject *top = gst_object_ref (GST_OBJECT_CAST (self)), *parent;
+  GstIterator *iterator;
+  GValue value = G_VALUE_INIT;
+  gboolean found = FALSE;
+
+  while ((parent = gst_object_get_parent (top)) != NULL) {
+    gst_object_unref (top);
+    top = parent;
+  }
+  iterator = GST_IS_BIN (top)
+      ? gst_bin_iterate_all_by_element_factory_name (GST_BIN (top), "audiosink") : NULL;
+  while (iterator != NULL && !found) {
+    GstIteratorResult result = gst_iterator_next (iterator, &value);
+
+    if (result == GST_ITERATOR_RESYNC) {
+      gst_iterator_resync (iterator);
+      continue;
+    }
+    if (result != GST_ITERATOR_OK)
+      break;
+    GObject *sink = g_value_get_object (&value);
+    GObjectClass *klass = G_OBJECT_GET_CLASS (sink);
+    if (g_object_class_find_property (klass, "index")
+        && g_object_class_find_property (klass, "mixer")) {
+      guint index = 0;
+      gboolean mixer = FALSE;
+
+      g_object_get (sink, "index", &index, "mixer", &mixer, NULL);
+      g_snprintf (resource, 16, "%s%u", mixer ? "AMIXER" : "ADEC", index);
+      found = TRUE;
+    }
+    g_value_reset (&value);
+  }
+  g_value_unset (&value);
+  if (iterator != NULL)
+    gst_iterator_free (iterator);
+  gst_object_unref (top);
+  return found;
+}
+
+/* One line in the receiver log testers send (lgroute.c writes the rest). */
+static void
+gst_adecswitch_note (const gchar * text)
+{
+  FILE *log = fopen (LGROUTE_RUN "/lgroute.log", "a");
+  GDateTime *now;
+  gchar *when;
+
+  if (log == NULL)
+    return;
+  now = g_date_time_new_now_local ();
+  when = g_date_time_format (now, "%T.%f");
+  fprintf (log, "%.12s %s\n", when, text);
+  g_free (when);
+  g_date_time_unref (now);
+  fclose (log);
+}
+
+typedef struct
+{
+  GstAdecSwitch *self;
+  gint serial;
+} LabelCheck;
+
+/* Its own thread: LG lists a pipeline up to a few seconds after it starts,
+ * and "eac3" seen early can still turn into "ac3" when the decoder reports. */
+static gpointer
+gst_adecswitch_label_thread (gpointer data)
+{
+  LabelCheck *check = data;
+  GstAdecSwitch *self = check->self;
+  gchar pipeline[64], immersive[16], resource[16];
+
+  for (guint i = 0; i < LABEL_POLLS && gst_adecswitch_pipeline_id (pipeline); i++) {
+    gchar *reply = NULL;
+    gint state;
+
+    g_usleep (LABEL_POLL_US);
+    if (g_atomic_int_get (&self->label_serial) != check->serial)
+      break;
+    state = gst_adecswitch_luna
+        ("luna://com.webos.service.audio/tv/getAudioInputProperty", "{}", &reply)
+        ? gst_adecswitch_label_state (reply, pipeline, immersive) : -1;
+    g_free (reply);
+    if (state == 1 && gst_adecswitch_resource (self, resource)) {
+      gchar *payload = g_strdup_printf ("{\"categoryType\":\"audioInputInfo\","
+          "\"requestType\":\"setAudioInputInfo\",\"pipelineInfo\":{\"pipelineId\":\"%s\","
+          "\"resource\":\"%s\",\"sourceType\":\"MEDIA\"},\"categoryInfo\":{\"codec\":\"eac3\","
+          "\"immersive\":\"%s\"}}", pipeline, resource, immersive);
+      gboolean ok = gst_adecswitch_luna
+          ("luna://com.webos.service.audio/tv/setQualityAttribute", payload, NULL);
+      gchar *text = g_strdup_printf ("dolby: LG had this Dolby Digital Plus track as "
+          "plain ac3 (immersive %s), corrected to eac3 on %s: %s", immersive, resource,
+          ok ? "accepted" : "refused");
+
+      GST_INFO_OBJECT (self, "%s", text);
+      gst_adecswitch_note (text);
+      g_free (text);
+      g_free (payload);
+    }
+  }
+  gst_object_unref (self);
+  g_free (check);
+  return NULL;
+}
+
+static void
+gst_adecswitch_check_label (GstAdecSwitch * self, gint serial)
+{
+  LabelCheck *check = g_new (LabelCheck, 1);
+
+  check->self = gst_object_ref (self);
+  check->serial = serial;
+  g_thread_unref (g_thread_new ("adecswitch-label", gst_adecswitch_label_thread, check));
 }
 
 /* CAPS and ACCEPT_CAPS are answered from the static template, NEVER from the
@@ -495,6 +714,12 @@ gst_adecswitch_sink_event_probe (GstPad *pad, GstPadProbeInfo *info, gpointer da
   if (GST_EVENT_TYPE (event) != GST_EVENT_CAPS)
     return GST_PAD_PROBE_OK;
   gst_event_parse_caps (event, &caps);
+  {
+    gint serial = g_atomic_int_add (&self->label_serial, 1) + 1;
+
+    if (gst_structure_has_name (gst_caps_get_structure (caps, 0), "audio/x-eac3"))
+      gst_adecswitch_check_label (self, serial);
+  }
   factory = gst_adecswitch_factory_for_caps (caps);
   if (self->caps && gst_caps_is_equal (self->caps, caps)
       && !g_strcmp0 (factory, "truehdmat")
@@ -535,6 +760,7 @@ gst_adecswitch_change_state (GstElement * element, GstStateChange transition)
    * and the old decoder is locked-state so gst_bin_element_set_state() skips
    * it (gstbin.c:2489-2501). */
   if (transition == GST_STATE_CHANGE_PAUSED_TO_READY) {
+    g_atomic_int_inc (&self->label_serial);
     gst_adecswitch_wait_hw_teardown (self, 0, 2 * G_TIME_SPAN_SECOND);
 
     if (self->parked_hw != NULL) {

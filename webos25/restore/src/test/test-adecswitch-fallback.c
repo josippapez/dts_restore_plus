@@ -67,6 +67,38 @@ int
 main (int argc, char **argv)
 {
   gst_init (&argc, &argv);
+  /* LG's label for a Blu-ray style DD+ track. A tester's TV had the 2016 Dolby
+   * Atmos demo disc's E-AC-3 JOC track as ac3 (reply copied from its report)
+   * and sent stereo PCM; the same reply shape with eac3 is a C5's. */
+  {
+    gchar immersive[16] = "";
+    g_assert_cmpint (gst_adecswitch_label_state ("{\"returnValue\":true,\"audioInputProperty\":"
+        "[{\"codec\":\"ac3\",\"pipelineId\":\"_f36Fb2UGWeQAS0\",\"immersive\":\"atmos\"}]}",
+        "_f36Fb2UGWeQAS0", immersive), ==, 1);
+    g_assert_cmpstr (immersive, ==, "atmos");
+    g_assert_cmpint (gst_adecswitch_label_state ("{\"audioInputProperty\":[{\"codec\":\"ac3\","
+        "\"pipelineId\":\"_a\"}]}", "_a", immersive), ==, 1);
+    g_assert_cmpstr (immersive, ==, "none");
+    /* Already right: nothing to do. */
+    g_assert_cmpint (gst_adecswitch_label_state ("{\"returnValue\":true,\"audioInputProperty\":"
+        "[{\"codec\":\"eac3\",\"pipelineId\":\"_a\",\"immersive\":\"none\"}]}", "_a", immersive), ==, 0);
+    /* Not LG's word on this track yet: our own PCM label, the track before, another player, nothing. */
+    g_assert_cmpint (gst_adecswitch_label_state ("{\"audioInputProperty\":[{\"codec\":\"pcm\","
+        "\"pipelineId\":\"_a\",\"immersive\":\"none\"}]}", "_a", immersive), ==, -1);
+    g_assert_cmpint (gst_adecswitch_label_state ("{\"audioInputProperty\":[{\"codec\":\"true-hd\","
+        "\"pipelineId\":\"_a\",\"immersive\":\"atmos\"}]}", "_a", immersive), ==, -1);
+    g_assert_cmpint (gst_adecswitch_label_state ("{\"audioInputProperty\":[{\"codec\":\"ac3\","
+        "\"pipelineId\":\"_b\",\"immersive\":\"atmos\"}]}", "_a", immersive), ==, -1);
+    g_assert_cmpint (gst_adecswitch_label_state ("{\"returnValue\":true,\"audioInputProperty\":[]}",
+        "_a", immersive), ==, -1);
+    /* Two players: only ours counts. */
+    g_assert_cmpint (gst_adecswitch_label_state ("{\"audioInputProperty\":[{\"codec\":\"eac3\","
+        "\"pipelineId\":\"_b\",\"immersive\":\"none\"},{\"codec\":\"ac3\",\"pipelineId\":\"_a\","
+        "\"immersive\":\"atmos\"}]}", "_a", immersive), ==, 1);
+    /* A value that would not survive our own JSON is not written back. */
+    g_assert_cmpint (gst_adecswitch_label_state ("{\"audioInputProperty\":[{\"codec\":\"ac3\","
+        "\"pipelineId\":\"_a\",\"immersive\":\"at mos\"}]}", "_a", immersive), ==, -1);
+  }
   g_assert_true (gst_element_register (NULL, "truehdmat", GST_RANK_NONE, test_decoder_get_type ()));
   g_assert_true (gst_element_register (NULL, "avdec_truehd", GST_RANK_NONE, test_decoder_get_type ()));
   GstElement *pipeline = gst_pipeline_new (NULL);

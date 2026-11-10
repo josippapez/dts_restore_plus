@@ -54,6 +54,10 @@ struct _GstAdecSwitch
    * Written and read on the event/streaming threads under `lock`. */
   GstEvent *resource_event;
 
+  /* Bumped on every CAPS event and when playback stops, so a label check
+   * started for an earlier track gives up. Atomic. */
+  gint label_serial;
+
   /* Properties */
   guint grace_ms;               /* hw-teardown-grace-ms */
   gboolean post_changing_decoder;
