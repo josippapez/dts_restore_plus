@@ -34,9 +34,20 @@ every write is listed with its undo under
 [HDMI passthrough active modes](#hdmi-passthrough-active-modes-mode2). `mode=0`
 and `mode=1` are unchanged, byte for byte.
 
-Status: both builds host-tested against the kernels listed under Test; the 6.12
-build has never run on a TV. **On one C5 (33.31.68, kernel 5.4.268), 2026-11-11:
-the audit, `mode=2`, `mode=3` and `mode=4` ran and left the TV in its stock
+Status: both builds host-tested against the kernels listed under Test.
+Experimental, root over SSH, not shipped in the app or the release.
+
+On 2026-11-11 a tester's LG CS (OLED55CS6LA, firmware 33.31.68, kernel
+5.4.268-329.ptl4tv.5) with a Samsung HW-Q930F over eARC and a set-top box on
+HDMI 1 ran `hdmi-session.sh --apply 30` (mode 7). The soundbar showed DTS for a
+DTS core stream, DTS-HD for DTS-HD MA and DTS:X for DTS:X. It worked again after
+a TV power cycle. The first run failed because the script gave up during the
+input-service restart; it now waits for the input to come back (a wait loop,
+fixed since). That is the only run with an eARC receiver. `hdmi-watch.sh` has run
+only on the C5, which has no receiver.
+
+On one C5 (33.31.68, kernel 5.4.268), also 2026-11-11: the audit, `mode=2`,
+`mode=3` and `mode=4` ran and left the TV in its stock
 state. With `mode=3` loaded the HDMI decoder started on a live DTS stream
 (`UserCodec=DTS`, `Start=1`) and refused it again after unload. `mode=4`'s
 `_set_output` pre-handler fired on every input-service restart (`calls_seen=1`
@@ -49,8 +60,14 @@ core stream (`Codec=UNKNOWN_DTS`, 48 kHz): both self-tests, the check opened,
 three probes placed, the decoder started on DTS after an input-service restart,
 and the one `_set_output` call came before that start (`adec1-codec=0
 started=0`), so nothing was overridden; no output-status event, `earc_nonpcm=0`,
-unload left the TV stock. `mode=5` has never run on a TV, and no mode has run
-with an eARC receiver or on a DTS-HD stream. Nothing has run on 6.12.**
+unload left the TV stock.
+
+Not run on any TV: `mode=5`; kernel 5.4.268-329.ptl4tv.2 (33.22.x), which is
+host-tested only; the 6.12 build and kernel.
+
+The module and the loader still print `UNTESTED ON HARDWARE` for modes 5, 6 and 7.
+That message is out of date for mode 7, which has run on a C5 and, with a receiver,
+on a CS. It will be reworded in a later build.
 Neither `.ko` is committed (`out/` is ignored). Neither generation uses
 MODVERSIONS (no `__versions`, no CRCs) or BTI, so no `-mbranch-protection` flag is
 needed; both kernels have PAC on.
@@ -404,7 +421,11 @@ Every directory is passed to the test with the sha256 of its `kernel.bin`
 Without captures it prints `SKIP` and passes. With them, the test applies the
 oracle table keyed by that sha256, so an oracle never meets another image:
 
-- 5.4: C5 33.31.68/69 (hand-derived) and G5 33.31.69 (Glasshouse's values);
+- 5.4: C5 33.31.68 (hand-derived) and G5 33.31.69 (Glasshouse's values). There
+  is no eARC oracle row for a C5 33.31.69, or for any kernel 5.4.268-329.ptl4tv.2
+  (33.22.x) image: that one decodes and prints its eARC route values with no
+  oracle, and has an HDMI oracle row only (see below). A kernel never run on a
+  TV, ptl4tv.2 included, is checked by the host test alone;
 - 6.12: C5 43.21.73 and 43.21.77, G5 43.21.71 and 43.21.77, G2 43.21.74, each
   derived from its corrected `kallsyms.txt` and disassembly;
 - every other image is decoded and printed without an oracle.
@@ -469,6 +490,44 @@ the compare and at the name load, a table of 4 entries or none), and on the firs
 mutations of the real function (breakpoints at both sites, the name load
 removed, `mov x19,x2` changed so the store's base is not argument 2).
 
+## Adding a kernel
+
+A TV whose `uname -r` is not in the loader's allowlist is refused. To add one:
+
+1. Read the user's release from `uname -r`, or from `KERNEL_RELEASE=` in the
+   output of `webos25/restore/report-tv.sh` (report version 5 and later).
+2. Find firmwares on that release in the firmware archive index,
+   `https://lg.slada.sk/processed_fw.json`: each EPK entry has a `kernelVersion`
+   field. Match the user's board by `firmwareotaID`, not by the version string.
+3. Download from `https://tv.slada.sk/<relativePath>` and check the file against
+   the entry's `zipFileSha256`.
+4. Extract the EPK with epk2extract (steps in
+   [`add-tv-generation`](../../.claude/skills/add-tv-generation/SKILL.md)).
+5. The kernel is `/boot/Image.lz4-<release>` in the rootfs. On 33.22.x the EPK has
+   no `kernel.pak`, so the rootfs is the only place. LG's LZ4P container needs
+   unpacking before it is a raw arm64 Image (c5-native's `unlz4p.py`, in a private
+   repository).
+6. Make the symbol table with `kallsyms-finder` from vmlinux-to-elf. It must be
+   what `/proc/kallsyms` shows on the TV (see Build for the 6.12 offset).
+7. The stock module is `/lib/modules/<release>/kernel/aspectratiodrv.ko` in the
+   rootfs (`/usr/lib/modules/<release>/...` on 6.12).
+8. Put the files in a capture directory: `kernel.bin`, `kallsyms.txt`,
+   `stock-module.ko`, and a `NOTES.txt` of your own (firmware version, source
+   file, hashes; no script reads it). `build.sh` and `test/run.sh` need only the
+   first three. Keep the directory outside the repository.
+9. Add the release to the allowlist in `earc-route-load.sh` (the `case "$release"`
+   block and its refusal message), and to the release table under Load.
+10. Run `webos25/kmod/build.sh CAPTURE_DIR...` (it runs `build.py`'s ABI, import
+    and export checks against the capture).
+11. Add the image to `test/test_decode.c`: an oracle row for the eARC values and an
+    HDMI oracle row, derived independently of the decoder, keyed by the
+    `kernel.bin` sha256. Run `sh test/run.sh` with the directory in
+    `EARC_EXTRA_DIRS` and check that the refusal tests still fail on a mutated
+    instruction.
+
+Host tests passing is not a TV run. Say so in the Status paragraph until someone
+has loaded the module on that kernel.
+
 ## Load (on the TV, as root)
 
 ```sh
@@ -488,8 +547,8 @@ sh earc-route-load.sh --dts-hd [window_seconds=30] [supervised=0|1]    # mode 7:
 exists; the audit only reports those. **Do not play DTS-HD while modes 3 to 5
 (`--open-gate`, `--observe`, `--dts-core`) are loaded: see the known limitation
 above. For a real session, DTS core included, load `--dts-hd`.** **Modes 2, 3, 4, 6 and 7 have run on one C5
-without a receiver and left it stock (see Status above); mode 5 has never run;
-nothing has run on 6.12.** Read-only parameters report the
+without a receiver and left it stock, and mode 7 ran with a receiver on a CS (see
+Status above); mode 5 has never run; nothing has run on 6.12.** Read-only parameters report the
 state: `gate_open`, `gate_opened_by_us`, `hooks_registered`, `probe_registered`,
 `selftest_passed`, `window_open`, `calls_seen`, `calls_matched`, `overrides`,
 and for modes 6 and 7 `hd_probes_registered` (2 when both are in),
@@ -658,14 +717,21 @@ within a second (kernel log: codec 48); the one `_set_output` call is the one
 described above, with `mask=0x2` (the TV speakers; eARC would be 0x20); there were no
 output-status events (`hd_status_seen=0`, `hd_name_seen=0`), `earc_nonpcm=0` and
 no override; unload restored the check, the audit afterwards showed the stock
-state, and the kernel logged no errors. **Not verified:** `--apply` and
-`--session` have never run on a TV, for either kind, and nothing here has run on
-a TV with an eARC receiver, so the override, the compressed route, the gain
-writes and the DSP writes are untested on hardware. Nothing in the DTS-HD kind
-has run on any TV: no DTS-HD stream has been played into a C5 (so its `Codec=`
-name there is unmeasured), and the DTS-HD states in the host test are
-synthetic, including the `output_arc` prop file, which has no real sample
-because the test TV has no eARC output instance.
+state, and the kernel logged no errors.
+
+With a receiver: on a CS (OLED55CS6LA, 33.31.68, kernel 5.4.268-329.ptl4tv.5) with
+a Samsung HW-Q930F over eARC and a set-top box on HDMI 1, `hdmi-session.sh --apply
+30` (mode 7) made the soundbar show DTS for DTS core, DTS-HD for DTS-HD MA and
+DTS:X for DTS:X, and it worked again after a TV power cycle (2026-11-11, tester
+report; the soundbar's display, not a measurement of the bitstream). The first run
+on that TV failed when the script gave up during the input-service restart; the
+wait loop above came from that.
+
+**Not verified:** `--session` has not been reported from any TV. Nothing has run
+on kernel 5.4.268-329.ptl4tv.2 (33.22.x) or on 6.12. No DTS-HD stream has been
+played into a C5 (so its `Codec=` name there is unmeasured), and the DTS-HD states
+in the host test are synthetic, including the `output_arc` prop file, which has no
+real sample because the C5 has no eARC output instance.
 
 ## HDMI passthrough watcher (`hdmi-watch.sh`)
 

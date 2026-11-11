@@ -13,11 +13,13 @@ The single source of truth for the shipped binaries is:
 ```
 gst/                          four LG GStreamer 1.14.4 legacy plugins (CX/C2 app payload)
 webos25/restore/out/         libgstdtsdec.so                     (DTS decoder, ffmpeg dca static)
+                              lgroute-control                     (ALSA mixer validation/recovery helper)
 webos25/restore/truehd-out/  libgstlibav.so + libav*/libsw*      (TrueHD/MLP)
 webos25/restore/switch-out/  libgstadecswitch.so                 (track A stream-switch bin)
 webos25/restore/edid-out/    libedidaudio.so                     (eim hook: no DTS in HDMI EDIDs)
 webos25/restore/demux-out/   libgstisomp4.so, libgstmpegtsdemux.so (mp4/ts/m2ts DTS,
                               MP4 Dolby Vision profile 7), libgstmatroska.so (MKV DV profile 7)
+webos25/restore/ts114-out/   libgstmpegtsdemux.so                (1.14.4 build, C2 app profile)
 ```
 
 The app's `webos25/app/payload/**` `.so` are **git-ignored** generated copies. At
@@ -28,12 +30,21 @@ Never edit a generated `payload/**` binary.
 **If you touch anything that affects those binaries, you MUST rebuild + re-verify
 + re-commit them, then re-release.** "Affects those binaries" includes:
 
-- `webos25/restore/src/gstdtsdec.c` (the DTS patch)
+- the sources of the committed binaries, all in `webos25/restore/src/`:
+  `gstdtsdec.c`, `gstdtsdec.h`, `dtsdec-track.h` (the DTS patch);
+  `lgroute.c`, `lgroute.h`, `lgroute-graph.h` (linked into `libgstdtsdec.so`);
+  `lgroute-control.c`, `lgroute-control.h` (linked into `libgstdtsdec.so` and
+  `libgstadecswitch.so`, and built alone as `out/lgroute-control`);
+  `gstadecswitch.c`, `gstadecswitch.h`; `edidaudio.c`, `edidaudio.h`
 - the `dts_support` demuxer patch, the DTS-HD substream (0x72) tsdemux patch, the Dolby
   Vision profile 7 matroska/qtdemux patches, or their version, in `webos25/restore/build-demux.sh`
-- `webos25/restore/build.sh`, `build-truehd.sh`, `build-demux.sh`, `build-switch.sh`
+- `webos25/restore/build.sh`, `build-truehd.sh`, `build-demux.sh`, `build-switch.sh`,
+  `build-edid.sh`, `build-ts114.sh`
   (toolchain, flags, pinned sources, ABI — for `build.sh` that includes the ffmpeg
   `n4.4.4` tag, its configure flags and the pinned Debian snapshot)
+
+`webos25/kmod/` (the eARC/HDMI passthrough kernel module) is not part of any of this: the
+release workflow does not package it, and its `.ko` files are built locally and never committed.
 
 Editing `install.sh` / `init_dts25.sh` / the app JS/HTML does **not** require a
 rebuild — but still cut a new release so the tarball/`.ipk` carry the change.

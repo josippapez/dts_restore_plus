@@ -208,7 +208,8 @@ The flag is checked at each playback start (no reboot needed) but **resets on re
   not reach LG's multichannel sink. (This does **not** apply to the webOS 25 build, which emits
   discrete channels up to 7.1 — since webos25-2.43 bit-exact against desktop ffmpeg on a C5,
   DTS-HD MA lossless included.)
-  Bitstream passthrough to an AVR is out of scope on either platform (decode-to-PCM only).
+  The CX tool decodes to PCM only; it does not pass a bitstream to a receiver. For webOS 25,
+  see the [receiver section](webos25/README.md#send-dts-to-a-receiver-passthrough-opt-in).
 - **Root required.**
 - **4K content cannot 2× fast-forward** — a stock LG limitation that also applies to AC3/AAC.
 
@@ -240,12 +241,15 @@ provenance:
 
 ## Experimental & extras
 
-This fork adds two work-in-progress components alongside the core tool:
+This fork adds a few work-in-progress components alongside the core tool:
 
 - **`gst-dtstolpcm/`** — an experimental GStreamer plugin that converts DTS to BluRay LPCM so it
   rides LG's proprietary **multichannel** sink (real 5.1/7.1 instead of stereo downmix). See its
   own README for the design, build, and the on-TV test that gates the approach. **Not yet
   validated on hardware.**
+- **`webos25/kmod/`**: an experimental kernel module that sends DTS from an HDMI input to an
+  eARC receiver on webOS 25 (root over SSH). Not shipped in the app or the release. See its
+  [README](webos25/kmod/README.md).
 - **`webos25/app/`** — the shipping "DTS Enabler" Homebrew app: a GUI for the verified
   webOS-25 mechanism plus the exact-firmware experimental C2/G2 profile described above.
 

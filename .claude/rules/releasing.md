@@ -9,12 +9,16 @@ it does **not** rebuild from source. Two obligations follow:
 1. **Keep the committed binaries in sync with their source.** If you change a
    binary-affecting file, you MUST rebuild, re-verify on a real webOS-25 TV, and
    re-commit the `.so` in the SAME change. Binary-affecting files:
-   - `webos25/restore/src/gstdtsdec.c`, `webos25/restore/src/edidaudio.c`
+   - the sources of the committed binaries, all in `webos25/restore/src/`:
+     `gstdtsdec.c`, `gstdtsdec.h`, `dtsdec-track.h`, `lgroute.c`, `lgroute.h`,
+     `lgroute-graph.h`, `lgroute-control.c`, `lgroute-control.h`, `gstadecswitch.c`,
+     `gstadecswitch.h`, `edidaudio.c`, `edidaudio.h`
    - the `dts_support` patch / pinned sources / flags in `webos25/restore/build-demux.sh`
-   - `webos25/restore/build.sh`, `build-truehd.sh`, `build-demux.sh`, `build-switch.sh`, `build-edid.sh`
+   - `webos25/restore/build.sh`, `build-truehd.sh`, `build-demux.sh`, `build-switch.sh`, `build-edid.sh`, `build-ts114.sh`
 
    The committed binaries live in
-   `webos25/restore/{out,truehd-out,demux-out,switch-out,edid-out}`.
+   `webos25/restore/{out,truehd-out,demux-out,switch-out,edid-out,ts114-out}`.
+   (`out/` holds `libgstdtsdec.so` and `lgroute-control`.)
    The app's `webos25/app/payload/**` `.so` are git-ignored and copied from
    `webos25/restore/**` at package time — never edit them there.
 

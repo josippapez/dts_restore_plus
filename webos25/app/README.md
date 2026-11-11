@@ -554,8 +554,31 @@ Open questions: DTS decodes to **S32LE, up to 7.1** (DTS-HD MA lossless included
 LG's integer-only sink accepts these (confirmed on-device; the earlier F32LE issue
 was fixed by converting dtsdec's output to S32LE). The remaining unknown is whether
 the TV **renders full surround** to speakers/eARC or downmixes to stereo (not
-independently measured). Bitstream **passthrough** to an AVR is out of scope
-(months of proprietary-lib RE). See `../docs/MULTI-MODEL.md` for the full gap list.
+independently measured). Sending DTS to a receiver is an opt-in on webOS 25 (see the
+toggles below and [`../README.md`](../README.md#send-dts-to-a-receiver-passthrough-opt-in)).
+See `../docs/MULTI-MODEL.md` for the full gap list.
+
+### Experimental toggles
+
+Labels as in `index.html`. The first four are on webOS 25 only (`app.js` hides or disables
+them otherwise); the boot-script side is `restore/init_dts25.sh`.
+
+- **Show DTS tracks in apps (experimental)**: sets `tv.model.edidType` to a value with
+  `dts`, so Stremio and Kodi offer DTS tracks. HDMI inputs keep their stock audio list.
+  Off puts the factory value back.
+- **Send DTS to a receiver (experimental)**: writes the `passthrough` flag and starts
+  the sound-output watcher. While the TV's output is ARC/eARC or optical with Digital
+  Sound Out on Pass Through or Auto, `dtsdec` sends the DTS core as IEC 61937 instead of
+  decoding it. Videos only.
+- **Full DTS-HD / TrueHD (experimental)**: a checkbox in the same card, writes the
+  `passthrough-hd` flag. Needs eARC, Digital Sound Output on Pass Through, and an LG
+  audio sink build on the tested list; otherwise the card shows why HD is not ready.
+- **Show receiver log**: prints the last 80 lines of `/run/dts25/lgroute.log`, for
+  testers without SSH.
+- **Try anyway (experimental)**: not a card. It appears in the compatibility block only
+  for an untested TV the service says can be forced, and needs two presses. It calls
+  `enable` with `force: true`, which replaces system media plugins on a TV nobody has
+  tested. **Disable** undoes it.
 
 ## License
 

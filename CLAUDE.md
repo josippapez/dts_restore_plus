@@ -12,14 +12,17 @@ Fork of [`lgstreamer/dts_restore`](https://github.com/lgstreamer/dts_restore). T
 - `webos25/app/` — the "DTS Enabler" Homebrew app (enable/disable/uninstall + self-test
   + play-by-ear). Its `payload/**/*.so` are **git-ignored** and vendored from
   `webos25/restore/**` at packaging time.
+- `webos25/kmod/`: self-adapting eARC/HDMI passthrough kernel module (GPL-2.0-only,
+  experimental). Not packaged by the release workflow; the `.ko` is built locally and
+  never committed. See its README.
 - `gst/` — upstream CX binaries (unchanged).
 
 ## Non-negotiable rules
 
 1. **Prebuilt binaries are vendored + on-device-verified.** The committed `.so` in
    `webos25/restore/{out,truehd-out,demux-out}` are the source of truth. If you change
-   a binary-affecting file (`webos25/restore/src/gstdtsdec.c`, the `dts_support` patch or
-   pins in `build-demux.sh`, or any `build*.sh`), you MUST rebuild, **verify on a real
+   a binary-affecting file (any of the C sources in `webos25/restore/src/`, the `dts_support`
+   patch or pins in `build-demux.sh`, or any `build*.sh`; full list in `RELEASING.md`), you MUST rebuild, **verify on a real
    webOS-25 TV**, and re-commit the `.so` in the same change. See
    [`.claude/rules/releasing.md`](.claude/rules/releasing.md) and [`RELEASING.md`](RELEASING.md).
 2. **Release by tagging.** After any change to be shipped, cut a release:
