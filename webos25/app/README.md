@@ -286,11 +286,12 @@ on-device and reports a measured number, not an impression.
 
 Some apps hide DTS tracks before they reach the decoder: Stremio and Kodi both decide
 from `tv.model.edidType`, a configd value that reads `TrueHD` on a C5. The card flips it
-to `TrueHD+dts`, or to `ac3+dts` on sets that report `ac3`. Turn on / Turn off only record intent (a marker file) and never touch
-configd, so they cannot hang; the boot hook applies it at the next restart with a
-dependency-free configd restart (`--job-mode=ignore-dependencies` + SIGKILL, ~1s,
-nothing else restarted), and a **Restart TV now** button appears while that is the
-remaining step. Kept out of Enable because the same value feeds the TV's eARC EDID.
+to `TrueHD+dts`, or to `ac3+dts` on sets that report `ac3`. Turn on / Turn off write a
+marker file and then run the boot script with `W25_APPDTS=on|off`, which sets the value
+live through configd's `setConfigs` and, on TVs whose factory value has no `dts`, hooks
+the HDMI EDID by restarting `eim` once. No TV restart is needed. The live value is not
+saved, so the boot hook sets it again after every restart while the marker is there.
+Kept out of Enable because the same value feeds the TV's eARC EDID.
 Full mechanism, measurements and dead ends: `../README.md` § "Show DTS tracks in apps".
 
 ### `webos22-o22-gst118` — exact-firmware legacy override (EXPERIMENTAL; NOT HARDWARE VERIFIED)
