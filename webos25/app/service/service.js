@@ -2497,6 +2497,9 @@ function w25Enable(force) {
     'LOG=' + LOG,
     'W25_LOG=' + LOG,
     'log() { echo "[dts25-install $(date \'+%Y-%m-%d %H:%M:%S\')] $*" >> "$LOG" 2>&1; }',
+    // Same as install.sh replace_file: a temp file and a rename, never a write into
+    // a library a running process has mapped (a C5's eim crashed after `cp -f`).
+    'replace_file() { cp -Pf "$1" "$2.new" && mv -f "$2.new" "$2" && return 0; rm -f "$2.new"; return 1; }',
     // Author constant either way -- see the note on `force` above.
     (force ? "FORCE=1" : "FORCE=0"),
     'log "=== enable (webos25 DTS+TrueHD) start ==="',
@@ -2524,33 +2527,33 @@ function w25Enable(force) {
     // marker back if the user returns to the CLI.
     'if [ -f "' + W25_CLI_MARKER + '" ]; then rm -f "' + W25_CLI_MARKER + '" && log "took ownership from a previous CLI install (removed ' + W25_CLI_MARKER + ')"; fi',
     'if [ -f "' + PAYLOAD_W25 + '/libgstdtsdec.so" ]; then',
-    '  cp -f "' + PAYLOAD_W25 + '/libgstdtsdec.so" "' + W25_DEST + '/libgstdtsdec.so" && log "installed libgstdtsdec.so" || log "WARN: copy libgstdtsdec.so failed"',
+    '  replace_file "' + PAYLOAD_W25 + '/libgstdtsdec.so" "' + W25_DEST + '/libgstdtsdec.so" && log "installed libgstdtsdec.so" || log "WARN: copy libgstdtsdec.so failed"',
     'else log "WARN: ' + PAYLOAD_W25 + '/libgstdtsdec.so not found (populate payload before packaging)"; fi',
     // 1b. Stage the adecswitch payload (track A: same-family stream-switch bin,
     //     compiled rank 320) -- CORE, like dtsdec/libav (init_dts25.sh
     //     w25_core_staged). Mirrors install.sh step 1b.
     'if [ -f "' + PAYLOAD_W25 + '/libgstadecswitch.so" ]; then',
-    '  cp -f "' + PAYLOAD_W25 + '/libgstadecswitch.so" "' + W25_DEST + '/libgstadecswitch.so" && log "installed libgstadecswitch.so" || log "WARN: copy libgstadecswitch.so failed"',
+    '  replace_file "' + PAYLOAD_W25 + '/libgstadecswitch.so" "' + W25_DEST + '/libgstadecswitch.so" && log "installed libgstadecswitch.so" || log "WARN: copy libgstadecswitch.so failed"',
     'else log "WARN: ' + PAYLOAD_W25 + '/libgstadecswitch.so not found (populate payload before packaging)"; fi',
     // The eim hook for "Show DTS tracks in apps". Optional. Mirrors install.sh step 1b.
     'if [ -f "' + PAYLOAD_W25 + '/libedidaudio.so" ]; then',
-    '  cp -f "' + PAYLOAD_W25 + '/libedidaudio.so" "' + W25_DEST + '/libedidaudio.so" && log "installed libedidaudio.so" || log "WARN: copy libedidaudio.so failed"',
+    '  replace_file "' + PAYLOAD_W25 + '/libedidaudio.so" "' + W25_DEST + '/libedidaudio.so" && log "installed libedidaudio.so" || log "WARN: copy libedidaudio.so failed"',
     'fi',
     // 1c. Stage the eARC ALSA check/recovery helper. Mirrors install.sh step 1c.
     'if [ -f "' + PAYLOAD_W25 + '/lgroute-control" ]; then',
-    '  cp -f "' + PAYLOAD_W25 + '/lgroute-control" "' + W25_DEST + '/lgroute-control" && chmod 0755 "' + W25_DEST + '/lgroute-control" && log "installed lgroute-control" || log "WARN: staging lgroute-control failed"',
+    '  replace_file "' + PAYLOAD_W25 + '/lgroute-control" "' + W25_DEST + '/lgroute-control" && chmod 0755 "' + W25_DEST + '/lgroute-control" && log "installed lgroute-control" || log "WARN: staging lgroute-control failed"',
     'else log "note: lgroute-control payload absent; DTS-HD passthrough unavailable"; fi',
     // 2. Stage the TrueHD payload (preserve the .so version symlinks).
     'mkdir -p "' + W25_THD_LIBS + '" || { log "FATAL: cannot create ' + W25_THD_LIBS + '"; exit 0; }',
     'if [ -f "' + PAYLOAD_W25_THD + '/libgstlibav.so" ]; then',
-    '  cp -f "' + PAYLOAD_W25_THD + '/libgstlibav.so" "' + W25_THD_DEST + '/libgstlibav.so" && log "installed libgstlibav.so" || log "WARN: copy libgstlibav.so failed"',
+    '  replace_file "' + PAYLOAD_W25_THD + '/libgstlibav.so" "' + W25_THD_DEST + '/libgstlibav.so" && log "installed libgstlibav.so" || log "WARN: copy libgstlibav.so failed"',
     'else log "WARN: ' + PAYLOAD_W25_THD + '/libgstlibav.so not found (populate payload before packaging)"; fi',
-    'n=0; for f in "' + PAYLOAD_W25_THD + '"/libav*.so* "' + PAYLOAD_W25_THD + '"/libsw*.so*; do [ -e "$f" ] && cp -Pf "$f" "' + W25_THD_LIBS + '/" && n=$((n+1)); done',
+    'n=0; for f in "' + PAYLOAD_W25_THD + '"/libav*.so* "' + PAYLOAD_W25_THD + '"/libsw*.so*; do [ -e "$f" ] && replace_file "$f" "' + W25_THD_LIBS + '/${f##*/}" && n=$((n+1)); done',
     'log "staged $n ffmpeg lib entries -> ' + W25_THD_LIBS + '"',
     // 2c. Stage the container-demuxer payload (optional; skipped if absent).
     'mkdir -p "' + W25_DMX_DEST + '" || log "WARN: cannot create ' + W25_DMX_DEST + '"',
     'for so in libgstisomp4.so libgstmpegtsdemux.so libgstmatroska.so libgstmpegpsdemux.so; do',
-    '  if [ -f "' + PAYLOAD_W25_DMX + '/$so" ]; then cp -f "' + PAYLOAD_W25_DMX + '/$so" "' + W25_DMX_DEST + '/$so" && log "installed $so"; else log "note: ' + PAYLOAD_W25_DMX + '/$so absent; its demuxer override skipped"; fi',
+    '  if [ -f "' + PAYLOAD_W25_DMX + '/$so" ]; then replace_file "' + PAYLOAD_W25_DMX + '/$so" "' + W25_DMX_DEST + '/$so" && log "installed $so"; else log "note: ' + PAYLOAD_W25_DMX + '/$so absent; its demuxer override skipped"; fi',
     'done',
     // 2d. Seed first-run audio defaults (only when no config exists yet).
     w25GainConfSeedScript(DTS_GAIN_CONF),
@@ -3127,7 +3130,7 @@ function c2EngineLines(c) {
     // are deleted by the rollback that follows. The owner in issue #1 hit exactly
     // this and the reason told us nothing. C2_PAYLOAD_FAIL is a global on purpose
     // (no subshell), so the caller can append it to its own reason.
-    'c2_payload() { C2_PAYLOAD_FAIL=; C2_TS_OK=0; C2_TS_SKIP=; "$C2_MKDIR" -p "$C2_GST" || { C2_PAYLOAD_FAIL="cannot create $C2_GST"; return 1; }; for f in libgstlibav.so libgstisomp4.so libgstmatroska.so libgstisomp4_1_8.so; do [ -f "$C2_PAYLOAD/$f" ] || { C2_PAYLOAD_FAIL="payload file absent: $f"; return 1; }; "$C2_CP" -f "$C2_PAYLOAD/$f" "$C2_GST/$f" || { C2_PAYLOAD_FAIL="cannot copy $f"; return 1; }; [ -s "$C2_GST/$f" ] || { C2_PAYLOAD_FAIL="empty after copy: $f"; return 1; }; LD_TRACE_LOADED_OBJECTS=1 "$C2_LOADER" "$C2_GST/$f" > "$C2_STATE/trace.$f" 2>&1 || { C2_PAYLOAD_FAIL="loader could not trace $f"; return 1; }; miss=$(grep "not found" "$C2_STATE/trace.$f" | sed "s/^[[:space:]]*//;s/[[:space:]]*=>.*//" | tr "\n" " "); [ -z "$miss" ] || { C2_PAYLOAD_FAIL="$f is missing dependencies on this TV: $miss"; return 1; }; done; C2_TS_OK=0; tsf=libgstmpegtsdemux.so; if [ -f "$C2_PAYLOADTS/$tsf" ]; then if "$C2_CP" -f "$C2_PAYLOADTS/$tsf" "$C2_GST/$tsf" && [ -s "$C2_GST/$tsf" ]; then if LD_TRACE_LOADED_OBJECTS=1 "$C2_LOADER" "$C2_GST/$tsf" > "$C2_STATE/trace.$tsf" 2>&1 && ! grep -q "not found" "$C2_STATE/trace.$tsf"; then C2_TS_OK=1; else C2_TS_SKIP="unresolved dependencies on this TV"; "$C2_RM" -f "$C2_GST/$tsf"; fi; else C2_TS_SKIP="could not stage"; "$C2_RM" -f "$C2_GST/$tsf"; fi; else C2_TS_SKIP="not shipped in this app build"; fi; return 0; }',
+    'c2_payload() { C2_PAYLOAD_FAIL=; C2_TS_OK=0; C2_TS_SKIP=; "$C2_MKDIR" -p "$C2_GST" || { C2_PAYLOAD_FAIL="cannot create $C2_GST"; return 1; }; for f in libgstlibav.so libgstisomp4.so libgstmatroska.so libgstisomp4_1_8.so; do [ -f "$C2_PAYLOAD/$f" ] || { C2_PAYLOAD_FAIL="payload file absent: $f"; return 1; }; { "$C2_CP" -f "$C2_PAYLOAD/$f" "$C2_GST/$f.new" && "$C2_MV" -f "$C2_GST/$f.new" "$C2_GST/$f"; } || { "$C2_RM" -f "$C2_GST/$f.new"; C2_PAYLOAD_FAIL="cannot copy $f"; return 1; }; [ -s "$C2_GST/$f" ] || { C2_PAYLOAD_FAIL="empty after copy: $f"; return 1; }; LD_TRACE_LOADED_OBJECTS=1 "$C2_LOADER" "$C2_GST/$f" > "$C2_STATE/trace.$f" 2>&1 || { C2_PAYLOAD_FAIL="loader could not trace $f"; return 1; }; miss=$(grep "not found" "$C2_STATE/trace.$f" | sed "s/^[[:space:]]*//;s/[[:space:]]*=>.*//" | tr "\n" " "); [ -z "$miss" ] || { C2_PAYLOAD_FAIL="$f is missing dependencies on this TV: $miss"; return 1; }; done; C2_TS_OK=0; tsf=libgstmpegtsdemux.so; if [ -f "$C2_PAYLOADTS/$tsf" ]; then if "$C2_CP" -f "$C2_PAYLOADTS/$tsf" "$C2_GST/$tsf.new" && "$C2_MV" -f "$C2_GST/$tsf.new" "$C2_GST/$tsf" && [ -s "$C2_GST/$tsf" ]; then if LD_TRACE_LOADED_OBJECTS=1 "$C2_LOADER" "$C2_GST/$tsf" > "$C2_STATE/trace.$tsf" 2>&1 && ! grep -q "not found" "$C2_STATE/trace.$tsf"; then C2_TS_OK=1; else C2_TS_SKIP="unresolved dependencies on this TV"; "$C2_RM" -f "$C2_GST/$tsf"; fi; else C2_TS_SKIP="could not stage"; "$C2_RM" -f "$C2_GST/$tsf" "$C2_GST/$tsf.new"; fi; else C2_TS_SKIP="not shipped in this app build"; fi; return 0; }',
     'c2_regular_or_absent() { { [ ! -e "$1" ] && [ ! -L "$1" ]; } || { [ -f "$1" ] && [ ! -L "$1" ]; }; }',
     'c2_state_known() { [ -d "$C2_STATE" ] && [ ! -L "$C2_STATE" ] || return 1; for p in "$C2_OWNER" "$C2_BASELINE" "$C2_BASELINE.tmp" "$C2_RECOVERY" "$C2_INIT" "$C2_INIT.tmp" "$C2_ENV" "$C2_HOOKSOURCE" "$C2_CONFIGSOURCE" "$C2_REGISTRYSOURCE" "$C2_STATE/trace.libgstlibav.so" "$C2_STATE/trace.libgstisomp4.so" "$C2_STATE/trace.libgstmatroska.so" "$C2_STATE/trace.libgstisomp4_1_8.so" "$C2_STATE/trace.libgstmpegtsdemux.so"; do c2_regular_or_absent "$p" || return 1; done; if [ -e "$C2_GST" ] || [ -L "$C2_GST" ]; then [ -d "$C2_GST" ] && [ ! -L "$C2_GST" ] || return 1; for p in "$C2_GST"/* "$C2_GST"/.[!.]* "$C2_GST"/..?*; do { [ -e "$p" ] || [ -L "$p" ]; } || continue; case "$p" in "$C2_GST/libgstlibav.so"|"$C2_GST/libgstisomp4.so"|"$C2_GST/libgstmatroska.so"|"$C2_GST/libgstisomp4_1_8.so"|"$C2_GST/libgstmpegtsdemux.so") c2_regular_or_absent "$p" || return 1;; *) return 1;; esac; done; fi; for p in "$C2_STATE"/* "$C2_STATE"/.[!.]* "$C2_STATE"/..?*; do { [ -e "$p" ] || [ -L "$p" ]; } || continue; case "$p" in "$C2_GST"|"$C2_OWNER"|"$C2_BASELINE"|"$C2_BASELINE.tmp"|"$C2_RECOVERY"|"$C2_INIT"|"$C2_INIT.tmp"|"$C2_ENV"|"$C2_HOOKSOURCE"|"$C2_CONFIGSOURCE"|"$C2_REGISTRYSOURCE"|"$C2_STATE/trace.libgstlibav.so"|"$C2_STATE/trace.libgstisomp4.so"|"$C2_STATE/trace.libgstmatroska.so"|"$C2_STATE/trace.libgstisomp4_1_8.so"|"$C2_STATE/trace.libgstmpegtsdemux.so") :;; *) return 1;; esac; done; }',
     'c2_snapshot_state() { c2_state_known && c2_baseline_complete && [ -f "$C2_OWNER" ] && [ -f "$C2_INIT" ] && [ ! -L "$C2_INIT" ] && [ -f "$C2_ENV" ] && [ ! -L "$C2_ENV" ] || return 1; C2_KEEP_BASELINE=$(cat "$C2_BASELINE") || return 1; C2_KEEP_INIT=$(cat "$C2_INIT") || return 1; C2_KEEP_ENV=$(cat "$C2_ENV") || return 1; C2_KEEP_HOOK_KIND=$(c2_hook_kind); [ "$C2_KEEP_HOOK_KIND" != foreign ] || return 1; C2_KEEP_HOOK=; if [ "$C2_KEEP_HOOK_KIND" = exact ]; then C2_KEEP_HOOK=$(cat "$C2_HOOK") || return 1; fi; }',
@@ -3849,7 +3852,8 @@ function w25AppDtsSteps(on) {
   lines.push('B64EOF');
   lines.push('chmod 0755 "' + W25_INIT_SCRIPT + '"');
   // Its HDMI EDID hook too, which an app update ships before the next Enable.
-  if (on) lines.push('[ -f "' + PAYLOAD_W25 + '/libedidaudio.so" ] && cp -f "' + PAYLOAD_W25 + '/libedidaudio.so" "' + W25_DEST + '/libedidaudio.so"');
+  // Through a rename: eim may have the old one mapped, and `cp -f` over it crashed eim on a C5.
+  if (on) lines.push('[ -f "' + PAYLOAD_W25 + '/libedidaudio.so" ] && { cp -f "' + PAYLOAD_W25 + '/libedidaudio.so" "' + W25_DEST + '/libedidaudio.so.new" && mv -f "' + W25_DEST + '/libedidaudio.so.new" "' + W25_DEST + '/libedidaudio.so" || rm -f "' + W25_DEST + '/libedidaudio.so.new"; }');
   lines.push('W25_APPDTS=' + (on ? "on" : "off") + ' sh "' + W25_INIT_SCRIPT + '"');
   lines.push('echo "APPDTS_LAST=$(head -n1 ' + W25_DEST + '/appdts.last 2>/dev/null)"');
   lines.push('echo OK');

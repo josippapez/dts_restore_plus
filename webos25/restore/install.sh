@@ -119,6 +119,18 @@ w25_umount() {
   return 1
 }
 
+# Put $1 at $2 through a temp file in $2's directory and a rename, never by
+# writing $2 in place. `cp -f` onto an existing file rewrites the same inode,
+# and truncating it drops every running process's relocated pages of it: on a
+# C5, a reinstall that rewrote libedidaudio.so under a hooked eim crashed eim
+# the next time it built an EDID. After a rename, running processes keep the old
+# inode. -P keeps the ffmpeg soname symlinks symlinks.
+replace_file() {
+  cp -Pf "$1" "$2.new" && mv -f "$2.new" "$2" && return 0
+  rm -f "$2.new"
+  return 1
+}
+
 log "=== unified DTS+TrueHD install start ==="
 
 # --- 1. Stage DTS payload --------------------------------------------------
@@ -134,7 +146,7 @@ mkdir -p "$DTS_DEST" || { log "FATAL: cannot create $DTS_DEST"; exit 0; }
 : > "$CLI_MARKER" && log "marked CLI install ($CLI_MARKER)" || log "WARN: could not write $CLI_MARKER"
 
 if [ -f "$SELF_DIR/out/libgstdtsdec.so" ]; then
-  cp -f "$SELF_DIR/out/libgstdtsdec.so" "$DTS_DEST/libgstdtsdec.so" \
+  replace_file "$SELF_DIR/out/libgstdtsdec.so" "$DTS_DEST/libgstdtsdec.so" \
     && log "installed libgstdtsdec.so -> $DTS_DEST/" || log "WARN: copy libgstdtsdec.so failed"
 else
   log "WARN: $SELF_DIR/out/libgstdtsdec.so not found (run build.sh first)"
@@ -144,7 +156,7 @@ fi
 #         compiled rank 320) into the same dts25 dir the plugin path already
 #         covers -- CORE, like dtsdec/libav (init_dts25.sh w25_core_staged).
 if [ -f "$SELF_DIR/switch-out/libgstadecswitch.so" ]; then
-  cp -f "$SELF_DIR/switch-out/libgstadecswitch.so" "$DTS_DEST/libgstadecswitch.so" \
+  replace_file "$SELF_DIR/switch-out/libgstadecswitch.so" "$DTS_DEST/libgstadecswitch.so" \
     && log "installed libgstadecswitch.so -> $DTS_DEST/" || log "WARN: copy libgstadecswitch.so failed"
 else
   log "WARN: $SELF_DIR/switch-out/libgstadecswitch.so not found (run build-switch.sh first)"
@@ -152,13 +164,13 @@ fi
 # The eim hook for "Show DTS tracks in apps" (init_dts25.sh w25_hdmi_hook_on).
 # Optional: without it the HDMI inputs list DTS while that opt-in is on.
 if [ -f "$SELF_DIR/edid-out/libedidaudio.so" ]; then
-  cp -f "$SELF_DIR/edid-out/libedidaudio.so" "$DTS_DEST/libedidaudio.so" \
+  replace_file "$SELF_DIR/edid-out/libedidaudio.so" "$DTS_DEST/libedidaudio.so" \
     && log "installed libedidaudio.so -> $DTS_DEST/" || log "WARN: copy libedidaudio.so failed"
 fi
 
 # --- 1c. Stage the eARC ALSA check/recovery helper (never rewires DSP edges).
 if [ -f "$SELF_DIR/out/lgroute-control" ]; then
-  cp -f "$SELF_DIR/out/lgroute-control" "$DTS_DEST/lgroute-control" \
+  replace_file "$SELF_DIR/out/lgroute-control" "$DTS_DEST/lgroute-control" \
     && chmod 0755 "$DTS_DEST/lgroute-control" \
     && log "installed lgroute-control -> $DTS_DEST/" || log "WARN: staging lgroute-control failed"
 else
@@ -169,7 +181,7 @@ fi
 mkdir -p "$THD_LIBS" || { log "FATAL: cannot create $THD_LIBS"; exit 0; }
 
 if [ -f "$SELF_DIR/truehd-out/libgstlibav.so" ]; then
-  cp -f "$SELF_DIR/truehd-out/libgstlibav.so" "$THD_DEST/libgstlibav.so" \
+  replace_file "$SELF_DIR/truehd-out/libgstlibav.so" "$THD_DEST/libgstlibav.so" \
     && log "installed libgstlibav.so -> $THD_DEST/" || log "WARN: copy libgstlibav.so failed"
 else
   log "WARN: $SELF_DIR/truehd-out/libgstlibav.so not found (run build-truehd.sh first)"
@@ -178,8 +190,8 @@ fi
 n=0
 for f in "$SELF_DIR"/truehd-out/libav*.so* "$SELF_DIR"/truehd-out/libsw*.so*; do
   [ -e "$f" ] || continue
-  # cp -P preserves the soname symlinks (libavcodec.so.58 -> libavcodec.so.58.x.y).
-  cp -Pf "$f" "$THD_LIBS/" && n=$((n+1))
+  # replace_file keeps the soname symlinks (libavcodec.so.58 -> libavcodec.so.58.x.y).
+  replace_file "$f" "$THD_LIBS/${f##*/}" && n=$((n+1))
 done
 log "staged $n ffmpeg lib entries -> $THD_LIBS/"
 
@@ -195,7 +207,7 @@ DMX_PSD=/usr/lib/gstreamer-1.0/libgstmpegpsdemux.so
 mkdir -p "$DMX_DEST" || log "WARN: cannot create $DMX_DEST"
 for so in libgstisomp4.so libgstmpegtsdemux.so libgstmatroska.so libgstmpegpsdemux.so; do
   if [ -f "$SELF_DIR/demux-out/$so" ]; then
-    cp -f "$SELF_DIR/demux-out/$so" "$DMX_DEST/$so" \
+    replace_file "$SELF_DIR/demux-out/$so" "$DMX_DEST/$so" \
       && log "installed $so -> $DMX_DEST/" || log "WARN: copy $so failed"
   else
     log "note: $SELF_DIR/demux-out/$so not found; its demuxer override will be skipped"
