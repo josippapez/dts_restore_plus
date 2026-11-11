@@ -11,15 +11,18 @@
 # supervised=1), so the DTS check is open before a stream arrives, and polls
 # once a second. Decoder N plays the input only if its own dsp0/hdmiN instance
 # is on the port adec.pN connects and one of the two is started; decoder 0 is
-# logged, not handled. A live DTS stream that no decoder plays gets one
-# input-service restart per stream. A DTS stream on decoder 1 that holds for
-# two polls gets the route hdmi-session.sh builds (same writes, same order); a change of the
-# stream, the port or the decoder reverts it at once. TERM, INT or HUP reverts,
-# unloads the module and exits 0; it does not restart the input service (on a
-# C5 a stop-time restart left both decoders wired to another HDMI port until a
-# TV restart), so a DTS stream still live at stop keeps its decoder state until
-# the input changes. Exit 1: refused, or three attempts in a row
-# failed. Exit 20: the rollback is incomplete. Logs go to
+# logged, not handled. A DTS stream on decoder 1 that holds for two polls
+# gets the route hdmi-session.sh builds (same writes, same order); a change of
+# the stream, the port or the decoder reverts it at once. TERM, INT or HUP
+# reverts, unloads the module and exits 0. Exit 1: refused, or three attempts
+# in a row failed.
+#
+# It never restarts the input service: on a C5 a restart left one HDMI input
+# playing another's audio until a TV restart. With the module loaded first, the
+# C5's decoder started on DTS by itself, also after a seek or an input switch.
+# A stream already playing when the module loads was refused by the TV; it
+# needs a skip, pause and play, or an input switch and back. A DTS stream still
+# live at stop keeps its decoder state until the input changes. Exit 20: the rollback is incomplete. Logs go to
 # /tmp/dts25-hdmi-watch-<epoch>-<pid>/.
 #
 # The helpers are copied from hdmi-session.sh. DTS25_ROOT prefixes every
@@ -146,7 +149,7 @@ started_within() {  # started_within SECONDS
 loaded=0 applied=0 touched=0 unmuted=0 incomplete=0
 a_kind='' a_port='' a_prop='' a_dsp='' a_restore='' gain=''
 saved_prop='' saved_gain=''
-cand='' polls=0 fails=0 restarted=0 waited=0 backoff=0 p0_seen=0 p0_count=0 last=''
+cand='' polls=0 fails=0 backoff=0 hinted=0 p0_seen=0 p0_count=0 last=''
 applies=0 reverts=0
 
 # 0 applied; 1 failed (why says why; counts towards the three); 2 the stream
@@ -155,21 +158,7 @@ apply() {
     k=$kind
     kind_vars "$k"
     say "applying $label (port $port, decoder 1)"
-    if ! started_within 3; then
-        if [ "$restarted" = 1 ]; then why="adec.p1 is not on UserCodec=$adec_codec with Start=1"; return 1; fi
-        restarted=1
-        # Same cross-wiring risk as in wake().
-        say "adec.p1 has not started on $adec_codec; restarting extinput-integration.service (once per stream)"
-        systemctl restart extinput-integration.service || { why='the input-service restart failed'; return 1; }
-        # The input can read as not DTS for a moment after the restart; only
-        # the last read decides.
-        if ! started_within 10; then
-            read_input
-            [ "$kind" = "$k" ] || return 2
-            why="adec.p1 did not start on $adec_codec within 10 s of the input-service restart"
-            return 1
-        fi
-    fi
+    started_within 3 || { why="adec.p1 is not on UserCodec=$adec_codec with Start=1"; return 1; }
     read_input
     { [ "$kind" = "$k" ] && [ "$dec" = 1 ]; } || return 2
 
@@ -280,8 +269,7 @@ capture_p0() {
 
 poll() {
     read_input
-    [ "$kind" != none ] || restarted=0 waited=0 backoff=0 p0_seen=0
-    [ -z "$dec" ] || waited=0
+    [ "$kind" != none ] || backoff=0 hinted=0 p0_seen=0
     if [ "$applied" = 1 ] && { [ "$kind" != "$a_kind" ] || [ "$dec" != 1 ] || [ "$port" != "$a_port" ] || [ "$prop" != "$a_prop" ]; }; then
         say "input changed ($seen); reverting"
         revert || { say 'Revert failed; stopping.'; exit 20; }
@@ -301,7 +289,10 @@ poll() {
             n92=$(earc_control)
             [ "$n92" = 2,1,0,0,1 ] || note="numid 92 is '$n92', expected 2,1,0,0,1"
         fi
-        [ -n "$note" ] || [ -n "$dec" ] || { note='no decoder is playing the HDMI input'; wake; }
+        if [ -z "$note" ] && [ -z "$dec" ]; then
+            note='no decoder is playing the HDMI input'
+            [ "$hinted" = 1 ] || { hinted=1; say 'DTS is arriving but no decoder plays it (the TV refused it before the module loaded); skip, pause and play, or switch inputs and back to restart the stream.'; }
+        fi
     fi
     [ "$seen${note:+; $note}" = "$last" ] || { last="$seen${note:+; $note}"; say "input: $last"; }
     if [ "$applied" = 1 ] || [ "$kind" = none ] || [ -n "$note" ]; then cand='' polls=0; return 0; fi
@@ -318,20 +309,6 @@ failed() {  # counts the attempt that failed for the reason in why
     say "attempt failed ($fails of 3): $why; not retried until this stream ends"
     [ "$fails" -lt 3 ] || { say "Three failed attempts in a row (last: $why); stopping."; exit 1; }
 }
-# A live DTS stream that no decoder plays: LG refused it before the module
-# loaded. One input-service restart per stream, then about 10 polls for a
-# decoder to start. On a C5 a restart (at stop) once cross-wired both decoders
-# to another HDMI port until a TV restart; here it is the only way in.
-wake() {
-    if [ "$restarted" = 0 ]; then
-        restarted=1 waited=0
-        say 'no decoder is playing the DTS input; restarting extinput-integration.service (once per stream)'
-        systemctl restart extinput-integration.service || { why='the input-service restart failed'; failed; }
-    else
-        waited=$((waited+1))
-        [ "$waited" -lt 10 ] || { why='no decoder started within 10 s of the input-service restart'; failed; }
-    fi
-}
 
 cleanup() {
     status=$?
@@ -346,8 +323,6 @@ cleanup() {
         [ -z "$(lsmod | awk '$1=="earc_route" {print $1}')" ] || incomplete=1
         n92=$(earc_control)
         [ -n "$n92" ] && amixer -c0 cset numid=92 "$n92" > /dev/null || incomplete=1
-        # No input-service restart: on a C5 one left both decoders on another
-        # HDMI port until a TV restart.
         [ "$kind" = none ] || say 'DTS is still playing on HDMI; switch to another input and back, or the TV keeps the passthrough decoder state until the stream changes.'
         dmesg | grep 'earc_route:' > "$logdir/module.log"
     fi

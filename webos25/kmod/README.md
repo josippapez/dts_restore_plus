@@ -619,7 +619,10 @@ On exit, interrupt or any failure after the first write, cleanup quiesces the DS
 instance, restores the gain and prop values it changed (for DTS-HD also
 `sampling-freq` and `channel-num`), unloads `earc_route`, restores numid 92 and
 restarts the input service. If anything could not be restored it prints
-`Rollback incomplete; ... restart TV` and exits non-zero. Logs, including the
+`Rollback incomplete; ... restart TV` and exits non-zero. It restarts the
+input service at start and at exit (the flow that worked on the tester's CS),
+although on a C5 an input-service restart (from an earlier `hdmi-watch.sh`) left
+one HDMI input playing another's audio until a TV restart. Logs, including the
 `earc_route` dmesg lines and the module counters including the `hd_*` ones (for
 DTS-HD also `earc-nonpcm.txt`), go to `/tmp/dts25-hdmi-<epoch>-<pid>/`
 (mode 700).
@@ -677,6 +680,12 @@ sh hdmi-watch.sh                              # foreground; Ctrl-C stops it
 nohup sh hdmi-watch.sh > /dev/null 2>&1 &     # background; stop it with kill <pid>
 ```
 
+It never restarts `extinput-integration.service`: on a C5 a restart while DTS was
+live left both `adec.p0` and `adec.p1` on `HDMI_PORT2` (the PS5's audio while
+watching the Streamer on port 0), which only a TV restart cleared. A DTS stream
+that was already playing when the module loaded was refused by the TV and needs
+restarting by hand (see *No decoder playing*).
+
 It refuses when not root, when `earc_route` is already loaded, when another
 watcher holds `/tmp/dts25-hdmi-watch.lock` (a lock whose pid is dead is taken
 over), or when the loader refuses.
@@ -688,32 +697,27 @@ over), or when the loader refuses.
   `adec.p0` played port 0 through `hdmi0`. When both qualify, the one whose
   `UserCodec` is the stream's codec wins; otherwise neither is used (logged).
 - *No decoder playing* a live DTS stream (it arrived before the module loaded,
-  and LG refused it): with eARC on and numid 92 at `2,1,0,0,1`, one
-  `extinput-integration.service` restart per stream; if no decoder has started
-  about 10 s later, that counts as a failed attempt.
+  and the TV refused it): with eARC on and numid 92 at `2,1,0,0,1`, it prints once
+  per stream `DTS is arriving but no decoder plays it (the TV refused it before
+  the module loaded); skip, pause and play, or switch inputs and back to restart
+  the stream.` and keeps watching. This is not a failed attempt.
 - *Apply.* A DTS core or DTS-HD stream (the kinds in the session table above) on
   decoder 1, with `EArcOnOff=On` and numid 92 at `2,1,0,0,1`, seen on two
   polls in a row, gets the same writes in the same order as `hdmi-session.sh`
   (numid 92, route check, the one gain block, the DSP instance; DTS-HD muted
   until `earc_nonpcm` reads 1). If `adec.p1` has not started on the stream's
-  codec within 3 s, it restarts `extinput-integration.service` once per stream
-  and waits up to 10 s more. The DSP instance and gain values are saved once per
+  codec within 3 s, the attempt fails. The DSP instance and gain values are saved once per
   run, from the first instance it writes, and saved again only for a new
   instance or gain block.
 - *Revert*, at once, when the stream's kind, port, decoder or DSP instance
   changes: mute the gain block, then, if the instance still has our port and
   codec, `drop 1`, `start 0`, the saved values and the saved gain mute values
   (otherwise LG has rewritten it and it is left alone), then numid 92 to its own
-  value. It never restarts the input service. A core to DTS-HD change is a
+  value. A core to DTS-HD change is a
   revert and then a new apply.
-- *Stop* (TERM, INT or HUP): revert, `rmmod earc_route`, numid 92. It does not
-  restart the input service: on a C5 a stop-time restart while DTS was live left
-  both `adec.p0` and `adec.p1` on `HDMI_PORT2` (the PS5's audio while watching
-  the Streamer on port 0), which only a TV restart cleared. If DTS is still live
-  it prints `DTS is still playing on HDMI; switch to another input and back, or
-  the TV keeps the passthrough decoder state until the stream changes.` The
-  once-per-stream restarts while running stay, since a stream that arrived before
-  the module loaded needs one, and carry the same risk.
+- *Stop* (TERM, INT or HUP): revert, `rmmod earc_route`, numid 92. If DTS is
+  still live it prints `DTS is still playing on HDMI; switch to another input and
+  back, or the TV keeps the passthrough decoder state until the stream changes.`
 - A failed attempt (no compressed route, no single gain block, the decoder never
   started, `earc_nonpcm` not 1) is reverted and not retried until the stream
   ends. Three in a row stop the watcher.

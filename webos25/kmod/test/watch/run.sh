@@ -33,10 +33,8 @@ if [ "$2" = cget ]; then
 fi
 echo "cset numid=92 $4" >> "$FAKE_EVENTS"
 [ "${FAKE_ROUTE:-yes}" = no ] || printf "%s\n" " renderer_1_out100 -> mixer_0_in100 [label=\"\"]" " mixer_0_out100 -> output_3_in0 [label=\"\"]" >> "$R/proc/aaudio/dot_block_connection"'
-# A restart starts adec.p1 on the codec the state gave it (FAKE_ADEC=never: not).
-stub systemctl 'echo "systemctl $*" >> "$FAKE_EVENTS"
-touch "$DTS25_ROOT/restarted"
-[ "${FAKE_ADEC:-auto}" = never ] || sed -i.bak "s/^Start=.*/Start=1/" "$DTS25_ROOT/proc/lgtv-driver/audio/adec.p1"'
+# Only logged: the watcher must never call it (expect_clean).
+stub systemctl 'echo "systemctl $*" >> "$FAKE_EVENTS"'
 stub lsmod 'echo "Module Size Used by"; [ ! -e "$DTS25_ROOT/sys/module/earc_route" ] || echo "earc_route 16384 0"'
 stub rmmod 'echo "rmmod $*" >> "$FAKE_EVENTS"
 [ "${FAKE_RMMOD:-ok}" = ok ] || { echo "rmmod: ERROR: Module $1 is in use" >&2; exit 1; }
@@ -48,7 +46,8 @@ name=${line%% *}; value=${line#* }
 sed -i.bak "s/^$name=\(([a-z]*)\).*/$name=\1$value/" "$f"'
 # fake-state STATE: rewrites the input and both decoders. A DTS stream starts
 # adec.p1 on its own (the module's DTS check is open), unless FAKE_ADEC is
-# "restart" (only after an input-service restart in this stream) or "never".
+# "refused" (the TV refused the first stream: only DTS after a non-DTS state
+# starts) or "never".
 # FAKE_LG=1: a non-DTS state rewrites the DSP instance's codec, as LG does.
 # p0dts: the stream on adec.p0, adec.p1 disconnected. c5: the stream on adec.p0
 # and a stale adec.p1 on port 2, as on the C5. stalep0 and both: the stream on
@@ -66,8 +65,8 @@ case "$1" in
 esac
 s=1
 case "$u" in
-  DTS*) case "${FAKE_ADEC:-auto}" in never) s=0 ;; restart) [ -e "$R/restarted" ] || s=0 ;; esac ;;
-  *) rm -f "$R/restarted"
+  DTS*) case "${FAKE_ADEC:-auto}" in never) s=0 ;; refused) [ -e "$R/dropped" ] || s=0 ;; esac ;;
+  *) touch "$R/dropped"
      [ "$u" != UNKNOWN ] || s=0
      [ -z "${FAKE_LG:-}" ] || sed -i.bak "s/^codec=(int).*/codec=(int)4/" "$R/proc/aaudio/processors/dsp0/hdmi1/021c0001/prop" ;;
 esac
@@ -161,20 +160,20 @@ expect_clean() {
     [ ! -e "$R/sys/module/earc_route" ] || bad "module still loaded"
     [ ! -e "$R/tmp/dts25-hdmi-watch.lock" ] || bad "lock left behind"
     case "$out" in *'Rollback incomplete'*) bad "rollback incomplete" ;; esac
-    # The stop never restarts the input service; it says so when DTS is live.
+    # The input service is never restarted; the stop says so when DTS is live.
+    ! grep -q '^systemctl' "$WORK/events" || bad "input service restarted"
     if grep -q '^rmmod' "$WORK/events"; then
-        [ "$(sed -n '/^rmmod/,$p' "$WORK/events" | grep -c '^systemctl')" = 0 ] || bad "input service restarted at stop"
         case "$(cat "$R/state")" in
             dts|hd|p0dts|c5|stalep0|both) expect_out "$LIVE" ;;
             *) case "$out" in *"$LIVE"*) bad "live-DTS notice without a live stream" ;; esac ;;
         esac
     fi
 }
+HINT='DTS is arriving but no decoder plays it (the TV refused it before the module loaded); skip, pause and play, or switch inputs and back to restart the stream.'
 LIVE='DTS is still playing on HDMI; switch to another input and back, or the TV keeps the passthrough decoder state until the stream changes.'
 
 LOAD='load --dts-hd window_seconds=0 supervised=1'
 CSET='cset numid=92 2,1,0,0,1'
-RESTART='systemctl restart extinput-integration.service'
 CORE="$CSET
 write $G mute-input false
 write $G mute-output false
@@ -333,25 +332,14 @@ $HD_RESTORE
 $STOP"
     expect_out 'attempt failed (1 of 3): eARC is not non-PCM (earc_nonpcm=0); not retried until this stream ends'
 
-    name='adec does not start on its own: one service restart, then the apply'; cases=$((cases+1))
-    FAKE_ADEC=restart; export FAKE_ADEC
-    setup dts 'dts*6'
-    run; expect_status 0; expect_clean
-    expect_events "$LOAD
-$RESTART
-$CORE
-$MUTE
-$CORE_RESTORE
-$STOP"
-
-    name='adec never starts: one service restart in the stream, no writes'; cases=$((cases+1))
+    name='adec.p1 never starts on DTS: one failed attempt, no writes'; cases=$((cases+1))
     FAKE_ADEC=never; export FAKE_ADEC
     setup dts 'dts*20'
     run; expect_status 0; expect_clean
     expect_events "$LOAD
-$RESTART
 $STOP"
-    expect_out 'attempt failed (1 of 3): adec.p1 did not start on DTS within 10 s of the input-service restart'
+    expect_out 'attempt failed (1 of 3): adec.p1 is not on UserCodec=DTS with Start=1; not retried until this stream ends'
+    [ "$(printf '%s\n' "$out" | grep -c 'attempt failed')" = 1 ] || bad "more than one failed attempt"
 
     name='originals are saved once: LG rewrote the codec during the seek'; cases=$((cases+1))
     FAKE_LG=1; export FAKE_LG
@@ -447,32 +435,32 @@ $STOP"
 $STOP"
     expect_out 'decoder=; decoders 0 and 1 both play an HDMI input; not handled'
 
-    name='DTS live, no decoder playing: one restart from the poll, then the apply'; cases=$((cases+1))
-    FAKE_ADEC=restart; export FAKE_ADEC
-    setup dts 'dts*4'
+    name='DTS refused before the load: the hint once, no failure; applied when the stream returns'; cases=$((cases+1))
+    FAKE_ADEC=refused; export FAKE_ADEC
+    setup dts 'dts*12' noaudio 'dts*3'
     sed -i.bak 's/^start=(int).*/start=(int)0/' "$R$P"
     run; expect_status 0; expect_clean
     expect_events "$LOAD
-$RESTART
+-- noaudio
+-- dts
 $CORE
 $MUTE
 $(echo "$CORE_RESTORE" | sed 's/start 1$/start 0/')
 $STOP"
-    expect_out 'no decoder is playing the DTS input; restarting extinput-integration.service (once per stream)'
+    [ "$(printf '%s\n' "$out" | grep -c "$HINT")" = 1 ] || bad "the hint is not printed exactly once"
+    case "$out" in *'attempt failed'*) bad "counted as a failed attempt" ;; esac
 
-    name='DTS live, the restart starts no decoder: one failed attempt, no second restart'; cases=$((cases+1))
+    name='no decoder playing in two streams: the hint once per stream'; cases=$((cases+1))
     FAKE_ADEC=never; export FAKE_ADEC
-    setup dts 'dts*15' noaudio 'dts*3'
+    setup dts 'dts*2' noaudio 'dts*3'
     sed -i.bak 's/^start=(int).*/start=(int)0/' "$R$P"
     run; expect_status 0; expect_clean
     expect_events "$LOAD
-$RESTART
 -- noaudio
 -- dts
-$RESTART
 $STOP"
-    expect_out 'attempt failed (1 of 3): no decoder started within 10 s of the input-service restart; not retried until this stream ends'
-    [ "$(printf '%s\n' "$out" | grep -c 'attempt failed')" = 1 ] || bad "more than one failed attempt"
+    [ "$(printf '%s\n' "$out" | grep -c "$HINT")" = 2 ] || bad "the hint is not printed once per stream"
+    case "$out" in *'attempt failed'*) bad "counted as a failed attempt" ;; esac
 
     name='rmmod fails: rollback incomplete, exit 20'; cases=$((cases+1))
     FAKE_RMMOD=fail; export FAKE_RMMOD
