@@ -1,0 +1,17 @@
+Status files read from a rooted LG C5 (kernel 5.4.268-329.ptl4tv.5) on
+2026-11-11, with speakers as the output (no eARC receiver) and a Dolby MAT
+source on HDMI port 0, decoder adec.p1. Copied verbatim; the test edits them
+into each case's state. The number in a prop file's chain-profile line is
+different on every read of the TV's file; it is not a setting.
+
+hdmi, adec.p0, adec.p1, sndout   /proc/lgtv-driver/audio/<name>
+hdmi1.prop, hdmi1.lstatus        /proc/aaudio/processors/dsp0/hdmi1/021c0001/{prop,lstatus}
+gain.prop                        /proc/aaudio/processors/dsp2/gain/041b0001/prop
+dot_module_connection            /proc/aaudio/dot_module_connection
+dot_block_connection             /proc/aaudio/dot_block_connection
+amixer-cget-numid92.txt          amixer -c0 cget numid=92
+
+dot_block_connection lacks the compressed route (renderer_1_out100 ->
+mixer_0_in100, mixer_0_out100 -> output_3_in0): this TV has no receiver. The
+test's amixer stub appends those two lines, in the form lg-g5-dts's script
+greps for; their exact text on a receiver TV has not been seen here.
