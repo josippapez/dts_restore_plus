@@ -226,7 +226,7 @@ the layout check (the captures hold no kprobe instance to measure directly).
 the registration/patch call conventions match 5.4. No mode refuses on 6.12 for a
 generation reason. Only `struct kprobe`'s size differs, and that is handled.
 
-The pre-handler runs in breakpoint context: it calls no kernel function, takes no
+The pre-handler runs in breakpoint context: it calls no kernel function but `printk` (first 5 matches, first 8 non-matches), takes no
 lock, sleeps not, reads only the load-time bounds-checked ADEC addresses and the
 caller's descriptor (null-checked), updates atomics, and (mode 5, in-window)
 rewrites x2/x3. We never probe the pre-handler itself (only `_set_output` and the
@@ -351,6 +351,7 @@ unloaded cleanly but its `_set_output` pre-handler never fired; mode 5 has never
 run; nothing has run on 6.12.** Read-only parameters report the state:
 `gate_open`, `gate_opened_by_us`, `hooks_registered`, `probe_registered`,
 `selftest_passed`, `window_open`, `calls_seen`, `calls_matched`, `overrides`.
+In dmesg, modes 4 and 5 print `earc_route: pass nomatch ...` for the first 8 `_set_output` calls that miss the policy, with every input of the decision: `index`, `desc` (0 = null descriptor, `mask` then shown as 0), `mask`, ADEC 1 `adec1-codec`/`open`/`started`, and the call's `codec-arg`/`bypass-arg`.
 
 `earc_route-5.4.ko` and `earc_route-6.12.ko` sit next to the script; `uname -r`
 picks one, with its stock module path and `struct module` layout:

@@ -124,7 +124,7 @@ static struct target_kprobe route_probe, selftest_probe;
 static struct target_break_hook hook_probe, hook_step;  /* BRK imm 4 and imm 6 */
 static u32 hooks_registered, probe_registered, gate_open, gate_opened_by_us, selftest_passed;
 static ed_u32 gate_written;
-static u32 calls_seen, calls_matched, overrides, match_prints;
+static u32 calls_seen, calls_matched, overrides, match_prints, nomatch_prints;
 static u32 window_seconds = 30, supervised, window_open = 1;
 static int override_mode;          /* mode 5: override; mode 4: observe only */
 static u32 selftest_hits;
@@ -763,20 +763,26 @@ static int (*volatile selftest_call)(int) = selftest_fn;
 /* Runs in breakpoint context (BRK #4 handler). Reads only the derived,
  * load-time bounds-checked ADEC addresses and the caller's descriptor (null
  * checked), updates atomics, and for mode 5 rewrites x2/x3 within the window.
- * It calls no kernel function and we only ever probe _set_output and the
+ * It calls no kernel function but printk (first 5 matches, first 8
+ * non-matches) and we only ever probe _set_output and the
  * self-test leaf, never this handler, so no probe recursion is possible. */
 static int route_prehandler(struct target_kprobe *p, struct target_pt_regs *regs) {
     ed_u64 descriptor = regs->regs[1];
-    ed_u32 mask_word, codec;
+    ed_u32 mask_word = 0, codec;
     ed_u8 open, started;
     (void)p;
     __atomic_add_fetch(&calls_seen, 1, __ATOMIC_RELAXED);
-    if (!descriptor) return 0;
-    mask_word = *(volatile u32 *)(descriptor + hdmi.mask_offset);
+    if (descriptor) mask_word = *(volatile u32 *)(descriptor + hdmi.mask_offset);
     codec = *(volatile u32 *)hdmi.adec1_codec;
     open = *(volatile u8 *)hdmi.adec1_open;
     started = *(volatile u8 *)hdmi.adec1_started;
-    if (!earc_policy_match(regs->regs[0], mask_word, codec, open, started)) return 0;
+    if (!descriptor || !earc_policy_match(regs->regs[0], mask_word, codec, open, started)) {
+        if (__atomic_add_fetch(&nomatch_prints, 1, __ATOMIC_RELAXED) <= 8)
+            printk("\0016earc_route: pass nomatch index=%llu desc=%d mask=0x%x adec1-codec=%u open=%u started=%u codec-arg=%u bypass-arg=%u\n",
+                   (unsigned long long)regs->regs[0], descriptor != 0, mask_word, codec, open, started,
+                   (u32)regs->regs[2], (u32)regs->regs[3]);
+        return 0;
+    }
     __atomic_add_fetch(&calls_matched, 1, __ATOMIC_RELAXED);
     if (__atomic_add_fetch(&match_prints, 1, __ATOMIC_RELAXED) <= 5)
         printk("\0016earc_route: pass match index=%llu codec-arg=%u bypass-arg=%u adec1-codec=%u\n",
