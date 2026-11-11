@@ -68,6 +68,8 @@ needed; both kernels have PAC on.
 | `test/run.sh`, `test/test_decode.c` | Host test: sha-keyed oracles, refusal tests, C5/G5 and 5.4/6.12 differences |
 | `hdmi-session.sh` | TV-side DTS core or DTS-HD session from an HDMI input (root, busybox sh): preflight, audio graph setup, restore |
 | `test/session/run.sh`, `test/session/fixtures/` | Host test of `hdmi-session.sh` against a C5's own status files, with stubbed commands |
+| `hdmi-watch.sh` | TV-side watcher: keeps the `hdmi-session.sh` route applied across seeks and input switches (root, busybox sh) |
+| `test/watch/run.sh` | Host test of `hdmi-watch.sh` on a timeline of input states, using `test/session/fixtures/` |
 
 ## What is derived, and from where
 
@@ -580,9 +582,15 @@ unmeasured**, so both are accepted. On the five saved 6.12 kernels the same
 type numbers and the same strings are present, but the table's pointers are
 filled in at boot, so the pairing is not confirmed there.
 
+The decoder is chosen as in `hdmi-watch.sh`: `adec.pN` carries the input when it
+is connected to the port of its own instance `dsp0/hdmiN` and it or the instance
+is started (`UserCodec` decides between two). When nothing is started yet (a stock
+TV refuses DTS), decoder 1 is used only if `adec.p1`/`hdmi1` is the one connected
+pair, since the input-service restart is what starts it; otherwise it refuses.
+
 `--check` changes nothing. It requires: root; a live stream of one of the two
 kinds (`AudioData=1`); `EArcOnOff=On`; one `dsp0/hdmi1` DSP instance whose
-`hdmi-port=(int)n` is connected and open on `adec.p1` (an input on `adec.p0` is
+`hdmi-port=(int)n` is connected on `adec.p1` (an input on `adec.p0` is
 refused: the module only overrides decoder 1); ALSA numid 92 equal to
 `2,1,0,0,1`; at most one gain block feeding a bypass block in
 `/proc/aaudio/dot_module_connection`. The loader's own checks (ABI, derivation,
@@ -652,3 +660,74 @@ has run on any TV: no DTS-HD stream has been played into a C5 (so its `Codec=`
 name there is unmeasured), and the DTS-HD states in the host test are
 synthetic, including the `output_arc` prop file, which has no real sample
 because the test TV has no eARC output instance.
+
+## HDMI passthrough watcher (`hdmi-watch.sh`)
+
+`hdmi-session.sh --session` ends at the first seek or input switch and has to
+be run again by hand. `hdmi-watch.sh` loads `earc_route` once
+(`earc-route-load.sh --dts-hd window_seconds=0 supervised=1`), so the DTS check
+is already open when a stream arrives, and then polls the input once a second.
+In one C5 run with the check open before DTS arrived, the decoder accepted the
+stream on its own, and again after a seek (input `NO_AUDIO`, then MAT for about
+3 s, then DTS) and after switching inputs away and back, with no input-service
+restart.
+
+```sh
+sh hdmi-watch.sh                              # foreground; Ctrl-C stops it
+nohup sh hdmi-watch.sh > /dev/null 2>&1 &     # background; stop it with kill <pid>
+```
+
+It refuses when not root, when `earc_route` is already loaded, when another
+watcher holds `/tmp/dts25-hdmi-watch.lock` (a lock whose pid is dead is taken
+over), or when the loader refuses.
+
+- *Decoder.* Decoder N (1, then 0) plays the input only if its own DSP instance
+  `dsp0/hdmiN/*/prop` exists, `adec.pN` has `Connect=HDMI_PORT<that instance's
+  hdmi-port>`, and `adec.pN` reads `Start=1` or the instance `start=(int)1`. A C5
+  showed why: `adec.p1` stayed `Open=1` on port 2's idle `hdmi1` instance while
+  `adec.p0` played port 0 through `hdmi0`. When both qualify, the one whose
+  `UserCodec` is the stream's codec wins; otherwise neither is used (logged).
+- *No decoder playing* a live DTS stream (it arrived before the module loaded,
+  and LG refused it): with eARC on and numid 92 at `2,1,0,0,1`, one
+  `extinput-integration.service` restart per stream; if no decoder has started
+  about 10 s later, that counts as a failed attempt.
+- *Apply.* A DTS core or DTS-HD stream (the kinds in the session table above) on
+  decoder 1, with `EArcOnOff=On` and numid 92 at `2,1,0,0,1`, seen on two
+  polls in a row, gets the same writes in the same order as `hdmi-session.sh`
+  (numid 92, route check, the one gain block, the DSP instance; DTS-HD muted
+  until `earc_nonpcm` reads 1). If `adec.p1` has not started on the stream's
+  codec within 3 s, it restarts `extinput-integration.service` once per stream
+  and waits up to 10 s more. The DSP instance and gain values are saved once per
+  run, from the first instance it writes, and saved again only for a new
+  instance or gain block.
+- *Revert*, at once, when the stream's kind, port, decoder or DSP instance
+  changes: mute the gain block, then, if the instance still has our port and
+  codec, `drop 1`, `start 0`, the saved values and the saved gain mute values
+  (otherwise LG has rewritten it and it is left alone), then numid 92 to its own
+  value. It never restarts the input service. A core to DTS-HD change is a
+  revert and then a new apply.
+- *Stop* (TERM, INT or HUP): revert, `rmmod earc_route`, numid 92. It does not
+  restart the input service: on a C5 a stop-time restart while DTS was live left
+  both `adec.p0` and `adec.p1` on `HDMI_PORT2` (the PS5's audio while watching
+  the Streamer on port 0), which only a TV restart cleared. If DTS is still live
+  it prints `DTS is still playing on HDMI; switch to another input and back, or
+  the TV keeps the passthrough decoder state until the stream changes.` The
+  once-per-stream restarts while running stay, since a stream that arrived before
+  the module loaded needs one, and carry the same risk.
+- A failed attempt (no compressed route, no single gain block, the decoder never
+  started, `earc_nonpcm` not 1) is reverted and not retried until the stream
+  ends. Three in a row stop the watcher.
+- **Decoder 0 is not handled**: the module overrides decoder 1 only. A DTS stream
+  on decoder 0 is logged once per stream with a capture (`decoder0-N/`: both
+  ADEC files, both dot files, the `hdmi0` and `hdmi1` props, the last `pass nomatch` kernel
+  line) and left alone.
+
+Exit codes: 0 stopped cleanly; 1 refused, or three failed attempts in a row; 20
+the rollback is incomplete (`Rollback incomplete; restart the TV.`). Logs go to
+`/tmp/dts25-hdmi-watch-<epoch>-<pid>/` (mode 700): `watch.log` (each input
+change, apply and revert, with the module counters), `loader.txt`, the saved
+originals, the last `route.dot` and `module.log`.
+
+**Verified:** the host test (`sh test/watch/run.sh`, under sh and bash); on a C5
+without an eARC receiver, decoder and port detection through seeks, a track
+restart and an input switch, and the stop. Never run with a receiver.
