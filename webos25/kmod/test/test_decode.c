@@ -316,6 +316,9 @@ static int run_oracle(const struct oracle *o, const struct kernel *k, struct ear
  * 33.31.68 row is the tester's CS kernel and also equals the addresses compiled
  * into its modules. adec_base is the slot array (struct + 32); the independent
  * derivation frames it 32 lower with offsets 32 higher, the same addresses.
+ * The G2 33.22.95 row (5.4.268-329.ptl4tv.2) was derived by hand from that
+ * image's disassembly and kallsyms; there the slot array is the address formed
+ * itself, and both ADEC functions bound the index with a signed `b.gt`.
  * What one pattern fixes for a whole generation is asserted per generation:
  * mask +20, ADEC stride 96 / codec +20 / open +8 / started +10, break fn +16 /
  * immediate +24 / mask +26, HD bound 4, six name entries, and the sites: 5.4
@@ -340,6 +343,10 @@ static const struct hdmi_oracle hdmi_oracles[] = {
      0xffffffc010cd44e0ULL, 0xffffffc012605218ULL, 0xffffffc012605280ULL, 0xffffffc012605282ULL, 0xffffffc01260528cULL,
      0xffffffc011b04090ULL, 0xffffffc011088cd0ULL, 0xffffffc011088bc0ULL, 0xffffffc011088930ULL, 0xffffffc01017e7e0ULL, 0xffffffc01017dbc0ULL, 0xffffffc0100b8ed0ULL, 0xffffffc0100b9004ULL,
      0x260594cULL, 0xffffffc010cb2d54ULL, 0xffffffc0115ea500ULL},
+    {"0192cf4f875affcbd505732ecc13d5fc67b38ae16f09d132ab21cbebdfa22503", "G2 33.22.95", 0,
+     0xffffffc010cd8a70ULL, 0xffffffc0125f41e0ULL, 0xffffffc0125f4248ULL, 0xffffffc0125f424aULL, 0xffffffc0125f4254ULL,
+     0xffffffc011af4090ULL, 0xffffffc01108d090ULL, 0xffffffc01108cf80ULL, 0xffffffc01108ccf0ULL, 0xffffffc01017e740ULL, 0xffffffc01017db20ULL, 0xffffffc0100b8e90ULL, 0xffffffc0100b8fc4ULL,
+     0x25f4934ULL, 0xffffffc010cb73c4ULL, 0xffffffc0115ea4b0ULL},
     {"53c3cb3d1f23a3da5e698df0a39848e850bbaa26692978e85845a12530775085", "C5 43.21.77", 1,
      0xffffffc080f5f4acULL, 0xffffffc082efedb8ULL, 0xffffffc082efee20ULL, 0xffffffc082efee22ULL, 0xffffffc082efee2cULL,
      0xffffffc082284890ULL, 0xffffffc0813e3c94ULL, 0xffffffc0813e3bfcULL, 0xffffffc0813e3a4cULL, 0xffffffc08013c404ULL, 0xffffffc08013b760ULL, 0xffffffc08003f4c0ULL, 0xffffffc08003f9acULL,
@@ -849,6 +856,15 @@ HDMI_MUTATION(adec_no_bound) {
         if ((w[i] & 0xfffffc1fU) == 0x7100041fU && (w[i + 1] & 0xff00001fU) == 0x54000008U) { w[i] = NOP; return 1; }
     return 0;
 }
+/* The b.hi after cmp wI,#1 -> cond (b.gt as on ptl4tv.2: equivalent; b.ge would reject index 1). */
+static int adec_bound_cond(ed_u32 *w, ed_u32 n, ed_u32 cond) {
+    ed_u32 i;
+    for (i = 0; i + 1 < n; i++)
+        if ((w[i] & 0xfffffc1fU) == 0x7100041fU && (w[i + 1] & 0xff00001fU) == 0x54000008U) { w[i + 1] = (w[i + 1] & ~15U) | cond; return 1; }
+    return 0;
+}
+HDMI_MUTATION(adec_bound_signed) { HDMI_UNUSED; return adec_bound_cond(w, n, 0xc); }
+HDMI_MUTATION(adec_bound_ge) { HDMI_UNUSED; return adec_bound_cond(w, n, 0xa); }
 /* The codec store: the first str wT,[xS,#off] after `add xS,xB,xA,lsl #5`. */
 static ed_u32 adec_store(const ed_u32 *w, ed_u32 n) {
     ed_u32 i, j;
@@ -941,6 +957,9 @@ static void hdmi_refusal_tests(const struct kernel *k, ed_u64 nonpcm, const stru
     hdmi_refuse(k, HF_alsa_decoder_codec, "ADEC slot scaling lsl #5 -> #6", "not found in alsa_decoder_codec", adec_scaling, adec_reason, nonpcm, good);
     hdmi_refuse(k, HF_alsa_decoder_start, "ADEC slot scaling changed in alsa_decoder_start only", "not found in alsa_decoder_start", adec_scaling, adec_reason, nonpcm, good);
     hdmi_refuse(k, HF_alsa_decoder_codec, "ADEC index bound check removed", "bound check", adec_no_bound, adec_reason, nonpcm, good);
+    hdmi_refuse(k, HF_alsa_decoder_codec, "ADEC index bound signed (b.gt) is not a refusal", 0, adec_bound_signed, adec_reason, nonpcm, good);
+    check("hdmi refusal", "ADEC 1 codec unchanged by a signed bound", hdmi_last.adec1_codec, good->adec1_codec);
+    hdmi_refuse(k, HF_alsa_decoder_codec, "ADEC index bound b.ge (rejects index 1)", "bound check", adec_bound_ge, adec_reason, nonpcm, good);
     hdmi_refuse(k, HF_alsa_decoder_codec, "codec store removed", "codec store", adec_no_store, adec_reason, nonpcm, good);
     hdmi_refuse(k, HF_alsa_decoder_codec, "a second 32-bit store through the slot", "more than one 32-bit store", adec_two_stores, adec_reason, nonpcm, good);
     hdmi_refuse(k, HF__cb_output_status, "acceptance branch condition changed", "no event-codec acceptance compare", cb_branch_condition, cb_reason, nonpcm, good);

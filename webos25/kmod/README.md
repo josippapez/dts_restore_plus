@@ -8,8 +8,8 @@ port of [Glasshouse](https://github.com/rorygallagher2024/glasshouse)'s
 Glasshouse's module and the earlier C5 port are pinned to one kernel image: every
 LG-private address is compiled in. This one is built once per kernel generation,
 from one source: `earc_route-5.4.ko` (webOS 25 firmware 33.31.x, kernel
-5.4.268-329.ptl4tv.5) and `earc_route-6.12.ko` (firmware 43.21.x, kernel
-6.12.44-352), the generation-specific values passed as `-D` macros by `build.py`.
+5.4.268-329.ptl4tv.5, and 33.22.x, kernel 5.4.268-329.ptl4tv.2) and
+`earc_route-6.12.ko` (firmware 43.21.x, kernel 6.12.44-352), the generation-specific values passed as `-D` macros by `build.py`.
 The loader passes each LG function's address and size from `/proc/kallsyms`, and
 the module derives every data address and struct offset from LG's own code when
 it loads. If anything does not match, it refuses to load.
@@ -129,7 +129,7 @@ does not pass `_etext` and is at most 16 KiB.
 |---|---|
 | DTS gate and its state | `aud_hal_dts_supported`'s two words: stock (`mov w0,#0; ret`), switched (`mov w0,#1; ret`: another tool is active), a breakpoint (another tool is probing it), or unknown |
 | `_set_output` kprobe site, mask offset | its first word (a kprobe can sit on it; any `brk` there is reported as another tool's probe), and the offset of the only 32-bit load from a copy of argument 1 whose loaded register is compared with an immediate (0x14). That 0x20 in that word means eARC is fixed in the source |
-| ADEC table base, stride, codec/open/started | `alsa_decoder_codec`: `slot = constant + index * stride` from `sbfiz x,xI,#1,#32; add x,x,wI,sxtw; add xS,<constant>,x,lsl #5` (stride 96), the index being the value `cmp wI,#1; b.hi` checked in the same block; codec is the only 32-bit store through the slot, open the only byte offset loaded through it. `alsa_decoder_start` must form the same base and stride and load exactly two slot bytes, open and started. ADEC 1 = base + stride |
+| ADEC table base, stride, codec/open/started | `alsa_decoder_codec`: `slot = constant + index * stride` from `sbfiz x,xI,#1,#32; add x,x,wI,sxtw; add xS,<constant>,x,lsl #5` (stride 96), the index being the value `cmp wI,#1; b.hi` checked in the same block (`b.gt`, signed, on 5.4.268-329.ptl4tv.2: it too accepts index 1 and rejects every index above it); codec is the only 32-bit store through the slot, open the only byte offset loaded through it. `alsa_decoder_start` must form the same base and stride and load exactly two slot bytes, open and started. ADEC 1 = base + stride |
 | `_cb_output_status` DTS-HD sites | the event codec is the word loaded from argument 0. Exactly one compare of it with an immediate is the acceptance: shape 1 (5.4) `cmp codec,#4; b.ls` to the 32-bit store of the codec, shape 2 (6.12) the last compare of the chain `cmp #2; b.eq; b.ls; cmp #3; b.eq; cmp #4; b.ne`, whose `b.ne` falls through into that store. The store is the supported branch; the one `ldr x,[constant, codec, lsl #3]` is the name load and gives the table. The output register (x19 on every kernel measured) is the base register of that store, taken only if the engine shows it holding argument 2 at the compare |
 | break-hook list head, hook fields | `register_kernel_break_hook`: its only pre-indexed 64-bit load from a constant base. `call_break_hook`, which must compute the same head: its one `blr`, the one `ldr xN,[xN]` (the node), the one 64-bit load from the node into the `blr` register (`fn`, +16), and, of the node's two 16-bit loads, the one `cmp x, w, uxth` compares (immediate, +24) and the other (mask, +26) |
 | kprobe handlers, service symbols | by name: `kprobe_breakpoint_handler`, `kprobe_breakpoint_ss_handler`, `kretprobe_breakpoint_handler` (6.12 only), `aarch64_insn_patch_text`, `cpus_read_{lock,unlock}`, `[un]register_kprobe`, `[un]register_kernel_break_hook`. In the kernels' ksymtab: `[un]register_kprobe`, `cpus_read_{lock,unlock}`; not exported: the patch function and the break-hook pair |
@@ -428,8 +428,9 @@ layout (stride 0x60/0x70, mutex +0x38/+0x48, callback +32/+40, object rate
 
 The HDMI set has its own sha-keyed oracle, asserted whenever its image is given,
 with or without an eARC oracle for it: the kernels above plus the tester's
-CS kernel (G2 33.31.68, whose values are also the ones its `.ko` files use).
-The rows were checked against an independent static derivation. `_set_output`
+CS kernel (G2 33.31.68, whose values are also the ones its `.ko` files use) and
+G2 33.22.95 (kernel 5.4.268-329.ptl4tv.2, derived by hand from its disassembly).
+The other rows were checked against an independent static derivation. `_set_output`
 of every capture must pass the validity rule with its kallsyms size (2308 to
 2544 bytes). The break-hook walk runs on each image (the list is empty before
 boot) and on lists built in test memory: complete with both kprobe handlers,
@@ -438,7 +439,8 @@ the first oracle kernel of each generation, each require their own reason: the
 gate changed to a third value; `brk #4` on the gate, at the `_set_output` entry
 and at both probed `_cb_output_status` sites; `brk #0x800` there not counted;
 the mask load from a non-argument register; a second mask candidate; the ADEC
-scaling changed (in either function), its bound check removed, the codec store
+scaling changed (in either function), its bound check removed or changed to
+`b.ge` (a signed `b.gt` must still derive the same ADEC 1), the codec store
 removed, a second store through the slot; the acceptance branch condition
 changed, a second acceptance compare, the name load removed; the list-head load
 removed.
@@ -512,11 +514,12 @@ picks one, with its stock module path and `struct module` layout:
 | release | module | stock module | size/init/exit |
 |---|---|---|---|
 | `5.4.268-329.ptl4tv.5` | `earc_route-5.4.ko` | `/lib/modules/$release/kernel/aspectratiodrv.ko` | 0x380/0x150/0x338 |
+| `5.4.268-329.ptl4tv.2` | `earc_route-5.4.ko` | `/lib/modules/$release/kernel/aspectratiodrv.ko` | 0x380/0x150/0x338 |
 | `6.12.44-352` | `earc_route-6.12.ko` | `/usr/lib/modules/$release/kernel/aspectratiodrv.ko` | 0x4c0/0x138/0x480 |
 
 The loader refuses unless:
 
-- the release is one of the two above (a missing stock module path refuses too;
+- the release is one of the three above (a missing stock module path refuses too;
   nothing is probed);
 - the stock `aspectratiodrv.ko` has the generation's layout and our module
   has the same vermagic and layout;

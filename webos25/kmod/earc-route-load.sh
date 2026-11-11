@@ -20,9 +20,10 @@ refuse() { echo "earc-route: REFUSED: $*"; exit 1; }
 [ "$(id -u)" = 0 ] || refuse "must run as root"
 # Allowlist: release -> module, stock module, struct module size, init and exit
 # offsets (the same values build.py checks). Anything else is refused.
+# ptl4tv.2 (33.22.x) ships the same stock module, byte for byte, as ptl4tv.5.
 release=$(uname -r)
 case "$release" in
-  5.4.268-329.ptl4tv.5)
+  5.4.268-329.ptl4tv.5|5.4.268-329.ptl4tv.2)
     KO="$HERE/earc_route-5.4.ko"
     STOCK="/lib/modules/$release/kernel/aspectratiodrv.ko"
     ABI="0x380 0x150 0x338" ;;
@@ -30,7 +31,7 @@ case "$release" in
     KO="$HERE/earc_route-6.12.ko"
     STOCK="/usr/lib/modules/$release/kernel/aspectratiodrv.ko"
     ABI="0x4c0 0x138 0x480" ;;
-  *) refuse "kernel $release is not in the allowlist (5.4.268-329.ptl4tv.5, 6.12.44-352)" ;;
+  *) refuse "kernel $release is not in the allowlist (5.4.268-329.ptl4tv.5, 5.4.268-329.ptl4tv.2, 6.12.44-352)" ;;
 esac
 [ -f "$KO" ] || refuse "$KO missing"
 [ ! -e /sys/module/earc_route ] || refuse "earc_route is already loaded"

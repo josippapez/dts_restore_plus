@@ -357,7 +357,9 @@ struct hd_slot_scan {
  * xS,<constant>,xA,lsl #5` (slot = constant + index * 96) and the accesses made
  * while a register still holds that slot. Exact: every such access must be
  * through one slot value (one base, stride and index), and that index must be
- * the value checked by a `cmp wI,#1; b.hi` earlier in the same block. */
+ * the value checked by a `cmp wI,#1; b.hi` earlier in the same block. The
+ * 5.4.268-329.ptl4tv.2 kernel (33.22.x) compares signed, `b.gt`: it also
+ * rejects every index above 1 and accepts 1, the only slot read. */
 static void hd_slot_scan(const struct earc_code *f, struct hd_slot_scan *s) {
     unsigned int i, j, bounds = 0, bound_reg[8], bound_at[8];
     ed_u16 bound_def[8];
@@ -372,7 +374,8 @@ static void hd_slot_scan(const struct earc_code *f, struct hd_slot_scan *s) {
         ed_u32 op = f->words[i];
         unsigned int rn = (op >> 5) & 31;
         if ((op & 0xfffffc1f) == 0x7100041f && rn != 31 && i + 1 < f->count &&
-            (f->words[i + 1] & 0xff00001f) == 0x54000008 && bounds < 8) {  /* cmp wN,#1 ; b.hi */
+            ((f->words[i + 1] & 0xff00001f) == 0x54000008 || (f->words[i + 1] & 0xff00001f) == 0x5400000c) &&
+            bounds < 8) {  /* cmp wN,#1 ; b.hi or b.gt */
             bound_reg[bounds] = rn; bound_def[bounds] = hf_reg[rn].def; bound_at[bounds++] = i;
         }
         if ((op & 0x3b000000) == 0x39000000 && !((op >> 26) & 1) && rn != 31 && hf_reg[rn].kind == HK_SLOT) {
