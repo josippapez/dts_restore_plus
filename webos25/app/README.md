@@ -353,8 +353,9 @@ accepts only the literal boolean `{force: true}` on the confirmed call.
 
 The status panel exposes the OTA ID and firmware, exact verdict/reason, measured
 hashes, owner/recovery state, and the permanent hardware-verification **NO** label.
-B2/W22H, C3/W23O, and B3/W23H get diagnostic-only refusal profiles; C4/G4 and
-other C2/G2 firmware remain unsupported/unknown.
+B2/W22H and B3/W23H get diagnostic-only refusal profiles. C3/G3/M3 and
+C4/G4/M4/T4 have LG's own DTS decoder, so the app reports native DTS and offers
+nothing (see the table below). Other C2/G2 firmware remains unsupported/unknown.
 
 ### `cx-armv7-gst114` — demuxer-override (UNVERIFIED)
 
