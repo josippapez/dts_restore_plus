@@ -81,7 +81,7 @@ setup() {  # a DTS core input on HDMI port 0, decoder 1, eARC on, ADEC idle
     R=$WORK/root
     rm -rf "$R" "$WORK/app"
     A=$R/proc/lgtv-driver/audio
-    mkdir -p "$A" "$R/proc/aaudio/processors/dsp0/hdmi1/021c0001" \
+    mkdir -p "$A" "$R/proc/aaudio/processors/dsp0/hdmi1/021c0001" "$R/proc/aaudio/processors/dsp0/hdmi0/021d0001" \
         "$R/proc/aaudio/processors/dsp2/gain/041b0001" "$R/tmp" "$WORK/app"
     cp "$FIX/adec.p0" "$FIX/adec.p1" "$FIX/sndout" "$A/"
     sed -e 's/^Codec=.*/Codec=UNKNOWN_DTS/' -e 's/^SamplingRate=.*/SamplingRate=48000/' "$FIX/hdmi" > "$A/hdmi"
@@ -89,6 +89,9 @@ setup() {  # a DTS core input on HDMI port 0, decoder 1, eARC on, ADEC idle
     sed -i.bak -e 's/^UserCodec=.*/UserCodec=UNKNOWN/' -e 's/^Start=.*/Start=0/' "$A/adec.p1"
     cp "$FIX/hdmi1.prop" "$R/proc/aaudio/processors/dsp0/hdmi1/021c0001/prop"
     cp "$FIX/hdmi1.lstatus" "$R/proc/aaudio/processors/dsp0/hdmi1/021c0001/lstatus"
+    # hdmi0 pairs with adec.p0 (not connected in the fixture): idle, on port 0.
+    sed 's/^start=(int).*/start=(int)0/' "$FIX/hdmi1.prop" > "$R/proc/aaudio/processors/dsp0/hdmi0/021d0001/prop"
+    cp "$R/proc/aaudio/processors/dsp0/hdmi0/021d0001/prop" "$WORK/hdmi0.found"
     cp "$FIX/gain.prop" "$R/proc/aaudio/processors/dsp2/gain/041b0001/prop"
     cp "$FIX/dot_module_connection" "$FIX/dot_block_connection" "$R/proc/aaudio/"
     cp "$SCRIPT" "$WORK/app/hdmi-session.sh"
@@ -125,6 +128,7 @@ expect_untouched() {
 expect_restored() {
     cmp -s "$FIX/hdmi1.prop" "$R/proc/aaudio/processors/dsp0/hdmi1/021c0001/prop" || bad "DSP prop not restored"
     cmp -s "$FIX/gain.prop" "$R/proc/aaudio/processors/dsp2/gain/041b0001/prop" || bad "gain prop not restored"
+    cmp -s "$WORK/hdmi0.found" "$R/proc/aaudio/processors/dsp0/hdmi0/021d0001/prop" || bad "hdmi0 prop changed"
     [ ! -e "$R/sys/module/earc_route" ] || bad "module still loaded"
     [ "$(tail -n 2 "$WORK/events")" = "cset numid=92 2,1,0,0,1
 systemctl restart extinput-integration.service" ] || bad "numid 92 / service not restored last"
@@ -132,6 +136,7 @@ systemctl restart extinput-integration.service" ] || bad "numid 92 / service not
 }
 
 P=/proc/aaudio/processors/dsp0/hdmi1/021c0001/prop
+P0=/proc/aaudio/processors/dsp0/hdmi0/021d0001/prop
 G=/proc/aaudio/processors/dsp2/gain/041b0001/prop
 HAPPY="load --dts-hd window_seconds=35
 systemctl restart extinput-integration.service
@@ -209,15 +214,52 @@ for SH in $shells; do
     run --apply; expect_status 1; expect_out 'REFUSED: eARC is not on (EArcOnOff=Off)'; expect_untouched
 
     name='refuses the input on decoder 0'; cases=$((cases+1)); setup
-    sed -i.bak 's/^Connect=.*/Connect=HDMI_PORT0/' "$A/adec.p0"
+    sed -i.bak -e 's/^Connect=.*/Connect=HDMI_PORT0/' -e 's/^Start=.*/Start=1/' "$A/adec.p0"
     sed -i.bak 's/^Connect=.*/Connect=HDMI_PORT3/' "$A/adec.p1"
     run --session; expect_status 1; expect_out 'REFUSED: HDMI port 0 is on decoder 0, and the module only overrides decoder 1'; expect_untouched
 
     name='refuses decoder 0 beside a closed decoder 1 on the same port'; cases=$((cases+1)); setup
-    sed -i.bak -e 's/^Connect=.*/Connect=HDMI_PORT0/' -e 's/^Open=.*/Open=1/' "$A/adec.p0"
+    sed -i.bak -e 's/^Connect=.*/Connect=HDMI_PORT0/' -e 's/^Open=.*/Open=1/' -e 's/^Start=.*/Start=1/' "$A/adec.p0"
     sed -i.bak 's/^Open=.*/Open=0/' "$A/adec.p1"
+    sed -i.bak 's/^start=(int).*/start=(int)0/' "$R/proc/aaudio/processors/dsp0/hdmi1/021c0001/prop"
     run --check; expect_status 1; expect_out 'REFUSED: HDMI port 0 is on decoder 0'; expect_untouched
-    expect_out '(adec.p0 Connect=HDMI_PORT0 Open=1 Start=0 UserCodec=UNKNOWN; adec.p1 Connect=HDMI_PORT0 Open=0 Start=0 UserCodec=UNKNOWN)'
+    expect_out '(adec.p0 Connect=HDMI_PORT0 Open=1 Start=1 UserCodec=UNKNOWN; adec.p1 Connect=HDMI_PORT0 Open=0 Start=0 UserCodec=UNKNOWN)'
+
+    name='C5: stale adec.p1 on hdmi1 port 2, the stream on adec.p0/hdmi0 port 0: refused'; cases=$((cases+1)); setup
+    sed -i.bak -e 's/^hdmi-port=(int).*/hdmi-port=(int)2/' -e 's/^start=(int).*/start=(int)0/' -e 's/^codec=(int).*/codec=(int)0/' "$R$P"
+    sed -i.bak 's/^start=(int).*/start=(int)1/' "$R$P0"
+    sed -i.bak -e 's/^Connect=.*/Connect=HDMI_PORT0/' -e 's/^Open=.*/Open=1/' -e 's/^Start=.*/Start=1/' -e 's/^UserCodec=.*/UserCodec=DTS/' "$A/adec.p0"
+    sed -i.bak -e 's/^Connect=.*/Connect=HDMI_PORT2/' "$A/adec.p1"
+    run --apply 15; expect_status 1; expect_untouched
+    expect_out 'REFUSED: HDMI port 0 is on decoder 0, and the module only overrides decoder 1'
+
+    name='nothing started, only adec.p1/hdmi1 connected: proceeds'; cases=$((cases+1)); setup
+    sed -i.bak 's/^start=(int).*/start=(int)0/' "$R$P"
+    cp "$R$P" "$WORK/hdmi1.found"
+    run --apply 15; expect_status 0
+    expect_out 'ok    HDMI port 0 is connected to decoder 1, not started yet; the input-service restart starts it'
+    expect_events "$HAPPY
+$(echo "$RESTORE" | sed 's/start 1$/start 0/')"
+    cmp -s "$WORK/hdmi1.found" "$R$P" || bad "DSP prop not restored"
+    cmp -s "$WORK/hdmi0.found" "$R$P0" || bad "hdmi0 prop changed"
+    [ ! -e "$R/sys/module/earc_route" ] || bad "module still loaded"
+
+    name='both decoders started, adec.p1 on DTS: proceeds on decoder 1'; cases=$((cases+1)); setup
+    sed -i.bak -e 's/^hdmi-port=(int).*/hdmi-port=(int)2/' -e 's/^start=(int).*/start=(int)1/' "$R$P0"
+    cp "$R$P0" "$WORK/hdmi0.found"
+    sed -i.bak -e 's/^Connect=.*/Connect=HDMI_PORT2/' -e 's/^Start=.*/Start=1/' -e 's/^UserCodec=.*/UserCodec=MAT/' "$A/adec.p0"
+    sed -i.bak 's/^UserCodec=.*/UserCodec=DTS/' "$A/adec.p1"
+    run --apply 15; expect_status 0; expect_out 'ok    HDMI port 0 is on decoder 1'
+    expect_events "$HAPPY
+$RESTORE"
+    expect_restored
+
+    name='nothing started, both pairs connected: refused'; cases=$((cases+1)); setup
+    sed -i.bak 's/^start=(int).*/start=(int)0/' "$R$P"
+    sed -i.bak 's/^hdmi-port=(int).*/hdmi-port=(int)2/' "$R$P0"
+    sed -i.bak 's/^Connect=.*/Connect=HDMI_PORT2/' "$A/adec.p0"
+    run --apply 15; expect_status 1; expect_untouched
+    expect_out 'REFUSED: cannot tell which decoder carries the HDMI input'
 
     name='two failed checks are counted'; cases=$((cases+1)); setup
     sed -i.bak 's/^Codec=.*/Codec=NO_AUDIO/' "$A/hdmi"

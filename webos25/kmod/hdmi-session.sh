@@ -51,8 +51,9 @@ value() {  # value FILE KEY: what follows the first "KEY=" line
 put() {  # put FILE 'name value'
     printf '%s\n' "$2" | tee "$1" > /dev/null
 }
-find_prop() {
-    set -- "$AAUDIO"/processors/dsp0/hdmi1/*/prop
+find_prop() { instance 1; }
+instance() {  # instance N: the one dsp0/hdmiN DSP instance; hdmiN pairs with adec.pN
+    set -- "$AAUDIO"/processors/dsp0/hdmi"$1"/*/prop
     [ "$#" = 1 ] && [ -f "$1" ] || return 1
     printf '%s\n' "$1"
 }
@@ -117,22 +118,39 @@ esac
 seen=$(value "$AUDIO/sndout" EArcOnOff)
 if [ "$seen" = On ]; then ok "eARC is on (EArcOnOff=$seen)"; else no "eARC is not on (EArcOnOff=$seen)"; fi
 
-port=''
-if prop=$(find_prop); then port=$(sed -n 's/^hdmi-port=(int)//p' "$prop"); else prop=''; fi
-case "$port" in
-    ''|*[!0-9]*) port=''; no "expected one hdmi1 DSP instance with an hdmi-port (found: $(echo "$AAUDIO"/processors/dsp0/hdmi1/*/prop))" ;;
-    *) ok "one hdmi1 DSP instance, hdmi-port $port ($prop)" ;;
-esac
-
-seen="$(adec 0); $(adec 1)"
-if [ -z "$port" ]; then no "decoder not checked: the HDMI port is unknown ($seen)"
-# A C5 has shown a stale, closed connection on adec.p1 while adec.p0 played.
-elif grep -qx "Connect=HDMI_PORT$port" "$AUDIO/adec.p1" && grep -qx 'Open=1' "$AUDIO/adec.p1"; then
-    ok "HDMI port $port is on decoder 1 ($seen)"
-elif grep -qx "Connect=HDMI_PORT$port" "$AUDIO/adec.p0"; then
-    no "HDMI port $port is on decoder 0, and the module only overrides decoder 1; no session is possible in this state ($seen)"
-else no "no decoder is connected to HDMI port $port ($seen)"
+# Decoder N carries the input only if adec.pN is connected to the port of its
+# own instance dsp0/hdmiN, and plays it if either of the two is started. A C5
+# has shown adec.p1 open on port 2's idle hdmi1 while adec.p0 played port 0
+# through hdmi0. A stock TV refuses a DTS stream, so nothing may play yet: then
+# the one connected pair must be decoder 1, which the input-service restart
+# below starts.
+connected='' playing=''
+for n in 1 0; do
+    p=$(instance "$n") || continue
+    pt=$(sed -n 's/^hdmi-port=(int)//p' "$p")
+    case "$pt" in ''|*[!0-9]*) continue ;; esac
+    grep -qx "Connect=HDMI_PORT$pt" "$AUDIO/adec.p$n" || continue
+    connected="$connected$n"
+    if grep -qx 'Start=1' "$AUDIO/adec.p$n" || grep -qx 'start=(int)1' "$p"; then playing="$playing$n"; fi
+done
+if [ "$playing" = 10 ]; then
+    if grep -qx "UserCodec=$adec_codec" "$AUDIO/adec.p1"; then
+        grep -qx "UserCodec=$adec_codec" "$AUDIO/adec.p0" || playing=1
+    elif grep -qx "UserCodec=$adec_codec" "$AUDIO/adec.p0"; then playing=0
+    fi
 fi
+dec=''
+case "$playing" in 1|0) dec=$playing ;; '') [ "$connected" != 1 ] || dec=1 ;; esac
+port='' prop=''
+if [ -n "$dec" ]; then prop=$(instance "$dec"); port=$(sed -n 's/^hdmi-port=(int)//p' "$prop"); fi
+seen="$(adec 0); $(adec 1)"
+case "$dec$playing" in
+    11) ok "one hdmi1 DSP instance, hdmi-port $port ($prop)"; ok "HDMI port $port is on decoder 1 ($seen)" ;;
+    1) ok "one hdmi1 DSP instance, hdmi-port $port ($prop)"
+       ok "HDMI port $port is connected to decoder 1, not started yet; the input-service restart starts it ($seen)" ;;
+    00) no "HDMI port $port is on decoder 0, and the module only overrides decoder 1; no session is possible in this state ($seen)" ;;
+    *) no "cannot tell which decoder carries the HDMI input (instances: $(echo "$AAUDIO"/processors/dsp0/hdmi*/*/prop); $seen)" ;;
+esac
 
 earc=$(earc_control)
 # Only use the known ordinary pass-through setting; do not force a new codec.
