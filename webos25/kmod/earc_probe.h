@@ -62,16 +62,33 @@ static enum earc_hook_decision earc_hook_decide(const struct earc_hdmi_walk *wal
     return EHD_REGISTER;
 }
 
+/* _set_output's index is the main-audio decoder: an ADEC port (0..3) as itself,
+ * an AMIXER port N as N + 4 (common_input_convert_index). Its bypass branch
+ * connects renderer `index` and calls decoder_set_output_mode(index, 1, 1),
+ * which takes 0 or 1 and the same ADEC table, so ADEC slot = renderer =
+ * decoder for 0 and 1. Any other index has no ADEC slot: earc_adec_slot gives
+ * the three addresses of slot 0 or 1 and refuses every other index, so a caller
+ * that reads only what it returns never reads past the two derived slots. */
+struct earc_adec_slot { ed_u64 codec, open, started; };
+static int earc_adec_slot(const struct earc_hdmi_layout *h, ed_u64 index, struct earc_adec_slot *slot) {
+    if (index > 1) return 0;
+    slot->codec = index ? h->adec1_codec : h->adec0_codec;
+    slot->open = index ? h->adec1_open : h->adec0_open;
+    slot->started = index ? h->adec1_started : h->adec0_started;
+    return 1;
+}
+
 /* lg-g5-dts's DTS-core policy for a _set_output(index, descriptor, ...) call:
- * decoder index 1, the descriptor's mask word == 0x20 (eARC), and ADEC 1 open
- * and started on codec 48 (DTS). The caller has already confirmed the
- * descriptor pointer is non-null and read these through the derived addresses. */
+ * decoder index 0 or 1 (lg-g5-dts: 1 only), the descriptor's mask word == 0x20
+ * (eARC), and that decoder's ADEC slot open and started on codec 48 (DTS). The
+ * caller has already confirmed the descriptor pointer is non-null and read
+ * these through earc_adec_slot's addresses. */
 static int earc_policy_match(ed_u64 index, ed_u32 mask_word, ed_u32 codec, ed_u8 open, ed_u8 started) {
-    return index == 1 && mask_word == 0x20 && codec == 48 && open == 1 && started == 1;
+    return index <= 1 && mask_word == 0x20 && codec == 48 && open == 1 && started == 1;
 }
 
 /* ---- DTS-HD (modes 6 and 7): lg-g5-dts's tools/dts-hd-route ----
- * LG's output-status codec for DTS-HD is 7 and ADEC 1's public codec is 51
+ * LG's output-status codec for DTS-HD is 7 and the ADEC public codec is 51
  * (status_hooks.h, policy.h). _cb_output_status accepts codecs up to the derived
  * bound (4) and names the codec from a table of 6 entries, so codec 7 is turned
  * into PCM and its name is loaded from past the table. */
@@ -80,12 +97,12 @@ static int earc_policy_match(ed_u64 index, ed_u32 mask_word, ed_u32 codec, ed_u8
 #define EARC_OUTPUT_EARC    3   /* output type, at output+44 (earc_decode checks it in output_set_earc_on) */
 #define EARC_OUTPUT_TYPE_OFFSET 44
 
-/* Mode 7's _set_output policy: the same call, with ADEC 1 on DTS core (48) or
- * DTS-HD (51). lg-g5-dts's two modules apply one override (codec argument 0,
- * bypass 1) and differ only in this codec, so one stage serves both streams
- * and a core session runs with the name probe in place too. */
+/* Mode 7's _set_output policy: the same call, with the decoder's ADEC slot on
+ * DTS core (48) or DTS-HD (51). lg-g5-dts's two modules apply one override
+ * (codec argument 0, bypass 1) and differ only in this codec, so one stage
+ * serves both streams and a core session runs with the name probe in place too. */
 static int earc_session_policy_match(ed_u64 index, ed_u32 mask_word, ed_u32 codec, ed_u8 open, ed_u8 started) {
-    return index == 1 && mask_word == 0x20 && (codec == 48 || codec == EARC_HD_ADEC_CODEC) && open == 1 && started == 1;
+    return index <= 1 && mask_word == 0x20 && (codec == 48 || codec == EARC_HD_ADEC_CODEC) && open == 1 && started == 1;
 }
 
 /* The registers the two probes read and write, from the probed instructions:
@@ -97,10 +114,30 @@ static unsigned int earc_hd_name_reg(const struct earc_hdmi_layout *h) { return 
 /* The probe on the acceptance compare: 1 means continue at the supported
  * branch (pc = hd_supported_branch, compare skipped, earc_hd_accept_pstate)
  * with the codec register untouched. Only for a DTS-HD event on the eARC output
- * while ADEC 1 is started on DTS-HD. The caller null-checked the output. */
+ * while the ADEC slot given is started on DTS-HD. The caller null-checked the
+ * output. */
 static int earc_hd_accept(ed_u32 event_codec, ed_u32 output_type, ed_u32 adec_codec, ed_u8 adec_started) {
     return event_codec == EARC_HD_EVENT_CODEC && output_type == EARC_OUTPUT_EARC &&
         adec_codec == EARC_HD_ADEC_CODEC && adec_started == 1;
+}
+
+/* Which ADEC slot the acceptance reads. `matched` is the decoder of the last
+ * _set_output policy match (0 or 1), or EARC_NO_DECODER before the first one.
+ * After a match only that decoder's slot counts: the other decoder can stay
+ * open on an earlier input (a C5 kept adec.p1 open on an idle input while
+ * adec.p0 played), so its slot says nothing about this output. Before any
+ * match (mode 6 has no _set_output probe; in mode 7 nothing orders the first
+ * match before a status event) nothing says which decoder feeds the output, so
+ * either slot started on 51 accepts: lg-g5-dts's rule on ADEC 1, applied to
+ * both decoders. Only codec[0..1] and started[0..1] are read, whatever
+ * `matched` holds. Returns the decoder accepted for, or -1. */
+#define EARC_NO_DECODER 2u
+static int earc_hd_accept_decoder(ed_u32 event_codec, ed_u32 output_type, ed_u32 matched,
+                                  const ed_u32 codec[2], const ed_u8 started[2]) {
+    unsigned int n;
+    for (n = 0; n < 2; n++)
+        if ((matched > 1 || matched == n) && earc_hd_accept(event_codec, output_type, codec[n], started[n])) return (int)n;
+    return -1;
 }
 
 /* The flags the skipped compare leaves when it accepts: those of `cmp x,#x`

@@ -51,7 +51,7 @@ value() {  # value FILE KEY: what follows the first "KEY=" line
 put() {  # put FILE 'name value'
     printf '%s\n' "$2" | tee "$1" > /dev/null
 }
-find_prop() { instance 1; }
+find_prop() { instance "$dec"; }
 instance() {  # instance N: the one dsp0/hdmiN DSP instance; hdmiN pairs with adec.pN
     set -- "$AAUDIO"/processors/dsp0/hdmi"$1"/*/prop
     [ "$#" = 1 ] && [ -f "$1" ] || return 1
@@ -76,11 +76,13 @@ find_gain() {
     [ "$#" = 1 ] && [ -f "$1" ] || return 1
     printf '%s\n' "$1"
 }
-core_now() {
+stream_now() {
     grep -qx 'AudioData=1' "$AUDIO/hdmi" &&
     grep -Eqx "Codec=($codecs)" "$AUDIO/hdmi" &&
-    grep -qx "SamplingRate=$rate" "$AUDIO/hdmi" &&
-    grep -qx "Connect=HDMI_PORT$port" "$AUDIO/adec.p1"
+    grep -qx "SamplingRate=$rate" "$AUDIO/hdmi"
+}
+core_now() {
+    stream_now && grep -qx "Connect=HDMI_PORT$port" "$AUDIO/adec.p$dec"
 }
 
 # Every precondition, each with the value read. The first failure is the reason.
@@ -122,33 +124,34 @@ if [ "$seen" = On ]; then ok "eARC is on (EArcOnOff=$seen)"; else no "eARC is no
 # own instance dsp0/hdmiN, and plays it if either of the two is started. A C5
 # has shown adec.p1 open on port 2's idle hdmi1 while adec.p0 played port 0
 # through hdmi0. A stock TV refuses a DTS stream, so nothing may play yet: then
-# the one connected pair must be decoder 1, which the input-service restart
-# below starts.
-connected='' playing=''
-for n in 1 0; do
-    p=$(instance "$n") || continue
-    pt=$(sed -n 's/^hdmi-port=(int)//p' "$p")
-    case "$pt" in ''|*[!0-9]*) continue ;; esac
-    grep -qx "Connect=HDMI_PORT$pt" "$AUDIO/adec.p$n" || continue
-    connected="$connected$n"
-    if grep -qx 'Start=1' "$AUDIO/adec.p$n" || grep -qx 'start=(int)1' "$p"; then playing="$playing$n"; fi
-done
-if [ "$playing" = 10 ]; then
-    if grep -qx "UserCodec=$adec_codec" "$AUDIO/adec.p1"; then
-        grep -qx "UserCodec=$adec_codec" "$AUDIO/adec.p0" || playing=1
-    elif grep -qx "UserCodec=$adec_codec" "$AUDIO/adec.p0"; then playing=0
+# the one connected pair is used, which the input-service restart below
+# starts. Sets connected, playing and found (the decoder, or empty).
+detect() {
+    connected='' playing='' found=''
+    for n in 1 0; do
+        p=$(instance "$n") || continue
+        pt=$(sed -n 's/^hdmi-port=(int)//p' "$p")
+        case "$pt" in ''|*[!0-9]*) continue ;; esac
+        grep -qx "Connect=HDMI_PORT$pt" "$AUDIO/adec.p$n" || continue
+        connected="$connected$n"
+        if grep -qx 'Start=1' "$AUDIO/adec.p$n" || grep -qx 'start=(int)1' "$p"; then playing="$playing$n"; fi
+    done
+    if [ "$playing" = 10 ]; then
+        if grep -qx "UserCodec=$adec_codec" "$AUDIO/adec.p1"; then
+            grep -qx "UserCodec=$adec_codec" "$AUDIO/adec.p0" || playing=1
+        elif grep -qx "UserCodec=$adec_codec" "$AUDIO/adec.p0"; then playing=0
+        fi
     fi
-fi
-dec=''
-case "$playing" in 1|0) dec=$playing ;; '') [ "$connected" != 1 ] || dec=1 ;; esac
-port='' prop=''
+    case "$playing" in 1|0) found=$playing ;; '') case "$connected" in 1|0) found=$connected ;; esac ;; esac
+}
+detect
+dec=$found port='' prop=''
 if [ -n "$dec" ]; then prop=$(instance "$dec"); port=$(sed -n 's/^hdmi-port=(int)//p' "$prop"); fi
 seen="$(adec 0); $(adec 1)"
 case "$dec$playing" in
-    11) ok "one hdmi1 DSP instance, hdmi-port $port ($prop)"; ok "HDMI port $port is on decoder 1 ($seen)" ;;
-    1) ok "one hdmi1 DSP instance, hdmi-port $port ($prop)"
-       ok "HDMI port $port is connected to decoder 1, not started yet; the input-service restart starts it ($seen)" ;;
-    00) no "HDMI port $port is on decoder 0, and the module only overrides decoder 1; no session is possible in this state ($seen)" ;;
+    11|00) ok "one hdmi$dec DSP instance, hdmi-port $port ($prop)"; ok "HDMI port $port is on decoder $dec ($seen)" ;;
+    1|0) ok "one hdmi$dec DSP instance, hdmi-port $port ($prop)"
+         ok "HDMI port $port is connected to decoder $dec, not started yet; the input-service restart starts it ($seen)" ;;
     *) no "cannot tell which decoder carries the HDMI input (instances: $(echo "$AAUDIO"/processors/dsp0/hdmi*/*/prop); $seen)" ;;
 esac
 
@@ -253,25 +256,35 @@ cat "$logdir/loader.txt"
 [ "$load_status" = 0 ] || { echo 'The loader did not start the session; aborting.'; exit 1; }
 modified=1
 systemctl restart extinput-integration.service
-# Allow ordinary service startup to set ADEC1's codec and create bypass nodes.
-# The input reads as not DTS for a moment after the restart (a CS run aborted
-# here on the first read), so only the last read decides.
+# Allow ordinary service startup to set the decoder's codec and create bypass
+# nodes. The input reads as not DTS for a moment after the restart (a CS run
+# aborted here on the first read), so only the last read decides. The decoder
+# is detected again each time: the restart can move the input to the other
+# decoder. The port must stay the same.
 i=0
 while [ "$i" -lt 10 ]; do
-    if core_now && grep -qx "UserCodec=$adec_codec" "$AUDIO/adec.p1" &&
-       grep -qx 'Start=1' "$AUDIO/adec.p1"; then break; fi
+    detect
+    if [ -n "$found" ] && stream_now && grep -qx "Connect=HDMI_PORT$port" "$AUDIO/adec.p$found" &&
+       grep -qx "UserCodec=$adec_codec" "$AUDIO/adec.p$found" && grep -qx 'Start=1' "$AUDIO/adec.p$found"; then break; fi
     i=$((i+1)); sleep 1
 done
 if [ "$i" -ge 10 ]; then
-    core_now || { echo "$label input did not come back within 10 s of the input-service restart; aborting."; exit 1; }
+    stream_now || { echo "$label input did not come back within 10 s of the input-service restart; aborting."; exit 1; }
     echo 'ADEC did not start; aborting.'; exit 1
+fi
+if [ "$found" != "$dec" ]; then
+    # Nothing was written to the old decoder's instance; the new one's values
+    # are what cleanup restores.
+    echo "The input-service restart moved HDMI port $port from decoder $dec to decoder $found; using decoder $found."
+    dec=$found
+    cp "$(find_prop)" "$logdir/original.prop"
 fi
 prop=$(find_prop)
 grep -qx "hdmi-port=(int)$port" "$prop"
 # Create the downstream connection while the input is stopped.
 amixer -c0 cset numid=92 "$earc" > "$logdir/trigger-earc.txt"
 cat "$AAUDIO/dot_block_connection" > "$logdir/route-before-input.dot"
-grep -q 'renderer_1_out100 -> mixer_0_in100' "$logdir/route-before-input.dot" || {
+grep -q "renderer_${dec}_out100 -> mixer_0_in100" "$logdir/route-before-input.dot" || {
     echo 'Compressed route not created; aborting before input start.'; exit 1;
 }
 grep -q 'mixer_0_out100 -> output_3_in0' "$logdir/route-before-input.dot" || exit 1

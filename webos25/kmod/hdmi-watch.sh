@@ -10,10 +10,10 @@
 # It loads earc_route once (earc-route-load.sh --dts-hd window_seconds=0
 # supervised=1), so the DTS check is open before a stream arrives, and polls
 # once a second. Decoder N plays the input only if its own dsp0/hdmiN instance
-# is on the port adec.pN connects and one of the two is started; decoder 0 is
-# logged, not handled. A DTS stream on decoder 1 that holds for two polls
-# gets the route hdmi-session.sh builds (same writes, same order); a change of
-# the stream, the port or the decoder reverts it at once. TERM, INT or HUP
+# is on the port adec.pN connects and one of the two is started. A DTS stream
+# on decoder N that holds for two polls gets the route hdmi-session.sh builds
+# (same writes, same order, on hdmiN and renderer N); a change of the stream,
+# the port or the decoder reverts it at once. TERM, INT or HUP
 # reverts, unloads the module and exits 0. Exit 1: refused, or three attempts
 # in a row failed.
 #
@@ -134,8 +134,8 @@ kind_vars() {  # kind_vars KIND
         restore='codec mode sampling-freq channel-num data-drop-mode drop-output-data start drop'
     fi
 }
-adec_started() {
-    grep -qx "UserCodec=$adec_codec" "$AUDIO/adec.p1" && grep -qx 'Start=1' "$AUDIO/adec.p1"
+adec_started() {  # adec.p$d, the decoder apply works on
+    grep -qx "UserCodec=$adec_codec" "$AUDIO/adec.p$d" && grep -qx 'Start=1' "$AUDIO/adec.p$d"
 }
 started_within() {  # started_within SECONDS
     i=0
@@ -147,20 +147,20 @@ started_within() {  # started_within SECONDS
 
 # State of the watcher. Applied state (a_*) is what revert undoes.
 loaded=0 applied=0 touched=0 unmuted=0 incomplete=0
-a_kind='' a_port='' a_prop='' a_dsp='' a_restore='' gain=''
+a_kind='' a_dec='' a_port='' a_prop='' a_dsp='' a_restore='' gain=''
 saved_prop='' saved_gain=''
-cand='' polls=0 fails=0 backoff=0 hinted=0 p0_seen=0 p0_count=0 last=''
+cand='' polls=0 fails=0 backoff=0 hinted=0 last=''
 applies=0 reverts=0
 
 # 0 applied; 1 failed (why says why; counts towards the three); 2 the stream
 # changed under it (not counted). The caller reverts whatever was touched.
 apply() {
-    k=$kind
+    k=$kind d=$dec
     kind_vars "$k"
-    say "applying $label (port $port, decoder 1)"
-    started_within 3 || { why="adec.p1 is not on UserCodec=$adec_codec with Start=1"; return 1; }
+    say "applying $label (port $port, decoder $d)"
+    started_within 3 || { why="adec.p$d is not on UserCodec=$adec_codec with Start=1"; return 1; }
     read_input
-    { [ "$kind" = "$k" ] && [ "$dec" = 1 ]; } || return 2
+    { [ "$kind" = "$k" ] && [ "$dec" = "$d" ]; } || return 2
 
     # Originals are taken once per run, from the first instance we write. LG
     # itself sets the instance's codec to the input's (codec 4 for MAT in the
@@ -176,7 +176,7 @@ apply() {
     n92=$(earc_control)
     amixer -c0 cset numid=92 "$n92" > /dev/null || { why='the numid 92 write failed'; return 1; }
     cat "$AAUDIO/dot_block_connection" > "$logdir/route.dot"
-    { grep -q 'renderer_1_out100 -> mixer_0_in100' "$logdir/route.dot" &&
+    { grep -q "renderer_${d}_out100 -> mixer_0_in100" "$logdir/route.dot" &&
       grep -q 'mixer_0_out100 -> output_3_in0' "$logdir/route.dot"; } || {
         why='the compressed route was not created (route.dot)'; return 1; }
     gain=$(find_gain) || {
@@ -189,7 +189,7 @@ apply() {
         saved_gain=$gain
     fi
 
-    touched=1 a_kind=$k a_port=$port a_prop=$prop a_dsp=$dsp_codec a_restore=$restore
+    touched=1 a_kind=$k a_dec=$d a_port=$port a_prop=$prop a_dsp=$dsp_codec a_restore=$restore
     if [ "$k" = core ]; then
         unmuted=1
         put "$gain" 'mute-input false' && put "$gain" 'mute-output false' &&
@@ -256,33 +256,16 @@ revert() {
     say 'reverted'
 }
 
-capture_p0() {
-    p0_count=$((p0_count+1))
-    d=$logdir/decoder0-$p0_count
-    mkdir "$d" &&
-    cp "$AUDIO/adec.p0" "$AUDIO/adec.p1" "$AAUDIO/dot_block_connection" "$AAUDIO/dot_module_connection" "$d/" &&
-    for n in 0 1; do
-        p=$(instance "$n") && cp "$p" "$d/hdmi$n.prop" || :
-    done &&
-    dmesg | grep 'earc_route: pass nomatch' | tail -n 1 > "$d/nomatch.txt"
-}
-
 poll() {
     read_input
-    [ "$kind" != none ] || backoff=0 hinted=0 p0_seen=0
-    if [ "$applied" = 1 ] && { [ "$kind" != "$a_kind" ] || [ "$dec" != 1 ] || [ "$port" != "$a_port" ] || [ "$prop" != "$a_prop" ]; }; then
+    [ "$kind" != none ] || backoff=0 hinted=0
+    if [ "$applied" = 1 ] && { [ "$kind" != "$a_kind" ] || [ "$dec" != "$a_dec" ] || [ "$port" != "$a_port" ] || [ "$prop" != "$a_prop" ]; }; then
         say "input changed ($seen); reverting"
         revert || { say 'Revert failed; stopping.'; exit 20; }
     fi
     note=''
     if [ "$applied" = 0 ] && [ "$kind" != none ]; then
-        if [ "$dec" = 0 ]; then
-            note='decoder 0: not handled'
-            if [ "$p0_seen" = 0 ]; then
-                p0_seen=1
-                capture_p0 || say 'decoder 0 capture failed'
-            fi
-        elif [ -n "$decnote" ]; then note=$decnote
+        if [ -n "$decnote" ]; then note=$decnote
         elif [ "$(value "$AUDIO/sndout" EArcOnOff)" != On ]; then note='eARC is off'
         elif [ "$backoff" = 1 ]; then note='not retried until this stream ends'
         else

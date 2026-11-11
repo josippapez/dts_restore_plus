@@ -34,16 +34,23 @@ if [ "$2" = cget ]; then
   exit 0
 fi
 echo "cset numid=92 $4" >> "$FAKE_EVENTS"
-[ "${FAKE_ROUTE:-yes}" = no ] || printf "%s\n" " renderer_1_out100 -> mixer_0_in100 [label=\"\"]" " mixer_0_out100 -> output_3_in0 [label=\"\"]" >> "$R/proc/aaudio/dot_block_connection"'
+[ "${FAKE_ROUTE:-yes}" = no ] || printf "%s\n" " renderer_${FAKE_RENDERER:-1}_out100 -> mixer_0_in100 [label=\"\"]" " mixer_0_out100 -> output_3_in0 [label=\"\"]" >> "$R/proc/aaudio/dot_block_connection"'
 # FAKE_BLIP: the first restart turns the HDMI input to PCM; "once" brings it
-# back at the next sleep (as on a CS), "forever" leaves it.
+# back at the next sleep (as on a CS), "forever" leaves it. FAKE_DEC: the
+# decoder a restart starts (default 1). FAKE_FROM: at the first restart the
+# input leaves that decoder (Connect=UNKNOWN, Start=0) for FAKE_DEC, on port 0.
 stub systemctl 'echo "systemctl $*" >> "$FAKE_EVENTS"
-h=$DTS25_ROOT/proc/lgtv-driver/audio/hdmi
+A=$DTS25_ROOT/proc/lgtv-driver/audio h=$DTS25_ROOT/proc/lgtv-driver/audio/hdmi d=${FAKE_DEC:-1}
 if [ -n "${FAKE_BLIP:-}" ] && [ ! -e "$DTS25_ROOT/blipped" ]; then
   touch "$DTS25_ROOT/blipped"; cp "$h" "$DTS25_ROOT/hdmi.real"; sed -i.bak "s/^Codec=.*/Codec=PCM/" "$h"
   [ "$FAKE_BLIP" = once ] || rm "$DTS25_ROOT/hdmi.real"
 fi
-[ "${FAKE_ADEC:-start}" = never ] || sed -i.bak -e "s/^UserCodec=.*/UserCodec=${FAKE_ADEC_CODEC:-DTS}/" -e "s/^Start=.*/Start=1/" "$DTS25_ROOT/proc/lgtv-driver/audio/adec.p1"'
+if [ -n "${FAKE_FROM:-}" ] && [ ! -e "$DTS25_ROOT/moved" ]; then
+  touch "$DTS25_ROOT/moved"
+  sed -i.bak -e "s/^Connect=.*/Connect=UNKNOWN/" -e "s/^Start=.*/Start=0/" "$A/adec.p$FAKE_FROM"
+  sed -i.bak "s/^Connect=.*/Connect=HDMI_PORT0/" "$A/adec.p$d"
+fi
+[ "${FAKE_ADEC:-start}" = never ] || sed -i.bak -e "s/^UserCodec=.*/UserCodec=${FAKE_ADEC_CODEC:-DTS}/" -e "s/^Start=.*/Start=1/" "$A/adec.p$d"'
 stub lsmod 'echo "Module Size Used by"; [ ! -e "$DTS25_ROOT/sys/module/earc_route" ] || echo "earc_route 16384 0"'
 stub rmmod 'echo "rmmod $*" >> "$FAKE_EVENTS"; rm -rf "$DTS25_ROOT/sys/module/$1"'
 stub dmesg 'echo "[ 1.0] earc_route: fake kernel line"'
@@ -91,13 +98,15 @@ setup() {  # a DTS core input on HDMI port 0, decoder 1, eARC on, ADEC idle
     cp "$FIX/hdmi1.lstatus" "$R/proc/aaudio/processors/dsp0/hdmi1/021c0001/lstatus"
     # hdmi0 pairs with adec.p0 (not connected in the fixture): idle, on port 0.
     sed 's/^start=(int).*/start=(int)0/' "$FIX/hdmi1.prop" > "$R/proc/aaudio/processors/dsp0/hdmi0/021d0001/prop"
+    cp "$FIX/hdmi1.lstatus" "$R/proc/aaudio/processors/dsp0/hdmi0/021d0001/lstatus"  # a session samples its instance's
     cp "$R/proc/aaudio/processors/dsp0/hdmi0/021d0001/prop" "$WORK/hdmi0.found"
+    cp "$FIX/hdmi1.prop" "$WORK/hdmi1.found"
     cp "$FIX/gain.prop" "$R/proc/aaudio/processors/dsp2/gain/041b0001/prop"
     cp "$FIX/dot_module_connection" "$FIX/dot_block_connection" "$R/proc/aaudio/"
     cp "$SCRIPT" "$WORK/app/hdmi-session.sh"
     printf '#!/bin/sh\n%s\n' "$LOADER" > "$WORK/app/earc-route-load.sh"
     : > "$WORK/events"
-    unset FAKE_UID FAKE_EARC FAKE_ROUTE FAKE_ADEC FAKE_LOADER FAKE_ADEC_CODEC FAKE_NONPCM FAKE_BLIP
+    unset FAKE_UID FAKE_EARC FAKE_ROUTE FAKE_ADEC FAKE_LOADER FAKE_ADEC_CODEC FAKE_NONPCM FAKE_BLIP FAKE_RENDERER FAKE_DEC FAKE_FROM
 }
 hd_setup() {  # hd_setup CODEC: the same TV with a DTS-HD stream named CODEC
     setup
@@ -124,9 +133,10 @@ expect_untouched() {
     [ ! -s "$WORK/events" ] || bad "events recorded"
     [ -z "$(ls "$R/tmp")" ] || bad "log dir created"
 }
-# Everything this run changed is back as it was and the module is gone.
+# Everything this run changed is back as it was and the module is gone. A case
+# that edits a DSP prop before the run copies it to hdmi1.found or hdmi0.found.
 expect_restored() {
-    cmp -s "$FIX/hdmi1.prop" "$R/proc/aaudio/processors/dsp0/hdmi1/021c0001/prop" || bad "DSP prop not restored"
+    cmp -s "$WORK/hdmi1.found" "$R/proc/aaudio/processors/dsp0/hdmi1/021c0001/prop" || bad "DSP prop not restored"
     cmp -s "$FIX/gain.prop" "$R/proc/aaudio/processors/dsp2/gain/041b0001/prop" || bad "gain prop not restored"
     cmp -s "$WORK/hdmi0.found" "$R/proc/aaudio/processors/dsp0/hdmi0/021d0001/prop" || bad "hdmi0 prop changed"
     [ ! -e "$R/sys/module/earc_route" ] || bad "module still loaded"
@@ -194,6 +204,13 @@ rmmod earc_route
 cset numid=92 2,1,0,0,1
 systemctl restart extinput-integration.service"
 
+# The same writes on hdmi0's instance; hdmi0 starts the case stopped
+# (start=(int)0), which is what its restore writes back.
+HAPPY0=$(echo "$HAPPY" | sed "s|$P|$P0|")
+RESTORE0=$(echo "$RESTORE" | sed -e "s|$P|$P0|" -e 's/start 1$/start 0/')
+HD_HAPPY0=$(echo "$HD_HAPPY" | sed "s|$P|$P0|")
+HD_RESTORE0=$(echo "$HD_RESTORE" | sed -e "s|$P|$P0|" -e 's/start 1$/start 0/')
+
 for SH in $shells; do
     command -v "$SH" > /dev/null || { echo "SKIP shell $SH: not found"; continue; }
 
@@ -213,25 +230,70 @@ for SH in $shells; do
     sed -i.bak 's/^EArcOnOff=.*/EArcOnOff=Off/' "$A/sndout"
     run --apply; expect_status 1; expect_out 'REFUSED: eARC is not on (EArcOnOff=Off)'; expect_untouched
 
-    name='refuses the input on decoder 0'; cases=$((cases+1)); setup
+    name='decoder 0 plays the input: the session runs on hdmi0 and renderer 0'; cases=$((cases+1)); setup
     sed -i.bak -e 's/^Connect=.*/Connect=HDMI_PORT0/' -e 's/^Start=.*/Start=1/' "$A/adec.p0"
     sed -i.bak 's/^Connect=.*/Connect=HDMI_PORT3/' "$A/adec.p1"
-    run --session; expect_status 1; expect_out 'REFUSED: HDMI port 0 is on decoder 0, and the module only overrides decoder 1'; expect_untouched
+    FAKE_DEC=0 FAKE_RENDERER=0; export FAKE_DEC FAKE_RENDERER
+    run --apply 15; expect_status 0; expect_out 'ok    HDMI port 0 is on decoder 0 ('
+    expect_out 'ok    one hdmi0 DSP instance, hdmi-port 0'
+    expect_events "$HAPPY0
+$RESTORE0"
+    expect_restored
 
-    name='refuses decoder 0 beside a closed decoder 1 on the same port'; cases=$((cases+1)); setup
+    name='decoder 0 beside a closed decoder 1 on the same port: check OK on decoder 0'; cases=$((cases+1)); setup
     sed -i.bak -e 's/^Connect=.*/Connect=HDMI_PORT0/' -e 's/^Open=.*/Open=1/' -e 's/^Start=.*/Start=1/' "$A/adec.p0"
     sed -i.bak 's/^Open=.*/Open=0/' "$A/adec.p1"
     sed -i.bak 's/^start=(int).*/start=(int)0/' "$R/proc/aaudio/processors/dsp0/hdmi1/021c0001/prop"
-    run --check; expect_status 1; expect_out 'REFUSED: HDMI port 0 is on decoder 0'; expect_untouched
-    expect_out '(adec.p0 Connect=HDMI_PORT0 Open=1 Start=1 UserCodec=UNKNOWN; adec.p1 Connect=HDMI_PORT0 Open=0 Start=0 UserCodec=UNKNOWN)'
+    run --check; expect_status 0; expect_out 'CHECK OK'; expect_untouched
+    expect_out 'ok    HDMI port 0 is on decoder 0 (adec.p0 Connect=HDMI_PORT0 Open=1 Start=1 UserCodec=UNKNOWN; adec.p1 Connect=HDMI_PORT0 Open=0 Start=0 UserCodec=UNKNOWN)'
 
-    name='C5: stale adec.p1 on hdmi1 port 2, the stream on adec.p0/hdmi0 port 0: refused'; cases=$((cases+1)); setup
+    name='C5: stale adec.p1 on hdmi1 port 2, the stream on adec.p0/hdmi0 port 0: decoder 0'; cases=$((cases+1)); setup
     sed -i.bak -e 's/^hdmi-port=(int).*/hdmi-port=(int)2/' -e 's/^start=(int).*/start=(int)0/' -e 's/^codec=(int).*/codec=(int)0/' "$R$P"
     sed -i.bak 's/^start=(int).*/start=(int)1/' "$R$P0"
+    cp "$R$P" "$WORK/hdmi1.found"; cp "$R$P0" "$WORK/hdmi0.found"
     sed -i.bak -e 's/^Connect=.*/Connect=HDMI_PORT0/' -e 's/^Open=.*/Open=1/' -e 's/^Start=.*/Start=1/' -e 's/^UserCodec=.*/UserCodec=DTS/' "$A/adec.p0"
     sed -i.bak -e 's/^Connect=.*/Connect=HDMI_PORT2/' "$A/adec.p1"
-    run --apply 15; expect_status 1; expect_untouched
-    expect_out 'REFUSED: HDMI port 0 is on decoder 0, and the module only overrides decoder 1'
+    FAKE_DEC=0 FAKE_RENDERER=0; export FAKE_DEC FAKE_RENDERER
+    run --apply 15; expect_status 0; expect_out 'ok    HDMI port 0 is on decoder 0'
+    expect_events "$HAPPY0
+$(echo "$RESTORE" | sed "s|$P|$P0|")"
+    expect_restored
+
+    name='nothing started, only adec.p0/hdmi0 connected: proceeds on decoder 0'; cases=$((cases+1)); setup
+    sed -i.bak 's/^Connect=.*/Connect=HDMI_PORT0/' "$A/adec.p0"
+    sed -i.bak 's/^Connect=.*/Connect=UNKNOWN/' "$A/adec.p1"
+    FAKE_DEC=0 FAKE_RENDERER=0; export FAKE_DEC FAKE_RENDERER
+    run --apply 15; expect_status 0
+    expect_out 'ok    HDMI port 0 is connected to decoder 0, not started yet; the input-service restart starts it'
+    expect_events "$HAPPY0
+$RESTORE0"
+    expect_restored
+
+    name='decoder 0, but only renderer 1 is routed: rolled back'; cases=$((cases+1)); setup
+    sed -i.bak -e 's/^Connect=.*/Connect=HDMI_PORT0/' -e 's/^Start=.*/Start=1/' "$A/adec.p0"
+    sed -i.bak 's/^Connect=.*/Connect=UNKNOWN/' "$A/adec.p1"
+    FAKE_DEC=0; export FAKE_DEC
+    run --apply 15; expect_status 1; expect_out 'Compressed route not created'
+    expect_restored
+    case "$(cat "$WORK/events")" in *'codec 5'*|*mute-*) bad "wrote to the DSP instance or gain" ;; esac
+
+    name='the restart moves the input from decoder 1 to decoder 0: hdmi0 is written and restored'; cases=$((cases+1)); setup
+    FAKE_FROM=1 FAKE_DEC=0 FAKE_RENDERER=0; export FAKE_FROM FAKE_DEC FAKE_RENDERER
+    run --apply 15; expect_status 0; expect_out 'ok    HDMI port 0 is on decoder 1'
+    expect_out 'The input-service restart moved HDMI port 0 from decoder 1 to decoder 0; using decoder 0.'
+    expect_events "$HAPPY0
+$RESTORE0"
+    expect_restored
+
+    name='the restart moves the input from decoder 0 to decoder 1: hdmi1 is written and restored'; cases=$((cases+1)); setup
+    sed -i.bak -e 's/^Connect=.*/Connect=HDMI_PORT0/' -e 's/^Start=.*/Start=1/' "$A/adec.p0"
+    sed -i.bak 's/^Connect=.*/Connect=UNKNOWN/' "$A/adec.p1"
+    FAKE_FROM=0 FAKE_DEC=1; export FAKE_FROM FAKE_DEC
+    run --apply 15; expect_status 0; expect_out 'ok    HDMI port 0 is on decoder 0'
+    expect_out 'The input-service restart moved HDMI port 0 from decoder 0 to decoder 1; using decoder 1.'
+    expect_events "$HAPPY
+$RESTORE"
+    expect_restored
 
     name='nothing started, only adec.p1/hdmi1 connected: proceeds'; cases=$((cases+1)); setup
     sed -i.bak 's/^start=(int).*/start=(int)0/' "$R$P"
@@ -389,6 +451,16 @@ $(echo "$HD_RESTORE" | sed 's/\(mute-[a-z]*put\) false/\1 true/')"
     expect_events "$(echo "$HD_HAPPY" | sed 's/window_seconds=35/window_seconds=0 supervised=1/')
 $HD_UNMUTE
 $HD_RESTORE"
+    expect_restored
+
+    name='DTS-HD on decoder 0: hdmi0 and renderer 0'; cases=$((cases+1)); hd_setup UNKNOWN_DTS_HD
+    sed -i.bak -e 's/^Connect=.*/Connect=HDMI_PORT0/' -e 's/^Start=.*/Start=1/' "$A/adec.p0"
+    sed -i.bak 's/^Connect=.*/Connect=UNKNOWN/' "$A/adec.p1"
+    FAKE_DEC=0 FAKE_RENDERER=0; export FAKE_DEC FAKE_RENDERER
+    run --apply 15; expect_status 0; expect_out 'DTS-HD test running for 15 seconds'
+    expect_events "$HD_HAPPY0
+$HD_UNMUTE
+$HD_RESTORE0"
     expect_restored
 
     name='DTS-HD: ADEC stays on DTS: rolled back'; cases=$((cases+1)); hd_setup DTS_HD

@@ -32,15 +32,16 @@ if [ "$2" = cget ]; then
   exit 0
 fi
 echo "cset numid=92 $4" >> "$FAKE_EVENTS"
-[ "${FAKE_ROUTE:-yes}" = no ] || printf "%s\n" " renderer_1_out100 -> mixer_0_in100 [label=\"\"]" " mixer_0_out100 -> output_3_in0 [label=\"\"]" >> "$R/proc/aaudio/dot_block_connection"'
+# The route of the renderer whose decoder plays the current state (fake-state).
+[ "${FAKE_ROUTE:-yes}" = no ] || { cat "$FAKE_FIX/dot_block_connection"
+  printf "%s\n" " renderer_$(cat "$R/renderer")_out100 -> mixer_0_in100 [label=\"\"]" " mixer_0_out100 -> output_3_in0 [label=\"\"]"; } > "$R/proc/aaudio/dot_block_connection"'
 # Only logged: the watcher must never call it (expect_clean).
 stub systemctl 'echo "systemctl $*" >> "$FAKE_EVENTS"'
 stub lsmod 'echo "Module Size Used by"; [ ! -e "$DTS25_ROOT/sys/module/earc_route" ] || echo "earc_route 16384 0"'
 stub rmmod 'echo "rmmod $*" >> "$FAKE_EVENTS"
 [ "${FAKE_RMMOD:-ok}" = ok ] || { echo "rmmod: ERROR: Module $1 is in use" >&2; exit 1; }
 rm -rf "$DTS25_ROOT/sys/module/$1"'
-stub dmesg 'echo "[ 1.0] earc_route: fake kernel line"
-echo "[ 2.0] earc_route: pass nomatch index=0 desc=3 mask=0x2 adec1-codec=0 open=0 started=0 codec-arg=0 bypass-arg=0"'
+stub dmesg 'echo "[ 1.0] earc_route: fake kernel line"'
 stub tee 'line=$(cat); f=$1; echo "write ${f#$DTS25_ROOT} $line" >> "$FAKE_EVENTS"
 name=${line%% *}; value=${line#* }
 sed -i.bak "s/^$name=\(([a-z]*)\).*/$name=\1$value/" "$f"'
@@ -49,15 +50,16 @@ sed -i.bak "s/^$name=\(([a-z]*)\).*/$name=\1$value/" "$f"'
 # "refused" (the TV refused the first stream: only DTS after a non-DTS state
 # starts) or "never".
 # FAKE_LG=1: a non-DTS state rewrites the DSP instance's codec, as LG does.
-# p0dts: the stream on adec.p0, adec.p1 disconnected. c5: the stream on adec.p0
-# and a stale adec.p1 on port 2, as on the C5. stalep0 and both: the stream on
-# adec.p1 with adec.p0 on port 2, stopped on MAT or started on DTS.
+# p0dts, p0hd: the stream on adec.p0, adec.p1 disconnected. c5: the stream on
+# adec.p0 and a stale adec.p1 on port 2, as on the C5. stalep0 and both: the
+# stream on adec.p1 with adec.p0 on port 2, stopped on MAT or started on DTS.
+# $R/renderer is the renderer of the decoder that plays: 0 for p0dts, p0hd and c5.
 stub fake-state 'set -f; R=$DTS25_ROOT; A=$R/proc/lgtv-driver/audio
 [ "$(cat "$R/state" 2>/dev/null)" = "$1" ] || echo "-- $1" >> "$FAKE_EVENTS"
 echo "$1" > "$R/state"
 case "$1" in
   dts|p0dts|c5|stalep0|both) c=UNKNOWN_DTS r=48000 u=DTS ;;
-  hd) c=DTS_HD r=192000 u=DTS_HD ;;
+  hd|p0hd) c=DTS_HD r=192000 u=DTS_HD ;;
   pcm) c=PCM r=48000 u=PCM ;;
   mat) c=MAT r=192000 u=MAT ;;
   noaudio) c=NO_AUDIO r=48000 u=UNKNOWN ;;
@@ -72,15 +74,16 @@ case "$u" in
 esac
 sed -e "s/^Codec=.*/Codec=$c/" -e "s/^SamplingRate=.*/SamplingRate=$r/" "$FAKE_FIX/hdmi" > "$A/hdmi"
 p1="-e s/^Connect=.*/Connect=HDMI_PORT0/ -e s/^Open=.*/Open=1/ -e s/^UserCodec=.*/UserCodec=$u/ -e s/^Start=.*/Start=$s/"
-p0=""
+p0="" renderer=1
 case "$1" in
-  p0dts) p0=$p1; p1="-e s/^Connect=.*/Connect=UNKNOWN/ -e s/^Open=.*/Open=0/ -e s/^Start=.*/Start=0/" ;;
-  c5) p0=$p1; p1="-e s/^Connect=.*/Connect=HDMI_PORT2/ -e s/^Open=.*/Open=1/ -e s/^UserCodec=.*/UserCodec=UNKNOWN/ -e s/^Start=.*/Start=0/" ;;
+  p0dts|p0hd) renderer=0 p0=$p1; p1="-e s/^Connect=.*/Connect=UNKNOWN/ -e s/^Open=.*/Open=0/ -e s/^Start=.*/Start=0/" ;;
+  c5) renderer=0 p0=$p1; p1="-e s/^Connect=.*/Connect=HDMI_PORT2/ -e s/^Open=.*/Open=1/ -e s/^UserCodec=.*/UserCodec=UNKNOWN/ -e s/^Start=.*/Start=0/" ;;
   stalep0) p0="-e s/^Connect=.*/Connect=HDMI_PORT2/ -e s/^Open=.*/Open=1/ -e s/^UserCodec=.*/UserCodec=MAT/ -e s/^Start=.*/Start=0/" ;;
   both) p0="-e s/^Connect=.*/Connect=HDMI_PORT2/ -e s/^Open=.*/Open=1/ -e s/^UserCodec=.*/UserCodec=DTS/ -e s/^Start=.*/Start=1/" ;;
 esac
 sed $p0 -e "" "$FAKE_FIX/adec.p0" > "$A/adec.p0"
-sed $p1 -e "" "$FAKE_FIX/adec.p1" > "$A/adec.p1"'
+sed $p1 -e "" "$FAKE_FIX/adec.p1" > "$A/adec.p1"
+echo "$renderer" > "$R/renderer"'
 # "sleep 2" is the DTS-HD muted wait: logged, and earc_nonpcm becomes the next
 # word of FAKE_NONPCM (default 1). Any other sleep takes the next timeline state.
 stub sleep 'R=$DTS25_ROOT
@@ -164,7 +167,7 @@ expect_clean() {
     ! grep -q '^systemctl' "$WORK/events" || bad "input service restarted"
     if grep -q '^rmmod' "$WORK/events"; then
         case "$(cat "$R/state")" in
-            dts|hd|p0dts|c5|stalep0|both) expect_out "$LIVE" ;;
+            dts|hd|p0dts|p0hd|c5|stalep0|both) expect_out "$LIVE" ;;
             *) case "$out" in *"$LIVE"*) bad "live-DTS notice without a live stream" ;; esac ;;
         esac
     fi
@@ -220,6 +223,12 @@ write $P drop false
 $UNMUTE"
 STOP="rmmod earc_route
 $CSET"
+# The same writes on hdmi0's instance, which starts a case stopped
+# (start=(int)0) unless the case edits it.
+CORE0=$(echo "$CORE" | sed "s|$P|$P0|")
+CORE_RESTORE0=$(echo "$CORE_RESTORE" | sed -e "s|$P|$P0|" -e 's/start 1$/start 0/')
+HD0=$(echo "$HD" | sed "s|$P|$P0|")
+HD_RESTORE0=$(echo "$HD_RESTORE" | sed -e "s|$P|$P0|" -e 's/start 1$/start 0/')
 
 for SH in $shells; do
     command -v "$SH" > /dev/null || { echo "SKIP shell $SH: not found"; continue; }
@@ -276,20 +285,30 @@ $MUTE
 $CORE_RESTORE
 $STOP"
 
-    name='DTS on decoder 0: nothing written, captured once'; cases=$((cases+1)); setup p0dts p0dts p0dts
+    name='DTS core on decoder 0: applied to hdmi0 and renderer 0'; cases=$((cases+1)); setup p0dts p0dts p0dts
     run; expect_status 0; expect_clean
     expect_events "$LOAD
+$CORE0
+$MUTE
+$CORE_RESTORE0
 $STOP"
-    expect_out 'decoder 0: not handled'
-    logdir=$(ls -d "$R"/tmp/dts25-hdmi-watch-*)
-    for f in adec.p0 adec.p1 dot_block_connection dot_module_connection hdmi0.prop hdmi1.prop nomatch.txt; do
-        [ -f "$logdir/decoder0-1/$f" ] || bad "decoder 0 capture lacks $f"
-    done
-    grep -q 'earc_route: pass nomatch' "$logdir/decoder0-1/nomatch.txt" || bad "no nomatch line captured"
-    cmp -s "$R$P0" "$logdir/decoder0-1/hdmi0.prop" || bad "capture's hdmi0.prop is not the hdmi0 instance"
-    [ ! -e "$logdir/decoder0-2" ] || bad "captured twice in one stream"
+    expect_out 'port=0 decoder=0'
+    expect_out 'applying DTS core (port 0, decoder 0)'
+    expect_out 'DTS core applied'
+    [ -z "$(ls -d "$R"/tmp/dts25-hdmi-watch-*/decoder0-* 2>/dev/null)" ] || bad "decoder 0 capture written"
 
-    name='stream moves to decoder 0 while applied: reverted'; cases=$((cases+1)); setup dts dts p0dts p0dts
+    name='DTS-HD on decoder 0: applied to hdmi0 and renderer 0'; cases=$((cases+1)); setup p0hd p0hd p0hd
+    run; expect_status 0; expect_clean
+    expect_events "$LOAD
+$HD0
+$UNMUTE
+$MUTE
+$HD_RESTORE0
+$STOP"
+    expect_out 'DTS-HD applied'
+
+    name='stream moves from decoder 1 to decoder 0 while applied: reverted, then applied to decoder 0'; cases=$((cases+1))
+    setup dts dts p0dts p0dts
     run; expect_status 0; expect_clean
     expect_events "$LOAD
 $CORE
@@ -297,8 +316,27 @@ $CORE
 $MUTE
 $CORE_RESTORE
 $CSET
+$CORE0
+$MUTE
+$CORE_RESTORE0
 $STOP"
-    [ -d "$(ls -d "$R"/tmp/dts25-hdmi-watch-*)/decoder0-1" ] || bad "no decoder 0 capture"
+    expect_out 'port=0 decoder=0); reverting'
+
+    name='stream moves from decoder 0 to decoder 1 mid-stream: reverted on hdmi0, applied to hdmi1'; cases=$((cases+1))
+    setup p0dts p0dts dts dts
+    run; expect_status 0; expect_clean
+    expect_events "$LOAD
+$CORE0
+-- dts
+$MUTE
+$CORE_RESTORE0
+$CSET
+$CORE
+$MUTE
+$CORE_RESTORE
+$STOP"
+    expect_out 'port=0 decoder=1); reverting'
+    expect_out 'Watcher stopped: 2 applied, 2 reverted'
 
     name='core to DTS-HD: reverted, then the DTS-HD apply'; cases=$((cases+1)); setup dts dts hd hd hd
     run; expect_status 0; expect_clean
@@ -405,16 +443,17 @@ $CSET
 $STOP"
     expect_out 'Three failed attempts in a row (last: the compressed route was not created (route.dot)); stopping.'
 
-    name='C5: stream on adec.p0/hdmi0, stale adec.p1 on hdmi1 port 2: decoder 0, nothing written'; cases=$((cases+1))
+    name='C5: stream on adec.p0/hdmi0, stale adec.p1 on hdmi1 port 2: applied to decoder 0'; cases=$((cases+1))
     setup c5 c5 c5
     sed -i.bak -e 's/^hdmi-port=(int).*/hdmi-port=(int)2/' -e 's/^start=(int).*/start=(int)0/' -e 's/^codec=(int).*/codec=(int)0/' "$R$P"
     sed -i.bak 's/^start=(int).*/start=(int)1/' "$R$P0"
     run; expect_status 0; expect_clean
     expect_events "$LOAD
+$CORE0
+$MUTE
+$(echo "$CORE_RESTORE" | sed "s|$P|$P0|")
 $STOP"
-    expect_out 'port=0 decoder=0; decoder 0: not handled'
-    logdir=$(ls -d "$R"/tmp/dts25-hdmi-watch-*)
-    cmp -s "$R$P0" "$logdir/decoder0-1/hdmi0.prop" || bad "capture's hdmi0.prop is not the hdmi0 instance"
+    expect_out 'port=0 decoder=0'
 
     name='stale adec.p0/hdmi0 while the stream plays on adec.p1: applied to decoder 1'; cases=$((cases+1))
     setup stalep0 stalep0 stalep0
