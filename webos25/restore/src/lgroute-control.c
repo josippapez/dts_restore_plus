@@ -95,23 +95,43 @@ int lgroute_control_receiver (void)
       && lgroute_sound_output (mode) && !strcmp (mode, "passThrough");
 }
 
-static int ready (int fd, long output[5])
+/* A tester's TV hung on a track switch after one -1, and the log could not
+ * say which of these it was. */
+static int ready (int fd, long output[5], char why[LGROUTE_WHY])
 {
   long earc;
-  return lgroute_control_read (fd, "Sndout EARC OnOff", &earc, 1) == 0 && earc == 1
-      && lgroute_control_read (fd, "Sndout EARC Outputtype", output, 5) == 0
-      && valid (output);
+  if (lgroute_control_read (fd, "Sndout EARC OnOff", &earc, 1) < 0)
+    snprintf (why, LGROUTE_WHY, "Sndout EARC OnOff could not be read: %s", strerror (errno));
+  else if (earc != 1)
+    snprintf (why, LGROUTE_WHY, "Sndout EARC OnOff is %ld, not on", earc);
+  else if (lgroute_control_read (fd, "Sndout EARC Outputtype", output, 5) < 0)
+    snprintf (why, LGROUTE_WHY, "Sndout EARC Outputtype could not be read: %s", strerror (errno));
+  else if (!valid (output))
+    snprintf (why, LGROUTE_WHY, "Sndout EARC Outputtype is %ld,%ld,%ld,%ld,%ld, not a known output type",
+        output[0], output[1], output[2], output[3], output[4]);
+  else
+    return 1;
+  return 0;
 }
 
 /* 1 = LG requests unmixed eARC, 0 = mixed, -1 = unavailable. Never written:
  * in Pass Through LG derives the mixer word from its own setMixer state. */
-int lgroute_control_unmixed (void)
+int lgroute_control_unmixed_why (char why[LGROUTE_WHY])
 {
   long output[5];
   int fd = open ("/dev/snd/controlC0", O_RDONLY | O_CLOEXEC);
-  int ok = fd >= 0 && ready (fd, output);
-  if (fd >= 0) close (fd);
+  int ok = fd >= 0 && ready (fd, output, why);
+  if (fd < 0)
+    snprintf (why, LGROUTE_WHY, "/dev/snd/controlC0 could not be opened: %s", strerror (errno));
+  else
+    close (fd);
   return ok ? output[4] == 0 : -1;
+}
+
+int lgroute_control_unmixed (void)
+{
+  char why[LGROUTE_WHY];
+  return lgroute_control_unmixed_why (why);
 }
 
 #ifdef LGROUTE_CONTROL_MAIN
