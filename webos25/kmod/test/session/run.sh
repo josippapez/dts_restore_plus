@@ -35,7 +35,14 @@ if [ "$2" = cget ]; then
 fi
 echo "cset numid=92 $4" >> "$FAKE_EVENTS"
 [ "${FAKE_ROUTE:-yes}" = no ] || printf "%s\n" " renderer_1_out100 -> mixer_0_in100 [label=\"\"]" " mixer_0_out100 -> output_3_in0 [label=\"\"]" >> "$R/proc/aaudio/dot_block_connection"'
+# FAKE_BLIP: the first restart turns the HDMI input to PCM; "once" brings it
+# back at the next sleep (as on a CS), "forever" leaves it.
 stub systemctl 'echo "systemctl $*" >> "$FAKE_EVENTS"
+h=$DTS25_ROOT/proc/lgtv-driver/audio/hdmi
+if [ -n "${FAKE_BLIP:-}" ] && [ ! -e "$DTS25_ROOT/blipped" ]; then
+  touch "$DTS25_ROOT/blipped"; cp "$h" "$DTS25_ROOT/hdmi.real"; sed -i.bak "s/^Codec=.*/Codec=PCM/" "$h"
+  [ "$FAKE_BLIP" = once ] || rm "$DTS25_ROOT/hdmi.real"
+fi
 [ "${FAKE_ADEC:-start}" = never ] || sed -i.bak -e "s/^UserCodec=.*/UserCodec=${FAKE_ADEC_CODEC:-DTS}/" -e "s/^Start=.*/Start=1/" "$DTS25_ROOT/proc/lgtv-driver/audio/adec.p1"'
 stub lsmod 'echo "Module Size Used by"; [ ! -e "$DTS25_ROOT/sys/module/earc_route" ] || echo "earc_route 16384 0"'
 stub rmmod 'echo "rmmod $*" >> "$FAKE_EVENTS"; rm -rf "$DTS25_ROOT/sys/module/$1"'
@@ -47,7 +54,8 @@ sed -i.bak "s/^$name=\(([a-z]*)\).*/$name=\1$value/" "$f"'
 # script that keeps sleeping long after that (a broken loop) is sent TERM.
 # "sleep 2" is the DTS-HD muted wait: it is logged, and the eARC non-PCM word
 # only becomes FAKE_NONPCM (default 1) during it.
-stub sleep 'if [ "$1" = 2 ]; then
+stub sleep '[ ! -f "$DTS25_ROOT/hdmi.real" ] || mv "$DTS25_ROOT/hdmi.real" "$DTS25_ROOT/proc/lgtv-driver/audio/hdmi"
+if [ "$1" = 2 ]; then
   echo "sleep 2" >> "$FAKE_EVENTS"
   echo "${FAKE_NONPCM:-1}" > "$DTS25_ROOT/sys/module/earc_route/parameters/earc_nonpcm"
 fi
@@ -86,7 +94,7 @@ setup() {  # a DTS core input on HDMI port 0, decoder 1, eARC on, ADEC idle
     cp "$SCRIPT" "$WORK/app/hdmi-session.sh"
     printf '#!/bin/sh\n%s\n' "$LOADER" > "$WORK/app/earc-route-load.sh"
     : > "$WORK/events"
-    unset FAKE_UID FAKE_EARC FAKE_ROUTE FAKE_ADEC FAKE_LOADER FAKE_ADEC_CODEC FAKE_NONPCM
+    unset FAKE_UID FAKE_EARC FAKE_ROUTE FAKE_ADEC FAKE_LOADER FAKE_ADEC_CODEC FAKE_NONPCM FAKE_BLIP
 }
 hd_setup() {  # hd_setup CODEC: the same TV with a DTS-HD stream named CODEC
     setup
@@ -267,6 +275,20 @@ $RESTORE"
     run --apply 15; expect_status 1; expect_out 'ADEC did not start; aborting.'
     expect_restored
     case "$(cat "$WORK/events")" in *'codec 5'*) bad "wrote codec 5" ;; esac
+
+    name='input reads PCM for a moment after the service restart'; cases=$((cases+1)); setup
+    FAKE_BLIP=once; export FAKE_BLIP
+    run --apply 15; expect_status 0; expect_out 'DTS core test running for 15 seconds'
+    expect_events "$HAPPY
+$RESTORE"
+    expect_restored
+
+    name='input never comes back after the service restart: rolled back'; cases=$((cases+1)); setup
+    FAKE_BLIP=forever; export FAKE_BLIP
+    run --apply 15; expect_status 1; expect_out 'DTS core input did not come back within 10 s'
+    case "$(cat "$WORK/events")" in *'codec 5'*) bad "wrote codec 5" ;; esac
+    [ ! -e "$R/sys/module/earc_route" ] || bad "module still loaded"
+    case "$out" in *'Rollback incomplete'*) bad "rollback incomplete" ;; esac
 
     name='no compressed route: rolled back'; cases=$((cases+1)); setup
     FAKE_ROUTE=no; export FAKE_ROUTE

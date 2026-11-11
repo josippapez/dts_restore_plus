@@ -1,8 +1,8 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-2.0-only
 # hdmi-session.sh -- one DTS passthrough session (DTS core or DTS-HD, whichever
-# the HDMI input carries) to an eARC receiver, on a rooted LG webOS 25 TV. Only
-# --check has run on a TV.
+# the HDMI input carries) to an eARC receiver, on a rooted LG webOS 25 TV.
+# --apply has run with a receiver on a CS (DTS core, DTS-HD, DTS:X).
 #
 #   sh hdmi-session.sh --check             read-only preflight, changes nothing
 #   sh hdmi-session.sh --apply [seconds]   timed test, 15..60 seconds (default 30)
@@ -236,14 +236,18 @@ cat "$logdir/loader.txt"
 modified=1
 systemctl restart extinput-integration.service
 # Allow ordinary service startup to set ADEC1's codec and create bypass nodes.
+# The input reads as not DTS for a moment after the restart (a CS run aborted
+# here on the first read), so only the last read decides.
 i=0
 while [ "$i" -lt 10 ]; do
-    core_now || exit 1
-    if grep -qx "UserCodec=$adec_codec" "$AUDIO/adec.p1" &&
+    if core_now && grep -qx "UserCodec=$adec_codec" "$AUDIO/adec.p1" &&
        grep -qx 'Start=1' "$AUDIO/adec.p1"; then break; fi
     i=$((i+1)); sleep 1
 done
-[ "$i" -lt 10 ] || { echo 'ADEC did not start; aborting.'; exit 1; }
+if [ "$i" -ge 10 ]; then
+    core_now || { echo "$label input did not come back within 10 s of the input-service restart; aborting."; exit 1; }
+    echo 'ADEC did not start; aborting.'; exit 1
+fi
 prop=$(find_prop)
 grep -qx "hdmi-port=(int)$port" "$prop"
 # Create the downstream connection while the input is stopped.
