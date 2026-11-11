@@ -25,16 +25,32 @@ available", never a refusal, so the eARC route still loads.
 [lg-g5-dts](https://github.com/dakenf/lg-g5-dts) (GPL-2.0-only) onto our derived
 addresses: `mode=2` self-tests the kprobe BRK dispatch, `mode=3` opens the DTS
 check, `mode=4` observes `_set_output`, `mode=5` overrides the DTS-core route for
-a bounded window. These modes write to kernel memory (break-hook list, one kprobe,
-one patched instruction); every write is listed with its undo under
+a bounded window. `mode=6` and `mode=7` are a port of
+lg-g5-dts's `tools/dts-hd-route`: `mode=6` watches the two `_cb_output_status`
+sites and changes nothing, `mode=7` is the session load for both DTS core and
+DTS-HD. These modes write
+to kernel memory (break-hook list, up to three kprobes, one patched instruction);
+every write is listed with its undo under
 [HDMI passthrough active modes](#hdmi-passthrough-active-modes-mode2). `mode=0`
 and `mode=1` are unchanged, byte for byte.
 
 Status: both builds host-tested against the kernels listed under Test; the 6.12
-build has never run on a TV, and the HDMI audit has never run on a TV at all.
-**`mode=2` and `mode=3` have run on one C5 (33.31.68) and left it in its stock
-state; `mode=4` loaded and unloaded cleanly there but its `_set_output`
-pre-handler has never fired; `mode=5` has never run. Nothing has run on 6.12.**
+build has never run on a TV. **On one C5 (33.31.68, kernel 5.4.268), 2026-11-11:
+the audit, `mode=2`, `mode=3` and `mode=4` ran and left the TV in its stock
+state. With `mode=3` loaded the HDMI decoder started on a live DTS stream
+(`UserCodec=DTS`, `Start=1`) and refused it again after unload. `mode=4`'s
+`_set_output` pre-handler fired on every input-service restart (`calls_seen=1`
+each time) and printed `pass nomatch index=1 desc=1 mask=0x2 adec1-codec=21
+open=1 started=1`: that TV plays through its own speakers, with no eARC receiver,
+so the policy never matched. `mode=6` loaded with nothing playing, passed both
+self-tests (`result=11` and the redirect's `result=10`), placed its two probes and
+unloaded stock; it saw no output-status event. `mode=7` ran once on a live DTS
+core stream (`Codec=UNKNOWN_DTS`, 48 kHz): both self-tests, the check opened,
+three probes placed, the decoder started on DTS after an input-service restart,
+and the one `_set_output` call came before that start (`adec1-codec=0
+started=0`), so nothing was overridden; no output-status event, `earc_nonpcm=0`,
+unload left the TV stock. `mode=5` has never run on a TV, and no mode has run
+with an eARC receiver or on a DTS-HD stream. Nothing has run on 6.12.**
 Neither `.ko` is committed (`out/` is ignored). Neither generation uses
 MODVERSIONS (no `__versions`, no CRCs) or BTI, so no `-mbranch-protection` flag is
 needed; both kernels have PAC on.
@@ -44,9 +60,9 @@ needed; both kernels have PAC on.
 | File | What it is |
 |---|---|
 | `earc_decode.h` | Freestanding AArch64 decoder and derivations, shared by the module and the test |
-| `earc_route.c` | The module: parameter checks, decode, audit (`mode=0`), route (`mode=1`), HDMI passthrough (`mode=2`..`5`) |
+| `earc_route.c` | The module: parameter checks, decode, audit (`mode=0`), route (`mode=1`), HDMI passthrough (`mode=2`..`7`) |
 | `earc_hdmi.h` | The HDMI passthrough audit's derivations and its break-hook list walk, shared by the module and the test |
-| `earc_probe.h` | The active modes' pure decision logic (break-hook decision, DTS-core policy, gate-restore rule, per-mode refusal), shared by the module and the test |
+| `earc_probe.h` | The active modes' pure decision logic (break-hook decision, DTS-core policy, gate-restore rule, the two DTS-HD probes, per-mode refusal), shared by the module and the test |
 | `build.sh`, `build.py` | Container build plus ABI, import and export checks against kernel captures |
 | `earc-route-load.sh` | TV-side loader (root, busybox sh + python3) |
 | `test/run.sh`, `test/test_decode.c` | Host test: sha-keyed oracles, refusal tests, C5/G5 and 5.4/6.12 differences |
@@ -89,7 +105,7 @@ derivable from the analysed functions. `aimc_send_command` and
 `aud_hal_set_arc_sample_rate` are trusted from kallsyms alone. The callback is
 only compared, so a wrong value refuses the route.
 
-## HDMI passthrough audit (derived, read-only; never run on a TV)
+## HDMI passthrough audit (derived, read-only)
 
 `earc_hdmi.h` derives what an HDMI-input -> eARC passthrough feature would later
 need, for the audit to print. `_cb_output_status` goes through the engine above.
@@ -110,7 +126,7 @@ does not pass `_etext` and is at most 16 KiB.
 | DTS gate and its state | `aud_hal_dts_supported`'s two words: stock (`mov w0,#0; ret`), switched (`mov w0,#1; ret`: another tool is active), a breakpoint (another tool is probing it), or unknown |
 | `_set_output` kprobe site, mask offset | its first word (a kprobe can sit on it; any `brk` there is reported as another tool's probe), and the offset of the only 32-bit load from a copy of argument 1 whose loaded register is compared with an immediate (0x14). That 0x20 in that word means eARC is fixed in the source |
 | ADEC table base, stride, codec/open/started | `alsa_decoder_codec`: `slot = constant + index * stride` from `sbfiz x,xI,#1,#32; add x,x,wI,sxtw; add xS,<constant>,x,lsl #5` (stride 96), the index being the value `cmp wI,#1; b.hi` checked in the same block; codec is the only 32-bit store through the slot, open the only byte offset loaded through it. `alsa_decoder_start` must form the same base and stride and load exactly two slot bytes, open and started. ADEC 1 = base + stride |
-| `_cb_output_status` DTS-HD sites | the event codec is the word loaded from argument 0. Exactly one compare of it with an immediate is the acceptance: shape 1 (5.4) `cmp codec,#4; b.ls` to the 32-bit store of the codec, shape 2 (6.12) the last compare of the chain `cmp #2; b.eq; b.ls; cmp #3; b.eq; cmp #4; b.ne`, whose `b.ne` falls through into that store. The store is the supported branch; the one `ldr x,[constant, codec, lsl #3]` is the name load and gives the table |
+| `_cb_output_status` DTS-HD sites | the event codec is the word loaded from argument 0. Exactly one compare of it with an immediate is the acceptance: shape 1 (5.4) `cmp codec,#4; b.ls` to the 32-bit store of the codec, shape 2 (6.12) the last compare of the chain `cmp #2; b.eq; b.ls; cmp #3; b.eq; cmp #4; b.ne`, whose `b.ne` falls through into that store. The store is the supported branch; the one `ldr x,[constant, codec, lsl #3]` is the name load and gives the table. The output register (x19 on every kernel measured) is the base register of that store, taken only if the engine shows it holding argument 2 at the compare |
 | break-hook list head, hook fields | `register_kernel_break_hook`: its only pre-indexed 64-bit load from a constant base. `call_break_hook`, which must compute the same head: its one `blr`, the one `ldr xN,[xN]` (the node), the one 64-bit load from the node into the `blr` register (`fn`, +16), and, of the node's two 16-bit loads, the one `cmp x, w, uxth` compares (immediate, +24) and the other (mask, +26) |
 | kprobe handlers, service symbols | by name: `kprobe_breakpoint_handler`, `kprobe_breakpoint_ss_handler`, `kretprobe_breakpoint_handler` (6.12 only), `aarch64_insn_patch_text`, `cpus_read_{lock,unlock}`, `[un]register_kprobe`, `[un]register_kernel_break_hook`. In the kernels' ksymtab: `[un]register_kprobe`, `cpus_read_{lock,unlock}`; not exported: the patch function and the break-hook pair |
 | non-PCM word, physical | `struct earc_layout.nonpcm` minus `_stext & ~0xfffff`: the image is loaded at physical 0 plus its text offset (`/proc/iomem` on the C5: `00088000-0197ffff : Kernel code`) |
@@ -146,7 +162,11 @@ holds the kernel ABI and the live calls. Each mode first runs the same HDMI
 derivation the audit runs and **refuses** (never degrades) unless every item it
 depends on derived cleanly, the DTS check is stock (for modes that touch it), no
 probe-relevant site holds a breakpoint, and `_set_output`'s entry is
-kprobe-placeable (`earc_mode_refusal`).
+kprobe-placeable (`earc_mode_refusal`). Modes 6 and 7 also need
+`earc_hd_refusal`: the `_cb_output_status` sites derived with no breakpoint in
+the function, the ADEC table, a compare bound below 7, the output register, no
+SP/ZR in the probed instructions, both kprobe-placeable, and a live name table
+with more entries than the bound.
 
 | Mode | Loader | What it does | Stays loaded |
 |---|---|---|---|
@@ -154,6 +174,8 @@ kprobe-placeable (`earc_mode_refusal`).
 | 3 | `--open-gate` | Opens the DTS check (`aud_hal_dts_supported`: `mov w0,#0` -> `mov w0,#1`) | yes |
 | 4 | `--observe` | Stage a + opens the gate + a counting kprobe on `_set_output` (no register change) | yes |
 | 5 | `--dts-core` | Stage a + opens the gate + a kprobe on `_set_output` that overrides the DTS-core route for a bounded window | yes |
+| 6 | `--observe-hd` | Stage a + the redirect self-test + counting kprobes on the `_cb_output_status` compare and name load. The gate stays shut; no register, flag or pc is changed | yes |
+| 7 | `--dts-hd` | The session stage for DTS core and DTS-HD: stage a + the redirect self-test + the `_cb_output_status` name-load kprobe + opens the gate + the `_cb_output_status` compare kprobe (acts for DTS-HD only) + the `_set_output` kprobe overriding the route of a DTS core or DTS-HD stream (ADEC codec 48 or 51) for a bounded window | yes |
 
 **Composition.** A real session needs the DTS check open **and** the `_set_output`
 probe active from one load (a module loads once), so modes 4 and 5 include opening
@@ -163,8 +185,77 @@ bounds the override; after it, mode 5 observes only. The window is driven by the
 module's existing watchdog-thread pattern (a 100 ms-tick kthread), not a new clock
 import.
 
+**DTS-HD (modes 6 and 7).** lg-g5-dts has two modules built from one source:
+`tools/dts-core-route` (the `_set_output` probe, ADEC codec 48) and
+`tools/dts-hd-route`, which is the same file with the policy codec changed to 51
+and two more kprobes in `_cb_output_status` (`status_hooks.h`). Its DTS-core
+sessions never have those two; its DTS-HD session loads `dts_gate.ko`, then the
+HD module with all three probes. The two modules apply the same override
+(`regs[2] = 0`, `regs[3] = 1`) and differ on the `_set_output` path only in the
+policy codec, so one load of mode 7 has the gate, the two status probes and the
+`_set_output` override on ADEC codec 48 or 51. It serves a DTS core session as
+well as a DTS-HD one: a core session then runs with the name probe in place, and
+a core-to-HD track change never passes through an open gate without it. The
+compare probe still acts only for event codec 7 while ADEC 1 is started on codec
+51. Mode 5 is unchanged: codec 48 only, no status probes.
+
+LG's output-status event for DTS-HD carries codec 7. `_cb_output_status` only
+runs past its entry for output types 2 and 3 (optical and eARC; any other type
+returns -1 before the compare), accepts codecs up to the bound (4), turns
+anything else into codec 0 (PCM signalling), and on both paths loads the codec's
+log name from a 6-entry table, so codec 7 already reads past that table in
+stock code once the gate lets a DTS-HD stream start. The two probes:
+
+- *compare* (`hd-compare`, `cmp wC,#4`): for event codec 7 on an output of type
+  3 while ADEC 1 is started on codec 51, continue at the supported branch
+  (`hd-supported`, the `str wC,[xOutput,#68]`) with the codec register untouched
+  and the compare skipped, as its `b.ls` (5.4) or the fall-through of its `b.ne`
+  (6.12) would. Unlike lg-g5-dts, which leaves the flags of an earlier compare,
+  the flags are set to those of an accepting compare (Z and C).
+- *name load* (`name-load`, `ldr xN,[table,xI,lsl #3]`): for an index outside
+  the table, put the table's own last entry in `xN` and skip the load. The
+  table size is the live count the audit prints (`entries=6`), not a constant,
+  and the substitute is read once at load from `table[entries-1]`, an entry the
+  count has already checked as a pointer to a string in the kernel's data
+  (`"???"` on all 13 saved kernels of both generations). lg-g5-dts substitutes
+  its own strings (`dts-hd`, `unknown`); those would be module memory, which
+  LG's log call reads after the pre-handler has returned, so a task preempted
+  there across an unload would read freed memory. The `dts-hd` label in LG's
+  log is given up for that.
+
+Both are needed because accepting codec 7 is what sends it to the name load on
+the supported path. The open gate is what lets a codec-7 event reach the name
+load at all, so in mode 7 the name probe is registered before the gate is
+opened and removed after it is restored. In
+lg-g5-dts the name fix is unconditional and the acceptance is not bounded by the
+window (only the `_set_output` override is); mode 7 keeps that: the acceptance
+has to last as long as the DSP instance the session configured, since a later
+status event that is not accepted puts the eARC output back to PCM signalling
+under a compressed stream. `window_seconds`/`supervised` bound the `_set_output`
+override exactly as in mode 5. Mode 6 registers the same two probes with the
+same decisions but only counts and prints (`would accept`, `would substitute`); it
+does not open the gate, because the sites are reached by any output-status event
+on an optical or eARC output, whatever the codec. On 6.12 the derived compare is
+the last of a chain, so mode 6 sees there only events with codec 4 or above; the
+name load sees every event on both generations.
+
+**Known limitation of modes 3, 4 and 5 (unverified).** They open the gate with
+no name probe. While one of them is loaded and a DTS-HD source plays on an
+optical or eARC output, a codec-7 status event reaches LG's stock name load,
+which reads `table[7]`; on the 5.4 images `table[6]` and `table[7]` are the
+ASCII of a neighbouring string, not pointers. This is read from the disassembly
+and from lg-g5-dts's `tests/emulate_status.py` (its stock run logs with that
+garbage pointer), not observed on a TV, and whether LG's log call dereferences
+it depends on its log mask. Do not play DTS-HD while modes 3 to 5 are loaded.
+Real sessions therefore use mode 7 (`--dts-hd`) for DTS core too: it registers
+the name probe before it opens the gate, so a source that switches from a core
+track to a DTS-HD track is covered. Modes 3 to 5 stay as test stages and are
+themselves unchanged.
+
 **Stage a (break handlers + self-test).** On both generations a plain pre-handler
-kprobe needs the BRK #4 (trap) and #6 (single-step) handlers; it never reaches
+kprobe needs the BRK #4 (trap) and #6 (single-step) handlers; the BRK-based
+single-step is upstream's on both (v5.4.268 `arch_prepare_ss_slot` ends the
+slot with `BRK64_OPCODE_KPROBES_SS`), not an LG change. It never reaches
 the kretprobe trampoline (#7, 6.12 only), so that hook is not registered. The
 module walks the kernel's break-hook list: if both handlers are already on it, it
 does nothing; if the walk is incomplete, or a node would also answer #4 or #6
@@ -176,7 +267,12 @@ and expects 11 with exactly one hit; `register_kprobe` on a core-text function o
 the still-initialising module succeeds (the module is `MODULE_STATE_COMING`,
 `try_module_get` succeeds, the function is not in the init section), and mode 2
 confirms it empirically. The leaf stays a named symbol: on 6.12 `register_kprobe`
-returns `-ENOENT` unless kallsyms resolves the probed address.
+returns `-ENOENT` unless kallsyms resolves the probed address. Modes 6 and 7
+then run lg-g5-dts's second pass on the same leaf, since their probes redirect
+`pc`: the pre-handler sets x0 to 10, adds 4 to `pc` and returns 1, and the call
+must come back as 10 with one hit (the leaf is first checked to be exactly
+`add w0,w0,#1; ret`). `kprobe_breakpoint_handler` of every capture resumes at
+`regs->pc` without single-stepping when the pre-handler returns non-zero.
 
 Stage a is needed because, on 5.4, LG's `init_kprobes` begins with a vendor test
 of a flag that only a `kprobe` kernel command-line parameter sets and returns
@@ -198,11 +294,14 @@ redundant wait: `unregister_kernel_break_hook` (and `unregister_kprobe`, through
 | Write | Made by | Undo |
 |---|---|---|
 | break-hook list: add our #4 and #6 nodes | stage a (only if not already present) | `unregister_kernel_break_hook` (#6 then #4), then `synchronize_rcu` |
-| one kprobe on `_set_output` (modes 4, 5) | `register_kprobe` | `unregister_kprobe` |
-| one kprobe on the self-test leaf (mode 2) | `register_kprobe` | `unregister_kprobe`, within init |
-| one instruction: DTS check word 0 `mov w0,#0` -> `mov w0,#1` (modes 3, 4, 5) | `aarch64_insn_patch_text` under `cpus_read_lock` | patch back to `mov w0,#0`, but only if the live word is still the one we wrote |
+| one kprobe on `_set_output` (modes 4, 5, 7) | `register_kprobe` | `unregister_kprobe` |
+| one kprobe on the `_cb_output_status` name load (modes 6, 7; in mode 7 before the gate is opened) | `register_kprobe` | `unregister_kprobe`, after the gate is restored |
+| one kprobe on the `_cb_output_status` compare (modes 6, 7; in mode 7 after the gate is opened) | `register_kprobe` | `unregister_kprobe`, before the gate is restored |
+| one kprobe on the self-test leaf (modes 2, 4, 5; twice in modes 6, 7) | `register_kprobe` | `unregister_kprobe`, within init |
+| one instruction: DTS check word 0 `mov w0,#0` -> `mov w0,#1` (modes 3, 4, 5, 7) | `aarch64_insn_patch_text` under `cpus_read_lock` | patch back to `mov w0,#0`, but only if the live word is still the one we wrote |
 
 **Failure paths** undo in reverse: self-test fail -> unregister hooks, `synchronize_rcu`; gate-patch fail -> unregister hooks, `synchronize_rcu`; probe-register fail -> restore gate, unregister hooks, `synchronize_rcu`; window-thread fail -> unregister probe, restore gate, unregister hooks, `synchronize_rcu`. `cleanup_module` (modes 3-5) stops the window thread, unregisters the probe, restores the gate, unregisters the hooks, then `synchronize_rcu`. It does **not** repair the audio graph: like lg-g5-dts, that is left to the session script.
+Modes 6 and 7 take every failure through that same cleanup, which also removes the two `_cb_output_status` probes. Mode 7 sets up in the order hooks, self-tests, name-load probe, gate, compare probe, `_set_output` probe, window thread, and the cleanup runs it backwards: window thread, `_set_output` probe, compare probe, gate, name-load probe, hooks, `synchronize_rcu`. Their failure points are the self-tests, the name-load `register_kprobe`, the gate patch (mode 7), the other two `register_kprobe` calls and the window thread (mode 7).
 
 **New imports** (called directly; build.py proves each is exported by every kernel
 of the generation): `register_kprobe`, `unregister_kprobe`, `cpus_read_lock`,
@@ -211,7 +310,10 @@ of the generation): `register_kprobe`, `unregister_kprobe`, `cpus_read_lock`,
 are called through their kallsyms addresses.
 
 **Hand-declared kernel structs** (`earc_route.c`, with static assertions). `struct
-pt_regs` (`regs[31]` at +0, we touch x0..x3) and `struct break_hook` (`fn` +16,
+pt_regs` (`regs[31]` at +0, `pc` +256, `pstate` +264: the `user_pt_regs` prefix;
+`kprobe_breakpoint_handler` of every capture reads `[regs,#256]` and
+`[regs,#264]`; modes 2-5 touch x0..x3, modes 6 and 7 also the derived registers,
+`pc` and the NZCV bits of `pstate`) and `struct break_hook` (`fn` +16,
 `imm` +24, `mask` +26, 32 bytes) are identical on both generations. `struct
 kprobe` differs: `addr` +0x28, `pre_handler` +0x40 on both; its size is 0x88 on
 5.4 (flags +0x80) and 0x80 on 6.12 (flags +0x78, after `fault_handler` was
@@ -225,12 +327,26 @@ the layout check (the captures hold no kprobe instance to measure directly).
 (return non-zero to skip single-stepping; we return 0), the break-hook layout and
 the registration/patch call conventions match 5.4. No mode refuses on 6.12 for a
 generation reason. Only `struct kprobe`'s size differs, and that is handled.
+Modes 6 and 7 work on both shapes of `_cb_output_status` by the same rule
+(continue at the derived supported branch): on 5.4 that is the `b.ls` target, on
+6.12 the instruction after the `b.ne`. The host test derives the sites and the
+registers (codec w6, output x19, name x7 from index x4, 6 entries) on all five
+6.12 kernels.
 
 The pre-handler runs in breakpoint context: it calls no kernel function but `printk` (first 5 matches, first 8 non-matches), takes no
 lock, sleeps not, reads only the load-time bounds-checked ADEC addresses and the
 caller's descriptor (null-checked), updates atomics, and (mode 5, in-window)
-rewrites x2/x3. We never probe the pre-handler itself (only `_set_output` and the
-self-test leaf), so no probe recursion is possible; a `NOKPROBE_SYMBOL` marker,
+rewrites x2/x3. The two `_cb_output_status` pre-handlers (modes 6, 7) obey the
+same contract: they read the probed instruction's own registers, the output's
+type word through the output pointer the function itself has just read through
+(null-checked), and ADEC 1's codec and started flag; they print the first 8
+stock and first 5 acting hits each (`earc_route: hd status codec=... `,
+`earc_route: hd name codec=...`), and in mode 7 write `pc`, the NZCV flags and
+the name register. The name written there is a pointer into the kernel image
+(the table's last entry), because LG's log call uses it after the pre-handler
+has returned. We never probe a pre-handler itself (only `_set_output`, the two
+`_cb_output_status` instructions and the self-test leaf), so no probe recursion
+is possible; a `NOKPROBE_SYMBOL` marker,
 which lg-g5-dts uses, is unnecessary here and unavailable freestanding.
 
 ## Build
@@ -332,6 +448,21 @@ each mode when an item it depends on is missing (break hooks for mode 2, the gat
 and patch service for mode 3, `_set_output`/ADEC for modes 4-5), including that a
 mode does not refuse on an item it does not depend on.
 
+The DTS-HD decisions are tested on every kernel given, oracle or not: the sites
+and registers derive and modes 6 and 7 accept the stock image; the probed words
+are `cmp wC,#bound`, `str wC,[xOutput,..]` and the name load; the acceptance
+acts for codec 7 on the eARC output with ADEC 1 started on 51 and not for the
+bound, codecs 5 and 8, the optical output, ADEC on 48 or stopped; the probe
+registers are codec w6, output x19, name index x4 and name destination x7; the
+name decision substitutes for 7 and the first index past that kernel's table
+and keeps every index inside it; the substitute, `table[entries-1]`, is the
+in-image string `"???"`. `earc_hd_refusal` has one test per reason on a
+synthetic layout (a breakpoint, the compare not derived, ADEC not derived, a
+bound of 7, no output register, a load into xzr, a PC-relative instruction at
+the compare and at the name load, a table of 4 entries or none), and on the first oracle kernel of each generation three
+mutations of the real function (breakpoints at both sites, the name load
+removed, `mov x19,x2` changed so the store's base is not argument 2).
+
 ## Load (on the TV, as root)
 
 ```sh
@@ -341,16 +472,34 @@ sh earc-route-load.sh --selftest      # mode 2: BRK dispatch self-test, then unl
 sh earc-route-load.sh --open-gate     # mode 3: open the DTS check, stay loaded
 sh earc-route-load.sh --observe       # mode 4: open the gate, count _set_output calls
 sh earc-route-load.sh --dts-core [window_seconds=30] [supervised=0|1]  # mode 5: override
+sh earc-route-load.sh --observe-hd    # mode 6: count the two _cb_output_status sites, change nothing
+sh earc-route-load.sh --dts-hd [window_seconds=30] [supervised=0|1]    # mode 7: DTS core and DTS-HD sessions
 ```
 
-`--selftest`, `--open-gate`, `--observe` and `--dts-core` (modes 2-5) refuse,
-before `insmod`, if another DTS tool is loaded (`dts_gate`, `dts_core_route`,
-`gh_dts_native`) or `/var/lib/lg-dts-core/enabled` exists; the audit only reports
-those. **Modes 2 and 3 have run on one C5 and left it stock; mode 4 loaded and
-unloaded cleanly but its `_set_output` pre-handler never fired; mode 5 has never
-run; nothing has run on 6.12.** Read-only parameters report the state:
-`gate_open`, `gate_opened_by_us`, `hooks_registered`, `probe_registered`,
-`selftest_passed`, `window_open`, `calls_seen`, `calls_matched`, `overrides`.
+`--selftest`, `--open-gate`, `--observe`, `--dts-core`, `--observe-hd` and
+`--dts-hd` (modes 2-7) refuse, before `insmod`, if another DTS tool is loaded
+(`dts_gate`, `dts_core_route`, `gh_dts_native`) or `/var/lib/lg-dts-core/enabled`
+exists; the audit only reports those. **Do not play DTS-HD while modes 3 to 5
+(`--open-gate`, `--observe`, `--dts-core`) are loaded: see the known limitation
+above. For a real session, DTS core included, load `--dts-hd`.** **Modes 2, 3, 4, 6 and 7 have run on one C5
+without a receiver and left it stock (see Status above); mode 5 has never run;
+nothing has run on 6.12.** Read-only parameters report the
+state: `gate_open`, `gate_opened_by_us`, `hooks_registered`, `probe_registered`,
+`selftest_passed`, `window_open`, `calls_seen`, `calls_matched`, `overrides`,
+and for modes 6 and 7 `hd_probes_registered` (2 when both are in),
+`hd_status_seen`, `hd_status_accepts`, `hd_name_seen`, `hd_name_fixes`.
+
+`earc_nonpcm` is the live eARC non-PCM word (the cached argument 0 of
+`audio_hal_earc_set_output_format`, `struct earc_layout.nonpcm`): 0 for PCM, 1
+for a compressed stream. Its getter reads the derived address at every access,
+in every mode that stays loaded, so a script waits for
+`cat /sys/module/earc_route/parameters/earc_nonpcm` to print `1` where
+lg-g5-dts runs `devmem` on a fixed physical address. `struct kernel_param_ops`
+is hand-declared as `{flags, set, get, free}` (`get` at +16, static-asserted):
+`param_attr_show` of every capture calls `attribute->param(+56)->ops(+16)->get(+16)`
+with the buffer and the parameter and returns its count unchanged, and
+`param_get_uint`'s own format is `"%u\n"`, so the getter writes the number and
+the newline itself.
 In dmesg, modes 4 and 5 print `earc_route: pass nomatch ...` for the first 8 `_set_output` calls that miss the policy, with every input of the decision: `index`, `desc` (0 = null descriptor, `mask` then shown as 0), `mask`, ADEC 1 `adec1-codec`/`open`/`started`, and the call's `codec-arg`/`bypass-arg`.
 
 `earc_route-5.4.ko` and `earc_route-6.12.ko` sit next to the script; `uname -r`

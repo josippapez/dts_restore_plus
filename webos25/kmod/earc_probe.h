@@ -9,6 +9,8 @@
  *    or must we refuse for a conflict or an incomplete walk),
  *  - the DTS-core policy match a _set_output probe applies,
  *  - the "only restore the word we wrote" gate rule,
+ *  - the two DTS-HD probes in _cb_output_status (accept codec 7, keep its
+ *    name load inside the table),
  *  - per-mode refusal from the derived HDMI layout.
  *
  * None of these writes anything; the module turns a decision into an action. */
@@ -68,6 +70,74 @@ static int earc_policy_match(ed_u64 index, ed_u32 mask_word, ed_u32 codec, ed_u8
     return index == 1 && mask_word == 0x20 && codec == 48 && open == 1 && started == 1;
 }
 
+/* ---- DTS-HD (modes 6 and 7): lg-g5-dts's tools/dts-hd-route ----
+ * LG's output-status codec for DTS-HD is 7 and ADEC 1's public codec is 51
+ * (status_hooks.h, policy.h). _cb_output_status accepts codecs up to the derived
+ * bound (4) and names the codec from a table of 6 entries, so codec 7 is turned
+ * into PCM and its name is loaded from past the table. */
+#define EARC_HD_EVENT_CODEC 7
+#define EARC_HD_ADEC_CODEC  51
+#define EARC_OUTPUT_EARC    3   /* output type, at output+44 (earc_decode checks it in output_set_earc_on) */
+#define EARC_OUTPUT_TYPE_OFFSET 44
+
+/* Mode 7's _set_output policy: the same call, with ADEC 1 on DTS core (48) or
+ * DTS-HD (51). lg-g5-dts's two modules apply one override (codec argument 0,
+ * bypass 1) and differ only in this codec, so one stage serves both streams
+ * and a core session runs with the name probe in place too. */
+static int earc_session_policy_match(ed_u64 index, ed_u32 mask_word, ed_u32 codec, ed_u8 open, ed_u8 started) {
+    return index == 1 && mask_word == 0x20 && (codec == 48 || codec == EARC_HD_ADEC_CODEC) && open == 1 && started == 1;
+}
+
+/* The registers the two probes read and write, from the probed instructions:
+ * `cmp wC,#bound` and `ldr xN,[xT,xI,lsl #3]`. */
+static unsigned int earc_hd_codec_reg(const struct earc_hdmi_layout *h) { return (h->hd_compare_word >> 5) & 31; }
+static unsigned int earc_hd_index_reg(const struct earc_hdmi_layout *h) { return (h->hd_name_word >> 16) & 31; }
+static unsigned int earc_hd_name_reg(const struct earc_hdmi_layout *h) { return h->hd_name_word & 31; }
+
+/* The probe on the acceptance compare: 1 means continue at the supported
+ * branch (pc = hd_supported_branch, compare skipped, earc_hd_accept_pstate)
+ * with the codec register untouched. Only for a DTS-HD event on the eARC output
+ * while ADEC 1 is started on DTS-HD. The caller null-checked the output. */
+static int earc_hd_accept(ed_u32 event_codec, ed_u32 output_type, ed_u32 adec_codec, ed_u8 adec_started) {
+    return event_codec == EARC_HD_EVENT_CODEC && output_type == EARC_OUTPUT_EARC &&
+        adec_codec == EARC_HD_ADEC_CODEC && adec_started == 1;
+}
+
+/* The flags the skipped compare leaves when it accepts: those of `cmp x,#x`
+ * (Z and C set, N and V clear), which satisfy both the b.ls of shape 1 and the
+ * fall-through of shape 2's b.ne. lg-g5-dts leaves the flags of an earlier
+ * compare; this makes the redirected state one the stock branch can produce. */
+static ed_u64 earc_hd_accept_pstate(ed_u64 pstate) {
+    return (pstate & ~0xf0000000ULL) | 0x60000000ULL;
+}
+
+/* The probe on the name load: an index inside the table keeps LG's load (0);
+ * any other is given the table's own last entry and the load is skipped
+ * (pc = hd_name_load + 4), so nothing past the table is ever used as a
+ * pointer. The substitute is a string in the kernel image ("???" on every
+ * kernel measured), not module memory: LG's log call uses it after the
+ * pre-handler has returned, which an unload must not be able to outrun. */
+static int earc_hd_name_substitute(ed_u64 index, unsigned int entries) {
+    return index >= entries;
+}
+
+/* What modes 6 and 7 need of _cb_output_status, beyond earc_mode_refusal.
+ * name_entries is the live count of the name table's entries. cb_reason covers
+ * the compare, the supported branch, the name load and any breakpoint in the
+ * function. Returns the reason or 0. */
+static const char *earc_hd_refusal(const struct earc_hdmi_layout *h, unsigned int name_entries) {
+    if (h->cb_reason) return h->cb_reason;
+    if (h->adec_reason) return h->adec_reason;
+    if (h->hd_compare_bound >= EARC_HD_EVENT_CODEC) return "the acceptance compare already covers codec 7";
+    if (h->hd_output_reg > 30) return "the output register at the acceptance compare was not derived";
+    if (earc_hd_codec_reg(h) == 31 || earc_hd_index_reg(h) == 31 || earc_hd_name_reg(h) == 31)
+        return "a probed _cb_output_status instruction uses SP or ZR";
+    if (!hf_kprobe_placeable(h->hd_compare_word) || !hf_kprobe_placeable(h->hd_name_word))
+        return "a probed _cb_output_status instruction is not kprobe-placeable";
+    if (name_entries <= h->hd_compare_bound) return "the codec-name table is smaller than the accepted codecs";
+    return 0;
+}
+
 /* The gate state machine's restore rule: restore the stock first word only if
  * the current first word is still the one this module wrote. `current` is the
  * live first word; `written` is what we patched in (0x52800020). Returns the
@@ -82,11 +152,12 @@ static ed_u32 earc_gate_restore_word(ed_u32 current, ed_u32 written) {
  * checks are the module's, done against _etext at load). mode 2 needs the break
  * hooks derived; mode 3 needs the gate stock and patch service; modes 4 and 5
  * need both plus the _set_output probe site, the mask offset and ADEC state.
- * Returns the reason or 0. */
+ * Mode 6 (watch the DTS-HD sites) needs the break hooks, mode 7 (DTS core and
+ * DTS-HD) what mode 5 needs; both also need earc_hd_refusal. Returns the reason or 0. */
 static const char *earc_mode_refusal(const struct earc_hdmi_layout *h, int mode) {
-    int needs_hooks = mode == 2 || mode == 4 || mode == 5;
-    int needs_gate = mode == 3 || mode == 4 || mode == 5;
-    int needs_probe = mode == 4 || mode == 5;
+    int needs_hooks = mode == 2 || mode >= 4;
+    int needs_gate = mode == 3 || mode == 4 || mode == 5 || mode == 7;
+    int needs_probe = mode == 4 || mode == 5 || mode == 7;
     if (needs_hooks) {
         if (h->break_reason) return h->break_reason;
         if (!h->break_fn || !h->step_fn) return "kprobe break handlers not derived";

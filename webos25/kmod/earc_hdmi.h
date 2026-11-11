@@ -91,11 +91,14 @@ struct earc_hdmi_layout {
     const char *adec_reason;
     /* 5. _cb_output_status DTS-HD sites. hd_shape 1: `cmp codec,#bound; b.ls`
      * to the supported-codec store. 2: `cmp codec,#bound; b.ne` falling through
-     * into it. hd_brk_*: kprobe breakpoints (brk #4) found in the function. */
+     * into it. hd_brk_*: kprobe breakpoints (brk #4) found in the function.
+     * hd_output_reg: the register holding argument 2 (the output) at the
+     * compare, 32 if not derived. */
     ed_u64 cb_output_status;
     ed_u64 hd_compare, hd_compare_bound, hd_supported_branch, hd_name_load, name_table;
     ed_u32 hd_compare_word, hd_supported_word, hd_name_word;
     int hd_shape;
+    unsigned int hd_output_reg;
     ed_u64 hd_brk_offset;
     unsigned int hd_brk_count;
     const char *cb_reason;
@@ -502,6 +505,9 @@ static void hd_cb(const struct earc_code *fns, struct earc_hdmi_layout *out) {
         out->hd_compare_bound = imm;
         out->hd_supported_branch = supported;
         out->hd_supported_word = f->words[(supported - f->address) / 4];
+        /* The supported store writes the codec through the output: its base
+         * register is the output register if it holds argument 2 here too. */
+        if (ed_state[i][(out->hd_supported_word >> 5) & 31] == ed_raw(2)) out->hd_output_reg = (out->hd_supported_word >> 5) & 31;
     }
     if (compares != 1) {
         out->cb_reason = compares ? "more than one event-codec acceptance compare" :
@@ -629,6 +635,7 @@ static void earc_hdmi_decode(const struct earc_code *fns, ed_u64 nonpcm_virtual,
     unsigned int i;
     for (i = 0; i < sizeof(*out) / sizeof(ed_u64); i++) ((ed_u64 *)out)[i] = 0;
     out->set_output_reason = out->adec_reason = out->cb_reason = out->break_reason = "not derived";
+    out->hd_output_reg = 32;
     hd_gate(fns, out);
     hd_set_output(fns, out);
     hd_adec(fns, out);

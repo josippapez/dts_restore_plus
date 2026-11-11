@@ -64,11 +64,21 @@ if [ $# -gt 0 ]; then
           *) refuse "unknown --dts-core option: $option" ;;
         esac
       done ;;
-    *) refuse "usage: $0 [--route ... | --selftest | --open-gate | --observe | --dts-core [window_seconds=N] [supervised=0|1]]" ;;
+    --observe-hd) shift; options="mode=6"; want_mode=6; [ $# -eq 0 ] || refuse "--observe-hd takes no options" ;;
+    --dts-hd)
+      shift; options="mode=7"; want_mode=7
+      for option in "$@"; do
+        case "$option" in
+          window_seconds=*) [ "${option#window_seconds=}" -ge 0 ] 2>/dev/null || refuse "bad $option"; options="$options $option" ;;
+          supervised=0|supervised=1) options="$options $option" ;;
+          *) refuse "unknown --dts-hd option: $option" ;;
+        esac
+      done ;;
+    *) refuse "usage: $0 [--route ... | --selftest | --open-gate | --observe | --dts-core [window_seconds=N] [supervised=0|1] | --observe-hd | --dts-hd [window_seconds=N] [supervised=0|1]]" ;;
   esac
 fi
 
-# Active modes (>=1 that write; the HDMI passthrough modes 2-5) refuse to load
+# Active modes (>=1 that write; the HDMI passthrough modes 2-7) refuse to load
 # beside another DTS tool, whose kprobes or gate change would collide with ours.
 # The audit (mode 0) only reports them (below).
 if [ "$want_mode" -ge 2 ]; then
@@ -255,8 +265,20 @@ case "$want_mode" in
   3)
     if [ "$status" = 0 ] && [ "$(param gate_open)" = 1 ]; then echo "earc-route: DTS GATE OPEN (mode 3); unload earc_route to restore ($last)"
     else echo "earc-route: GATE OPEN FAILED (insmod status $status: $result): $last"; exit 1; fi ;;
-  4|5)
+  4)
     if [ "$status" = 0 ] && [ "$(param probe_registered)" = 1 ]; then
+      echo "earc-route: PASSTHROUGH ACTIVE ($options) selftest=$(param selftest_passed) gate_open=$(param gate_open) ($last)"
+    else echo "earc-route: PASSTHROUGH FAILED (insmod status $status: $result): $last"; exit 1; fi ;;
+  5)
+    if [ "$status" = 0 ] && [ "$(param probe_registered)" = 1 ]; then
+      echo "earc-route: PASSTHROUGH ACTIVE ($options) selftest=$(param selftest_passed) gate_open=$(param gate_open); UNTESTED ON HARDWARE ($last)"
+    else echo "earc-route: PASSTHROUGH FAILED (insmod status $status: $result): $last"; exit 1; fi ;;
+  6)
+    if [ "$status" = 0 ] && [ "$(param hd_probes_registered)" = 2 ]; then
+      echo "earc-route: DTS-HD WATCH ACTIVE ($options) selftest=$(param selftest_passed) gate_open=$(param gate_open); nothing changed; UNTESTED ON HARDWARE ($last)"
+    else echo "earc-route: DTS-HD WATCH FAILED (insmod status $status: $result): $last"; exit 1; fi ;;
+  7)
+    if [ "$status" = 0 ] && [ "$(param probe_registered)" = 1 ] && [ "$(param hd_probes_registered)" = 2 ]; then
       echo "earc-route: PASSTHROUGH ACTIVE ($options) selftest=$(param selftest_passed) gate_open=$(param gate_open); UNTESTED ON HARDWARE ($last)"
     else echo "earc-route: PASSTHROUGH FAILED (insmod status $status: $result): $last"; exit 1; fi ;;
 esac
