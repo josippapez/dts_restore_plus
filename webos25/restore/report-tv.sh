@@ -1,7 +1,8 @@
 #!/bin/sh
 # report-tv.sh -- collect everything needed to answer "why was my TV refused?"
 #
-# READ-ONLY. Mounts nothing, copies nothing, writes nothing. Run as root and paste
+# READ-ONLY. Mounts nothing, copies nothing, writes nothing but a scratch file in
+# /tmp that it removes (see bounded() below). Run as root and paste
 # the whole output into a GitHub issue.
 #
 # Every value here is measured the SAME way the app's DETECT_PROBE measures it, so
@@ -19,8 +20,39 @@ hash_of() { # $1=algo(md5|sha256) $2=file
   printf "%s" "${h:-unavailable}"
 }
 
+# LG's audio driver can lock up, and a tester's report then stopped dead at the
+# first amixer read with everything after it lost. A task stuck inside the kernel
+# ignores even SIGKILL, and busybox `timeout` runs the program in its own pid, so
+# waiting on `timeout` would hang just the same. Instead run each read that talks
+# to LG's driver or a service in the background, into a scratch file in /tmp (the
+# only thing this script writes, removed at once), and stop waiting after LIMIT
+# seconds. The scratch file keeps a stuck read from holding our stdout open.
+LIMIT=5
+if sleep 0.1 2>/dev/null; then TICK=0.1 TICKS=$((LIMIT * 10)); else TICK=1 TICKS=$LIMIT; fi
+alive() { # $1=pid; an exited child is a zombie until reaped, and kill -0 still finds it
+  kill -0 "$1" 2>/dev/null || return 1
+  st=; { read -r st < "/proc/$1/stat"; } 2>/dev/null
+  case "$st" in *") Z "*) return 1 ;; esac
+}
+bounded() { # $@=command or function; prints its output, or what it printed plus a marker
+  o=$(mktemp /tmp/dts25-report.XXXXXX) || { echo "(no scratch file in /tmp)"; return 1; }
+  "$@" >"$o" 2>/dev/null </dev/null &
+  p=$! n=0
+  while alive "$p"; do
+    if [ "$n" -ge "$TICKS" ]; then
+      pkill -KILL -P "$p" 2>/dev/null; kill -KILL "$p" 2>/dev/null
+      cat "$o" 2>/dev/null; rm -f "$o"
+      echo "(timed out after $LIMIT s)"
+      return 1
+    fi
+    sleep "$TICK"; n=$((n + 1))
+  done
+  wait "$p"
+  cat "$o" 2>/dev/null; rm -f "$o"
+}
+
 echo "=== dts_restore_plus TV report ==="
-echo "report_version=3"
+echo "report_version=4"
 
 echo
 echo "--- loader / ABI ---"
@@ -178,16 +210,24 @@ grep -hE '^(verified|forced)=' "$D/stock.fp" 2>/dev/null
 for f in passthrough multich appdts.enabled; do
   [ -e "$D/$f" ] && echo "optin_$f=on" || echo "optin_$f=off"
 done
-echo "sound_output=$(luna-send -n 1 -w 3000 luna://com.webos.settingsservice/getSystemSettings \
-  '{"category":"sound","keys":["soundOutput","soundOutputDigital"]}' </dev/null 2>/dev/null \
-  | grep -o '"soundOutput[A-Za-z]*" *: *"[^"]*"' | tr -d ' "' | tr '\n' ' ')"
+sound_output() {
+  luna-send -n 1 -w 3000 luna://com.webos.settingsservice/getSystemSettings \
+    '{"category":"sound","keys":["soundOutput","soundOutputDigital"]}' </dev/null 2>/dev/null \
+    | grep -o '"soundOutput[A-Za-z]*" *: *"[^"]*"' | tr -d ' "' | tr '\n' ' '
+}
+echo "sound_output=$(bounded sound_output)"
 echo "watcher_sound_output=$(cat /run/dts25/sound-output 2>/dev/null)"
 # Apps and HDMI inputs offer DTS only if this mentions dts (Show DTS tracks).
 # The live value: the app sets it with setConfigs, which is not saved to disk.
-echo "edidType=$(script -q -e -c "luna-send -n 1 luna://com.webos.service.config/getConfigs '{\"configNames\":[\"tv.model.edidType\"]}'" /dev/null </dev/null 2>/dev/null | sed -n 's/.*"tv.model.edidType":"\([^"]*\)".*/\1/p' | head -n1)"
+edid_type() {
+  script -q -e -c "luna-send -n 1 luna://com.webos.service.config/getConfigs '{\"configNames\":[\"tv.model.edidType\"]}'" /dev/null </dev/null 2>/dev/null | sed -n 's/.*"tv.model.edidType":"\([^"]*\)".*/\1/p' | head -n1
+}
+echo "edidType=$(bounded edid_type)"
 echo "appdts_last=$(head -n1 "$D/appdts.last" 2>/dev/null)"
 echo "eim_env=$(cat /var/systemd/system/env/eim.env 2>/dev/null)"
-echo "eim_hooked=$(grep -c libedidaudio "/proc/$(pidof eim | cut -d' ' -f1)/maps" 2>/dev/null)"
+# pidof and maps take the target's memory lock, which a stuck task can hold.
+eim_hooked() { grep -c libedidaudio "/proc/$(pidof eim | cut -d' ' -f1)/maps" 2>/dev/null; }
+echo "eim_hooked=$(bounded eim_hooked)"
 echo "edid_hook=$(cat /run/dts25/edidaudio 2>/dev/null)"
 
 echo
@@ -272,24 +312,57 @@ echo "--- audio DSP crashes ---"
 { zcat /var/log/audio_dspdump_dmesg0.gz 2>/dev/null; cat /var/log/legacy-log 2>/dev/null; } \
   | grep -a -E "Exception: cause|eform_flush|is DEAD" | cut -c1-300 | tail -n 10
 
+# Printed before the driver reads below, so it survives one of them hanging: the
+# kernel stacks name the lock a stuck task waits for. LG's kernel threads idle in
+# state D by design (twelve on a healthy C5), so stacks are for user processes.
+echo
+echo "--- tasks stuck in uninterruptible sleep (state D) ---"
+stuck_tasks() {
+  n=0 u=0
+  for s in /proc/[0-9]*/status; do
+    nm= st= pp=
+    while read -r k v; do
+      case "$k" in Name:) nm=$v ;; State:) st=$v ;; PPid:) pp=$v; break ;; esac
+    done 2>/dev/null < "$s"
+    case "$st" in D*) ;; *) continue ;; esac
+    n=$((n + 1)); [ "$n" -le 40 ] || continue
+    d=${s%/status}; w=; { read -r w < "$d/wchan"; } 2>/dev/null
+    if [ "$pp" = 2 ]; then echo "${d#/proc/} $nm wchan=${w:-?} (kernel thread)"; continue; fi
+    echo "${d#/proc/} $nm wchan=${w:-?}"
+    u=$((u + 1)); [ "$u" -le 10 ] && head -n 16 "$d/stack" 2>/dev/null | sed 's/^/  /'
+  done
+  [ "$n" -gt 0 ] || echo "no task is in state D"
+  [ "$n" -le 40 ] || echo "($((n - 40)) more not shown)"
+}
+bounded stuck_tasks
+
 echo
 echo "--- eARC state ---"
+earc_ctl() { amixer -c0 cget name="$1" 2>/dev/null | sed -n 's/.*: values=//p'; }
 for c in "Sndout EARC OnOff" "Sndout EARC Outputtype"; do
-  echo "$c=$(amixer -c0 cget name="$c" 2>/dev/null | sed -n 's/.*: values=//p')"
+  echo "$c=$(bounded earc_ctl "$c")"
 done
 # LG's own account of the output: PCM or bitstream mode, channels, underflows.
-sed -n '/^\[ARC\]/,/^$/p; /^\[EARC\]/,/^$/p' /proc/lgtv-driver/audio/sndout 2>/dev/null | tr '\n' ' '; echo
+sndout() { sed -n '/^\[ARC\]/,/^$/p; /^\[EARC\]/,/^$/p' /proc/lgtv-driver/audio/sndout 2>/dev/null | tr '\n' ' '; }
+echo "$(bounded sndout)"
 # LG picks the eARC output from this. A tester's DD+ Atmos track played as stereo
 # PCM while LG's output word asked for plain Dolby Digital.
-echo "LG says is playing: $(luna-send -n 1 -w 3000 luna://com.webos.service.audio/tv/getAudioInputProperty '{}' </dev/null 2>/dev/null | grep -o '"audioInputProperty":.*' | cut -c1-400)"
+input_property() { luna-send -n 1 -w 3000 luna://com.webos.service.audio/tv/getAudioInputProperty '{}' </dev/null 2>/dev/null | grep -o '"audioInputProperty":.*' | cut -c1-400; }
+echo "LG says is playing: $(bounded input_property)"
 # A soundbar on eARC that lacks DTS-HD or TrueHD cannot play the lossless carrier.
 echo "receiver says it takes:"
-luna-send -n 1 -w 3000 luna://com.webos.service.arccontroller/getARCState '{}' </dev/null 2>/dev/null \
-  | grep -o -E '"(arcActivation|audioDeviceType|earcMatProfile|earcATMOS)":[^,}]*|"(earcCapability|advancedEarcCapability)":\[[^]]*\]'
+arc_state() {
+  luna-send -n 1 -w 3000 luna://com.webos.service.arccontroller/getARCState '{}' </dev/null 2>/dev/null \
+    | grep -o -E '"(arcActivation|audioDeviceType|earcMatProfile|earcATMOS)":[^,}]*|"(earcCapability|advancedEarcCapability)":\[[^]]*\]'
+}
+bounded arc_state
 echo "bypass chains:"
-grep -o -E "(rts|srcbin)_[0-9a-f]+_[0-9a-f]+_out0 -> (srcbin|lipsync)_[0-9a-f]+" /proc/aaudio/dot_module_connection 2>/dev/null
+bypass_chains() { grep -o -E "(rts|srcbin)_[0-9a-f]+_[0-9a-f]+_out0 -> (srcbin|lipsync)_[0-9a-f]+" /proc/aaudio/dot_module_connection 2>/dev/null; }
+bounded bypass_chains
 echo "media pipelines loaded (another app holding audio can block the route):"
-ps w 2>/dev/null | grep "[p]ipeline_process" | sed 's/.*pipeline_process//' | cut -c1-120
+# ps reads every process's command line, which takes that process's memory lock.
+media_pipelines() { ps w 2>/dev/null | grep "[p]ipeline_process" | sed 's/.*pipeline_process//' | cut -c1-120; }
+bounded media_pipelines
 
 # A tester's TV had Glasshouse's DTS forwarding switched on next to this tool:
 # it re-ranks the decoders and takes the eARC output itself.
@@ -303,5 +376,6 @@ done
 # A tester's helper bind-mounts another model's DSP firmware over LG's and reloads it.
 fw=$(grep -o ' /lib/firmware/audio_[^ ]*' /proc/mounts 2>/dev/null | tr -d '\n')
 [ -n "$fw" ] && echo "audio DSP firmware replaced:$fw" || echo "audio DSP firmware: LG's own"
-echo "DSP decoders: $(ls /proc/aaudio/processors/dsp0/ 2>/dev/null | grep '^dec_' | tr '\n' ' ')"
+dsp_decoders() { ls /proc/aaudio/processors/dsp0/ 2>/dev/null | grep '^dec_' | tr '\n' ' '; }
+echo "DSP decoders: $(bounded dsp_decoders)"
 echo "=== end of report ==="

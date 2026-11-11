@@ -884,6 +884,8 @@
       box.textContent = "Reading…";
       callService("routeLog", {}).then(function (r) {
         box.textContent = r.log ? r.log : "No receiver log yet. Play something with the receiver on, then try again.";
+        // The remote cannot scroll this box, so show its end: the newest lines.
+        box.scrollTop = box.scrollHeight;
       }, function (e) {
         box.textContent = "Could not read the log: " + (e && (e.errorText || e.message) || e);
       });
