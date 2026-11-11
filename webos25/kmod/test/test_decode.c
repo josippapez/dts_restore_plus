@@ -15,6 +15,7 @@
 #include <string.h>
 #include "../earc_decode.h"
 #include "../earc_hdmi.h"
+#include "../earc_probe.h"
 
 
 static int failures;
@@ -509,6 +510,135 @@ static void hdmi_walk_tests(void) {
     memset(&m, 0, sizeof(m));
     m.words[0] = fake_node(&m, 0, FAKE_BASE + 64 + 32 + 4, break_fn, 4);
     walk_case("misaligned next pointer", &m, HW_MISALIGNED, 1, FAKE_BASE + 64 + 32 + 4, 1, 0);
+}
+
+/* ---- stage-a break-hook decision, through the walk the module runs ---- */
+#define DEC_BREAK_FN 0xffffffc011000100ULL
+#define DEC_STEP_FN 0xffffffc011000200ULL
+static void decide_case(const char *what, struct fake_memory *m, int fields_known, enum earc_hook_decision expect) {
+    struct earc_hdmi_layout l;
+    struct earc_hdmi_walk w;
+    enum earc_hook_decision got;
+    memset(&l, 0, sizeof(l));
+    l.break_list_head = FAKE_BASE;
+    l.break_fn_offset = 16;
+    l.break_word_offset = 24;
+    l.break_fn = DEC_BREAK_FN;
+    l.step_fn = DEC_STEP_FN;
+    m->stray = 0;
+    earc_hdmi_walk_list(&l, FAKE_BASE, FAKE_BASE + sizeof(m->words), fake_read, m, &w);
+    got = earc_hook_decide(&w, fields_known);
+    if (got == expect && !m->stray) printf("PASS hook decision (%s): %d\n", what, got);
+    else { printf("FAIL hook decision (%s): got %d expected %d stray %d\n", what, got, expect, m->stray); failures++; }
+}
+static void hook_decision_tests(void) {
+    static struct fake_memory m;
+    const ed_u64 other = 0xffffffc011000300ULL;
+    /* Empty list, complete: nothing to answer BRK #4/#6 -> register. */
+    memset(&m, 0, sizeof(m));
+    m.words[0] = FAKE_BASE;
+    decide_case("empty list -> register", &m, 1, EHD_REGISTER);
+    /* Both kprobe handlers already linked -> already. */
+    memset(&m, 0, sizeof(m));
+    m.words[0] = fake_node(&m, 0, fake_node(&m, 1, FAKE_BASE, DEC_STEP_FN, 6), DEC_BREAK_FN, 4);
+    decide_case("both handlers present -> already", &m, 1, EHD_ALREADY);
+    /* A foreign node that answers BRK #4 (imm 4, mask 0) -> conflict. */
+    memset(&m, 0, sizeof(m));
+    m.words[0] = fake_node(&m, 0, FAKE_BASE, other, 4);
+    decide_case("foreign node answers #4 -> conflict", &m, 1, EHD_CONFLICT);
+    /* A foreign node whose mask makes it answer #6 (imm 6, mask 0) -> conflict. */
+    memset(&m, 0, sizeof(m));
+    m.words[0] = fake_node(&m, 0, FAKE_BASE, other, 6);
+    decide_case("foreign node answers #6 -> conflict", &m, 1, EHD_CONFLICT);
+    /* A BUG() hook (imm 0x800, mask 0) does not answer #4 or #6 -> register. */
+    memset(&m, 0, sizeof(m));
+    m.words[0] = fake_node(&m, 0, FAKE_BASE, other, 0x800);
+    decide_case("bug hook only -> register", &m, 1, EHD_REGISTER);
+    /* Same list, but the immediate/mask fields were not derived -> refuse. */
+    decide_case("node present, fields unknown -> conflict", &m, 0, EHD_CONFLICT);
+    /* Walk leaves the image (a module node) -> incomplete. */
+    memset(&m, 0, sizeof(m));
+    m.words[0] = fake_node(&m, 0, 0xffffffc008a01000ULL, other, 0);
+    decide_case("walk leaves image -> incomplete", &m, 1, EHD_INCOMPLETE);
+}
+
+/* ---- DTS-core policy ---- */
+static void policy_case(const char *what, ed_u64 idx, ed_u32 mask, ed_u32 codec, ed_u8 open, ed_u8 started, int expect) {
+    int got = earc_policy_match(idx, mask, codec, open, started);
+    if (got == expect) printf("PASS policy (%s): %d\n", what, got);
+    else { printf("FAIL policy (%s): got %d expected %d\n", what, got, expect); failures++; }
+}
+static void policy_tests(void) {
+    policy_case("DTS core match", 1, 0x20, 48, 1, 1, 1);
+    policy_case("wrong decoder index", 0, 0x20, 48, 1, 1, 0);
+    policy_case("not eARC mask", 1, 0x14, 48, 1, 1, 0);
+    policy_case("wrong codec", 1, 0x20, 4, 1, 1, 0);
+    policy_case("not open", 1, 0x20, 48, 0, 1, 0);
+    policy_case("not started", 1, 0x20, 48, 1, 0, 0);
+}
+
+/* ---- gate "restore only what we wrote" ---- */
+static void gate_tests(void) {
+    int ok = earc_gate_restore_word(EARC_GATE_OPEN_W0, EARC_GATE_OPEN_W0) == EARC_GATE_STOCK_W0 &&
+             earc_gate_restore_word(EARC_GATE_STOCK_W0, EARC_GATE_OPEN_W0) == 0 &&
+             earc_gate_restore_word(0xdeadbeefU, EARC_GATE_OPEN_W0) == 0;
+    if (ok) printf("PASS gate restore: restores only our word, leaves a stock or foreign word\n");
+    else { printf("FAIL gate restore\n"); failures++; }
+}
+
+/* ---- per-mode refusal from the derived layout ---- */
+static void good_hdmi_layout(struct earc_hdmi_layout *h) {
+    memset(h, 0, sizeof(*h));
+    h->gate_state = GATE_STOCK;
+    h->break_reason = h->adec_reason = h->set_output_reason = h->cb_reason = 0;
+    h->break_fn = 0xffffffc011000100ULL;
+    h->step_fn = 0xffffffc011000200ULL;
+    h->break_fields_known = 1;
+    h->break_register = 0xffffffc011000600ULL;
+    h->break_unregister = 0xffffffc011000700ULL;
+    h->patch_text = 0xffffffc011000300ULL;
+    h->cpus_read_lock = 0xffffffc011000400ULL;
+    h->cpus_read_unlock = 0xffffffc011000500ULL;
+    h->set_output_first_brk = 0;
+}
+static void refusal_case(const char *what, const struct earc_hdmi_layout *h, int mode, int should_refuse) {
+    const char *r = earc_mode_refusal(h, mode);
+    if (!r == !should_refuse) printf("PASS mode refusal (%s, mode %d): %s\n", what, mode, r ? r : "accepted");
+    else { printf("FAIL mode refusal (%s, mode %d): got %s\n", what, mode, r ? r : "accepted"); failures++; }
+}
+static void mode_refusal_tests(void) {
+    struct earc_hdmi_layout h;
+    good_hdmi_layout(&h);
+    refusal_case("all derived", &h, 2, 0);
+    refusal_case("all derived", &h, 3, 0);
+    refusal_case("all derived", &h, 4, 0);
+    refusal_case("all derived", &h, 5, 0);
+    good_hdmi_layout(&h); h.break_reason = "break not derived";
+    refusal_case("break not derived", &h, 2, 1);
+    refusal_case("break not derived (mode 3 does not depend)", &h, 3, 0);
+    good_hdmi_layout(&h); h.break_fields_known = 0;
+    refusal_case("break fields unknown", &h, 2, 1);
+    good_hdmi_layout(&h); h.break_register = 0;
+    refusal_case("register_kernel_break_hook missing", &h, 2, 1);
+    refusal_case("register_kernel_break_hook missing", &h, 4, 1);
+    refusal_case("register_kernel_break_hook missing (mode 3 does not depend)", &h, 3, 0);
+    good_hdmi_layout(&h); h.break_unregister = 0;
+    refusal_case("unregister_kernel_break_hook missing", &h, 2, 1);
+    refusal_case("unregister_kernel_break_hook missing", &h, 5, 1);
+    good_hdmi_layout(&h); h.gate_state = GATE_SWITCHED;
+    refusal_case("gate already switched", &h, 3, 1);
+    refusal_case("gate switched (mode 2 does not depend)", &h, 2, 0);
+    good_hdmi_layout(&h); h.gate_state = GATE_BREAKPOINT;
+    refusal_case("gate holds a breakpoint", &h, 4, 1);
+    good_hdmi_layout(&h); h.patch_text = 0;
+    refusal_case("patch_text missing", &h, 3, 1);
+    good_hdmi_layout(&h); h.set_output_reason = "set_output not derived";
+    refusal_case("set_output not derived", &h, 4, 1);
+    refusal_case("set_output not derived (mode 3 does not depend)", &h, 3, 0);
+    good_hdmi_layout(&h); h.set_output_first_brk = 1;
+    refusal_case("set_output entry holds a breakpoint", &h, 5, 1);
+    good_hdmi_layout(&h); h.adec_reason = "adec not derived";
+    refusal_case("adec not derived", &h, 4, 1);
 }
 
 #define NOP 0xd503201fU
@@ -1027,6 +1157,10 @@ int main(int argc, char **argv) {
     }
     hdmi_rule_test();
     hdmi_walk_tests();
+    hook_decision_tests();
+    policy_tests();
+    gate_tests();
+    mode_refusal_tests();
     if (first[0][0] >= 0 && first[1][0] >= 0) generation_test("C5", &layouts[first[0][0]], &layouts[first[1][0]]);
     else printf("SKIP C5 5.4/6.12 difference test: needs both oracle kernels\n");
     if (first[0][1] >= 0 && first[1][1] >= 0) generation_test("G5", &layouts[first[0][1]], &layouts[first[1][1]]);

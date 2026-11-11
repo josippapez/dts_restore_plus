@@ -32,8 +32,18 @@
 #ifndef EARC_PRINTK_SYMBOL
 #define EARC_PRINTK_SYMBOL "printk"
 #endif
+/* struct kprobe's size and the offset of its last field (flags), per generation,
+ * measured from register_kprobe/arch_prepare_kprobe/kprobe_breakpoint_handler in
+ * the captures (5.4: flags +0x80, size 0x88; 6.12: flags +0x78, size 0x80 after
+ * fault_handler was dropped). The kernel touches nothing past flags, so this is
+ * the full size. The active modes (mode>=2) are the only users. Defaults: 5.4. */
+#ifndef EARC_KPROBE_SIZE
+#define EARC_KPROBE_SIZE 0x88
+#define EARC_KPROBE_FLAGS 0x80
+#endif
 #include "earc_decode.h"
 #include "earc_hdmi.h"
+#include "earc_probe.h"
 
 typedef unsigned long u64;
 typedef unsigned int u32;
@@ -50,6 +60,51 @@ extern _Bool kthread_should_stop(void);
 extern void msleep(unsigned int milliseconds);
 extern void mutex_lock(void *mutex);
 extern void mutex_unlock(void *mutex);
+/* Exported on every 5.4 and 6.12 kernel measured (build.py proves it); the
+ * active modes (mode>=2) call them directly. register_kernel_break_hook,
+ * unregister_kernel_break_hook and aarch64_insn_patch_text are NOT exported and
+ * are called through their kallsyms addresses (fn_ below). */
+extern int register_kprobe(void *kp);
+extern void unregister_kprobe(void *kp);
+extern void cpus_read_lock(void);
+extern void cpus_read_unlock(void);
+extern void synchronize_rcu(void);
+
+/* Kernel structs declared by hand, per generation, like struct target_module.
+ * struct pt_regs and struct break_hook are identical across both generations;
+ * only struct kprobe's size and last-field offset differ (the EARC_KPROBE_*
+ * macros, set by build.py). We set only addr and pre_handler in a kprobe and
+ * only fn/imm/mask in a break_hook; the rest the kernel fills or we leave zero. */
+struct target_pt_regs { u64 regs[31]; };  /* x0..x30 at +0..+240; we touch x0..x3 */
+_Static_assert(__builtin_offsetof(struct target_pt_regs, regs) == 0, "pt_regs regs");
+struct target_kprobe;
+typedef int (*prehandler_fn)(struct target_kprobe *, struct target_pt_regs *);
+struct target_kprobe {
+    u8 before_addr[0x28];
+    void *addr;                 /* +0x28 */
+    const char *symbol_name;    /* +0x30 */
+    u32 offset;                 /* +0x38 */
+    u8 pad_3c[4];
+    prehandler_fn pre_handler;  /* +0x40 */
+    u8 tail[EARC_KPROBE_SIZE - 0x48];
+};
+_Static_assert(sizeof(struct target_kprobe) == EARC_KPROBE_SIZE, "kprobe size");
+_Static_assert(__builtin_offsetof(struct target_kprobe, addr) == 0x28, "kprobe addr");
+_Static_assert(__builtin_offsetof(struct target_kprobe, offset) == 0x38, "kprobe offset");
+_Static_assert(__builtin_offsetof(struct target_kprobe, pre_handler) == 0x40, "kprobe pre_handler");
+_Static_assert(EARC_KPROBE_FLAGS + 4 <= EARC_KPROBE_SIZE, "kprobe flags within size");
+struct target_break_hook {
+    void *next;   /* +0 */
+    void *prev;   /* +8 */
+    void *fn;            /* +16 */
+    unsigned short imm;  /* +24 */
+    unsigned short mask; /* +26 */
+    u8 pad[4];
+};
+_Static_assert(sizeof(struct target_break_hook) == 32, "break_hook size");
+_Static_assert(__builtin_offsetof(struct target_break_hook, fn) == 16, "break_hook fn");
+_Static_assert(__builtin_offsetof(struct target_break_hook, imm) == 24, "break_hook imm");
+_Static_assert(__builtin_offsetof(struct target_break_hook, mask) == 26, "break_hook mask");
 
 /* Parameters set by earc-route-load.sh. */
 #define EARC_ADDRESS(name, analysed) static unsigned long fn_##name;
@@ -62,6 +117,18 @@ EARC_FUNCTIONS(EARC_SIZE)
 #undef EARC_SIZE
 static unsigned long fn__stext, fn__etext;
 static u32 mode, renderer;
+/* HDMI passthrough (mode>=2) state; declared here because check_parameters and
+ * the parameter table reference some of it. The logic is far below in the
+ * "HDMI passthrough active modes" section. */
+static struct target_kprobe route_probe, selftest_probe;
+static struct target_break_hook hook_probe, hook_step;  /* BRK imm 4 and imm 6 */
+static u32 hooks_registered, probe_registered, gate_open, gate_opened_by_us, selftest_passed;
+static ed_u32 gate_written;
+static u32 calls_seen, calls_matched, overrides, match_prints;
+static u32 window_seconds = 30, supervised, window_open = 1;
+static int override_mode;          /* mode 5: override; mode 4: observe only */
+static u32 selftest_hits;
+static void *window_task;
 
 static const struct {
     const char *name;
@@ -498,8 +565,10 @@ static const char *check_parameters(void) {
     }
     if (fn_mutex_lock != (unsigned long)imported_mutex_lock || fn_mutex_unlock != (unsigned long)imported_mutex_unlock)
         return "fn_mutex_lock/fn_mutex_unlock differ from the kernel's exported symbols";
-    if (mode > 1 || renderer > 1 || restore_pcm > 1 || (carrier_rate != 48000 && carrier_rate != 192000))
+    if (mode > 5 || renderer > 1 || restore_pcm > 1 || (carrier_rate != 48000 && carrier_rate != 192000))
         return "mode, renderer, restore_pcm or carrier_rate out of range";
+    if (window_seconds > 120)
+        return "window_seconds out of range (max 120)";
     return 0;
 }
 
@@ -669,6 +738,354 @@ static void hdmi_audit(void) {
         printk("\0016earc_route: hdmi passthrough: not available: %u symbol(s) missing\n", missing);
 }
 
+/* ---- HDMI passthrough active modes (mode>=2) ----
+ * mode 2 self-tests the break handlers and a kprobe, then unloads. mode 3 opens
+ * the DTS gate and stays loaded. mode 4 opens the gate and observes _set_output
+ * calls. mode 5 does the same and overrides the DTS-core arguments for a bounded
+ * window. Every kernel write is listed with its undo in the README; a failure
+ * after a partial setup undoes it in reverse. These paths never run for mode 0
+ * or mode 1 and add nothing to the route's code path.
+ *
+ * The non-exported service functions are called through their kallsyms addresses
+ * (validated in [_stext,_etext) by the loader and earc_hdmi_valid). */
+#define REGISTER_BREAK_HOOK ((void (*)(void *))fn_register_kernel_break_hook)
+#define UNREGISTER_BREAK_HOOK ((void (*)(void *))fn_unregister_kernel_break_hook)
+#define PATCH_TEXT ((int (*)(void **, u32 *, int))fn_aarch64_insn_patch_text)
+
+/* A leaf function the self-test probes; never called except through this
+ * volatile pointer, so -O2 cannot fold the call or inline it past the probe.
+ * It must stay a named symbol in the module's symbol table: on 6.12
+ * register_kprobe returns -ENOENT unless kallsyms resolves the probed address,
+ * so stripping the module would break mode 2 here. */
+static __attribute__((noinline)) int selftest_fn(int x) { return x + 1; }
+static int (*volatile selftest_call)(int) = selftest_fn;
+
+/* Runs in breakpoint context (BRK #4 handler). Reads only the derived,
+ * load-time bounds-checked ADEC addresses and the caller's descriptor (null
+ * checked), updates atomics, and for mode 5 rewrites x2/x3 within the window.
+ * It calls no kernel function and we only ever probe _set_output and the
+ * self-test leaf, never this handler, so no probe recursion is possible. */
+static int route_prehandler(struct target_kprobe *p, struct target_pt_regs *regs) {
+    ed_u64 descriptor = regs->regs[1];
+    ed_u32 mask_word, codec;
+    ed_u8 open, started;
+    (void)p;
+    __atomic_add_fetch(&calls_seen, 1, __ATOMIC_RELAXED);
+    if (!descriptor) return 0;
+    mask_word = *(volatile u32 *)(descriptor + hdmi.mask_offset);
+    codec = *(volatile u32 *)hdmi.adec1_codec;
+    open = *(volatile u8 *)hdmi.adec1_open;
+    started = *(volatile u8 *)hdmi.adec1_started;
+    if (!earc_policy_match(regs->regs[0], mask_word, codec, open, started)) return 0;
+    __atomic_add_fetch(&calls_matched, 1, __ATOMIC_RELAXED);
+    if (__atomic_add_fetch(&match_prints, 1, __ATOMIC_RELAXED) <= 5)
+        printk("\0016earc_route: pass match index=%llu codec-arg=%u bypass-arg=%u adec1-codec=%u\n",
+               (unsigned long long)regs->regs[0], (u32)regs->regs[2], (u32)regs->regs[3], codec);
+    if (override_mode && __atomic_load_n(&window_open, __ATOMIC_ACQUIRE)) {
+        regs->regs[2] = 0;  /* codec -> 0 */
+        regs->regs[3] = 1;  /* bypass -> 1 */
+        __atomic_add_fetch(&overrides, 1, __ATOMIC_RELAXED);
+    }
+    return 0;
+}
+
+static int selftest_prehandler(struct target_kprobe *p, struct target_pt_regs *regs) {
+    (void)p;
+    regs->regs[0] = 10;
+    __atomic_add_fetch(&selftest_hits, 1, __ATOMIC_RELAXED);
+    return 0;  /* 0: single-step the original add w0,w0,#1 -> 11 */
+}
+
+/* Registers module-owned break hooks for BRK #4 (kprobe) and #6 (single-step),
+ * pointing at the kernel's own handlers. mask 0: each answers only its own
+ * immediate. The caller has decided (earc_hook_decide) that registration is
+ * needed and conflict-free. */
+static void hooks_register(void) {
+    hook_probe.fn = (void *)hdmi.break_fn;
+    hook_probe.imm = EARC_BRK_IMM_PROBE;
+    hook_probe.mask = 0;
+    hook_step.fn = (void *)hdmi.step_fn;
+    hook_step.imm = EARC_BRK_IMM_STEP;
+    hook_step.mask = 0;
+    REGISTER_BREAK_HOOK(&hook_probe);
+    REGISTER_BREAK_HOOK(&hook_step);
+    hooks_registered = 1;
+}
+static void hooks_unregister(void) {
+    if (!hooks_registered) return;
+    UNREGISTER_BREAK_HOOK(&hook_step);
+    UNREGISTER_BREAK_HOOK(&hook_probe);
+    hooks_registered = 0;
+}
+/* Callers follow hooks_unregister (and unregister_kprobe) with an explicit
+ * synchronize_rcu. That is a second, redundant wait: unregister_kernel_break_hook
+ * calls synchronize_rcu itself (both generations), and unregister_kprobe does so
+ * through unregister_kprobes. We keep it, as lg-g5-dts does, but it is a backstop,
+ * not the only grace period. */
+
+/* Stage a: walk the kernel's break-hook list and act. Returns 0 (hooks present,
+ * whether the kernel's or newly ours), or a negative refusal. */
+static struct earc_hdmi_walk pt_walk;
+static int stage_a_hooks(void) {
+    enum earc_hook_decision decision;
+    earc_hdmi_walk_list(&hdmi, fn__etext, fn__etext + HDMI_DATA_SPAN, hdmi_read, (void *)0, &pt_walk);
+    decision = earc_hook_decide(&pt_walk, hdmi.break_fields_known);
+    switch (decision) {
+    case EHD_ALREADY:
+        printk("\0016earc_route: break hooks already on the list (kernel owns them)\n");
+        return 0;
+    case EHD_REGISTER:
+        hooks_register();
+        printk("\0016earc_route: registered module break hooks #%u=%llx #%u=%llx\n",
+               EARC_BRK_IMM_PROBE, hdmi.break_fn, EARC_BRK_IMM_STEP, hdmi.step_fn);
+        return 0;
+    case EHD_INCOMPLETE:
+        printk("\0013earc_route: refused; break-hook walk incomplete (status=%d)\n", pt_walk.status);
+        return -16;
+    case EHD_CONFLICT:
+    default:
+        printk("\0013earc_route: refused; a break hook already answers BRK #%u or #%u\n",
+               EARC_BRK_IMM_PROBE, EARC_BRK_IMM_STEP);
+        return -16;
+    }
+}
+
+/* The kprobe self-test. Must run only after stage a: an unhandled BRK would
+ * panic. Registers a probe on the leaf, calls it, and checks the pre-handler
+ * ran exactly once and changed the result. */
+static int selftest(void) {
+    int result;
+    selftest_hits = 0;
+    selftest_probe.addr = (void *)selftest_fn;
+    selftest_probe.pre_handler = selftest_prehandler;
+    if (register_kprobe(&selftest_probe) < 0) {
+        printk("\0013earc_route: kprobe self-test: register_kprobe failed\n");
+        selftest_passed = 0;
+        return -1;
+    }
+    result = selftest_call(7);
+    unregister_kprobe(&selftest_probe);
+    selftest_passed = result == 11 && selftest_hits == 1;
+    printk("\0016earc_route: kprobe self-test result=%d (want 11) hits=%u (want 1): %s\n",
+           result, selftest_hits, selftest_passed ? "ok" : "FAILED");
+    return selftest_passed ? 0 : -1;
+}
+
+/* Opens the DTS gate: patch its first word mov w0,#0 -> mov w0,#1, under
+ * cpus_read_lock, re-checking the stock words beneath the lock. */
+static int gate_open_patch(void) {
+    void *addrs[1];
+    u32 insns[1];
+    ed_u32 w0, w1;
+    int result;
+    if ((hdmi.gate & 3) || hdmi.gate < fn__stext || hdmi.gate >= fn__etext) {
+        printk("\0013earc_route: refused; DTS gate %llx outside kernel text\n", hdmi.gate);
+        return -22;
+    }
+    cpus_read_lock();
+    w0 = *(volatile u32 *)hdmi.gate;
+    w1 = *(volatile u32 *)(hdmi.gate + 4);
+    if (w0 != EARC_GATE_STOCK_W0 || w1 != 0xd65f03c0u) {
+        cpus_read_unlock();
+        printk("\0013earc_route: refused; DTS gate not stock under lock (%08x %08x)\n", w0, w1);
+        return -22;
+    }
+    addrs[0] = (void *)hdmi.gate;
+    insns[0] = EARC_GATE_OPEN_W0;
+    result = PATCH_TEXT(addrs, insns, 1);
+    cpus_read_unlock();
+    if (result < 0) {
+        printk("\0013earc_route: DTS gate patch failed result=%d\n", result);
+        return result;
+    }
+    gate_written = EARC_GATE_OPEN_W0;
+    gate_opened_by_us = 1;
+    gate_open = 1;
+    printk("\0016earc_route: DTS gate opened; words now %08x %08x\n",
+           *(volatile u32 *)hdmi.gate, *(volatile u32 *)(hdmi.gate + 4));
+    return 0;
+}
+
+/* Restores the gate, but only if its first word is still the one we wrote. */
+static void gate_restore(void) {
+    void *addrs[1];
+    u32 insns[1];
+    ed_u32 current, want;
+    int result;
+    if (!gate_opened_by_us) return;
+    cpus_read_lock();
+    current = *(volatile u32 *)hdmi.gate;
+    want = earc_gate_restore_word(current, gate_written);
+    if (!want) {
+        cpus_read_unlock();
+        printk("\0013earc_route: DTS gate first word %08x is not ours; leaving it\n", current);
+        gate_opened_by_us = 0;
+        gate_open = current == EARC_GATE_OPEN_W0;
+        return;
+    }
+    addrs[0] = (void *)hdmi.gate;
+    insns[0] = want;
+    result = PATCH_TEXT(addrs, insns, 1);
+    cpus_read_unlock();
+    gate_opened_by_us = 0;
+    gate_open = (*(volatile u32 *)hdmi.gate) == EARC_GATE_OPEN_W0;
+    printk("\0016earc_route: DTS gate restored result=%d words now %08x %08x\n",
+           result, *(volatile u32 *)hdmi.gate, *(volatile u32 *)(hdmi.gate + 4));
+}
+
+/* The override window, driven by the watchdog-thread pattern (no new import for
+ * a clock). After window_seconds it stops overriding; supervised with
+ * window_seconds 0 never expires. */
+static int window_thread(void *unused) {
+    unsigned int ticks = 0, limit = window_seconds * 10;
+    (void)unused;
+    if (window_seconds)
+        while (ticks < limit && !kthread_should_stop()) { msleep(100); ticks++; }
+    if (ticks >= limit && window_seconds) {
+        __atomic_store_n(&window_open, 0, __ATOMIC_RELEASE);
+        printk("\0016earc_route: override window of %u s elapsed; observing only\n", window_seconds);
+    }
+    while (!kthread_should_stop()) msleep(100);
+    return 0;
+}
+
+/* Builds the HDMI code array and derives the set into the global `hdmi`, as the
+ * audit does (kept separate so mode 0 is byte-identical). */
+static void passthrough_derive(void) {
+    struct earc_code code[HF_COUNT];
+    unsigned int i;
+    for (i = 0; i < HF_COUNT; i++) {
+        unsigned long address = *hdmi_functions[i].address;
+        unsigned int size = hdmi_functions[i].size ? *hdmi_functions[i].size : 0;
+        int ok = earc_hdmi_valid(address, size, hdmi_functions[i].size != 0, fn__stext, fn__etext);
+        code[i].address = ok ? address : 0;
+        code[i].words = (ok && hdmi_functions[i].size) ? (const ed_u32 *)address : 0;
+        code[i].count = (ok && hdmi_functions[i].size) ? size / 4 : 0;
+    }
+    earc_hdmi_decode(code, layout.nonpcm, fn__stext & ~0xfffffUL, &hdmi);
+}
+
+static void passthrough_print_walk(const char *when) {
+    earc_hdmi_walk_list(&hdmi, fn__etext, fn__etext + HDMI_DATA_SPAN, hdmi_read, (void *)0, &pt_walk);
+    printk("\0016earc_route: break walk %s: %s nodes=%u kprobe=%d kprobe-ss=%d\n", when,
+           pt_walk.status == HW_COMPLETE ? "complete" : "incomplete", pt_walk.count,
+           pt_walk.saw_break, pt_walk.saw_step);
+}
+
+/* mode 2: register hooks (or confirm the kernel's), self-test, undo, unload.
+ * Everything is always undone before returning. The return code distinguishes
+ * the outcomes so the loader does not report a refusal or a failure as success:
+ * -ECANCELED only when the self-test passed, the stage-a refusal code when it
+ * refuses, -EIO when the self-test failed. */
+static int selftest_mode(void) {
+    int registered, refusal = stage_a_hooks(), ok;
+    if (refusal < 0) { passthrough_print_walk("after refusal"); return refusal; }
+    registered = hooks_registered;
+    ok = selftest() == 0;
+    passthrough_print_walk("with hooks");
+    hooks_unregister();
+    if (registered) synchronize_rcu();
+    passthrough_print_walk("after undo");
+    if (ok) {
+        printk("\0016earc_route: self-test passed; unloading\n");
+        return -125;
+    }
+    printk("\0013earc_route: self-test FAILED; unloading\n");
+    return -5;
+}
+
+/* mode 3: open the gate and stay loaded (cleanup restores it). */
+static int gate_mode(void) {
+    if (gate_open_patch() < 0) return -22;
+    printk("\0016earc_route: DTS gate open (mode 3); unload to restore\n");
+    return 0;
+}
+
+/* modes 4 (observe) and 5 (route override). One load: hooks + gate + probe. */
+static int session_mode(int override) {
+    if (!hdmi_addr_ok(hdmi.adec1_codec, 4, 4) || !hdmi_addr_ok(hdmi.adec1_open, 1, 1) ||
+        !hdmi_addr_ok(hdmi.adec1_started, 1, 1)) {
+        printk("\0013earc_route: refused; ADEC1 address out of range codec=%llx open=%llx started=%llx\n",
+               hdmi.adec1_codec, hdmi.adec1_open, hdmi.adec1_started);
+        return -22;
+    }
+    if ((hdmi.set_output & 3) || hdmi.set_output < fn__stext || hdmi.set_output >= fn__etext) {
+        printk("\0013earc_route: refused; _set_output %llx outside kernel text\n", hdmi.set_output);
+        return -22;
+    }
+    if (override && !window_seconds && !supervised) {
+        printk("\0013earc_route: refused; window_seconds=0 needs supervised=1\n");
+        return -22;
+    }
+    if (stage_a_hooks() < 0) return -16;
+    if (selftest() < 0) { hooks_unregister(); synchronize_rcu(); return -16; }
+    if (gate_open_patch() < 0) { hooks_unregister(); synchronize_rcu(); return -22; }
+    override_mode = override;
+    route_probe.addr = (void *)hdmi.set_output;
+    route_probe.pre_handler = route_prehandler;
+    if (register_kprobe(&route_probe) < 0) {
+        printk("\0013earc_route: register_kprobe on _set_output failed\n");
+        gate_restore();
+        hooks_unregister();
+        synchronize_rcu();
+        return -16;
+    }
+    probe_registered = 1;
+    if (override) {
+        window_task = kthread_create_on_node(window_thread, (void *)0, -1, "earc-dts-window");
+        if ((u64)window_task >= (u64)-4095) {
+            window_task = (void *)0;
+            unregister_kprobe(&route_probe);
+            probe_registered = 0;
+            gate_restore();
+            hooks_unregister();
+            synchronize_rcu();
+            return -12;
+        }
+        wake_up_process(window_task);
+    }
+    printk("\0016earc_route: HDMI passthrough %s active on _set_output=%llx; gate open%s\n",
+           override ? "route(override)" : "observe", hdmi.set_output,
+           override ? "; override window running" : "");
+    printk("\0013earc_route: UNTESTED ON HARDWARE: this mode has never run on a TV\n");
+    return 0;
+}
+
+/* Tears down whatever the active modes set up, in reverse order. Safe to call
+ * when nothing was set (modes 0 and 1). */
+static void passthrough_cleanup(void) {
+    int touched = probe_registered || hooks_registered || gate_opened_by_us;
+    if (window_task) { kthread_stop(window_task); window_task = (void *)0; }
+    if (probe_registered) { unregister_kprobe(&route_probe); probe_registered = 0; }
+    gate_restore();
+    hooks_unregister();
+    if (touched) synchronize_rcu();
+}
+
+static int passthrough_init(void) {
+    const char *reason;
+    passthrough_derive();
+    reason = earc_mode_refusal(&hdmi, mode);
+    if (reason) {
+        printk("\0013earc_route: refused: %s\n", reason);
+        return -22;
+    }
+    /* The modes call register_kprobe directly; confirm the kernel resolved the
+     * same address the loader passed as fn_register_kprobe (a bad kallsyms). */
+    if (hdmi.kprobe_register && hdmi.kprobe_register != (ed_u64)(unsigned long)&register_kprobe) {
+        printk("\0013earc_route: refused; register_kprobe %llx != resolved %lx\n",
+               hdmi.kprobe_register, (unsigned long)&register_kprobe);
+        return -22;
+    }
+    switch (mode) {
+    case 2: return selftest_mode();
+    case 3: return gate_mode();
+    case 4: return session_mode(0);
+    case 5: return session_mode(1);
+    default: return -22;
+    }
+}
+
 static int apply(void) {
     int connected;
     void *current_source = (void *)0;
@@ -770,10 +1187,12 @@ int init_module(void) {
         printk("\0016earc_route: audit complete; unloading\n");
         return -125;
     }
-    return apply();
+    if (mode == 1) return apply();
+    return passthrough_init();
 }
 
 void cleanup_module(void) {
+    passthrough_cleanup();
     if (watchdog) kthread_stop(watchdog);
     restore_route();
     printk("\0016earc_route: unloaded\n");
@@ -846,7 +1265,19 @@ static const struct target_parameter parameters[] __attribute__((section("__para
     {"active", &__this_module, &uint_operations, 0400, -1, 0, &applied},
     {"restore_pcm", &__this_module, &uint_operations, 0400, -1, 0, &restore_pcm},
     {"carrier_rate", &__this_module, &uint_operations, 0400, -1, 0, &carrier_rate},
-    {"hd_ready", &__this_module, &uint_operations, 0400, -1, 0, &hd_ready}
+    {"hd_ready", &__this_module, &uint_operations, 0400, -1, 0, &hd_ready},
+    /* HDMI passthrough (mode>=2): load-time inputs and read-only state. */
+    {"window_seconds", &__this_module, &uint_operations, 0400, -1, 0, &window_seconds},
+    {"supervised", &__this_module, &uint_operations, 0400, -1, 0, &supervised},
+    {"gate_open", &__this_module, &uint_operations, 0400, -1, 0, &gate_open},
+    {"gate_opened_by_us", &__this_module, &uint_operations, 0400, -1, 0, &gate_opened_by_us},
+    {"hooks_registered", &__this_module, &uint_operations, 0400, -1, 0, &hooks_registered},
+    {"probe_registered", &__this_module, &uint_operations, 0400, -1, 0, &probe_registered},
+    {"selftest_passed", &__this_module, &uint_operations, 0400, -1, 0, &selftest_passed},
+    {"window_open", &__this_module, &uint_operations, 0400, -1, 0, &window_open},
+    {"calls_seen", &__this_module, &uint_operations, 0400, -1, 0, &calls_seen},
+    {"calls_matched", &__this_module, &uint_operations, 0400, -1, 0, &calls_matched},
+    {"overrides", &__this_module, &uint_operations, 0400, -1, 0, &overrides}
 };
 static const char module_license[] __attribute__((section(".modinfo"), used)) = "license=GPL";
 static const char module_vermagic[] __attribute__((section(".modinfo"), used)) = "vermagic=" EARC_VERMAGIC;

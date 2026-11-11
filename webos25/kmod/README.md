@@ -21,19 +21,32 @@ only: nothing is probed, hooked or patched, no new kernel function is called and
 no import is added. A missing HDMI symbol or unmatched pattern is reported "not
 available", never a refusal, so the eARC route still loads.
 
+`mode=2` to `mode=5` are the *active* HDMI-passthrough stages, a port of
+[lg-g5-dts](https://github.com/dakenf/lg-g5-dts) (GPL-2.0-only) onto our derived
+addresses: `mode=2` self-tests the kprobe BRK dispatch, `mode=3` opens the DTS
+check, `mode=4` observes `_set_output`, `mode=5` overrides the DTS-core route for
+a bounded window. These modes write to kernel memory (break-hook list, one kprobe,
+one patched instruction); every write is listed with its undo under
+[HDMI passthrough active modes](#hdmi-passthrough-active-modes-mode2). `mode=0`
+and `mode=1` are unchanged, byte for byte.
+
 Status: both builds host-tested against the kernels listed under Test; the 6.12
 build has never run on a TV, and the HDMI audit has never run on a TV at all.
+**`mode=2` and `mode=3` have run on one C5 (33.31.68) and left it in its stock
+state; `mode=4` loaded and unloaded cleanly there but its `_set_output`
+pre-handler has never fired; `mode=5` has never run. Nothing has run on 6.12.**
 Neither `.ko` is committed (`out/` is ignored). Neither generation uses
-MODVERSIONS (no `__versions`, no CRCs) or BTI, so no `-mbranch-protection` flag
-is needed; both kernels have PAC on.
+MODVERSIONS (no `__versions`, no CRCs) or BTI, so no `-mbranch-protection` flag is
+needed; both kernels have PAC on.
 
 ## Files
 
 | File | What it is |
 |---|---|
 | `earc_decode.h` | Freestanding AArch64 decoder and derivations, shared by the module and the test |
-| `earc_route.c` | The module: parameter checks, decode, audit (`mode=0`) or route (`mode=1`) |
+| `earc_route.c` | The module: parameter checks, decode, audit (`mode=0`), route (`mode=1`), HDMI passthrough (`mode=2`..`5`) |
 | `earc_hdmi.h` | The HDMI passthrough audit's derivations and its break-hook list walk, shared by the module and the test |
+| `earc_probe.h` | The active modes' pure decision logic (break-hook decision, DTS-core policy, gate-restore rule, per-mode refusal), shared by the module and the test |
 | `build.sh`, `build.py` | Container build plus ABI, import and export checks against kernel captures |
 | `earc-route-load.sh` | TV-side loader (root, busybox sh + python3) |
 | `test/run.sh`, `test/test_decode.c` | Host test: sha-keyed oracles, refusal tests, C5/G5 and 5.4/6.12 differences |
@@ -122,6 +135,104 @@ lg-g5-dts (G5 33.30.80) reads the non-PCM word at physical 0x264d5bc; on G5
 33.31.x it is 0x264d5c4. Its ADEC 1 addresses are 8 below ours as well: the
 data moved by 8 between those firmwares, it is the same word.
 
+## HDMI passthrough active modes (`mode>=2`)
+
+A port of lg-g5-dts's DTS-from-HDMI path onto the addresses our decoders derive,
+so it needs no per-TV constants. lg-g5-dts is pinned to one G5 image; its
+conflict rule, self-test, DTS-core policy and gate patch are reused, its
+hardcoded addresses replaced by the derived set and the audit's break-hook walk.
+`earc_probe.h` holds the pure decisions (shared with the test); `earc_route.c`
+holds the kernel ABI and the live calls. Each mode first runs the same HDMI
+derivation the audit runs and **refuses** (never degrades) unless every item it
+depends on derived cleanly, the DTS check is stock (for modes that touch it), no
+probe-relevant site holds a breakpoint, and `_set_output`'s entry is
+kprobe-placeable (`earc_mode_refusal`).
+
+| Mode | Loader | What it does | Stays loaded |
+|---|---|---|---|
+| 2 | `--selftest` | Registers the BRK #4/#6 hooks (or confirms the kernel's), self-tests a kprobe on a module leaf, undoes everything, returns `-ECANCELED` | no |
+| 3 | `--open-gate` | Opens the DTS check (`aud_hal_dts_supported`: `mov w0,#0` -> `mov w0,#1`) | yes |
+| 4 | `--observe` | Stage a + opens the gate + a counting kprobe on `_set_output` (no register change) | yes |
+| 5 | `--dts-core` | Stage a + opens the gate + a kprobe on `_set_output` that overrides the DTS-core route for a bounded window | yes |
+
+**Composition.** A real session needs the DTS check open **and** the `_set_output`
+probe active from one load (a module loads once), so modes 4 and 5 include opening
+the check. Mode 3 exists to test the check alone; mode 2 to test BRK dispatch
+alone. Mode 5's `window_seconds` (default 30, max 120; 0 only with `supervised=1`)
+bounds the override; after it, mode 5 observes only. The window is driven by the
+module's existing watchdog-thread pattern (a 100 ms-tick kthread), not a new clock
+import.
+
+**Stage a (break handlers + self-test).** On both generations a plain pre-handler
+kprobe needs the BRK #4 (trap) and #6 (single-step) handlers; it never reaches
+the kretprobe trampoline (#7, 6.12 only), so that hook is not registered. The
+module walks the kernel's break-hook list: if both handlers are already on it, it
+does nothing; if the walk is incomplete, or a node would also answer #4 or #6
+(`(want & ~node_mask) == node_imm`), or the immediate/mask were not derived, it
+refuses; otherwise it registers module-owned hooks (mask 0) pointing at the
+kernel's own handlers, through `register_kernel_break_hook`'s kallsyms address.
+The self-test then probes a leaf (`add w0,w0,#1`), whose pre-handler sets x0 to 10
+and expects 11 with exactly one hit; `register_kprobe` on a core-text function of
+the still-initialising module succeeds (the module is `MODULE_STATE_COMING`,
+`try_module_get` succeeds, the function is not in the init section), and mode 2
+confirms it empirically. The leaf stays a named symbol: on 6.12 `register_kprobe`
+returns `-ENOENT` unless kallsyms resolves the probed address.
+
+Stage a is needed because, on 5.4, LG's `init_kprobes` begins with a vendor test
+of a flag that only a `kprobe` kernel command-line parameter sets and returns
+before registering anything (verified in three 5.4 captures; the live C5's command
+line has no such parameter), so every 5.4 TV lacks the two break hooks while
+`register_kprobe` itself works. On 6.12 `init_kprobes` runs ungated and the kernel
+registers the #4, #6 and #7 hooks, so stage a should find them already present
+(`already`); not confirmed on a TV.
+
+Expected mode-2 output on a 5.4 TV: `break walk with hooks: incomplete nodes=0`
+(by design -- our two nodes are module memory, which the walk never reads) and,
+after undo, `break walk after undo: complete nodes=1` (LG's `bug_handler` stays on
+the list). The explicit `synchronize_rcu` after each unregister is a second,
+redundant wait: `unregister_kernel_break_hook` (and `unregister_kprobe`, through
+`unregister_kprobes`) already wait a grace period on both generations.
+
+**Kernel writes and their undo.** Nothing else writes kernel memory.
+
+| Write | Made by | Undo |
+|---|---|---|
+| break-hook list: add our #4 and #6 nodes | stage a (only if not already present) | `unregister_kernel_break_hook` (#6 then #4), then `synchronize_rcu` |
+| one kprobe on `_set_output` (modes 4, 5) | `register_kprobe` | `unregister_kprobe` |
+| one kprobe on the self-test leaf (mode 2) | `register_kprobe` | `unregister_kprobe`, within init |
+| one instruction: DTS check word 0 `mov w0,#0` -> `mov w0,#1` (modes 3, 4, 5) | `aarch64_insn_patch_text` under `cpus_read_lock` | patch back to `mov w0,#0`, but only if the live word is still the one we wrote |
+
+**Failure paths** undo in reverse: self-test fail -> unregister hooks, `synchronize_rcu`; gate-patch fail -> unregister hooks, `synchronize_rcu`; probe-register fail -> restore gate, unregister hooks, `synchronize_rcu`; window-thread fail -> unregister probe, restore gate, unregister hooks, `synchronize_rcu`. `cleanup_module` (modes 3-5) stops the window thread, unregisters the probe, restores the gate, unregisters the hooks, then `synchronize_rcu`. It does **not** repair the audio graph: like lg-g5-dts, that is left to the session script.
+
+**New imports** (called directly; build.py proves each is exported by every kernel
+of the generation): `register_kprobe`, `unregister_kprobe`, `cpus_read_lock`,
+`cpus_read_unlock`, `synchronize_rcu`. `register_kernel_break_hook`,
+`unregister_kernel_break_hook` and `aarch64_insn_patch_text` are not exported and
+are called through their kallsyms addresses.
+
+**Hand-declared kernel structs** (`earc_route.c`, with static assertions). `struct
+pt_regs` (`regs[31]` at +0, we touch x0..x3) and `struct break_hook` (`fn` +16,
+`imm` +24, `mask` +26, 32 bytes) are identical on both generations. `struct
+kprobe` differs: `addr` +0x28, `pre_handler` +0x40 on both; its size is 0x88 on
+5.4 (flags +0x80) and 0x80 on 6.12 (flags +0x78, after `fault_handler` was
+dropped). The kernel touches nothing past `flags`, so that is the full size; we
+zero the struct and set only `addr` and `pre_handler`. The sizes are
+`-D` macros from `build.py`; the `_Static_assert`s, compiled per generation, are
+the layout check (the captures hold no kprobe instance to measure directly).
+
+**6.12.** Everything works: `aarch64_insn_patch_text` has the same signature
+(`int(void **addrs, u32 *insns, int cnt)`), the pre-handler contract is the same
+(return non-zero to skip single-stepping; we return 0), the break-hook layout and
+the registration/patch call conventions match 5.4. No mode refuses on 6.12 for a
+generation reason. Only `struct kprobe`'s size differs, and that is handled.
+
+The pre-handler runs in breakpoint context: it calls no kernel function, takes no
+lock, sleeps not, reads only the load-time bounds-checked ADEC addresses and the
+caller's descriptor (null-checked), updates atomics, and (mode 5, in-window)
+rewrites x2/x3. We never probe the pre-handler itself (only `_set_output` and the
+self-test leaf), so no probe recursion is possible; a `NOKPROBE_SYMBOL` marker,
+which lg-g5-dts uses, is unnecessary here and unavailable freestanding.
+
 ## Build
 
 ```sh
@@ -143,17 +254,23 @@ refuses unless, per generation:
 |---|---|---|
 | vermagic | `5.4.268 SMP preempt mod_unload aarch64` | `6.12.44 SMP preempt mod_unload aarch64` |
 | `struct module` size, init, exit offsets | 0x380, 0x150, 0x338 | 0x4c0, 0x138, 0x480 |
+| `struct kprobe` size, flags offset | 0x88, 0x80 | 0x80, 0x78 |
 | `printk` import | `printk` | `_printk` |
 
 - every stock module of the generation has that vermagic and `struct module`
   layout, and the built module's layout is identical (name at offset 24 in both);
+- the built module's `struct kprobe`, `struct pt_regs` and `struct break_hook`
+  `_Static_assert`s hold with the generation's `-D` macros (the layout check the
+  captures allow: they hold no kprobe instance to measure directly);
 - GCC's optimised tree has no `__builtin_unreachable` or `__builtin_trap`;
 - the imports are only the printk symbol above, `mutex_lock`/`mutex_unlock`,
-  `msleep`, the kthread calls and `param_{set,get}_{uint,ulong}`, and each one is
-  in every kernel's PREL32 ksymtab (`struct kernel_symbol` is `{value, name,
-  namespace}` offsets on both) at its kallsyms address, the name spelled exactly
-  (6.12 merges `mutex_lock` into the tail of `ww_mutex_lock`). The image base for
-  that proof is `(_stext & ~0xfffff) + text_offset` from the Image header:
+  `msleep`, the kthread calls, `param_{set,get}_{uint,ulong}` and, for the active
+  modes, `register_kprobe`, `unregister_kprobe`, `cpus_read_lock`,
+  `cpus_read_unlock` and `synchronize_rcu`; each one is in every kernel's PREL32
+  ksymtab (`struct kernel_symbol` is `{value, name, namespace}` offsets on both)
+  at its kallsyms address, the name spelled exactly (6.12 merges `mutex_lock`
+  into the tail of `ww_mutex_lock`). The image base for that proof is
+  `(_stext & ~0xfffff) + text_offset` from the Image header:
   `0xffffffc010088000` on 5.4, `0xffffffc080000000` on 6.12.
 
 ## Test
@@ -206,12 +323,34 @@ removed, a second store through the slot; the acceptance branch condition
 changed, a second acceptance compare, the name load removed; the list-head load
 removed.
 
+The active-mode decision logic (`earc_probe.h`) is tested off-TV through the same
+code the module runs: the break-hook decision on synthetic lists walked by
+`earc_hdmi_walk_list` (already registered, register, a node answering #4 or #6,
+immediate/mask unknown, an incomplete walk); the DTS-core policy over a table of
+cases; the gate "restore only what we wrote" rule; and `earc_mode_refusal` for
+each mode when an item it depends on is missing (break hooks for mode 2, the gate
+and patch service for mode 3, `_set_output`/ADEC for modes 4-5), including that a
+mode does not refuse on an item it does not depend on.
+
 ## Load (on the TV, as root)
 
 ```sh
 sh earc-route-load.sh                 # audit: decode, print to dmesg, unload
 sh earc-route-load.sh --route renderer=0 [restore_pcm=0|1] [carrier_rate=48000|192000]
+sh earc-route-load.sh --selftest      # mode 2: BRK dispatch self-test, then unload
+sh earc-route-load.sh --open-gate     # mode 3: open the DTS check, stay loaded
+sh earc-route-load.sh --observe       # mode 4: open the gate, count _set_output calls
+sh earc-route-load.sh --dts-core [window_seconds=30] [supervised=0|1]  # mode 5: override
 ```
+
+`--selftest`, `--open-gate`, `--observe` and `--dts-core` (modes 2-5) refuse,
+before `insmod`, if another DTS tool is loaded (`dts_gate`, `dts_core_route`,
+`gh_dts_native`) or `/var/lib/lg-dts-core/enabled` exists; the audit only reports
+those. **Modes 2 and 3 have run on one C5 and left it stock; mode 4 loaded and
+unloaded cleanly but its `_set_output` pre-handler never fired; mode 5 has never
+run; nothing has run on 6.12.** Read-only parameters report the state:
+`gate_open`, `gate_opened_by_us`, `hooks_registered`, `probe_registered`,
+`selftest_passed`, `window_open`, `calls_seen`, `calls_matched`, `overrides`.
 
 `earc_route-5.4.ko` and `earc_route-6.12.ko` sit next to the script; `uname -r`
 picks one, with its stock module path and `struct module` layout:

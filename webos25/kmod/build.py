@@ -24,13 +24,25 @@ import subprocess
 # Per kernel generation: vermagic, struct module (size, init offset, exit offset)
 # of the stock aspectratiodrv.ko, the kernel's name for printk, and the
 # -D macros earc_route.c takes. Neither generation uses MODVERSIONS or BTI.
+# kprobe: (sizeof struct kprobe, offset of its last field `flags`) of each
+# generation, measured from register_kprobe/arch_prepare_kprobe in the captures
+# (5.4: flags +0x80, size 0x88; 6.12: flags +0x78, size 0x80 after fault_handler
+# was dropped). The module's _Static_asserts, compiled per generation with these,
+# are the layout check; the captures hold no kprobe instance to measure directly.
 GENERATIONS = {
-    '5.4': {'vermagic': '5.4.268 SMP preempt mod_unload aarch64', 'abi': (0x380, 0x150, 0x338), 'printk': 'printk'},
-    '6.12': {'vermagic': '6.12.44 SMP preempt mod_unload aarch64', 'abi': (0x4c0, 0x138, 0x480), 'printk': '_printk'},
+    '5.4': {'vermagic': '5.4.268 SMP preempt mod_unload aarch64', 'abi': (0x380, 0x150, 0x338),
+            'printk': 'printk', 'kprobe': (0x88, 0x80)},
+    '6.12': {'vermagic': '6.12.44 SMP preempt mod_unload aarch64', 'abi': (0x4c0, 0x138, 0x480),
+             'printk': '_printk', 'kprobe': (0x80, 0x78)},
 }
+# The active modes (mode>=2) call these five directly; each is proven exported by
+# every kernel of the generation (prel32_exports). register_kernel_break_hook,
+# unregister_kernel_break_hook and aarch64_insn_patch_text are NOT exported and
+# are called through kallsyms addresses, so they are not imports.
 IMPORTS = {'mutex_lock', 'mutex_unlock', 'msleep', 'kthread_create_on_node', 'wake_up_process',
            'kthread_stop', 'kthread_should_stop', 'param_set_uint', 'param_get_uint',
-           'param_set_ulong', 'param_get_ulong'}
+           'param_set_ulong', 'param_get_ulong',
+           'register_kprobe', 'unregister_kprobe', 'cpus_read_lock', 'cpus_read_unlock', 'synchronize_rcu'}
 
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument('--output', type=Path, required=True)
@@ -125,6 +137,8 @@ for name, (expected_abi, captures) in sorted(by_generation.items()):
                     define('EARC_MODULE_SIZE', hex(size)), define('EARC_MODULE_INIT', hex(init)),
                     define('EARC_MODULE_EXIT', hex(exit_)), define('EARC_VERMAGIC', '"' + generation['vermagic'] + '"'),
                     define('EARC_PRINTK_SYMBOL', '"' + generation['printk'] + '"'),
+                    define('EARC_KPROBE_SIZE', hex(generation['kprobe'][0])),
+                    define('EARC_KPROBE_FLAGS', hex(generation['kprobe'][1])),
                     '-fdump-tree-optimized=' + str(optimized), str(source), '-o', str(module)], check=True)
     # GCC 12 once replaced a call through a constant kernel address, reached via
     # a function-pointer parameter, with __builtin_unreachable; the function then

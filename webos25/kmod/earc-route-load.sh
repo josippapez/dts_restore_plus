@@ -40,17 +40,42 @@ if [ -z "$INSMOD" ] && [ -x /sbin/insmod ]; then INSMOD=/sbin/insmod; fi
 [ -n "$INSMOD" ] || refuse "insmod not found"
 
 options="mode=0"
+want_mode=0
 if [ $# -gt 0 ]; then
-  [ "$1" = "--route" ] || refuse "usage: $0 [--route [renderer=0|1] [restore_pcm=0|1] [carrier_rate=48000|192000]]"
-  shift
-  options="mode=1"
-  for option in "$@"; do
-    case "$option" in
-      renderer=0|renderer=1|restore_pcm=0|restore_pcm=1|carrier_rate=48000|carrier_rate=192000)
-        options="$options $option" ;;
-      *) refuse "unknown --route option: $option" ;;
-    esac
+  case "$1" in
+    --route)
+      shift; options="mode=1"; want_mode=1
+      for option in "$@"; do
+        case "$option" in
+          renderer=0|renderer=1|restore_pcm=0|restore_pcm=1|carrier_rate=48000|carrier_rate=192000)
+            options="$options $option" ;;
+          *) refuse "unknown --route option: $option" ;;
+        esac
+      done ;;
+    --selftest)  shift; options="mode=2"; want_mode=2; [ $# -eq 0 ] || refuse "--selftest takes no options" ;;
+    --open-gate) shift; options="mode=3"; want_mode=3; [ $# -eq 0 ] || refuse "--open-gate takes no options" ;;
+    --observe)   shift; options="mode=4"; want_mode=4; [ $# -eq 0 ] || refuse "--observe takes no options" ;;
+    --dts-core)
+      shift; options="mode=5"; want_mode=5
+      for option in "$@"; do
+        case "$option" in
+          window_seconds=*) [ "${option#window_seconds=}" -ge 0 ] 2>/dev/null || refuse "bad $option"; options="$options $option" ;;
+          supervised=0|supervised=1) options="$options $option" ;;
+          *) refuse "unknown --dts-core option: $option" ;;
+        esac
+      done ;;
+    *) refuse "usage: $0 [--route ... | --selftest | --open-gate | --observe | --dts-core [window_seconds=N] [supervised=0|1]]" ;;
+  esac
+fi
+
+# Active modes (>=1 that write; the HDMI passthrough modes 2-5) refuse to load
+# beside another DTS tool, whose kprobes or gate change would collide with ours.
+# The audit (mode 0) only reports them (below).
+if [ "$want_mode" -ge 2 ]; then
+  for mod in dts_gate dts_core_route gh_dts_native; do
+    [ -e "/sys/module/$mod" ] && refuse "another DTS tool is loaded: $mod (unload it first)"
   done
+  [ -f /var/lib/lg-dts-core/enabled ] && refuse "lg-dts-core is enabled (/var/lib/lg-dts-core/enabled); disable it first"
 fi
 
 # Checks both modules' ELF and reads /proc/kallsyms; prints the fn_/sz_
@@ -210,17 +235,28 @@ last=$(dmesg | grep 'earc_route:' | tail -n 1 || true)
 after=$(dmesg | grep -c 'earc_route:' || true)
 [ "$after" != "$before" ] || last="(no earc_route kernel messages)"
 
-case "$options" in
-  mode=0)
-    # Only the audit path returns -ECANCELED, after decoding everything.
+param() { cat "/sys/module/earc_route/parameters/$1" 2>/dev/null; }
+case "$want_mode" in
+  0|2)
+    # The audit (0) and a PASSED self-test (2) return -ECANCELED and unload. A
+    # refused or failed self-test returns a different code and lands below.
     case "$result" in
-      *"Operation canceled"*) echo "earc-route: AUDIT OK: decoded and unloaded; dmesg | grep earc_route: has every value ($last)" ;;
-      *) echo "earc-route: REFUSED by the module (insmod status $status: $result): $last"; exit 1 ;;
+      *"Operation canceled"*)
+        if [ "$want_mode" = 0 ]; then echo "earc-route: AUDIT OK: decoded and unloaded; dmesg | grep earc_route: has every value ($last)"
+        else echo "earc-route: SELF-TEST PASSED and unloaded; dmesg | grep earc_route: has the result ($last)"; fi ;;
+      *)
+        if [ "$want_mode" = 0 ]; then echo "earc-route: REFUSED by the module (insmod status $status: $result): $last"
+        else echo "earc-route: SELF-TEST did not pass (insmod status $status: $result): $last"; fi
+        exit 1 ;;
     esac ;;
-  *)
-    if [ "$status" = 0 ] && [ "$(cat /sys/module/earc_route/parameters/active 2>/dev/null)" = 1 ]; then
-      echo "earc-route: ROUTED ($options): $last"
-    else
-      echo "earc-route: ROUTE FAILED (insmod status $status: $result): $last"; exit 1
-    fi ;;
+  1)
+    if [ "$status" = 0 ] && [ "$(param active)" = 1 ]; then echo "earc-route: ROUTED ($options): $last"
+    else echo "earc-route: ROUTE FAILED (insmod status $status: $result): $last"; exit 1; fi ;;
+  3)
+    if [ "$status" = 0 ] && [ "$(param gate_open)" = 1 ]; then echo "earc-route: DTS GATE OPEN (mode 3); unload earc_route to restore ($last)"
+    else echo "earc-route: GATE OPEN FAILED (insmod status $status: $result): $last"; exit 1; fi ;;
+  4|5)
+    if [ "$status" = 0 ] && [ "$(param probe_registered)" = 1 ]; then
+      echo "earc-route: PASSTHROUGH ACTIVE ($options) selftest=$(param selftest_passed) gate_open=$(param gate_open); UNTESTED ON HARDWARE ($last)"
+    else echo "earc-route: PASSTHROUGH FAILED (insmod status $status: $result): $last"; exit 1; fi ;;
 esac
