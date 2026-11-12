@@ -74,6 +74,9 @@ FUNCTIONS = [
 HDMI_FUNCTIONS = [
     ('aud_hal_dts_supported', 1), ('_set_output', 1), ('_cb_output_status', 1),
     ('alsa_decoder_codec', 1), ('alsa_decoder_start', 1),
+    ('input_get_hdmi_codec', 1), ('input_set_hdmi', 1), ('aimc_set_property', 1),
+    ('KDRV_HDMI21_HAL_Rx_GetAudioInfo', 0), ('input_drop_data', 1), ('input_start', 0), ('input_stop', 0),
+    ('aimc_register_named_event', 0), ('aimc_unregister_named_event', 0),
     ('register_kernel_break_hook', 1), ('call_break_hook', 1), ('unregister_kernel_break_hook', 0),
     ('kprobe_breakpoint_handler', 0), ('kprobe_breakpoint_ss_handler', 0), ('kretprobe_breakpoint_handler', 0),
     ('aarch64_insn_patch_text', 0), ('register_kprobe', 0), ('unregister_kprobe', 0),

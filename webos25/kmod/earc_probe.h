@@ -85,6 +85,8 @@ static int earc_adec_slot(const struct earc_hdmi_layout *h, ed_u64 index, struct
  * into PCM and its name is loaded from past the table. */
 #define EARC_HD_EVENT_CODEC 7
 #define EARC_HD_ADEC_CODEC  51
+#define EARC_CORE_EVENT_CODEC 5
+#define EARC_CORE_ADEC_CODEC  48
 #define EARC_OUTPUT_EARC    3   /* output type, at output+44 (earc_decode checks it in output_set_earc_on) */
 #define EARC_OUTPUT_TYPE_OFFSET 44
 
@@ -100,6 +102,22 @@ static int earc_app_policy_match(ed_u64 index, ed_u32 mask_word, ed_u32 app_rout
     return app_route && index == app_route - 1 && mask_word == 0x20;
 }
 
+static int earc_input_start_match(ed_u64 index, ed_u32 codec, ed_u8 open, ed_u64 input_codec) {
+    return index <= 1 && open == 1 && input_codec == 1 &&
+        (codec == EARC_CORE_ADEC_CODEC || codec == EARC_HD_ADEC_CODEC);
+}
+
+static ed_u32 earc_input_property(ed_u32 type, ed_u32 frequency, int mode_property, ed_u32 original, int forced_pcm) {
+    ed_u32 codec, mode;
+    if (forced_pcm) return original;
+    if (type == 4 || type == 1004) { codec = 5; mode = type == 4 ? 1 : 6; }
+    else if (type == 202 || type == 1202) { codec = 6; mode = type == 202 ? 4 : 7; }
+    else if (type == 203 || type == 1203) { codec = frequency >= 192000 ? 6 : 5; mode = type == 203 ? 5 : 8; }
+    else return original;
+    if (mode_property) return original == 1 ? mode : original;
+    return original == 0 ? codec : original;
+}
+
 /* The registers the two probes read and write, from the probed instructions:
  * `cmp wC,#bound` and `ldr xN,[xT,xI,lsl #3]`. */
 static unsigned int earc_hd_codec_reg(const struct earc_hdmi_layout *h) { return (h->hd_compare_word >> 5) & 31; }
@@ -108,12 +126,14 @@ static unsigned int earc_hd_name_reg(const struct earc_hdmi_layout *h) { return 
 
 /* The probe on the acceptance compare: 1 means continue at the supported
  * branch (pc = hd_supported_branch, compare skipped, earc_hd_accept_pstate)
- * with the codec register untouched. Only for a DTS-HD event on the eARC output
- * while the ADEC slot given is started on DTS-HD. The caller null-checked the
- * output. */
+ * with the codec register untouched. Only for a DTS event on the eARC output
+ * whose ADEC slot is started on the same DTS: codec 7 on DTS-HD (51), or codec 5
+ * on DTS core (48), which stock code also turns into PCM. The caller
+ * null-checked the output. */
 static int earc_hd_accept(ed_u32 event_codec, ed_u32 output_type, ed_u32 adec_codec, ed_u8 adec_started) {
-    return event_codec == EARC_HD_EVENT_CODEC && output_type == EARC_OUTPUT_EARC &&
-        adec_codec == EARC_HD_ADEC_CODEC && adec_started == 1;
+    return output_type == EARC_OUTPUT_EARC && adec_started == 1 &&
+        ((event_codec == EARC_HD_EVENT_CODEC && adec_codec == EARC_HD_ADEC_CODEC) ||
+         (event_codec == EARC_CORE_EVENT_CODEC && adec_codec == EARC_CORE_ADEC_CODEC));
 }
 
 /* Which ADEC slot the acceptance reads. `matched` is the decoder of the last

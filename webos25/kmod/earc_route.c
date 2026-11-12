@@ -136,6 +136,21 @@ static u32 nonpcm_ready;           /* layout.nonpcm is derived and range-checked
 #define EARC_APP_LEASE_TICKS 20
 static u32 app_route, app_ticks, app_overrides, app_prints;
 static u32 matched_decoder = EARC_NO_DECODER;  /* the last _set_output match's decoder (0 or 1) */
+static struct target_kprobe input_start_probe, input_property_probe;
+static u32 input_probes_registered, input_starts, input_properties;
+static u64 input_codec_format, input_mode_format;
+/* hdmi_dts_format_changed: the DSP raises it on a DTS sub-type change and sets
+ * drop itself; only G3's kernel subscribes. Per decoder: the event id and the uid it is on. */
+static u32 format_pending, format_changes;
+static int format_event[2];
+static u32 format_uid[2];
+#define INPUT_SET_HDMI ((int (*)(void *, _Bool))fn_input_set_hdmi)
+#define INPUT_DROP_DATA ((int (*)(void *, _Bool))fn_input_drop_data)
+#define SET_PROPERTY ((int (*)(u32, const char *, ...))fn_aimc_set_property)
+#define REGISTER_EVENT ((int (*)(void *, int (*)(void *, int, void *), u32, const char *, _Bool))fn_aimc_register_named_event)
+#define UNREGISTER_EVENT ((void (*)(int))fn_aimc_unregister_named_event)
+#define DECODER_LOCK ((void *)hdmi.decoder_lock)
+#define INPUT_AT(decoder) (*(void *volatile *)(hdmi.input_table + 16UL * (decoder)))
 
 static const struct {
     const char *name;
@@ -546,6 +561,47 @@ static int route_prehandler(struct target_kprobe *p, struct target_pt_regs *regs
     return 0;
 }
 
+static int input_start_prehandler(struct target_kprobe *probe, struct target_pt_regs *regs) {
+    struct earc_adec_slot slot;
+    u64 index = regs->regs[hdmi.input_index_reg];
+    (void)probe;
+    if (!__atomic_load_n(&window_open, __ATOMIC_ACQUIRE) || !earc_adec_slot(&hdmi, index, &slot)) return 0;
+    if (!earc_input_start_match(index, *(volatile u32 *)slot.codec, *(volatile u8 *)slot.open, regs->regs[0])) return 0;
+    regs->regs[0] = 0;
+    __atomic_or_fetch(&format_pending, 1u << index, __ATOMIC_RELEASE);
+    if (__atomic_add_fetch(&input_starts, 1, __ATOMIC_RELAXED) <= 5)
+        printk("\0016earc_route: HDMI start enabled for decoder %llu\n", (unsigned long long)index);
+    return 0;
+}
+
+static int input_property_prehandler(struct target_kprobe *probe, struct target_pt_regs *regs) {
+    u64 caller = regs->regs[30], format = regs->regs[1];
+    u32 type, frequency, value, original = (u32)regs->regs[2];
+    unsigned int decoder;
+    int mode_property = format == input_mode_format;
+    (void)probe;
+    if (!__atomic_load_n(&window_open, __ATOMIC_ACQUIRE) || caller <= hdmi.input_set_begin || caller >= hdmi.input_set_end ||
+        (format != input_codec_format && !mode_property) || (regs->sp & 15) ||
+        regs->regs[hdmi.input_forced_reg]) return 0;
+    for (decoder = 0; decoder < 2; decoder++) {
+        struct earc_adec_slot slot;
+        u32 codec;
+        earc_adec_slot(&hdmi, decoder, &slot);
+        codec = *(volatile u32 *)slot.codec;
+        if (*(volatile u8 *)slot.open == 1 && (codec == EARC_CORE_ADEC_CODEC || codec == EARC_HD_ADEC_CODEC) &&
+            *(volatile u64 *)(hdmi.input_table + 16UL * decoder) == regs->regs[hdmi.input_arg_reg]) break;
+    }
+    if (decoder == 2) return 0;
+    type = *(volatile u32 *)(regs->sp + hdmi.input_type_offset);
+    frequency = *(volatile u32 *)(regs->sp + hdmi.input_type_offset + 4);
+    value = earc_input_property(type, frequency, mode_property, original, 0);
+    if (value == original) return 0;
+    regs->regs[2] = value;
+    if (__atomic_add_fetch(&input_properties, 1, __ATOMIC_RELAXED) <= 8)
+        printk("\0016earc_route: HDMI type %u %s %u -> %u\n", type, mode_property ? "mode" : "codec", original, value);
+    return 0;
+}
+
 static int selftest_prehandler(struct target_kprobe *p, struct target_pt_regs *regs) {
     (void)p;
     regs->regs[0] = 10;
@@ -717,6 +773,55 @@ static int selftest_redirect(void) {
     return selftest_passed ? 0 : -1;
 }
 
+/* Runs on system_wq. The input is used only while LG's decoder lock shows it is
+ * still this decoder's, open on DTS; LG's own callback has the same first check. */
+static int format_changed(void *param, int size, void *argument) {
+    unsigned int decoder = (unsigned int)(unsigned long)argument;
+    struct earc_adec_slot slot;
+    void *input;
+    u32 codec;
+    if (size != 4 || !*(volatile u32 *)param || !earc_adec_slot(&hdmi, decoder, &slot)) return 0;
+    mutex_lock(DECODER_LOCK);
+    input = INPUT_AT(decoder);
+    codec = *(volatile u32 *)slot.codec;
+    if (input && *(volatile u8 *)slot.open == 1 && *(volatile u8 *)slot.started == 1 &&
+        (codec == EARC_CORE_ADEC_CODEC || codec == EARC_HD_ADEC_CODEC) &&
+        *(volatile u32 *)((u8 *)input + hdmi.input_uid_offset) == format_uid[decoder]) {
+        INPUT_SET_HDMI(input, 0);
+        SET_PROPERTY(format_uid[decoder], "start=%d", 0);
+        SET_PROPERTY(format_uid[decoder], "start=%d", 1);
+        INPUT_DROP_DATA(input, 0);
+        if (__atomic_add_fetch(&format_changes, 1, __ATOMIC_RELAXED) <= 5)
+            printk("\0016earc_route: DTS format changed on decoder %u; input restarted\n", decoder);
+    }
+    mutex_unlock(DECODER_LOCK);
+    return 0;
+}
+
+static void format_unsubscribe(unsigned int decoder) {
+    if (format_event[decoder] <= 0) return;
+    UNREGISTER_EVENT(format_event[decoder]);
+    format_event[decoder] = 0;
+    format_uid[decoder] = 0;
+}
+
+/* Process context: subscribes decoder to its input's event, once per uid. */
+static void format_subscribe(unsigned int decoder) {
+    void *input;
+    u32 uid = 0;
+    mutex_lock(DECODER_LOCK);
+    input = INPUT_AT(decoder);
+    if (input) uid = *(volatile u32 *)((u8 *)input + hdmi.input_uid_offset);
+    mutex_unlock(DECODER_LOCK);
+    if (!uid || (format_event[decoder] > 0 && format_uid[decoder] == uid)) return;
+    format_unsubscribe(decoder);
+    format_uid[decoder] = uid;
+    format_event[decoder] = REGISTER_EVENT((void *)(unsigned long)decoder, format_changed, uid, "hdmi_dts_format_changed", 1);
+    if (format_event[decoder] <= 0) format_uid[decoder] = 0;
+    printk("\0016earc_route: decoder %u subscribed to hdmi_dts_format_changed on uid %x: %d\n", decoder, uid,
+           format_event[decoder]);
+}
+
 /* Opens the DTS gate: patch its first word mov w0,#0 -> mov w0,#1, under
  * cpus_read_lock, re-checking the stock words beneath the lock. */
 static int gate_open_patch(void) {
@@ -787,7 +892,11 @@ static int window_thread(void *unused) {
     u32 t;
     (void)unused;
     while (!kthread_should_stop()) {
+        u32 pending;
         msleep(100);
+        pending = __atomic_exchange_n(&format_pending, 0, __ATOMIC_ACQUIRE);
+        if (pending & 1) format_subscribe(0);
+        if (pending & 2) format_subscribe(1);
         if (window_seconds && ++ticks == limit) {
             __atomic_store_n(&window_open, 0, __ATOMIC_RELEASE);
             printk("\0016earc_route: override window of %u s elapsed; observing only\n", window_seconds);
@@ -838,8 +947,12 @@ static int adec_slots_ok(int need_open) {
 /* Tears down whatever the active modes set up, in reverse order. Safe to call
  * when nothing was set (modes 0 and 1). */
 static void passthrough_cleanup(void) {
-    int touched = probe_registered || hd_probes_registered || hooks_registered || gate_opened_by_us;
+    int touched = input_probes_registered || probe_registered || hd_probes_registered || hooks_registered || gate_opened_by_us;
+    if (input_probes_registered == 2) { unregister_kprobe(&input_start_probe); input_probes_registered = 1; }
     if (window_task) { kthread_stop(window_task); window_task = (void *)0; }
+    format_unsubscribe(0);
+    format_unsubscribe(1);
+    if (input_probes_registered) { unregister_kprobe(&input_property_probe); input_probes_registered = 0; }
     if (probe_registered) { unregister_kprobe(&route_probe); probe_registered = 0; }
     if (hd_probes_registered == 2) { unregister_kprobe(&hd_status_probe); hd_probes_registered = 1; }
     gate_restore();
@@ -854,11 +967,12 @@ static void passthrough_cleanup(void) {
  * restored: the open gate is what lets a codec-7 event reach LG's name load,
  * which reads past the table. Every failure undoes through passthrough_cleanup. */
 static int session(void) {
-    ed_u64 sites[4] = {hdmi.hd_compare, hdmi.hd_name_load, hdmi.hd_supported_branch, hdmi.set_output};
+    ed_u64 sites[] = {hdmi.hd_compare, hdmi.hd_name_load, hdmi.hd_supported_branch, hdmi.set_output,
+                      hdmi.input_compare, hdmi.property_entry};
     unsigned int i;
     int result = -16;
     if (!adec_slots_ok(1)) return -22;
-    for (i = 0; i < 4; i++)
+    for (i = 0; i < sizeof(sites) / sizeof(sites[0]); i++)
         if ((sites[i] & 3) || sites[i] < fn__stext || sites[i] >= fn__etext) {
             printk("\0013earc_route: refused; probe site %llx outside kernel text\n", sites[i]);
             return -22;
@@ -869,6 +983,20 @@ static int session(void) {
     }
     if (stage_a_hooks() < 0) return -16;
     if (selftest() < 0 || selftest_redirect() < 0) goto undo;
+    input_property_probe.addr = (void *)hdmi.property_entry;
+    input_property_probe.pre_handler = input_property_prehandler;
+    if (register_kprobe(&input_property_probe) < 0) {
+        printk("\0013earc_route: HDMI property probe registration failed\n");
+        goto undo;
+    }
+    input_probes_registered = 1;
+    input_start_probe.addr = (void *)hdmi.input_compare;
+    input_start_probe.pre_handler = input_start_prehandler;
+    if (register_kprobe(&input_start_probe) < 0) {
+        printk("\0013earc_route: HDMI start probe registration failed\n");
+        goto undo;
+    }
+    input_probes_registered = 2;
     hd_name_probe.addr = (void *)hdmi.hd_name_load;
     hd_name_probe.pre_handler = hd_name_prehandler;
     hd_status_probe.addr = (void *)hdmi.hd_compare;
@@ -919,10 +1047,32 @@ undo:
     return result;
 }
 
+static int input_format_matches(u64 address, const char *expected) {
+    unsigned int index;
+    if (!hdmi_addr_ok(address, 1, 16)) return 0;
+    for (index = 0; expected[index]; index++)
+        if (*(volatile u8 *)(address + index) != (u8)expected[index]) return 0;
+    return *(volatile u8 *)(address + index) == 0;
+}
+
 static int passthrough_init(void) {
     const char *reason;
+    unsigned int index;
     passthrough_derive();
     reason = earc_mode_refusal(&hdmi);
+    if (!reason) reason = hdmi.input_reason;
+    if (!reason) reason = hdmi.property_reason;
+    if (!reason && !hdmi_addr_ok(hdmi.input_table, 8, 24)) reason = "HDMI input table outside kernel data";
+    if (!reason) reason = hdmi.format_reason;
+    if (!reason && !hdmi_addr_ok(hdmi.decoder_lock, 8, 32)) reason = "decoder lock outside kernel data";
+    if (!reason) {
+        for (index = 0; index < hdmi.input_format_count; index++) {
+            u64 address = hdmi.input_formats[index];
+            if (input_format_matches(address, "codec=%d")) input_codec_format = address;
+            if (input_format_matches(address, "mode=%d")) input_mode_format = address;
+        }
+        if (!input_codec_format || !input_mode_format) reason = "HDMI codec/mode format strings not derived";
+    }
     if (!reason) {
         hd_name_entries = hdmi_name_entries(hdmi.name_table);
         reason = earc_hd_refusal(&hdmi, hd_name_entries);
@@ -1108,7 +1258,11 @@ static const struct target_parameter parameters[] __attribute__((section("__para
     {"hd_name_fixes", &__this_module, &uint_operations, 0400, -1, 0, &hd_name_fixes},
     {"earc_nonpcm", &__this_module, &nonpcm_operations, 0400, -1, 0, (void *)0},
     {"app_route", &__this_module, &app_route_operations, 0600, -1, 0, &app_route},
-    {"app_overrides", &__this_module, &uint_operations, 0400, -1, 0, &app_overrides}
+    {"app_overrides", &__this_module, &uint_operations, 0400, -1, 0, &app_overrides},
+    {"input_probes_registered", &__this_module, &uint_operations, 0400, -1, 0, &input_probes_registered},
+    {"input_starts", &__this_module, &uint_operations, 0400, -1, 0, &input_starts},
+    {"input_properties", &__this_module, &uint_operations, 0400, -1, 0, &input_properties},
+    {"format_changes", &__this_module, &uint_operations, 0400, -1, 0, &format_changes}
 };
 static const char module_license[] __attribute__((section(".modinfo"), used)) = "license=GPL";
 static const char module_vermagic[] __attribute__((section(".modinfo"), used)) = "vermagic=" EARC_VERMAGIC;

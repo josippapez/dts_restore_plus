@@ -16,6 +16,23 @@ CASES=0
 V54='5.4.268 SMP preempt mod_unload aarch64'
 V612='6.12.44 SMP preempt mod_unload aarch64'
 
+# The loader's two function lists must equal the module's X-macro lists.
+python3 -I - "$LOADER" "$HERE/../../earc_decode.h" "$HERE/../../earc_hdmi.h" <<'PY' || exit 1
+import re, sys
+loader, decode, hdmi = (open(p).read() for p in sys.argv[1:4])
+def header(text, macro):
+    body = re.search(r'#define ' + macro + r'\(X\)(.*?)\n\n', text, re.S).group(1)
+    return [(n, int(a)) for n, a in re.findall(r'X\((\w+), ([01])\)', body)]
+def script(name):
+    body = re.search(name + r' = \[(.*?)\]\n', loader, re.S).group(1)
+    return [(n, int(a)) for n, a in re.findall(r"\('(\w+)', ([01])\)", body)]
+for macro, text, name in (('EARC_FUNCTIONS', decode, 'FUNCTIONS'), ('EARC_HDMI_FUNCTIONS', hdmi, 'HDMI_FUNCTIONS')):
+    if header(text, macro) != script(name):
+        print('FAIL loader %s differs from %s' % (name, macro))
+        sys.exit(1)
+print('PASS loader function lists equal EARC_FUNCTIONS and EARC_HDMI_FUNCTIONS')
+PY
+
 # fake_module PATH VERMAGIC SIZE INIT EXIT
 fake_module() {
   python3 -I - "$@" <<'PY'

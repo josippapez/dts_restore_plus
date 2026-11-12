@@ -693,9 +693,12 @@ static void hd_probe_test(const struct kernel *k, ed_u64 nonpcm) {
             h.hd_supported_branch - h.cb_output_status < 4ULL * k->hdmi[HF__cb_output_status].count);
     hd_case(k->dir, "hd accept acts: codec 7 on the eARC output while ADEC 1 is started on codec 51",
             earc_hd_accept(EARC_HD_EVENT_CODEC, EARC_OUTPUT_EARC, EARC_HD_ADEC_CODEC, 1) && EARC_HD_EVENT_CODEC > bound);
-    hd_case(k->dir, "hd accept does not act: the bound, codec 5 and 8, the optical output, ADEC on DTS core, ADEC stopped",
+    hd_case(k->dir, "hd accept acts for DTS core too: codec 5 on the eARC output while ADEC 1 is started on codec 48",
+            earc_hd_accept(5, 3, 48, 1));
+    hd_case(k->dir, "hd accept does not act: the bound, codec 8, mismatched codec pairs, the optical output, ADEC stopped",
             !earc_hd_accept((ed_u32)bound, 3, 51, 1) && !earc_hd_accept(5, 3, 51, 1) && !earc_hd_accept(8, 3, 51, 1) &&
-            !earc_hd_accept(7, 2, 51, 1) && !earc_hd_accept(7, 3, 48, 1) && !earc_hd_accept(7, 3, 51, 0));
+            !earc_hd_accept(7, 2, 51, 1) && !earc_hd_accept(7, 3, 48, 1) && !earc_hd_accept(5, 2, 48, 1) &&
+            !earc_hd_accept(7, 3, 51, 0) && !earc_hd_accept(5, 3, 48, 0));
     /* The registers every capture's disassembly shows: cmp w6; str w6,[x19];
      * ldr x7,[x2,x4,lsl #3]. */
     hd_case(k->dir, "hd probe registers: codec w6, output x19, name index x4, name destination x7",
@@ -806,8 +809,8 @@ static void hd_refusal_tests(void) {
             earc_app_policy_match(1, 0x20, 2) && earc_app_policy_match(0, 0x20, 1) &&
             !earc_app_policy_match(1, 0x20, 0) && !earc_app_policy_match(0, 0x20, 2) &&
             !earc_app_policy_match(1, 0x14, 2) && !earc_app_policy_match(1, 0x20, 1));
-    hd_case("hd accept", "still refuses ADEC codec 48: a core stream's status event is never redirected",
-            !earc_hd_accept(7, 3, 48, 1) && earc_hd_accept(7, 3, 51, 1));
+    hd_case("hd accept", "each event codec needs its own ADEC codec: 7 with 51, 5 with 48",
+            !earc_hd_accept(7, 3, 48, 1) && earc_hd_accept(7, 3, 51, 1) && earc_hd_accept(5, 3, 48, 1) && !earc_hd_accept(5, 3, 51, 1));
 }
 
 /* earc_adec_slot gives slot 0 or 1 and nothing for any other index, so the
@@ -845,10 +848,12 @@ static void hd_decoder_tests(void) {
     hd_case("hd decoder", "any matched value above 1 is no match and reads only slots 0 and 1",
             earc_hd_accept_decoder(7, 3, 4, on1, up) == 1 && earc_hd_accept_decoder(7, 3, 0xffffffffU, on0, up) == 0 &&
             earc_hd_accept_decoder(7, 3, 12, none, up) == -1);
-    hd_case("hd decoder", "still refuses a stopped slot, ADEC on 48, codec 5, the optical output",
+    hd_case("hd decoder", "still refuses a stopped slot, a mismatched codec pair, the optical output",
             earc_hd_accept_decoder(7, 3, 1, on1, down) == -1 && earc_hd_accept_decoder(7, 3, 0, on0, down) == -1 &&
             earc_hd_accept_decoder(7, 3, EARC_NO_DECODER, core, up) == -1 && earc_hd_accept_decoder(5, 3, 1, on1, up) == -1 &&
             earc_hd_accept_decoder(7, 2, 0, on0, up) == -1);
+    hd_case("hd decoder", "DTS core: codec 5 accepts on the matched slot started on 48",
+            earc_hd_accept_decoder(5, 3, 1, core, up) == 1 && earc_hd_accept_decoder(5, 3, 0, core, up) == 0);
 }
 
 #define NOP 0xd503201fU
@@ -889,6 +894,8 @@ static const char *adec_reason(const struct earc_hdmi_layout *h) { return h->ade
 static const char *cb_reason(const struct earc_hdmi_layout *h) { return h->cb_reason; }
 static const char *break_reason(const struct earc_hdmi_layout *h) { return h->break_reason; }
 static const char *hd_reason(const struct earc_hdmi_layout *h) { return earc_hd_refusal(h, 6); }
+static const char *input_reason(const struct earc_hdmi_layout *h) { return h->input_reason; }
+static const char *property_reason(const struct earc_hdmi_layout *h) { return h->property_reason; }
 
 #define HDMI_MUTATION(name) \
     static int name(ed_u32 *w, ed_u32 n, const struct earc_code *f, const struct earc_hdmi_layout *g)
@@ -898,6 +905,19 @@ static const char *hd_reason(const struct earc_hdmi_layout *h) { return earc_hd_
 HDMI_MUTATION(gate_third_value) { HDMI_UNUSED; w[0] = 0x52800040U; return 1; }
 /* The first instruction -> brk #4, what a kprobe plants. */
 HDMI_MUTATION(entry_kprobe) { HDMI_UNUSED; w[0] = HF_KPROBE_BRK; return 1; }
+HDMI_MUTATION(input_compare_changed) {
+    HDMI_UNUSED;
+    if (g->input_compare < f->address || g->input_compare >= f->address + 4ULL * n) return 0;
+    w[(g->input_compare - f->address) / 4] = NOP;
+    return 1;
+}
+HDMI_MUTATION(input_frame_changed) {
+    ed_u32 index;
+    HDMI_UNUSED;
+    for (index = 0; index < n && index < 16; index++)
+        if ((w[index] & 0xffc003ffu) == 0xd10003ffu) { w[index] = NOP; return 1; }
+    return 0;
+}
 /* ldr wT,[x1,#mask] -> the same load from x9, which is not an argument. */
 HDMI_MUTATION(mask_base_not_argument) {
     ed_u32 i;
@@ -1342,6 +1362,82 @@ static void generation_test(const char *family, const struct earc_layout *a, con
                family);
 }
 
+static void input_capture_tests(const struct kernel *kernel, const struct earc_hdmi_layout *layout) {
+    const struct earc_code *getter = &kernel->hdmi[HF_input_get_hdmi_codec];
+    unsigned int index, codec_formats = 0, mode_formats = 0;
+    ed_u64 codec_format = 0, mode_format = 0;
+    check_reason(kernel->dir, "HDMI input start", layout->input_reason);
+    check_reason(kernel->dir, "HDMI input properties", layout->property_reason);
+    for (index = 0; index < layout->input_format_count; index++) {
+        ed_u64 address = layout->input_formats[index];
+        const char *text;
+        if (address < kernel->base || address - kernel->base + 16 > kernel->image_size) continue;
+        text = (const char *)kernel->image + address - kernel->base;
+        if (!strcmp(text, "codec=%d")) { codec_format = address; codec_formats++; }
+        if (!strcmp(text, "mode=%d")) { mode_format = address; mode_formats++; }
+    }
+    check(kernel->dir, "one codec format", codec_formats, 1);
+    check(kernel->dir, "one mode format", mode_formats, 1);
+    check(kernel->dir, "input table oracle", layout->input_table, layout->adec_base - 32);
+    check(kernel->dir, "input argument register oracle", layout->input_arg_reg, 19);
+    check(kernel->dir, "forced PCM register oracle", layout->input_forced_reg, 23);
+    check(kernel->dir, "input frame size oracle", layout->input_frame_size, 160);
+    check_reason(kernel->dir, "HDMI format helpers", layout->format_reason);
+    check(kernel->dir, "input uid offset oracle", layout->input_uid_offset, 0x44);
+    check(kernel->dir, "input codec offset oracle", layout->input_codec_offset, 0x5c);
+    check(kernel->dir, "decoder lock calls mutex_lock", layout->decoder_lock_call, kernel_symbol(kernel, "mutex_lock"));
+    printf("INFO %s: decoder lock=%llx\n", kernel->dir, layout->decoder_lock);
+    if (getter->address == 0xffffffc010ca3be0ULL) {
+        check(kernel->dir, "start compare oracle", layout->input_compare, 0xffffffc010cccfe8ULL);
+        check(kernel->dir, "codec format oracle", codec_format, 0xffffffc0118e1b18ULL);
+        check(kernel->dir, "mode format oracle", mode_format, 0xffffffc0118e8d18ULL);
+        check(kernel->dir, "type offset oracle", layout->input_type_offset, 0x7c);
+        check(kernel->dir, "index register oracle", layout->input_index_reg, 27);
+    } else if (getter->address == 0xffffffc010ca3ca0ULL) {
+        check(kernel->dir, "start compare oracle", layout->input_compare, 0xffffffc010cce534ULL);
+        check(kernel->dir, "codec format oracle", codec_format, 0xffffffc011841358ULL);
+        check(kernel->dir, "mode format oracle", mode_format, 0xffffffc011848940ULL);
+        check(kernel->dir, "type offset oracle", layout->input_type_offset, 0x7c);
+        check(kernel->dir, "index register oracle", layout->input_index_reg, 27);
+    } else if (getter->address == 0xffffffc080f2894cULL) {
+        check(kernel->dir, "start compare oracle", layout->input_compare, 0xffffffc080f55518ULL);
+        check(kernel->dir, "codec format oracle", codec_format, 0xffffffc081cc0c78ULL);
+        check(kernel->dir, "mode format oracle", mode_format, 0xffffffc081cc87d8ULL);
+        check(kernel->dir, "type offset oracle", layout->input_type_offset, 0x78);
+        check(kernel->dir, "index register oracle", layout->input_index_reg, 28);
+    }
+    hdmi_refuse(kernel, HF_alsa_decoder_start, "HDMI start compare changed", "not found",
+                input_compare_changed, input_reason, 0, layout);
+    hdmi_refuse(kernel, HF_input_get_hdmi_codec, "HDMI getter breakpoint", "not a word load",
+                entry_kprobe, input_reason, 0, layout);
+    hdmi_refuse(kernel, HF_input_set_hdmi, "HDMI stack frame changed", "ambiguous",
+                input_frame_changed, property_reason, 0, layout);
+    hdmi_refuse(kernel, HF_aimc_set_property, "HDMI property breakpoint", "not derived",
+                entry_kprobe, property_reason, 0, layout);
+}
+
+static void input_policy_tests(void) {
+    check("input policy", "DTS start", earc_input_start_match(1, 48, 1, 1), 1);
+    check("input policy", "HD start", earc_input_start_match(0, 51, 1, 1), 1);
+    check("input policy", "closed decoder", earc_input_start_match(1, 48, 0, 1), 0);
+    check("input policy", "PCM decoder", earc_input_start_match(1, 1, 1, 1), 0);
+    check("input policy", "invalid index", earc_input_start_match(2, 48, 1, 1), 0);
+    check("input policy", "native input", earc_input_start_match(1, 48, 1, 17), 0);
+    check("input policy", "core codec", earc_input_property(4, 48000, 0, 0, 0), 5);
+    check("input policy", "HD codec", earc_input_property(202, 192000, 0, 0, 0), 6);
+    check("input policy", "HD mode", earc_input_property(202, 192000, 1, 1, 0), 4);
+    check("input policy", "unknown HD mode", earc_input_property(1202, 192000, 1, 1, 0), 7);
+    check("input policy", "forced PCM", earc_input_property(202, 192000, 0, 0, 1), 0);
+    check("input policy", "PCM mode", earc_input_property(202, 192000, 1, 0, 0), 0);
+    check("input policy", "native codec", earc_input_property(4, 48000, 0, 5, 0), 5);
+    check("input policy", "native HRA", earc_input_property(203, 192000, 1, 5, 0), 5);
+    check("input policy", "HRA mode", earc_input_property(203, 48000, 1, 1, 0), 5);
+    check("input policy", "unknown HRA mode", earc_input_property(1203, 48000, 1, 1, 0), 8);
+    check("input policy", "HRA low rate", earc_input_property(203, 48000, 0, 0, 0), 5);
+    check("input policy", "HRA high rate", earc_input_property(203, 192000, 0, 0, 0), 6);
+    check("input policy", "AC3", earc_input_property(3, 48000, 0, 0, 0), 0);
+}
+
 int main(int argc, char **argv) {
     struct kernel kernels[16];
     struct earc_layout layouts[16];
@@ -1378,6 +1474,13 @@ int main(int argc, char **argv) {
          * no earc one). layouts[n].nonpcm is set by run_oracle or the decode
          * above. */
         hdmi_validity_test(&kernels[n]);
+         earc_hdmi_decode(kernels[n].hdmi, layouts[n].nonpcm, kernels[n].stext & ~0xfffffULL, &hdmi_layout);
+        input_capture_tests(&kernels[n], &hdmi_layout);
+         printf("INFO %s: HDMI start compare=%llx index=x%u\n", dir,
+             hdmi_layout.input_compare, hdmi_layout.input_index_reg);
+         printf("INFO %s: HDMI property entry=%llx frame=%u type=sp+%u forced=x%u formats=%u\n", dir,
+             hdmi_layout.property_entry, hdmi_layout.input_frame_size, hdmi_layout.input_type_offset,
+             hdmi_layout.input_forced_reg, hdmi_layout.input_format_count);
         hd_probe_test(&kernels[n], layouts[n].nonpcm);
         if (ho && run_hdmi_oracle(ho, &kernels[n], layouts[n].nonpcm, &hdmi_layout) && !hdmi_refused[ho->generation]) {
             hdmi_refusal_tests(&kernels[n], layouts[n].nonpcm, &hdmi_layout);
@@ -1399,6 +1502,7 @@ int main(int argc, char **argv) {
     hd_refusal_tests();
     adec_slot_tests();
     hd_decoder_tests();
+    input_policy_tests();
     if (first[0][0] >= 0 && first[1][0] >= 0) generation_test("C5", &layouts[first[0][0]], &layouts[first[1][0]]);
     else printf("SKIP C5 5.4/6.12 difference test: needs both oracle kernels\n");
     if (first[0][1] >= 0 && first[1][1] >= 0) generation_test("G5", &layouts[first[0][1]], &layouts[first[1][1]]);
