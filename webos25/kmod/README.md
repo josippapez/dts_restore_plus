@@ -37,7 +37,9 @@ scripts handle either HDMI audio decoder, 0 or 1 (*Decoder 0 and decoder 1*,
 under the active modes).
 
 Status: both builds host-tested against the kernels listed under Test.
-Experimental, root over SSH, not shipped in the app or the release.
+Experimental. The release ships `earc_route-5.4.ko`, `earc-route-load.sh` and
+`hdmi-watch.sh` for the app's HDMI passthrough opt-in on the 5.4.268 kernels (see
+[In the app](#in-the-app-hdmi-passthrough-opt-in)); everything else here is root over SSH.
 
 On 2026-11-11 a tester's LG CS (OLED55CS6LA, firmware 33.31.68, kernel
 5.4.268-329.ptl4tv.5) with a Samsung HW-Q930F over eARC and a set-top box on
@@ -75,7 +77,11 @@ above used the scripts that handled decoder 1 only. Only a TV with an eARC
 receiver can confirm the decoder-0 override: on the C5's speakers `_set_output`
 never matches (`mask=0x2`). Every `pass match`, `pass nomatch` and `hd` line
 prints the decoder, so the next receiver run shows which one played.
-Neither `.ko` is committed (`out/` is ignored). Neither generation uses
+`out/` is ignored. The committed copies the release ships are in
+`webos25/restore/kmod-out/`: the build of commit 3a70b90 (`earc_route-5.4.ko` sha256
+`2d7a168354f9d9c756f0d02b466f57ae7b95e97bbbbe7b44a85573cde02b66e9`, `earc_route-6.12.ko`
+`17ce26b08f651f24a09e605bce186233c207bc3bf6ce0325ee9f6a190ed4006e`). After a rebuild,
+copy the new `.ko` there (RELEASING.md). Neither generation uses
 MODVERSIONS (no `__versions`, no CRCs) or BTI, so no `-mbranch-protection` flag is
 needed; both kernels have PAC on.
 
@@ -871,3 +877,18 @@ including decoder 0 and moves between the decoders; on a C5 without an eARC
 receiver, decoder and port detection through seeks, a track restart and an input
 switch, and the stop. Never run with a receiver. Decoder 0 has never been applied
 on a TV: the C5 run predates it (that build only logged decoder 0).
+
+## In the app (HDMI passthrough opt-in)
+
+DTS Enabler offers `hdmi-watch.sh` as a separate, experimental opt-in on the two 5.4.268
+kernels; its card says "not supported yet" on 6.12. The boot script
+(`webos25/restore/init_dts25.sh`, "HDMI-input DTS passthrough opt-in") stages
+`earc_route-5.4.ko`, `earc-route-load.sh` and `hdmi-watch.sh` into
+`/var/lib/webosbrew/dts25/hdmi/` and runs the watcher from there under a supervisor,
+at boot and from the app's toggle (`W25_HDMI=on|off sh init_dts25.sh` over SSH). Turning
+it off, Disable and Uninstall send the watcher TERM; an exit 20 is reported as "restart
+the TV". Turn on refuses beside an enabled lg-dts-core or Glasshouse helper, and needs
+"Show DTS tracks in apps" on, because the HDMI EDIDs offer DTS only through that
+opt-in's edidType. The supervisor takes that opt-in's eim hook off, so HDMI devices are
+offered DTS, only while an eARC receiver is the sound output. The rules and the
+trade-offs are in [`../app/README.md`](../app/README.md).

@@ -267,6 +267,38 @@
         <pre id="routeLog" class="log" hidden></pre>
       </section>
 
+      <section class="card" id="cardHdmi" hidden>
+        <h2>DTS from HDMI devices to a receiver (experimental)</h2>
+        <p class="muted">
+          Passes DTS and DTS-HD from a device on an HDMI input (a streamer, a console,
+          a player) through to an eARC receiver. Needs <strong>Show DTS tracks in
+          apps</strong> on.
+        </p>
+        <p class="muted">
+          HDMI devices are offered DTS only while the eARC receiver is the sound
+          output: on the TV speakers DTS from an HDMI device plays as silence. A device
+          that was already plugged in picks up a change after a replug or power cycle.
+        </p>
+        <p class="muted note-warn">
+          Experimental: loads a kernel module that has run with a receiver on one TV
+          (an LG CS). If HDMI sound stops, turn this off.
+        </p>
+        <div class="row">
+          <button id="btnHdmiOn"  class="btn focusable" data-nav disabled>Turn on</button>
+          <button id="btnHdmiOff" class="btn focusable" data-nav disabled>Turn off</button>
+        </div>
+        <dl class="status">
+          <dt>HDMI passthrough</dt><dd id="sHdmi">&mdash;</dd>
+          <dt>This TV's kernel</dt><dd id="sHdmiKernel">&mdash;</dd>
+          <dt>DTS offered to HDMI devices</dt><dd id="sHdmiEdid">&mdash;</dd>
+        </dl>
+        <p id="hdmiToolsNote" class="muted note-warn" hidden></p>
+        <div class="row">
+          <button id="btnHdmiLog" class="btn focusable" data-nav>Show HDMI log</button>
+        </div>
+        <pre id="hdmiLog" class="log" hidden></pre>
+      </section>
+
       <!-- ===== Support (static, deliberately not focusable) ===== -->
       <section class="card card--wide support" aria-labelledby="h-support">
         <img class="support__qr" src="img/kofi-qr.png" width="148" height="148" alt="QR code for ko-fi.com/josippapez">

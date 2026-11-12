@@ -61,7 +61,8 @@ jobs:
                    truehd-out/libgstlibav.so \
                    switch-out/libgstadecswitch.so edid-out/libedidaudio.so \
                    demux-out/libgstisomp4.so demux-out/libgstmpegtsdemux.so \
-                   demux-out/libgstmatroska.so demux-out/libgstmpegpsdemux.so; do
+                   demux-out/libgstmatroska.so demux-out/libgstmpegpsdemux.so \
+                   kmod-out/earc_route-5.4.ko; do
             [ -f "$f" ] || { echo "MISSING committed binary: $f"; exit 1; }
           done
           echo "all prebuilt binaries present"
@@ -100,6 +101,9 @@ jobs:
           # copy of the license and the source offer, and libgstdtsdec.so links ffmpeg
           # statically.
           cp -r app/licenses restore/licenses
+          # The HDMI passthrough opt-in's loader and watcher live with their module's
+          # source in kmod/; install.sh stages them from kmod-out/ next to the module.
+          cp -f kmod/earc-route-load.sh kmod/hdmi-watch.sh restore/kmod-out/
           # Excludes are defensive: dts2lpcm/ is the archived Path-A investigation
           # record (refuted on hardware, never shipped) and has no place in an
           # end-user CLI tarball, so it stays out even if its docs get committed.
@@ -123,6 +127,10 @@ jobs:
           cp -f  ../restore/demux-out/libgstisomp4.so ../restore/demux-out/libgstmpegtsdemux.so \
                  ../restore/demux-out/libgstmatroska.so ../restore/demux-out/libgstmpegpsdemux.so \
                  payload/webos25-demux/
+          # HDMI passthrough opt-in: the 5.4 module only, since 6.12 is refused.
+          mkdir -p payload/webos25-hdmi
+          cp -f ../restore/kmod-out/earc_route-5.4.ko ../kmod/earc-route-load.sh ../kmod/hdmi-watch.sh \
+                payload/webos25-hdmi/
           # C2/G2 deliberately reuses the existing legacy payload directory. Do
           # not duplicate these identical binaries under a model-specific path.
           mkdir -p payload/cx
