@@ -22,22 +22,20 @@ available", never a refusal, so the eARC route still loads.
 [lg-g5-dts](https://github.com/dakenf/lg-g5-dts)'s `tools/dts-hd-route`
 (GPL-2.0-only) onto our derived addresses. It writes to kernel memory
 (break-hook list, up to three kprobes, one patched instruction); every write is
-listed with its undo under [The session load](#the-session-load-mode7). It and
-both scripts handle either HDMI audio decoder, 0 or 1.
+listed with its undo under [The session load](#the-session-load-mode7). It
+handles either HDMI audio decoder, 0 or 1, and keeps an HDMI input on DTS by itself
+(see [HDMI input](#hdmi-input-mode7)).
 
 Status: both builds host-tested against the kernels listed under Test.
-Experimental. The release ships `earc_route-5.4.ko`, `earc-route-load.sh` and
-`hdmi-watch.sh` for the app's HDMI passthrough opt-in on the 5.4.268 kernels (see
+Experimental. The release ships `earc_route-5.4.ko` and `earc-route-load.sh`
+for the app's HDMI passthrough opt-in on the 5.4.268 kernels (see
 [In the app](#in-the-app-hdmi-passthrough-opt-in)); everything else here is root over SSH.
 
 On 2026-11-11 a tester's LG CS (OLED55CS6LA, firmware 33.31.68, kernel
 5.4.268-329.ptl4tv.5) with a Samsung HW-Q930F over eARC and a set-top box on
-HDMI 1 ran `hdmi-session.sh --apply 30` (mode 7). The soundbar showed DTS for a
-DTS core stream, DTS-HD for DTS-HD MA and DTS:X for DTS:X. It worked again after
-a TV power cycle. The first run failed because the script gave up during the
-input-service restart; it now waits for the input to come back (a wait loop,
-fixed since). That is the only run with an eARC receiver. `hdmi-watch.sh` has run
-only on the C5, which has no receiver.
+HDMI 1 ran mode 7 with a since-removed userspace script that wrote the HDMI
+input's DSP properties. The soundbar showed DTS for a DTS core stream, DTS-HD for
+DTS-HD MA and DTS:X for DTS:X.
 
 On one C5 (33.31.68, kernel 5.4.268), also 2026-11-11, `mode=7` ran once on a
 live DTS core stream without a receiver: both self-tests passed, three probes
@@ -46,18 +44,18 @@ were placed and unload left the TV stock.
 On 2026-11-12 a C2 (OLED42C27LA, 33.31.68) with an eARC receiver ran this build with
 the `app_route` lease on renderer 0 while the app played DTS-HD MA: the
 `_set_output` probe forced LG's bypass twice, eARC went non-PCM, and unload left
-the gate stock. The HDMI path was not re-run with this build.
+the gate stock. The same TV ran this build with the app again (rebuilt lease
+plugin) and with the boot script's supervisor, which loaded and unloaded it.
 
 Not run on any TV: kernel 5.4.268-329.ptl4tv.2 (33.22.x), which is host-tested
 only; the 6.12 build and kernel.
 
-Decoder 0 is host-tested only. No session has run on decoder 0, and the CS run
-above used the scripts that handled decoder 1 only. Only a TV with an eARC
+Decoder 0 is host-tested only for HDMI inputs. Only a TV with an eARC
 receiver can confirm the decoder-0 override: on the C5's speakers `_set_output`
 never matches (`mask=0x2`). Every `pass match`, `pass nomatch` and `hd` line
 prints the decoder, so the next receiver run shows which one played.
 `out/` is ignored. The release ships `webos25/restore/kmod-out/earc_route-5.4.ko`
-(sha256 `9551a0ddd3cc410bf3214a03de2e87569c52ff9b89d0a3209cbcdf9e6952ece3`). After a
+(sha256 `7a6a950e75990f066b2b0b07630aad54ca0dd51d1a47eb21bc09b70a1342c3ea`). After a
 rebuild, copy the new `.ko` there (RELEASING.md). Neither generation uses
 MODVERSIONS (no `__versions`, no CRCs) or BTI, so no `-mbranch-protection` flag is
 needed; both kernels have PAC on.
@@ -73,11 +71,7 @@ needed; both kernels have PAC on.
 | `build.sh`, `build.py` | Container build plus ABI, import and export checks against kernel captures |
 | `earc-route-load.sh` | TV-side loader (root, busybox sh + python3) |
 | `test/run.sh`, `test/test_decode.c` | Host test: sha-keyed oracles, refusal tests, C5/G5 and 5.4/6.12 differences |
-| `hdmi-session.sh` | TV-side DTS core or DTS-HD session from an HDMI input (root, busybox sh): preflight, audio graph setup, restore |
 | `test/loader/run.sh` | Host test of `earc-route-load.sh`'s kernel check (module chosen from the running kernel's stock modules, refusals), with generated stand-in modules and stubbed commands |
-| `test/session/run.sh`, `test/session/fixtures/` | Host test of `hdmi-session.sh` against a C5's own status files, with stubbed commands |
-| `hdmi-watch.sh` | TV-side watcher: keeps the `hdmi-session.sh` route applied across seeks and input switches (root, busybox sh) |
-| `test/watch/run.sh` | Host test of `hdmi-watch.sh` on a timeline of input states, using `test/session/fixtures/` |
 
 ## What is derived, and from where
 
@@ -611,238 +605,39 @@ every address against `[_stext, _etext)`, compares `fn_mutex_lock` and
 `fn_mutex_unlock` with the symbols the kernel resolved for it, and refuses a
 derived data address that is misaligned or not within 64 MiB after `_etext`.
 
-## HDMI passthrough session (`hdmi-session.sh`)
+## HDMI input (`mode=7`)
 
-`--dts-hd` alone makes no sound: the module opens the DTS check and overrides
-LG's decisions, but does not repair the audio graph.
-`hdmi-session.sh` does that for one session, from an HDMI input to an eARC
-receiver. It is a port of lg-g5-dts's `tools/dts-core-route/run-on-tv.sh` and
-`tools/dts-hd-route/run-on-tv.sh` (see NOTICE) that reads the HDMI port, the
-decoder and the bypass gain block from the TV instead of one G5 image's values.
-It runs as root with busybox `sh`, next to `earc-route-load.sh` and the `.ko`
-files.
+On C2/CS, C5 and G5, LG's `input_set_hdmi` sends every DTS type to the HDMI
+input's DSP instance as `codec=0` (PCM), and `alsa_decoder_start` then skips
+`input_start` and `input_drop_data(0)` for a DTS ADEC codec, so the instance stays
+dropped. C3/G3's kernel handles DTS there itself. Mode 7 makes the others do the same:
 
-```sh
-sh hdmi-session.sh --check            # read-only preflight; prints each check and a verdict
-sh hdmi-session.sh --apply [15..60]   # timed test (default 30 s), then restores
-sh hdmi-session.sh --session          # runs until the source changes; exit 10 on source loss
-```
+| Probe | Site | Acts when | Does |
+|---|---|---|---|
+| start | the `cmp w0,#1` after `bl input_get_hdmi_codec` in `alsa_decoder_start` | that decoder's ADEC slot is open on 48 or 51 and the input reads PCM | `w0 = 0`: LG starts the input and clears its drop |
+| property | `aimc_set_property` entry | called from `input_set_hdmi` with `codec=%d` 0 or `mode=%d` 1, not forced PCM, for the input of a decoder open on 48 or 51 | sends C3/G3's values: type 4 codec 5 / mode 1, 202 codec 6 / mode 4, 203 codec 5 or 6 (by rate) / mode 5; the 1000+ types modes 6, 7, 8 |
+| format change | the DSP's `hdmi_dts_format_changed` event, subscribed per decoder after the start probe acted | a DTS sub-type change (the DSP drops the input) | under LG's decoder lock: `input_set_hdmi`, `start` 0 then 1, `input_drop_data(0)`, as C3/G3's `input_hdmi_dts_format_changed_cb` |
 
-**Two kinds of session.** The stream on the HDMI input decides the kind, and
-the preflight says which (`live DTS core at 48 kHz` or `live DTS-HD at 192 kHz`):
+Derived from LG's code: the start compare and its index register, the input
+table and the decoder lock (`alsa_decoder_start`), `input_set_hdmi`'s frame, its
+audio-info offset (`add x1,sp,#K` before `GetAudioInfo`), its input and forced-PCM
+registers and format strings (read back at load), and the input's uid offset
+(`input_drop_data`). Counters: `input_starts`, `input_properties`, `format_changes`.
 
-| Kind | `/proc/lgtv-driver/audio/hdmi` | Loader | `adec.pN` waits for | DSP instance writes |
-|---|---|---|---|---|
-| DTS core | `Codec=DTS` or `UNKNOWN_DTS`, `SamplingRate=48000` | `--dts-hd` | `UserCodec=DTS` | `codec 5`, `mode 1`, `data-drop-mode 1`, `drop-output-data false`, `start 1`, `drop 0` |
-| DTS-HD | `Codec=DTS_HD` or `UNKNOWN_DTS_HD`, `SamplingRate=192000` | `--dts-hd` | `UserCodec=DTS_HD` | `codec 6`, `mode 4`, `sampling-freq 192000`, `channel-num 8`, `data-drop-mode 1`, `drop-output-data false`, `start 1`, `drop 0` |
-
-Both kinds load the same session (`--dts-hd`), which overrides the route for
-ADEC codec 48 and 51 and guards LG's codec-name load, so a core-to-DTS-HD track
-change is covered. The kind is still fixed for the session: a stream that
-changes kind ends it like any other source change.
-
-The names come from LG's tables, not from a guess. In the eight saved 5.4
-kernels the HDMI type table prints type 202 as `DTS_HD`, 203 as `DTS_HD_HRA`,
-1004 as `UNKNOWN_DTS`, 1202 as `UNKNOWN_DTS_HD` and 1203 as
-`UNKNOWN_DTS_HD_HRA`, and the ADEC table prints codec 48 as `DTS` and 51 as
-`DTS_HD`. In the C5 33.31.68 disassembly `HDMI21_HAL_Rx_Get_AudioType` stores
-202 or 1202 for an IEC 61937 data type 0x11 (DTS-HD) burst, and 203 or 1203 for
-its subtype 0x211, which is refused: lg-g5-dts has no session for it. (The same
-constants are in that function on the G5 33.31.69, G2 33.31.68, C5 43.21.77 and
-G5 43.21.77 kernels; its code was not read there.) A C5 prints `UNKNOWN_DTS` for a
-core stream (measured) where lg-g5-dts's G5 printed `DTS`; lg-g5-dts's G5
-printed `DTS_HD` for DTS-HD. **Which of the two DTS-HD names a C5 prints is
-unmeasured**, so both are accepted. On the five saved 6.12 kernels the same
-type numbers and the same strings are present, but the table's pointers are
-filled in at boot, so the pairing is not confirmed there.
-
-The decoder is chosen as in `hdmi-watch.sh`: `adec.pN` carries the input when it
-is connected to the port of its own instance `dsp0/hdmiN` and it or the instance
-is started (`UserCodec` decides between two). When nothing is started yet (a stock
-TV refuses DTS), the decoder is used only if `adec.pN`/`hdmiN` is the one connected
-pair, decoder 0 or 1, since the input-service restart is what starts it;
-otherwise it refuses. Both decoders are handled: decoder N's session writes
-`hdmiN`'s instance and needs renderer N's route. The bypass gain block is mixer
-0's, the same for both.
-
-`--check` changes nothing. It requires: root; a live stream of one of the two
-kinds (`AudioData=1`); `EArcOnOff=On`; a decoder N chosen as above, whose one
-`dsp0/hdmiN` DSP instance has its `hdmi-port=(int)n` connected on `adec.pN`;
-ALSA numid 92 equal to
-`2,1,0,0,1`; at most one gain block feeding a bypass block in
-`/proc/aaudio/dot_module_connection`. The loader's own checks (ABI, derivation,
-other DTS tools, already loaded) run only at `--apply`/`--session`; its refusal is
-printed and the script stops.
-
-`--apply` and `--session` then: load `earc-route-load.sh --dts-hd`
-(`window_seconds=<seconds+30>`, or `window_seconds=0 supervised=1`);
-restart `extinput-integration.service`; wait up to 20 s for the decoder, chosen
-again at each read because the restart can move the input to the other decoder,
-to be on the same port and read the kind's `UserCodec` and `Start=1`. If the
-decoder moved, the script prints `The input-service restart moved HDMI port n
-from decoder A to decoder B` and saves that decoder's instance as the original
-it restores (nothing was written to the other one). It then sets numid 92 to its
-own value so LG's driver builds the downstream connection; requires
-`renderer_N_out100 -> mixer_0_in100`
-and `mixer_0_out100 -> output_3_in0` in `dot_block_connection`; and finds the one
-gain block feeding a bypass block.
-
-- *DTS core:* unmute that gain block, write the DSP instance values, then sample
-  state each second.
-- *DTS-HD:* **mute** that gain block (`mute-input true`, `mute-output true`),
-  write the DSP instance values, wait 2 s, re-check the source, and read
-  `/sys/module/earc_route/parameters/earc_nonpcm` (where lg-g5-dts runs `devmem`
-  on a fixed address). Unless it reads `1` the session ends there, still muted
-  (`eARC is not non-PCM (earc_nonpcm=N); aborting muted`), and cleanup puts the
-  gain back as it was found. Otherwise the `dsp1/output_arc` prop is saved to
-  the log directory, the gain block is unmuted, and state is sampled each second.
-
-On exit, interrupt or any failure after the first write, cleanup quiesces the DSP
-instance, restores the gain and prop values it changed (for DTS-HD also
-`sampling-freq` and `channel-num`), unloads `earc_route`, restores numid 92 and
-restarts the input service. If anything could not be restored it prints
-`Rollback incomplete; ... restart TV` and exits non-zero. It restarts the
-input service at start and at exit (the flow that worked on the tester's CS),
-although on a C5 an input-service restart (from an earlier `hdmi-watch.sh`) left
-one HDMI input playing another's audio until a TV restart. Logs, including the
-`earc_route` dmesg lines and the module counters including the `hd_*` ones (for
-DTS-HD also `earc-nonpcm.txt`), go to `/tmp/dts25-hdmi-<epoch>-<pid>/`
-(mode 700).
-
-One order differs from lg-g5-dts: our route hook is already active when the
-input service restarts, where lg-g5-dts loads its route module after it. In one
-run on one C5 without a receiver, with a DTS core stream, `_set_output` was
-called once at that restart, about 40 ms before ADEC 1 started on DTS, and did
-not match (`adec1-codec=0 started=0`). So the override would hit the call the
-numid 92 write provokes, as in lg-g5-dts. On a receiver TV the order is
-untested.
-
-Tester steps: start DTS core (48 kHz) or DTS-HD playback on the HDMI input with
-an eARC receiver connected and eARC on; run `sh hdmi-session.sh --check` and send
-its output; only if it says `CHECK OK`, run `sh hdmi-session.sh --apply 30`, watch
-the receiver's format display, and send the printed log directory's contents.
-To keep DTS going while you watch, instead of a 30-second test, run
-`sh hdmi-session.sh --session` (not yet reported from any TV). It runs until the
-stream on the input changes, so a seek or an input switch ends it and you run it
-again. Keep the SSH session open while it runs. Ctrl-C stops it and puts the TV
-back.
-Successful script exit is not proof of sound or DTS lock.
-
-**Verified:** the host test (`sh test/session/run.sh`, under sh, dash and busybox
-ash) against real C5 status files, for both kinds; on a C5 (33.31.68, no
-receiver, nothing playing) the no-argument run and `--check`, which refused on
-the two failed checks and left the TV unchanged. Mode 7 by hand, once, on a C5
-(33.31.68, kernel 5.4.268, TV speakers, no receiver) with a DTS 5.1 core stream
-from a Google TV Streamer: the input read `Codec=UNKNOWN_DTS`,
-`SamplingRate=48000`; `earc-route-load.sh --dts-hd window_seconds=30` loaded with
-both self-tests ok, the DTS check open and three kprobes listed
-(`_cb_output_status+0x108`, `_set_output+0x0`, `_cb_output_status+0x48`); after
-the input service restart ADEC 1 read `UserCodec=DTS`, `Start=1`, `Mute=1`
-within a second (kernel log: codec 48); the one `_set_output` call is the one
-described above, with `mask=0x2` (the TV speakers; eARC would be 0x20); there were no
-output-status events (`hd_status_seen=0`, `hd_name_seen=0`), `earc_nonpcm=0` and
-no override; unload restored the check, the audit afterwards showed the stock
-state, and the kernel logged no errors.
-
-With a receiver: on a CS (OLED55CS6LA, 33.31.68, kernel 5.4.268-329.ptl4tv.5) with
-a Samsung HW-Q930F over eARC and a set-top box on HDMI 1, `hdmi-session.sh --apply
-30` (mode 7) made the soundbar show DTS for DTS core, DTS-HD for DTS-HD MA and
-DTS:X for DTS:X, and it worked again after a TV power cycle (2026-11-11, tester
-report; the soundbar's display, not a measurement of the bitstream). The first run
-on that TV failed when the script gave up during the input-service restart; the
-wait loop above came from that.
-
-**Not verified:** `--session` has not been reported from any TV. Nothing has run
-on kernel 5.4.268-329.ptl4tv.2 (33.22.x) or on 6.12. No DTS-HD stream has been
-played into a C5 (so its `Codec=` name there is unmeasured), and the DTS-HD states
-in the host test are synthetic, including the `output_arc` prop file, which has no
-real sample because the C5 has no eARC output instance. No session has run on
-decoder 0; its host-test cases (decoder 0 playing or only connected, the C5's
-stale `adec.p1`, a move between decoders at the restart, renderer 1's route
-only) use the C5's decoder-1 status files edited into decoder-0 states.
-
-## HDMI passthrough watcher (`hdmi-watch.sh`)
-
-`hdmi-session.sh --session` ends at the first seek or input switch and has to
-be run again by hand. `hdmi-watch.sh` loads `earc_route` once
-(`earc-route-load.sh --dts-hd window_seconds=0 supervised=1`), so the DTS check
-is already open when a stream arrives, and then polls the input once a second,
-or every 3 s after a minute with no DTS (each read of the HDMI status file adds
-three lines to the kernel log).
-In one C5 run with the check open before DTS arrived, the decoder accepted the
-stream on its own, and again after a seek (input `NO_AUDIO`, then MAT for about
-3 s, then DTS) and after switching inputs away and back, with no input-service
-restart.
-
-```sh
-sh hdmi-watch.sh                              # foreground; Ctrl-C stops it
-nohup sh hdmi-watch.sh > /dev/null 2>&1 &     # background; stop it with kill <pid>
-```
-
-It never restarts `extinput-integration.service`: on a C5 a restart while DTS was
-live left both `adec.p0` and `adec.p1` on `HDMI_PORT2` (the PS5's audio while
-watching the Streamer on port 0), which only a TV restart cleared. A DTS stream
-that was already playing when the module loaded was refused by the TV and needs
-restarting by hand (see *No decoder playing*).
-
-It refuses when not root, when `earc_route` is already loaded, when another
-watcher holds `/tmp/dts25-hdmi-watch.lock` (a lock whose pid is dead is taken
-over), or when the loader refuses.
-
-- *Decoder.* Decoder N (1, then 0) plays the input only if its own DSP instance
-  `dsp0/hdmiN/*/prop` exists, `adec.pN` has `Connect=HDMI_PORT<that instance's
-  hdmi-port>`, and `adec.pN` reads `Start=1` or the instance `start=(int)1`. A C5
-  showed why: `adec.p1` stayed `Open=1` on port 2's idle `hdmi1` instance while
-  `adec.p0` played port 0 through `hdmi0`. When both qualify, the one whose
-  `UserCodec` is the stream's codec wins; otherwise neither is used (logged).
-- *No decoder playing* a live DTS stream (it arrived before the module loaded,
-  and the TV refused it): with eARC on and numid 92 at `2,1,0,0,1`, it prints once
-  per stream `DTS is arriving but no decoder plays it (the TV refused it before
-  the module loaded); skip, pause and play, or switch inputs and back to restart
-  the stream.` and keeps watching. This is not a failed attempt.
-- *Apply.* A DTS core or DTS-HD stream (the kinds in the session table above) on
-  decoder N (0 or 1), with `EArcOnOff=On` and numid 92 at `2,1,0,0,1`, seen on two
-  polls in a row, gets the same writes in the same order as `hdmi-session.sh`
-  (numid 92, route check on `renderer_N_out100`, the one gain block, the
-  `hdmiN` DSP instance; DTS-HD muted until `earc_nonpcm` reads 1). If `adec.pN`
-  has not started on the stream's codec within 3 s, the attempt fails. The DSP instance and gain values are saved once per
-  run, from the first instance it writes, and saved again only for a new
-  instance or gain block.
-- *Revert*, at once, when the stream's kind, port, decoder or DSP instance
-  changes: mute the gain block, then, if the instance still has our port and
-  codec, `drop 1`, `start 0`, the saved values and the saved gain mute values
-  (otherwise LG has rewritten it and it is left alone), then numid 92 to its own
-  value. A core to DTS-HD change, or a move to the other decoder, is a
-  revert and then a new apply.
-- *Stop* (TERM, INT or HUP): revert, `rmmod earc_route`, numid 92. If DTS is
-  still live it prints `DTS is still playing on HDMI; switch to another input and
-  back, or the TV keeps the passthrough decoder state until the stream changes.`
-- A failed attempt (no compressed route, no single gain block, the decoder never
-  started, `earc_nonpcm` not 1) is reverted and not retried until the stream
-  ends. Three in a row stop the watcher.
-
-Exit codes: 0 stopped cleanly; 1 refused, or three failed attempts in a row; 20
-the rollback is incomplete (`Rollback incomplete; restart the TV.`). Logs go to
-`/tmp/dts25-hdmi-watch-<epoch>-<pid>/` (mode 700): `watch.log` (each input
-change, apply and revert, with the module counters), `loader.txt`, the saved
-originals, the last `route.dot` and `module.log`.
-
-**Verified:** the host test (`sh test/watch/run.sh`, under sh, bash and dash),
-including decoder 0 and moves between the decoders; on a C5 without an eARC
-receiver, decoder and port detection through seeks, a track restart and an input
-switch, and the stop. Never run with a receiver. Decoder 0 has never been applied
-on a TV: the C5 run predates it (that build only logged decoder 0).
+**Verified:** host-tested on C5 5.4, G3 5.4 and C5 6.12, with mutation refusals. On
+a C2 with an eARC receiver, writing those values by hand made a PS5's DTS core
+play as DTS on the soundbar; the module loads with both probes and unloads clean.
+**Not verified:** the probes acting on a live HDMI stream, and the format-change path.
 
 ## In the app (HDMI passthrough opt-in)
 
-DTS Enabler offers `hdmi-watch.sh` as a separate, experimental opt-in on the two 5.4.268
+DTS Enabler offers this as a separate, experimental opt-in on the two 5.4.268
 kernels; its card says "not supported yet" on 6.12. The boot script
 (`webos25/restore/init_dts25.sh`, "HDMI-input DTS passthrough opt-in") stages
-`earc_route-5.4.ko`, `earc-route-load.sh` and `hdmi-watch.sh` into
-`/var/lib/webosbrew/dts25/hdmi/` and runs the watcher from there under a supervisor,
-at boot and from the app's toggle (`W25_HDMI=on|off sh init_dts25.sh` over SSH). Turning
-it off, Disable and Uninstall send the watcher TERM; an exit 20 is reported as "restart
-the TV". Turn on refuses beside an enabled lg-dts-core or Glasshouse helper, and needs
+`earc_route-5.4.ko` and `earc-route-load.sh` into `/var/lib/webosbrew/dts25/hdmi/`
+and holds the module loaded under a supervisor, at boot and from the app's toggle
+(`W25_HDMI=on|off sh init_dts25.sh` over SSH). Turning it off, Disable and Uninstall
+unload it; a module that will not unload is reported as "restart the TV". Turn on refuses beside an enabled lg-dts-core or Glasshouse helper, and needs
 "Show DTS tracks in apps" on, because the HDMI EDIDs offer DTS only through that
 opt-in's edidType. The supervisor takes that opt-in's eim hook off, so HDMI devices are
 offered DTS, only while an eARC receiver is the sound output. The rules and the

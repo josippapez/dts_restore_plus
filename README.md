@@ -266,7 +266,7 @@ passthrough module and its scripts, which are GPL-2.0-only; each keeps its own l
 | `webos25/restore/demux-out/libgst{isomp4,mpegtsdemux,matroska,mpegpsdemux}.so` | LGPL-2.1-or-later | built from gst-plugins-good / -bad |
 | `webos25/restore/truehd-out/libgstlibav.so`, `libav*.so*`, `libsw*.so*` | LGPL-2.1-or-later | ffmpeg 4.4 configured **without** `--enable-gpl` / `--enable-version3` (see `webos25/restore/build-truehd.sh`) |
 | `webos25/restore/out/libgstdtsdec.so` | LGPL-2.1-or-later | gst-plugins-bad `ext/dts` (LGPL) with ffmpeg n4.4.4's `dca` decoder linked in **statically**, configured **without** `--enable-gpl` / `--enable-version3` / `--enable-nonfree` (see `webos25/restore/build.sh`). Before webos25-2.43 it linked libdca and was GPL-2.0-or-later |
-| `webos25/restore/kmod-out/earc_route-5.4.ko`, `webos25/kmod/earc-route-load.sh`, `hdmi-watch.sh` | GPL-2.0-only | `webos25/kmod/`, derived from Glasshouse and lg-g5-dts (see `webos25/kmod/NOTICE`); nothing else links it |
+| `webos25/restore/kmod-out/earc_route-5.4.ko`, `webos25/kmod/earc-route-load.sh` | GPL-2.0-only | `webos25/kmod/`, derived from Glasshouse and lg-g5-dts (see `webos25/kmod/NOTICE`); nothing else links it |
 
 Because `libgstdtsdec.so` links ffmpeg statically, LGPL-2.1 section 6 applies: the published
 plugin source and `webos25/restore/build.sh` let anyone rebuild ffmpeg, modify it and relink the

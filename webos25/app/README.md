@@ -296,10 +296,8 @@ Full mechanism, measurements and dead ends: `../README.md` § "Show DTS tracks i
 
 ### DTS from HDMI devices to a receiver (separate experimental opt-in, 5.4.268 kernels)
 
-The card runs `../kmod/hdmi-watch.sh`, which loads the `earc_route` kernel module and passes
-DTS core and DTS-HD from an HDMI input to an eARC receiver while it runs (see
-`../kmod/README.md`). It has run with a receiver on one CS, as `hdmi-session.sh`; the
-watcher itself has run only on a C5 without one.
+The card keeps the `earc_route` kernel module loaded, which passes DTS core and DTS-HD
+from an HDMI input to an eARC receiver (see `../kmod/README.md`).
 
 - **Where it runs.** Only on kernels `5.4.268-329.ptl4tv.5` and `.2`
   (`earc_route-5.4.ko`). On 6.12 the card says "not supported yet": that module has never
@@ -307,13 +305,13 @@ watcher itself has run only on a C5 without one.
   `/var/lib/lg-dts-native/enabled` (Glasshouse) exists, and warns when either is only
   installed. The loader refuses beside their loaded modules as well.
 - **Files.** Enable, `install.sh` and Turn on stage `earc_route-5.4.ko`,
-  `earc-route-load.sh` and `hdmi-watch.sh` into `/var/lib/webosbrew/dts25/hdmi/`. The
+  and `earc-route-load.sh` into `/var/lib/webosbrew/dts25/hdmi/`. The
   marker is `/var/lib/webosbrew/dts25/hdmi-passthrough`.
 - **Start and stop.** `W25_HDMI=on|off sh init_dts25.sh` (the toggle; usable over SSH too)
-  and the boot hook start a supervisor (`setsid`, pid in `/run/dts25/hdmi.pid`) that runs
-  the watcher with its output in `/run/dts25/hdmi-watch.out`. Turn off, Disable,
-  Uninstall, `uninstall.sh`, stand-down and self-heal send it TERM: the watcher reverts,
-  unloads `earc_route` and exits 0, or 20 when its rollback is incomplete, which the app
+  and the boot hook start a supervisor (`setsid`, pid in `/run/dts25/hdmi.pid`) that loads
+  the module, with the loader's output in `/run/dts25/hdmi-watch.out`. Turn off, Disable,
+  Uninstall, `uninstall.sh`, stand-down and self-heal send it TERM: it unloads
+  `earc_route` and records 0, or 20 when the module would not unload, which the app
   reports as "restart the TV". Enable and the boot hook leave a running supervisor alone.
 - **What HDMI devices are offered.** DTS reaches the HDMI inputs' EDIDs only through the
   `TrueHD+dts` edidType of *Show DTS tracks in apps*, so Turn on needs that on (or a factory
@@ -328,10 +326,9 @@ watcher itself has run only on a C5 without one.
   already plugged in reads a changed EDID only after a replug or a power cycle. At boot
   with a receiver, *Show DTS tracks in apps* puts its hook back on first, so eim restarts
   twice. The receiver case has not run on a TV.
-- **Status and log.** The card shows the kernel, whether the watcher runs (or why it
+- **Status and log.** The card shows the kernel, whether the supervisor runs (or why it
   stopped, with the loader's result line), whether HDMI devices are offered DTS, and the
-  newest 80 lines of the watcher's `watch.log` (in the `/tmp/dts25-hdmi-watch-*` directory
-  it prints), or its output when it stopped before creating one.
+  loader's output with the module's newest 80 kernel log lines.
 
 ### `webos22-o22-gst118` — exact-firmware legacy override (EXPERIMENTAL; NOT HARDWARE VERIFIED)
 
@@ -529,7 +526,7 @@ cp ../restore/truehd-out/libgstlibav.so ../restore/truehd-out/libav*.so* \
    ../restore/truehd-out/libsw*.so*                            payload/webos25-truehd/
 cp ../restore/demux-out/libgstisomp4.so ../restore/demux-out/libgstmpegtsdemux.so \
    ../restore/demux-out/libgstmatroska.so ../restore/demux-out/libgstmpegpsdemux.so payload/webos25-demux/
-cp ../restore/kmod-out/earc_route-5.4.ko ../kmod/earc-route-load.sh ../kmod/hdmi-watch.sh \
+cp ../restore/kmod-out/earc_route-5.4.ko ../kmod/earc-route-load.sh \
    payload/webos25-hdmi/                                       # HDMI passthrough opt-in
 # small DTS samples for the self-test / play-by-ear (already bundled)
 # payload/testfiles/{DTS-in-mp4.mp4,DTS-HD-MA-5.1.ts,DTS-HD-MA-5.1.m2ts}

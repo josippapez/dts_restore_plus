@@ -147,7 +147,7 @@ var APP_INSTALL  = "$APPBASE";
 var PAYLOAD_W25     = APP_INSTALL + "/payload/webos25";          // libgstdtsdec.so + libgstadecswitch.so
 var PAYLOAD_W25_THD = APP_INSTALL + "/payload/webos25-truehd";   // libgstlibav.so + ffmpeg libs
 var PAYLOAD_W25_DMX = APP_INSTALL + "/payload/webos25-demux";    // patched isomp4 + mpegtsdemux + matroska
-var PAYLOAD_W25_HDMI = APP_INSTALL + "/payload/webos25-hdmi";    // earc_route-5.4.ko + its loader + hdmi-watch.sh
+var PAYLOAD_W25_HDMI = APP_INSTALL + "/payload/webos25-hdmi";    // earc_route-5.4.ko + its loader
 var PAYLOAD_CX      = APP_INSTALL + "/payload/cx";               // CX demuxer/libav .so set
 // C2-only, deliberately NOT in payload/cx: that directory is shared with the
 // cx-armv7-gst114 profile, and adding a TS demuxer there would change CX behaviour.
@@ -371,10 +371,12 @@ var W25_COMPAT_SH = [
   "#      EDIDs keep LG's stock audio list (no DTS).",
   "#   49 ...but not on a TV whose factory edidType already lists dts.",
   "#   50 DTS-HD/TrueHD over eARC allowed on the G3's LG sink build (33.31.68).",
-  "#   51 opt-in DTS passthrough from HDMI inputs (webos25/kmod hdmi-watch.sh) on the",
+  "#   51 opt-in DTS passthrough from HDMI inputs (webos25/kmod earc_route) on the",
   "#      5.4.268 kernels, W25_HDMI=on|off|run; stand-down, self-heal and Disable stop it.",
   "#   52 verified stock plugin set for the G3 on firmware 33.31.68.",
-  "W25_GATE_VERSION=52",
+  "#   53 the HDMI opt-in loads earc_route itself, which keeps the HDMI input on DTS;",
+  "#      hdmi-watch.sh is gone.",
+  "W25_GATE_VERSION=53",
   "FP=/var/lib/webosbrew/dts25/stock.fp",
   "# Where the installed copy of THIS script lives, and the boot hook that symlinks",
   "# to it. Named here, in the shared block, so the read-only probe can fingerprint",
@@ -505,14 +507,15 @@ var W25_COMPAT_SH = [
   "  w25_log \"WARN passthrough stop failed; continuing: $PT_STOP_OUT\"",
   "  echo \"WARN_PT_STOP=${PT_STOP_OUT:-passthrough did not stop cleanly}\"",
   "}",
-  "# HDMI-input DTS passthrough opt-in: a supervisor (w25_hdmi_supervise) runs",
-  "# webos25/kmod's hdmi-watch.sh from $HDMI_DIR. Here because stand-down, self-heal,",
+  "# HDMI-input DTS passthrough opt-in: a supervisor (w25_hdmi_supervise) holds",
+  "# webos25/kmod's earc_route loaded from $HDMI_DIR. Here because stand-down, self-heal,",
   "# Disable and the app's probe stop it or report on it.",
   "HDMI_FLAG=/var/lib/webosbrew/dts25/hdmi-passthrough",
   "HDMI_DIR=/var/lib/webosbrew/dts25/hdmi",
   "HDMI_PID=/run/dts25/hdmi.pid",
   "HDMI_OUT=/run/dts25/hdmi-watch.out",
   "HDMI_EXIT=/run/dts25/hdmi-watch.exit",
+  "HDMI_MODULE=/sys/module/earc_route",
   "w25_alive() { [ -n \"$1\" ] && [ -r \"/proc/$1/stat\" ] && [ \"$(cut -d' ' -f3 \"/proc/$1/stat\" 2>/dev/null)\" != Z ]; }",
   "# Why the opt-in cannot run on this TV, or nothing. The module and the scripts",
   "# have run only on 5.4.268 kernels; earc_route-6.12.ko has never run on a TV.",
@@ -524,12 +527,12 @@ var W25_COMPAT_SH = [
   "  esac",
   "  if [ -f /var/lib/lg-dts-core/enabled ]; then echo lg-dts-core",
   "  elif [ -f /var/lib/lg-dts-native/enabled ]; then echo glasshouse",
-  "  elif [ ! -f \"$HDMI_DIR/earc_route-5.4.ko\" ] || [ ! -f \"$HDMI_DIR/earc-route-load.sh\" ] || [ ! -f \"$HDMI_DIR/hdmi-watch.sh\" ]; then echo payload",
+  "  elif [ ! -f \"$HDMI_DIR/earc_route-5.4.ko\" ] || [ ! -f \"$HDMI_DIR/earc-route-load.sh\" ]; then echo payload",
   "  fi",
   "  return 0",
   "}",
-  "# On TERM the supervisor stops hdmi-watch.sh, which reverts its writes, unloads",
-  "# earc_route and exits 0, or 20 when the rollback is incomplete.",
+  "# On TERM the supervisor unloads earc_route, which undoes its kernel changes, and",
+  "# records 0, or 20 when the module could not be unloaded.",
   "w25_hdmi_stop() {",
   "  P=$(cat \"$HDMI_PID\" 2>/dev/null)",
   "  w25_alive \"$P\" || { rm -f \"$HDMI_PID\"; return 0; }",
@@ -1202,9 +1205,9 @@ var W25_INIT_MAIN = [
   "  return 0",
   "}",
   "# --- HDMI-input DTS passthrough opt-in (experimental, 5.4.268 kernels) ------------",
-  "# hdmi-watch.sh loads earc_route and passes DTS from an HDMI input to an eARC",
-  "# receiver while it runs (webos25/kmod/README.md). The supervisor below runs it",
-  "# and decides what the HDMI inputs' EDIDs offer. They offer DTS only through the",
+  "# earc_route passes DTS from an HDMI input to an eARC receiver while it is loaded",
+  "# (webos25/kmod/README.md). The supervisor below holds it loaded and decides what",
+  "# the HDMI inputs' EDIDs offer. They offer DTS only through the",
   "# \"Show DTS tracks in apps\" edidType, so the opt-in needs that on; the supervisor",
   "# takes the eim hook off only while an eARC receiver is the sound output, because",
   "# on the TV speakers DTS from an HDMI device plays as silence (measured on a C5).",
@@ -1246,16 +1249,17 @@ var W25_INIT_MAIN = [
   "  ( set -C; echo \"$$\" > \"$HDMI_PID\" ) 2>/dev/null || return 0",
   "  quit=",
   "  trap 'quit=1' INT TERM HUP",
-  "  sh \"$HDMI_DIR/hdmi-watch.sh\" </dev/null >\"$HDMI_OUT\" 2>&1 &",
-  "  watcher=$!",
+  "  if ! sh \"$HDMI_DIR/earc-route-load.sh\" --dts-hd window_seconds=0 supervised=1 </dev/null >\"$HDMI_OUT\" 2>&1; then",
+  "    echo 1 > \"$HDMI_EXIT\"",
+  "    rm -f \"$HDMI_PID\"",
+  "    return 0",
+  "  fi",
   "  want= same=0 changed=0",
-  "  while [ -z \"$quit\" ] && w25_alive \"$watcher\"; do",
+  "  while [ -z \"$quit\" ] && [ -d \"$HDMI_MODULE\" ]; do",
   "    w25_hdmi_poll",
   "    sleep \"$HDMI_POLL\" & wait $!",
   "  done",
-  "  kill \"$watcher\" 2>/dev/null",
-  "  wait \"$watcher\"",
-  "  echo \"$?\" > \"$HDMI_EXIT\"",
+  "  if [ ! -d \"$HDMI_MODULE\" ] || rmmod earc_route 2>>\"$HDMI_OUT\"; then echo 0; else echo 20; fi > \"$HDMI_EXIT\"",
   "  w25_hdmi_edid nodts",
   "  rm -f \"$HDMI_PID\"",
   "}",
@@ -1271,7 +1275,7 @@ var W25_INIT_MAIN = [
   "  rm -f \"$HDMI_PID\" \"$HDMI_OUT\" \"$HDMI_EXIT\"",
   "  W25_HDMI=run setsid sh \"$INIT_SELF\" </dev/null >/dev/null 2>&1 &",
   "}",
-  "# The app's toggle. Waits until hdmi-watch.sh is watching or has stopped.",
+  "# The app's toggle. Waits until the module is loaded or the supervisor has stopped.",
   "w25_hdmi_on() {",
   "  WHY=$(w25_hdmi_refusal)",
   "  [ -n \"$WHY\" ] || case \"$(w25_edid_stock) $(w25_edid_get)\" in *dts*) ;; *) WHY=appdts ;; esac",
@@ -1282,7 +1286,7 @@ var W25_INIT_MAIN = [
   "  : > \"$HDMI_FLAG\" || return 1",
   "  w25_hdmi_start",
   "  i=0",
-  "  while [ \"$i\" -lt 30 ] && [ ! -f \"$HDMI_EXIT\" ] && ! grep -q 'watching the HDMI input' \"$HDMI_OUT\" 2>/dev/null; do",
+  "  while [ \"$i\" -lt 30 ] && [ ! -f \"$HDMI_EXIT\" ] && ! grep -q 'PASSTHROUGH ACTIVE' \"$HDMI_OUT\" 2>/dev/null; do",
   "    sleep 1",
   "    i=$((i + 1))",
   "  done",
@@ -4197,17 +4201,17 @@ service.register("setAppDts", function (message) {
 /* =======================================================================
  * HDMI-input DTS passthrough opt-in (experimental, 5.4.268 kernels)
  * ---------------------------------------------------------------------
- * The boot script's supervisor runs webos25/kmod's hdmi-watch.sh and decides
+ * The boot script's supervisor holds webos25/kmod's earc_route loaded and decides
  * what the HDMI inputs' EDIDs offer (W25_HDMI=on|off, see "HDMI-input DTS
  * passthrough opt-in" there). Its marker survives Disable like the other opt-ins.
  * ===================================================================== */
 var W25_HDMI_DEST = W25_DEST + "/hdmi";
 
-/** Stage the HDMI payload through a rename, so a running watcher keeps its files. */
+/** Stage the HDMI payload through a rename, so a running supervisor keeps its files. */
 function w25HdmiStageSteps() {
   return [
     'mkdir -p "' + W25_HDMI_DEST + '" || log "WARN: cannot create ' + W25_HDMI_DEST + '"',
-    'for f in earc_route-5.4.ko earc-route-load.sh hdmi-watch.sh; do',
+    'for f in earc_route-5.4.ko earc-route-load.sh; do',
     '  if [ -f "' + PAYLOAD_W25_HDMI + '/$f" ]; then replace_file "' + PAYLOAD_W25_HDMI + '/$f" "' + W25_HDMI_DEST + '/$f" && log "installed $f" || log "WARN: copy $f failed"; else log "note: ' + PAYLOAD_W25_HDMI + '/$f absent; HDMI passthrough unavailable"; fi',
     'done'
   ].join("\n");
@@ -4282,7 +4286,7 @@ service.register("setHdmiPassthrough", function (message) {
       logActionResult("hdmi-passthrough", d.profile, want ? (running ? "on" : "not-running") : "off", r.stdout);
       var note = want ? w25HdmiToolsNote(p.HDMI_TOOLS) : kv.WARN_HDMI || "";
       var summary = !want ? "HDMI passthrough off."
-        : running ? "HDMI passthrough on: watching the HDMI input."
+        : running ? "HDMI passthrough on."
         : "HDMI passthrough did not start" + (kv.HDMI_LOADER ? ": " + kv.HDMI_LOADER : ". Open the HDMI log.");
       message.respond({
         returnValue: !want || running,
@@ -4298,13 +4302,11 @@ service.register("setHdmiPassthrough", function (message) {
   });
 });
 
-/* The newest lines of the running (or last) watcher's log: watch.log in the log
- * directory hdmi-watch.sh prints, or its output when it stopped before creating one. */
+/* The loader's output and the module's newest kernel log lines. */
 function w25HdmiLogSteps() {
   return [
-    'OUT=/run/dts25/hdmi-watch.out',
-    'D=$(sed -n \'s|.*logs: \\(/tmp/dts25-hdmi-watch-[0-9]*-[0-9]*\\).*|\\1|p\' "$OUT" 2>/dev/null | tail -n 1)',
-    'if [ -n "$D" ] && [ -f "$D/watch.log" ]; then echo "$D/watch.log"; tail -n 80 "$D/watch.log"; else tail -n 80 "$OUT" 2>/dev/null; fi',
+    'cat /run/dts25/hdmi-watch.out 2>/dev/null',
+    "dmesg | grep 'earc_route:' | tail -n 80",
     'exit 0'
   ].join("\n");
 }

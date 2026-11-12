@@ -1,6 +1,6 @@
 "use strict";
 
-/* DTS-45: HDMI-input DTS passthrough (webos25/kmod hdmi-watch.sh) as an app opt-in. */
+/* DTS-45: HDMI-input DTS passthrough (webos25/kmod earc_route) as an app opt-in. */
 var test = require("node:test").test;
 var assert = require("node:assert/strict");
 var fs = require("node:fs");
@@ -23,7 +23,7 @@ test("the opt-in runs only on the two 5.4.268 kernels, beside no enabled DTS too
   var dir = tmp("dts-hdmi-refusal-");
   try {
     var hdmi = path.join(dir, "hdmi"), core = path.join(dir, "lg-dts-core"), gh = path.join(dir, "lg-dts-native");
-    ["earc_route-5.4.ko", "earc-route-load.sh", "hdmi-watch.sh"].forEach(function (f) { write(path.join(hdmi, f), "x"); });
+    ["earc_route-5.4.ko", "earc-route-load.sh"].forEach(function (f) { write(path.join(hdmi, f), "x"); });
     var fn = initFn("w25_hdmi_refusal").split("/var/lib/lg-dts-core").join(core).split("/var/lib/lg-dts-native").join(gh);
     function refusal(kernel) {
       var r = sh(['uname() { echo "' + kernel + '"; }', "HDMI_DIR=" + hdmi, fn, 'printf "[%s]" "$(w25_hdmi_refusal)"'].join("\n"));
@@ -44,7 +44,7 @@ test("the opt-in runs only on the two 5.4.268 kernels, beside no enabled DTS too
     assert.strictEqual(refusal("5.4.268-329.ptl4tv.5"), "[lg-dts-core]");
     fs.rmSync(core, {recursive: true});
     fs.rmSync(gh, {recursive: true});
-    fs.unlinkSync(path.join(hdmi, "hdmi-watch.sh"));
+    fs.unlinkSync(path.join(hdmi, "earc-route-load.sh"));
     assert.strictEqual(refusal("5.4.268-329.ptl4tv.5"), "[payload]");
   } finally {
     fs.rmSync(dir, {recursive: true, force: true});
@@ -199,23 +199,21 @@ test("the EDID is left alone where LG lists DTS itself or Show DTS tracks in app
   }
 });
 
-/* The supervisor and its stop, with a fake hdmi-watch.sh that behaves like the
- * real one on TERM: it reverts and exits 0, or 20 when the rollback is incomplete. */
-function supervisorRun(exitCode, selfExit) {
+/* The supervisor and its stop, with a fake loader that "loads" the module by
+ * creating its sysfs directory, and an rmmod that removes it, or fails (exit 20). */
+function supervisorRun(exitCode, loadFails) {
   var f = edidShell();
-  var hdmi = path.join(f.dir, "hdmi"), run = path.join(f.dir, "run");
+  var hdmi = path.join(f.dir, "hdmi"), run = path.join(f.dir, "run"), module = path.join(f.dir, "module");
   fs.mkdirSync(run);
-  exe(path.join(hdmi, "hdmi-watch.sh"), [
-    'trap \'echo "reverted"; exit ' + exitCode + '\' TERM',
-    'echo "earc-route: PASSTHROUGH ACTIVE (mode=7) EXPERIMENTAL"',
-    'echo "12:00:00 watching the HDMI input; stop with TERM, INT or HUP (logs: /tmp/dts25-hdmi-watch-1-2)"',
-    selfExit ? "exit 1" : "while :; do /bin/sleep 0.1; done"
-  ].join("\n"));
+  exe(path.join(hdmi, "earc-route-load.sh"), loadFails
+    ? 'echo "earc-route: REFUSED: test"; exit 1'
+    : 'mkdir -p "' + module + '"; echo "earc-route: PASSTHROUGH ACTIVE (mode=7) EXPERIMENTAL"');
   write(f.appdts, "");
   f.hook(false);  // a receiver: the hook stays off until the supervisor stops
   f.set(true);
   var vars = ["HDMI_DIR=" + hdmi, "HDMI_PID=" + run + "/hdmi.pid", "HDMI_OUT=" + run + "/hdmi-watch.out",
-    "HDMI_EXIT=" + run + "/hdmi-watch.exit", "HDMI_POLL=0.1",
+    "HDMI_EXIT=" + run + "/hdmi-watch.exit", "HDMI_POLL=0.1", "HDMI_MODULE=" + module,
+    exitCode ? "rmmod() { echo 'rmmod: busy' >&2; return 1; }" : 'rmmod() { rm -rf "' + module + '"; }',
     // macOS has no /proc: the same zombie rule, from ps.
     'w25_alive() { [ -n "$1" ] || return 1; s=$(ps -o stat= -p "$1" 2>/dev/null) || return 1; case $s in Z*|"") return 1 ;; esac; }'];
   var sup = path.join(f.dir, "supervise.sh");
@@ -229,19 +227,18 @@ function waitFor(cond, ms) {
   return cond();
 }
 
-test("stopping the supervisor stops the watcher, records its exit and puts the EDID hook back", function () {
+test("stopping the supervisor unloads the module, records its exit and puts the EDID hook back", function () {
   [0, 20].forEach(function (code) {
     var s = supervisorRun(code);
     try {
       var child = require("node:child_process").spawn("sh", [s.sup], {stdio: "ignore"});
-      assert.ok(waitFor(function () { return /watching the HDMI input/.test(read(s.run + "/hdmi-watch.out") || ""); }, 5000));
+      assert.ok(waitFor(function () { return /PASSTHROUGH ACTIVE/.test(read(s.run + "/hdmi-watch.out") || ""); }, 5000));
       assert.match(read(s.run + "/hdmi.pid"), /^\d+\n$/);
       var r = sh(s.stop + "\nw25_hdmi_stop; echo \"status=$?\"");
       assert.strictEqual(r.status, 0, r.stderr);
       assert.match(r.stdout, /status=0/);
       assert.strictEqual(/WARN_HDMI=.*Restart the TV/.test(r.stdout), code === 20, r.stdout);
       assert.strictEqual(read(s.run + "/hdmi-watch.exit"), code + "\n");
-      assert.match(read(s.run + "/hdmi-watch.out"), /reverted/);
       assert.strictEqual(fs.existsSync(s.run + "/hdmi.pid"), false, "the supervisor is gone");
       assert.ok(fs.existsSync(s.f.eimEnv), "the app-DTS hook is back on");
       assert.deepStrictEqual(s.f.log().filter(function (l) { return l !== "luna"; }), ["systemctl restart eim"]);
@@ -254,7 +251,7 @@ test("stopping the supervisor stops the watcher, records its exit and puts the E
   });
 });
 
-test("the supervisor ends with its watcher and a second one does not start beside it", function () {
+test("the supervisor ends when the module does not load and a second one does not start beside it", function () {
   var s = supervisorRun(0, true);
   try {
     var r = spawnSync("sh", [s.sup], {encoding: "utf8", timeout: 10000});
@@ -266,7 +263,7 @@ test("the supervisor ends with its watcher and a second one does not start besid
     fs.rmSync(s.run + "/hdmi-watch.out");
     r = spawnSync("sh", [s.sup], {encoding: "utf8", timeout: 10000});
     assert.strictEqual(r.status, 0);
-    assert.strictEqual(fs.existsSync(s.run + "/hdmi-watch.out"), false, "no second watcher");
+    assert.strictEqual(fs.existsSync(s.run + "/hdmi-watch.out"), false, "no second load");
     assert.strictEqual(read(s.run + "/hdmi.pid"), process.pid + "\n");
   } finally {
     fs.rmSync(s.f.dir, {recursive: true, force: true});
@@ -342,10 +339,10 @@ test("CLI uninstall turns HDMI passthrough off only with a script that knows W25
   });
 });
 
-test("install.sh and Enable stage the module, its loader and the watcher", function () {
+test("install.sh and Enable stage the module and its loader", function () {
   var dir = tmp("dts-hdmi-stage-");
   try {
-    var files = ["earc_route-5.4.ko", "earc-route-load.sh", "hdmi-watch.sh"];
+    var files = ["earc_route-5.4.ko", "earc-route-load.sh"];
     var src = path.join(dir, "src");
     files.forEach(function (f) { write(path.join(src, "kmod-out", f), f); });
     var install = fs.readFileSync(path.join(ROOT, "webos25/restore/install.sh"), "utf8");
@@ -393,21 +390,18 @@ test("the HDMI toggle installs the current boot script, then stages, then runs i
   });
 });
 
-test("the HDMI log shows the newest watch.log lines, or the watcher's output before it has one", function () {
+test("the HDMI log shows the loader's output and the module's newest kernel lines", function () {
   var dir = tmp("dts-hdmi-log-");
   try {
-    var logdir = path.join(dir, "tmp/dts25-hdmi-watch-1700000000-42");
-    var log = [];
-    for (var i = 1; i <= 90; i++) log.push("line " + i);
-    write(path.join(logdir, "watch.log"), log.join("\n") + "\n");
-    write(path.join(dir, "run/hdmi-watch.out"), "earc-route: PASSTHROUGH ACTIVE\n12:00 watching the HDMI input; stop with TERM, INT or HUP (logs: " + logdir + ")\n");
-    var script = service.w25HdmiLogSteps().split("/run/dts25").join(path.join(dir, "run"))
-      .split("\\(/tmp/").join("\\(" + dir + "/tmp/");
+    var log = ["[1.0] other: x"];
+    for (var i = 1; i <= 90; i++) log.push("[" + i + ".0] earc_route: line " + i);
+    write(path.join(dir, "dmesg.txt"), log.join("\n") + "\n");
+    write(path.join(dir, "run/hdmi-watch.out"), "earc-route: PASSTHROUGH ACTIVE\n");
+    var script = 'dmesg() { cat "' + path.join(dir, "dmesg.txt") + '"; }\n' +
+      service.w25HdmiLogSteps().split("/run/dts25").join(path.join(dir, "run"));
     var r = sh(script);
     assert.strictEqual(r.status, 0);
-    assert.strictEqual(r.stdout, logdir + "/watch.log\n" + log.slice(10).join("\n") + "\n");
-    write(path.join(dir, "run/hdmi-watch.out"), "REFUSED: earc_route is already loaded (another DTS tool or session). Nothing changed.\n");
-    assert.strictEqual(sh(script).stdout, "REFUSED: earc_route is already loaded (another DTS tool or session). Nothing changed.\n");
+    assert.strictEqual(r.stdout, "earc-route: PASSTHROUGH ACTIVE\n" + log.slice(11).join("\n") + "\n");
   } finally {
     fs.rmSync(dir, {recursive: true, force: true});
   }
@@ -447,7 +441,7 @@ test("the HDMI toggle reports refusals, a watcher that did not start, and a stop
     }),
     call(mockedService(k, "HDMI_RUNNING=1\nHDMI_LOADER=earc-route: PASSTHROUGH ACTIVE\nOK\n"), "setHdmiPassthrough", {enabled: true}).then(function (res) {
       assert.strictEqual(res.returnValue, true);
-      assert.match(res.summary, /^HDMI passthrough on: watching the HDMI input\. Glasshouse DTS forwarding is installed/);
+      assert.match(res.summary, /^HDMI passthrough on\. Glasshouse DTS forwarding is installed/);
     }),
     call(mockedService(k, "HDMI_RUNNING=0\nHDMI_LOADER=earc-route: REFUSED: another DTS tool is loaded: gh_dts_native (unload it first)\nOK\n"), "setHdmiPassthrough", {enabled: true}).then(function (res) {
       assert.strictEqual(res.returnValue, false);

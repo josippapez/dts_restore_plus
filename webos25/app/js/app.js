@@ -299,7 +299,7 @@
     var exit = s.hdmiExit === "20" ? "stopped with its rollback incomplete; restart the TV"
       : s.hdmiExit ? "stopped (exit " + s.hdmiExit + ")" : "not running";
     setVal("sHdmi", !s.hdmiRequested ? (blocked ? "off — " + s.hdmiRefusalText : "off")
-      : s.hdmiRunning ? "on — watching the HDMI input"
+      : s.hdmiRunning ? "on"
       : "on — " + (s.hdmiRefusalText || exit + (s.hdmiLoader ? ": " + s.hdmiLoader : "")),
       s.hdmiRequested ? (s.hdmiRunning ? "ok" : "warn") : null);
     setVal("sHdmiKernel", (s.hdmiKernel || "unknown") + (/^kernel/.test(s.hdmiRefusal || "")
