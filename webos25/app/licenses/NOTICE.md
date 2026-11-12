@@ -10,6 +10,7 @@ here relicenses anything. The full texts are alongside this file: [`LGPL-2.1.txt
 | `payload/webos25-demux/libgstisomp4.so` | LGPL-2.1-or-later | gst-plugins-good, `dts_support` default flipped to TRUE; built by `restore/build-demux.sh` |
 | `payload/webos25-demux/libgstmpegtsdemux.so` | LGPL-2.1-or-later | gst-plugins-bad, same patch; built by `restore/build-demux.sh` |
 | `payload/webos25-demux/libgstmatroska.so` | LGPL-2.1-or-later | gst-plugins-good, Dolby Vision profile 7 patch; links the system libbz2; built by `restore/build-demux.sh` |
+| `payload/webos25-demux/libgstvideoparsersbad.so` | LGPL-2.1-or-later | gst-plugins-bad, Dolby Vision profile 7 RPU normalization built by `restore/build-demux.sh` and `restore/patch-p7-rpu-state.py`. Uses the TV's installed RPU library. |
 | `payload/webos25-truehd/libgstlibav.so` | LGPL-2.1-or-later | gst-libav; built by `restore/build-truehd.sh` |
 | `libavcodec.so.58`, `libavformat.so.58`, `libavfilter.so.7`, `libavutil.so.56`, `libswresample.so.3` | LGPL-2.1-or-later | ffmpeg 4.4, configured **without** `--enable-gpl` and **without** `--enable-version3`, with a make-up-gain/DRC patch to `libavcodec/mlpdec.c`; built by `restore/build-truehd.sh` |
 | `payload/webos25/libgstdtsdec.so` | LGPL-2.1-or-later | gst-plugins-bad `ext/dts` plugin with ffmpeg n4.4.4's `dca` decoder linked in statically (ffmpeg configured **without** `--enable-gpl`, `--enable-version3` or `--enable-nonfree`); built by `restore/build.sh` |
@@ -30,7 +31,7 @@ control compilation and installation, is published at:
   https://github.com/josippapez/dts_restore_plus
 
 Specifically: `webos25/restore/build.sh` (dtsdec + static ffmpeg dca), `webos25/restore/build-truehd.sh`
-(gst-libav + ffmpeg), `webos25/restore/build-demux.sh` (isomp4 + mpegtsdemux + matroska), and the patched
+(gst-libav + ffmpeg), `webos25/restore/build-demux.sh` (container demuxers and HEVC parser), and the patched
 sources under `webos25/restore/src/`. Those webOS-25 builds are containerised and reproducible from
 that repository alone. The kernel module's source and its build script are in `webos25/kmod/`. The separately packaged legacy `payload/cx/` files are generated unchanged
 from the tracked root `gst/` artifacts; their per-file LG GStreamer 1.14.4 provenance and source

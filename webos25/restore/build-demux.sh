@@ -7,9 +7,10 @@
 #
 # Also patches matroska-demux so Dolby Vision profile 7 (UHD Blu-ray) MKVs
 # are signalled as Dolby Vision instead of being downgraded to HDR10.
+# The HEVC parser normalizes profile 7 metadata for base-layer playback.
 #
 # Produces libgstisomp4.so + libgstmpegtsdemux.so + libgstmatroska.so (and
-# libgstmpegpsdemux.so, DTS in .vob/MPEG-PS) for
+# libgstmpegpsdemux.so, DTS in .vob/MPEG-PS) plus libgstvideoparsersbad.so for
 # LG C5 (webOS 25):
 #   32-bit ARM EABI5 soft-float (arm-linux-gnueabi), e_flags 0x05000200,
 #   ld-linux.so.3, glibc <= 2.35 (built on debian:11-slim). GStreamer 1.24.
@@ -205,6 +206,9 @@ if grep -n 'profile 7 is not supported' "$QTDEMUX"; then
 fi
 echo "=== DV7 MP4 patch OK (P7 -> Dolby Vision in qtdemux) ==="
 
+# Normalize the RPU in the shared HEVC parser after the demuxer has set P7 caps.
+python3 "$(dirname "$0")/patch-p7-rpu-state.py" "$CTX/src"
+
 # Minimal patch for an LG meson bug: gst-libs/gst/mpdclient/meson.build uses
 # gstmpdclient/pkg_name outside the "if xml2_dep.found()" guard, which breaks
 # configuration when dash is disabled. Move the endif to end of file.
@@ -276,30 +280,35 @@ ninja -C "$WORK/good" install
 
 meson setup "$WORK/bad" "$SRC/gst-plugins-bad" $COMMON \
   -Dintrospection=disabled \
-  -Dauto_features=disabled -Dmpegtsdemux=enabled -Dmpegdemux=enabled -Ddca=true -Dorc=disabled
+  -Dauto_features=disabled -Dmpegtsdemux=enabled -Dmpegdemux=enabled \
+  -Dvideoparsers=enabled -Ddca=true -Dorc=disabled
 ninja -C "$WORK/bad" install
 
 cp "$PREFIX/lib/gstreamer-1.0/libgstisomp4.so" "$OUT/"
 cp "$PREFIX/lib/gstreamer-1.0/libgstmpegtsdemux.so" "$OUT/"
 cp "$PREFIX/lib/gstreamer-1.0/libgstmatroska.so" "$OUT/"
 cp "$PREFIX/lib/gstreamer-1.0/libgstmpegpsdemux.so" "$OUT/"
+cp "$PREFIX/lib/gstreamer-1.0/libgstvideoparsersbad.so" "$OUT/"
 arm-linux-gnueabi-strip --strip-unneeded "$OUT/libgstisomp4.so" "$OUT/libgstmpegtsdemux.so" \
-  "$OUT/libgstmatroska.so" "$OUT/libgstmpegpsdemux.so"
+  "$OUT/libgstmatroska.so" "$OUT/libgstmpegpsdemux.so" "$OUT/libgstvideoparsersbad.so"
 # Debian's bz2 soname is libbz2.so.1.0; the C5 only has libbz2.so.1 (the stock
 # libgstmatroska.so NEEDs that name too), so rewrite it or the plugin won't load.
 patchelf --replace-needed libbz2.so.1.0 libbz2.so.1 "$OUT/libgstmatroska.so"
 arm-linux-gnueabi-readelf -d "$OUT/libgstmatroska.so" | grep -q 'NEEDED.*\[libbz2\.so\.1\]' \
   || { echo "libgstmatroska.so does not NEED libbz2.so.1"; exit 1; }
 
-for so in "$OUT"/libgstisomp4.so "$OUT"/libgstmpegtsdemux.so "$OUT"/libgstmatroska.so "$OUT"/libgstmpegpsdemux.so; do
+for so in "$OUT"/libgstisomp4.so "$OUT"/libgstmpegtsdemux.so "$OUT"/libgstmatroska.so \
+          "$OUT"/libgstmpegpsdemux.so "$OUT"/libgstvideoparsersbad.so; do
   echo "--- $so"
   file "$so"
   echo -n "e_flags: "; od -An -tx4 -j36 -N4 "$so"
   echo -n "max GLIBC: "; arm-linux-gnueabi-objdump -T "$so" | grep -oE 'GLIBC_[0-9.]+' | sort -uV | tail -1
   echo "NEEDED:"; arm-linux-gnueabi-readelf -d "$so" | grep NEEDED
-  echo -n "x-dts strings: "; strings "$so" | grep -c 'audio/x-dts' || true
-  echo -n "x-private1-dts strings: "; strings "$so" | grep -c 'audio/x-private1-dts' || true
-  echo -n "DTS audio strings: "; strings "$so" | grep -c 'DTS audio'
+  if [ "${so##*/}" != libgstvideoparsersbad.so ]; then
+    echo -n "x-dts strings: "; strings "$so" | grep -c 'audio/x-dts' || true
+    echo -n "x-private1-dts strings: "; strings "$so" | grep -c 'audio/x-private1-dts' || true
+    echo -n "DTS audio strings: "; strings "$so" | grep -c 'DTS audio'
+  fi
 done
 echo "BUILD OK"
 EOF

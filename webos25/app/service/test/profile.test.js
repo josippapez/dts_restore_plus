@@ -356,6 +356,40 @@ test("the Enable call fits a luna message and writes the exact boot script", fun
   assert.strictEqual(fs.readFileSync(out, "utf8"), service.w25InitScriptBody());
 });
 
+test("the optional Profile 7 parser requires a verified native library and a working loader", function () {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dts-p7-parser-"));
+  var staged = path.join(dir, "staged.so");
+  var stock = path.join(dir, "stock.so");
+  write(staged, "staged parser");
+  write(stock, "stock parser");
+  var verifiedHash = "a7434cf3b77c46be2d806e17bf38bfaeacfa51decec6fc64ee75089707827c83";
+  var script = [
+    "set -u",
+    "MYLIBS= LD_SO=trace_loader",
+    'w25_log() { :; }',
+    'sha256sum() { [ "$1" = /usr/lib/librpu_m.so ] && printf "%s  %s\\n" "$NATIVE_HASH" "$1"; }',
+    'trace_loader() { printf "%s\\n" "$TRACE_OUTPUT"; return "$TRACE_STATUS"; }',
+    initFn("w25_p7_parser_ready"),
+    "w25_p7_parser_ready"
+  ].join("\n");
+  try {
+    var defaults = { MYPARSE: staged, LGPARSE: stock, NATIVE_HASH: verifiedHash, TRACE_OUTPUT: "", TRACE_STATUS: "0" };
+    assert.strictEqual(sh(script, defaults).status, 0);
+    [
+      { MYPARSE: path.join(dir, "missing.so") },
+      { LGPARSE: path.join(dir, "missing.so") },
+      { NATIVE_HASH: "unknown" },
+      { TRACE_OUTPUT: "libdl.so.2 => not found" },
+      { TRACE_STATUS: "1" }
+    ].forEach(function (testCase) {
+      var result = sh(script, Object.assign({}, defaults, testCase));
+      assert.strictEqual(result.status, 1, JSON.stringify(testCase) + "\n" + result.stderr);
+    });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 /* The generated script must resolve $APPBASE, not carry it as a literal.
  *
  * Regression for issue #1's actual cause: c2Q() single-quotes every config value,

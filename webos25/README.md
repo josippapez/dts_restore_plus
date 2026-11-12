@@ -551,17 +551,17 @@ Verified on a C5 in LG's Media Player: P7 MEL and P7 FEL MKVs show the **Dolby V
 badge with correct colours; P8.1 and P5 MKVs still play as Dolby Vision with Atmos; TrueHD
 and DTS in MKV are unaffected.
 
-- DV comes from the **base layer + RPU metadata**. A FEL's residual (enhancement) layer is
-  **not decoded** — the TV has one video decoder — which is the same result as converting
-  P7 to P8.1.
+- DV comes from the **base layer + RPU metadata**. On firmware with a supported native
+  RPU library, the HEVC parser disables the FEL residual request for this playback path
+  and keeps the profile 7 signalling.
 - **MP4 too (since webos25-2.44):** `qtdemux.c` has the same gate, folded the same way in
   `libgstisomp4.so`. It reads the DOVI config only from the `dvcC`/`dvvC` box, so the MKV
   `hvcE` fix has no MP4 counterpart. Verified with P7 MEL/FEL MP4s (DV badge, sound), a P8.1
   MP4 (still DV) and DTS in MP4 (still decodes).
-- **Known issue:** on a TV that has been up for hours, a P7 **FEL** title can start with a
-  green/blue tint that clears on replay or after a reboot. Seen with both containers and
-  with a byte-patched stock demuxer too; not reproduced on a freshly booted TV. MEL titles
-  have not shown it.
+- Each P7 stream starts with a full-frame active area and applies its own RPU offsets.
+  This lets a new title initialize its own Dolby state on the first play after boot and
+  after playback of a different title. Firmware outside the RPU compatibility check
+  continues to use the stock HEVC parser.
 
 ## Build
 

@@ -19,6 +19,7 @@ webos25/restore/switch-out/  libgstadecswitch.so                 (track A stream
 webos25/restore/edid-out/    libedidaudio.so                     (eim hook: no DTS in HDMI EDIDs)
 webos25/restore/demux-out/   libgstisomp4.so, libgstmpegtsdemux.so (mp4/ts/m2ts DTS,
                               MP4 Dolby Vision profile 7), libgstmatroska.so (MKV DV profile 7)
+                              libgstvideoparsersbad.so (HEVC Dolby Vision profile 7 RPU normalization)
 webos25/restore/ts114-out/   libgstmpegtsdemux.so                (1.14.4 build, C2 app profile)
 webos25/restore/kmod-out/    earc_route-5.4.ko (webos25/kmod, GPL-2.0-only; ships with the
                               HDMI passthrough opt-in)
@@ -40,6 +41,8 @@ Never edit a generated `payload/**` binary.
   `gstadecswitch.c`, `gstadecswitch.h`; `edidaudio.c`, `edidaudio.h`
 - the `dts_support` demuxer patch, the DTS-HD substream (0x72) tsdemux patch, the Dolby
   Vision profile 7 matroska/qtdemux patches, or their version, in `webos25/restore/build-demux.sh`
+- the HEVC parser's Dolby Vision profile 7 RPU normalization in
+  `webos25/restore/patch-p7-rpu-state.py` and `webos25/restore/src/dovi-rpu-normalize.h`
 - `webos25/restore/build.sh`, `build-truehd.sh`, `build-demux.sh`, `build-switch.sh`,
   `build-edid.sh`, `build-ts114.sh`
   (toolchain, flags, pinned sources, ABI — for `build.sh` that includes the ffmpeg
@@ -133,7 +136,7 @@ module and its two scripts (GPL-2.0-only), which `GPL-2.0.txt` covers.
 cd webos25/restore
 ./build.sh          # -> out/libgstdtsdec.so
 ./build-truehd.sh   # -> truehd-out/libgstlibav.so + libav*/libsw*
-./build-demux.sh    # -> demux-out/libgst{isomp4,mpegtsdemux,matroska,mpegpsdemux}.so
+./build-demux.sh    # -> demux-out/libgst{isomp4,mpegtsdemux,matroska,mpegpsdemux,videoparsersbad}.so
 ```
 
 Each build prints an ABI report — **confirm ARM EABI5 soft-float
@@ -153,6 +156,9 @@ sound (this build drops DTS tracks unless `dts_support` defaults TRUE). Its ABI 
 list `NEEDED libbz2.so.1` (the C5 has no `libbz2.so.1.0`). Only then commit the new `.so`.
 If `libgstisomp4.so` changed, play a P7 MP4 the same way (Dolby Vision badge), plus a P8.1
 MP4 (still DV) and `DTS-in-mp4.mp4` (still has sound).
+If `libgstvideoparsersbad.so` changed, confirm that a P7 FEL title plays correctly after
+a cold boot and after a P5 title. Play a full-frame P7 title after one with RPU letterbox
+offsets and confirm that it resets the active area.
 
 The TrueHD `.ts`/`.m2ts` case is easy to skip and easy to be fooled by: BD TrueHD
 carries an AC-3 compatibility substream on the **same PID**, so if the TrueHD pad is
@@ -194,7 +200,8 @@ cp -f  ../restore/edid-out/libedidaudio.so                              payload/
 cp -Pf ../restore/truehd-out/libgstlibav.so ../restore/truehd-out/libav*.so* \
        ../restore/truehd-out/libsw*.so*                                 payload/webos25-truehd/
 cp -f  ../restore/demux-out/libgstisomp4.so ../restore/demux-out/libgstmpegtsdemux.so \
-       ../restore/demux-out/libgstmatroska.so ../restore/demux-out/libgstmpegpsdemux.so payload/webos25-demux/
+       ../restore/demux-out/libgstmatroska.so ../restore/demux-out/libgstmpegpsdemux.so \
+       ../restore/demux-out/libgstvideoparsersbad.so payload/webos25-demux/
 cp -f  ../restore/kmod-out/earc_route-5.4.ko ../kmod/earc-route-load.sh ../kmod/hdmi-watch.sh \
        payload/webos25-hdmi/
 cp -f  ../../gst/libgstlibav.so ../../gst/libgstisomp4.so \
