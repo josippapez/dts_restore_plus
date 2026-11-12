@@ -84,6 +84,7 @@ needed; both kernels have PAC on.
 | `earc-route-load.sh` | TV-side loader (root, busybox sh + python3) |
 | `test/run.sh`, `test/test_decode.c` | Host test: sha-keyed oracles, refusal tests, C5/G5 and 5.4/6.12 differences |
 | `hdmi-session.sh` | TV-side DTS core or DTS-HD session from an HDMI input (root, busybox sh): preflight, audio graph setup, restore |
+| `test/loader/run.sh` | Host test of `earc-route-load.sh`'s kernel check (module chosen from the running kernel's stock modules, refusals), with generated stand-in modules and stubbed commands |
 | `test/session/run.sh`, `test/session/fixtures/` | Host test of `hdmi-session.sh` against a C5's own status files, with stubbed commands |
 | `hdmi-watch.sh` | TV-side watcher: keeps the `hdmi-session.sh` route applied across seeks and input switches (root, busybox sh) |
 | `test/watch/run.sh` | Host test of `hdmi-watch.sh` on a timeline of input states, using `test/session/fixtures/` |
@@ -208,10 +209,9 @@ of 7 or more with codec 7 named inside the table needs neither status probe
 (`hd_probes_registered=0`): LG's code accepts and names codec 7 itself. Modes 3
 to 5 still refuse an open check, and mode 6 refuses a compare of 7 or more
 (nothing to watch). Host-tested on the images above; **not run on any of these
-TVs.** The loader's release allowlist admits C3/G3 (5.4.268-329.ptl4tv.5) and
-`W26O` 43.21.98 (6.12.44-352); G4 (5.4.268-320) and `W26O` 43.11.81
-(6.12.44-347) still need a stock-module capture before they are added. LG
-documents native DTS on C3/G3 and C4/G4, so try them stock first.
+TVs.** The loader has no release allowlist (see Load), so these kernels are
+checked like any other. LG documents native DTS on C3/G3 and C4/G4, so try
+them stock first.
 
 | Mode | Loader | What it does | Stays loaded |
 |---|---|---|---|
@@ -438,6 +438,7 @@ refuses unless, per generation:
 
 ```sh
 EARC_C5_DIR=... EARC_G5_DIR=... [EARC_EXTRA_DIRS="..."] [EARC_612_DIRS="..."] sh webos25/kmod/test/run.sh
+sh webos25/kmod/test/loader/run.sh   # the loader's kernel check; needs no captures
 ```
 
 Every directory is passed to the test with the sha256 of its `kernel.bin`
@@ -516,7 +517,9 @@ removed, `mov x19,x2` changed so the store's base is not argument 2).
 
 ## Adding a kernel
 
-A TV whose `uname -r` is not in the loader's allowlist is refused. To add one:
+The loader does not list releases: it checks the running kernel (see Load), so
+a new release of a known generation needs no change to load. These steps add
+it to the host test, which is what qualifies a kernel before a TV run:
 
 1. Read the user's release from `uname -r`, or from `KERNEL_RELEASE=` in the
    output of `webos25/restore/report-tv.sh` (report version 5 and later).
@@ -539,8 +542,7 @@ A TV whose `uname -r` is not in the loader's allowlist is refused. To add one:
    `stock-module.ko`, and a `NOTES.txt` of your own (firmware version, source
    file, hashes; no script reads it). `build.sh` and `test/run.sh` need only the
    first three. Keep the directory outside the repository.
-9. Add the release to the allowlist in `earc-route-load.sh` (the `case "$release"`
-   block and its refusal message), and to the release table under Load.
+9. (No loader change.)
 10. Run `webos25/kmod/build.sh CAPTURE_DIR...` (it runs `build.py`'s ABI, import
     and export checks against the capture).
 11. Add the image to `test/test_decode.c`: an oracle row for the eARC values and an
@@ -591,23 +593,32 @@ with the buffer and the parameter and returns its count unchanged, and
 the newline itself.
 In dmesg, modes 4 and 5 print `earc_route: pass nomatch ...` for the first 8 `_set_output` calls that miss the policy, with every input of the decision: `index`, `desc` (0 = null descriptor, `mask` then shown as 0), `mask`, ADEC 1 `adec1-codec`/`open`/`started`, and the call's `codec-arg`/`bypass-arg`.
 
-`earc_route-5.4.ko` and `earc_route-6.12.ko` sit next to the script; `uname -r`
-picks one, with its stock module path and `struct module` layout:
+`earc_route-5.4.ko` and `earc_route-6.12.ko` sit next to the script. There is
+no release allowlist: the loader reads the running kernel's own modules under
+`/lib/modules/$(uname -r)` and `/usr/lib/modules/$(uname -r)` (up to eight,
+sorted) and loads the one `earc_route-*.ko` whose vermagic and `struct module`
+layout (`.gnu.linkonce.this_module` size, `init_module`/`cleanup_module`
+offsets) equal theirs. The builds are:
 
-| release | module | stock module | size/init/exit |
-|---|---|---|---|
-| `5.4.268-329.ptl4tv.5` | `earc_route-5.4.ko` | `/lib/modules/$release/kernel/aspectratiodrv.ko` | 0x380/0x150/0x338 |
-| `5.4.268-329.ptl4tv.2` | `earc_route-5.4.ko` | `/lib/modules/$release/kernel/aspectratiodrv.ko` | 0x380/0x150/0x338 |
-| `6.12.44-352` | `earc_route-6.12.ko` | `/usr/lib/modules/$release/kernel/aspectratiodrv.ko` | 0x4c0/0x138/0x480 |
+| module | vermagic | size/init/exit |
+|---|---|---|
+| `earc_route-5.4.ko` | `5.4.268 SMP preempt mod_unload aarch64` | 0x380/0x150/0x338 |
+| `earc_route-6.12.ko` | `6.12.44 SMP preempt mod_unload aarch64` | 0x4c0/0x138/0x480 |
 
-The loader refuses unless:
+The loader refuses, before `insmod`, unless:
 
-- the release is one of the three above (a missing stock module path refuses too;
-  nothing is probed);
-- the stock `aspectratiodrv.ko` has the generation's layout and our module
-  has the same vermagic and layout;
+- the kernel has stock modules and they all agree on vermagic and layout;
+- exactly one `earc_route-*.ko` has that vermagic and layout;
 - every needed symbol is in `/proc/kallsyms` exactly once, in the core kernel,
   with type T/t (`_etext`: T/t/D/d) and a non-zero address.
+
+The module then derives every LG address and offset from the kernel's code and
+refuses itself on any mismatch. What neither checks: `struct kprobe`'s size and
+`flags` offset (modes 2 to 7) are compiled per generation, measured on
+5.4.268-329 and 6.12.44-352; a kernel of the same vermagic with a different
+kprobe layout is not detected. Run `--selftest` (mode 2) on a new release
+before any active mode. `test/loader/run.sh` tests these rules with generated
+stand-in modules.
 
 The HDMI audit's symbols are optional: one that is missing is not passed and
 only that part of the audit says so. Before loading, the loader prints one
