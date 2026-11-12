@@ -2051,7 +2051,8 @@ var DETECT_PROBE = [
   // Use the native DTS heuristic as a fallback. The G3 on GStreamer 1.24
   // still registers dts_audiodec with avdec_dca at rank 0. Relabelling it as
   // native-dts-gated hides Enable before the webOS 25 compatibility check can
-  // evaluate the stock plugin hashes and model ID.
+  // evaluate the stock plugin hashes and model ID, so the webOS 25 case is decided
+  // after that check (NATIVE DTS ON WEBOS 25, below).
   // Keep the C2 restore and diagnostic profiles too. On that family, registration
   // can coexist with a stub libgstlibav.so, and relabelling hides the failed C2
   // checks that the diagnostic profile reports (issue #1).
@@ -2107,6 +2108,15 @@ var DETECT_PROBE = [
   "echo \"FP_FORCED=$(w25_fp_get forced)\"",
   "echo \"FP_WRITTEN=$(w25_fp_get written)\"",
   "w25_gate",
+  "# --- NATIVE DTS ON WEBOS 25 ---",
+  "# A webOS 25 set that registers LG's dts_audiodec keeps the restore profile only",
+  "# when the gate knows it: a verified row, the same stock plugins as one, or our",
+  "# own install (forced, drift). Any other one has LG's own DTS decoder.",
+  "if [ \"$PROFILE\" = webos25-armel-gst124 ] && [ \"$HAS_DTS_AUDIODEC\" = yes ] && [ \"$VERDICT\" = unverified ] && [ \"${TABLE_NEAR_MATCH:-0}\" = 0 ]; then",
+  "  if [ \"$DCA_RANK\" = \"0\" ]; then PROFILE=native-dts-gated; else PROFILE=native-dts; fi",
+  "  echo \"PROFILE=$PROFILE\"",
+  "fi",
+  "# --- END NATIVE DTS ON WEBOS 25 ---",
   "echo \"COMPAT_VERDICT=$VERDICT\"",
   "echo \"COMPAT_REASON=$REASON\"",
   "echo \"COMPAT_LABEL=$LABEL\"",

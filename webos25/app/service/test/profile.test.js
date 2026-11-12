@@ -87,6 +87,40 @@ test("native DTS detection preserves the webOS 25 and C2 profiles", function () 
     "a near-miss C2 must keep its diagnostic profile, not become native-dts-gated");
 });
 
+/* A webOS 25 set with LG's own dts_audiodec keeps the restore profile only when the
+ * compatibility check knows it. The G3 row needed the exemption, but applied to every
+ * 1.24 set it offered "Try anyway" to TVs that already have LG's DTS decoder. */
+test("native DTS on webOS 25 is decided by the compatibility check", function () {
+  var probe = service.DETECT_PROBE;
+  var start = probe.indexOf("# --- NATIVE DTS ON WEBOS 25 ---");
+  var end = probe.indexOf("# --- END NATIVE DTS ON WEBOS 25 ---");
+  assert.ok(start > 0 && end > start, "native DTS block not found in DETECT_PROBE");
+  var block = probe.slice(start, end);
+  function profileAfterGate(v) {
+    var pre = [
+      "set -u", "PROFILE=webos25-armel-gst124",
+      "HAS_DTS_AUDIODEC=" + v.audiodec, "DCA_RANK=" + v.rank, "VERDICT=" + v.verdict
+    ].concat(v.near ? ["TABLE_NEAR_MATCH=" + v.near] : []).join("\n");
+    var r = sh(pre + "\n" + block + '\nprintf "%s" "$PROFILE"');
+    assert.strictEqual(r.status, 0, "native DTS block failed: " + r.stderr);
+    var lines = r.stdout.trim().split("\n");
+    return lines[lines.length - 1].trim();
+  }
+  // Not in the table, LG's decoder ranked: native DTS, as before the G3 row.
+  assert.strictEqual(profileAfterGate({audiodec: "yes", rank: "290", verdict: "unverified"}), "native-dts");
+  // Not in the table, LG's decoder at rank 0: the gated native case.
+  assert.strictEqual(profileAfterGate({audiodec: "yes", rank: "0", verdict: "unverified"}), "native-dts-gated");
+  // The G3: a verified row keeps the restore profile.
+  assert.strictEqual(profileAfterGate({audiodec: "yes", rank: "0", verdict: "verified"}), "webos25-armel-gst124");
+  // Same stock plugins as a verified TV, another model: keeps it, so Try anyway is offered.
+  assert.strictEqual(profileAfterGate({audiodec: "yes", rank: "0", verdict: "unverified", near: "1"}), "webos25-armel-gst124");
+  // Already installed by us: keeps it, so Disable stays reachable.
+  assert.strictEqual(profileAfterGate({audiodec: "yes", rank: "0", verdict: "forced"}), "webos25-armel-gst124");
+  assert.strictEqual(profileAfterGate({audiodec: "yes", rank: "0", verdict: "drift"}), "webos25-armel-gst124");
+  // No LG decoder: the restore profile, whatever the verdict.
+  assert.strictEqual(profileAfterGate({audiodec: "no", rank: "absent", verdict: "unverified"}), "webos25-armel-gst124");
+});
+
 /* Issue #3: a C1 on GStreamer 1.16.2 was refused as unknown, while upstream
  * dts_restore 2.0 (byte-identical to payload/cx) works there. */
 test("a soft-float GStreamer 1.16 C1 selects the CX-payload profile", function () {

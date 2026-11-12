@@ -267,7 +267,9 @@ case "$GST_MM" in
 esac
 # Preserve the webOS 25 restore and C2 profiles even when the stock DTS element
 # is registered. Use the native DTS heuristic for the remaining profiles.
-# Keep this fallback in sync with the app's DETECT_PROBE.
+# Keep this fallback in sync with the app's DETECT_PROBE. The app then reports a
+# webOS 25 set with dts_audiodec as native DTS unless its compatibility check
+# matches the TV; this report has no verified table, so it stops here.
 case "$PROFILE" in
   webos22-o22-gst118|webos22-o22-c2-diagnostic|webos25-armel-gst124) ;;
   *)
