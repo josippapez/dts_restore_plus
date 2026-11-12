@@ -2,20 +2,12 @@
 /* eARC route for rooted LG webOS 25 TVs, on the 5.4.268 and 6.12.44 kernel
  * generations (one source, two builds: see the EARC_* macros below).
  *
- * Port of Glasshouse's native-route.c (github.com/rorygallagher2024/glasshouse,
- * native/dts-forwarding), written and qualified by Glasshouse on the G5. The
- * route logic, producer lease, watchdog, HD mode, restore and hand-back paths
- * are theirs; the C5 port re-derived every address by hand. This version
- * hardcodes none: the loader passes each LG function's address and size from
- * /proc/kallsyms (fn_<name>, sz_<name>), and earc_decode.h derives every data
- * address from LG's own code at load time. Any mismatch refuses the load.
+ * Hardcodes no LG address: the loader passes each LG function's address and
+ * size from /proc/kallsyms (fn_<name>, sz_<name>), and earc_decode.h derives
+ * every data address from LG's own code at load time. Any mismatch refuses.
  *
- * mode=0 (default) audits: it prints every address and derived value and the
- * read-only eARC state, then returns -ECANCELED so the kernel unloads it at
- * once. mode=1 routes renderer <renderer> to eARC output 3 under a producer
- * lease, as Glasshouse's apply build does. The struct module layout and
- * vermagic are those of the stock 5.4.268 modules and are checked against
- * them at build and load time. */
+ * mode=0 (default) audits read-only, then returns -ECANCELED so the kernel
+ * unloads it at once. mode=7 is the one session load for HDMI inputs and apps. */
 /* Per-generation build parameters, set by build.py with -D; the defaults are
  * the 5.4.268 generation. EARC_MODULE_SIZE, EARC_MODULE_INIT and EARC_MODULE_EXIT
  * are sizeof(struct module) and the offsets of its init and exit pointers in the
@@ -49,9 +41,6 @@ typedef unsigned long u64;
 typedef unsigned int u32;
 typedef unsigned char u8;
 typedef void *(*block_fn)(const char *, unsigned int);
-typedef int (*connection_fn)(void *, unsigned int, void *, unsigned int);
-typedef int (*disconnect_fn)(void *, unsigned int);
-typedef void (*format_fn)(unsigned int, unsigned int);
 extern int printk(const char *format, ...) __asm__(EARC_PRINTK_SYMBOL);
 extern void *kthread_create_on_node(int (*function)(void *), void *data, int node, const char *name, ...);
 extern int wake_up_process(void *task);
@@ -122,7 +111,7 @@ EARC_FUNCTIONS(EARC_ADDRESS)
 EARC_FUNCTIONS(EARC_SIZE)
 #undef EARC_SIZE
 static unsigned long fn__stext, fn__etext;
-static u32 mode, renderer;
+static u32 mode;
 /* HDMI passthrough (mode>=2) state; declared here because check_parameters and
  * the parameter table reference some of it. The logic is far below in the
  * "HDMI passthrough active modes" section. */
@@ -132,12 +121,10 @@ static u32 hooks_registered, probe_registered, gate_open, gate_opened_by_us, sel
 static ed_u32 gate_written;
 static u32 calls_seen, calls_matched, overrides, match_prints, nomatch_prints;
 static u32 window_seconds = 30, supervised, window_open = 1;
-static int override_mode;          /* mode 5: override; mode 4: observe only */
 static u32 selftest_hits;
 static void *window_task;
 /* DTS-HD (modes 6 and 7): the two _cb_output_status probes. */
 static struct target_kprobe hd_name_probe, hd_status_probe, redirect_probe;
-static int hd_active;              /* mode 7: act; mode 6: count and print only */
 static u32 hd_probes_registered, hd_name_entries;
 /* Set at load for mode 7 when the stock kernel already has the change (earc_probe.h). */
 static int hd_native, gate_native;
@@ -145,6 +132,9 @@ static u64 hd_name_last;           /* the name table's last entry: a string in t
 static u32 hd_status_seen, hd_status_accepts, hd_name_seen, hd_name_fixes;
 static u32 hd_status_prints, hd_accept_prints, hd_name_prints, hd_fix_prints;
 static u32 nonpcm_ready;           /* layout.nonpcm is derived and range-checked */
+/* Mode 7's app lease: renderer index + 1, cleared unless renewed within EARC_APP_LEASE_TICKS. */
+#define EARC_APP_LEASE_TICKS 20
+static u32 app_route, app_ticks, app_overrides, app_prints;
 static u32 matched_decoder = EARC_NO_DECODER;  /* the last _set_output match's decoder (0 or 1) */
 
 static const struct {
@@ -194,15 +184,6 @@ static struct earc_hdmi_layout hdmi;
 #define BM_GET ((block_fn)fn_bm_get_block_info_by_index)
 #define FIND_BLOCK ((void *(*)(void *))fn__bm_find_block_by_block_info)
 #define GET_PORT ((u8 *(*)(void *, u32, u8))fn__bm_get_block_port)
-#define CONNECT_LOCKED ((connection_fn)fn__bm_connect_block_locked)
-#define DISCONNECT_LOCKED ((disconnect_fn)fn__bm_disconnect_block_locked)
-#define HAL_FORMAT ((format_fn)fn_audio_hal_earc_set_output_format)
-#define HAL_CHANNEL ((format_fn)fn_audio_hal_earc_set_channel)
-#define HAL_MUTE ((void (*)(u32))fn_audio_hal_earc_set_mute)
-#define HAL_AUDIO_MODE ((void (*)(u32))fn_audio_hal_earc_set_audio_mode)
-#define HAL_SET_ON ((void (*)(u32))fn_audio_hal_earc_set_on)
-#define SEND_COMMAND ((int (*)(void *, u32, u32, u32, void *, u32))fn_aimc_send_command)
-#define PCM_HEAD ((u32 (*)(void *))fn_renderer_get_uid_pcm_bypass_head)
 #define CLOCK_CALLBACK ((void *)fn_aud_hal_set_arc_sample_rate)
 #define BM_MUTEX ((void *)layout.bm_mutex)
 #define WORD(field) (*(volatile u32 *)layout.field)
@@ -261,277 +242,6 @@ static int output_clock(u32 *rate, u32 *flag, u32 *channels) {
     return result;
 }
 
-/* aud_clock_update_output(3, rate, flag) on 5.4, (3, rate, channels, flag) on
- * 6.12, as earc_decode found its signature. */
-static int update_clock(u32 rate, u32 channels, u32 flag) {
-    if (layout.clock_takes_channels)
-        return ((int (*)(u32, u32, u32, u32))fn_aud_clock_update_output)(3, rate, channels, flag);
-    return ((int (*)(u32, u32, u32))fn_aud_clock_update_output)(3, rate, flag);
-}
-
-static void *source_block, *old_source_block, *output_block, *watchdog;
-static u32 original_nonpcm, original_rate;
-static int applied;
-static u32 lease = 1;
-static u32 restore_pcm;
-/* The eARC sample rate for the IEC 61937 carrier: 48000 for the DTS core,
- * 192000 for the eight-channel DTS-HD (HBR) carrier. */
-static u32 carrier_rate = 48000;
-static u32 hd_ready;
-static u32 original_clock_rate, original_clock_flag, original_clock_channels, original_channels, original_acmod;
-static u32 original_audio_mode, original_hal_mute, original_earc_on;
-static int hd_saved;
-
-static int output_edge(void **source, u32 *source_port) {
-    return output_edge_for(output_block, source, source_port);
-}
-
-static int owns_route_locked(void) {
-    void *source = (void *)0;
-    u32 port = 0;
-    return BM_GET("renderer", renderer) == source_block && BM_GET("output", 3) == output_block &&
-        output_edge(&source, &port) == 1 && source == source_block && port == 0x100;
-}
-
-static int owns_route(void) {
-    int owned;
-    mutex_lock(BM_MUTEX);
-    owned = owns_route_locked();
-    mutex_unlock(BM_MUTEX);
-    return owned;
-}
-
-static int hd_format_matches(void) {
-    u32 rate = 0, flag = 0, clock_channels = 0;
-    return !output_clock(&rate, &flag, &clock_channels) && rate == 192000 && flag == original_clock_flag &&
-        (!layout.clock_takes_channels || clock_channels == 8) &&
-        WORD(nonpcm) == 1 && WORD(rate) == 192000 && WORD(channel_count) == 8 &&
-        (WORD(control) & 7) == 6 && ((WORD(cs0) >> 24) & 15) == 9 && (WORD(cs0) & 2);
-}
-
-/* The clock callback and link reprogramming sleep. Neither block-manager nor
- * clock-table mutex may be held across them. The producer lease owns the UID. */
-static int configure_hd(void) {
-    u32 uid, format[8] = {192000, 8, 16, 0, 0, 192000, 8, 32};
-    int result;
-    mutex_lock(BM_MUTEX);
-    if (!owns_route_locked() || !*((u8 *)source_block + 77)) {
-        mutex_unlock(BM_MUTEX);
-        return -16;
-    }
-    HAL_MUTE(1);
-    __atomic_store_n(&hd_ready, 0, __ATOMIC_RELEASE);
-    uid = *(u32 *)((u8 *)source_block + 52);
-    mutex_unlock(BM_MUTEX);
-    result = SEND_COMMAND((void *)0, 0x50020020, 0, uid, format, sizeof(format));
-    if (result < 0) return result;
-    msleep(100);
-    if (!owns_route()) return -16;
-    result = update_clock(192000, 8, original_clock_flag);
-    if (result < 0 || !owns_route()) return result < 0 ? result : -16;
-    HAL_MUTE(1);
-    HAL_CHANNEL(8, 2);
-    HAL_FORMAT(1, 192000);
-    HAL_CHANNEL(8, 2);
-    HAL_SET_ON(original_earc_on);
-    printk("\0016earc_route: HD srcbin=%08x, output clock and eARC link configured\n", uid);
-    return 0;
-}
-
-struct output_state {
-    void *output;
-    u32 codec, channels, rate, acmod, flag, on;
-};
-
-static int same_output_state(const struct output_state *a, const struct output_state *b) {
-    return a->output == b->output && a->codec == b->codec && a->channels == b->channels &&
-        a->rate == b->rate && a->acmod == b->acmod && a->flag == b->flag && a->on == b->on;
-}
-
-static void copy_output_state(void *output, struct output_state *state) {
-    volatile u8 *bytes = output;
-    state->output = output;
-    state->codec = *(volatile u32 *)(bytes + 68);
-    state->channels = *(volatile u32 *)(bytes + 72);
-    state->rate = *(volatile u32 *)(bytes + 76);
-    state->acmod = *(volatile u32 *)(bytes + 80);
-    state->flag = *(volatile u32 *)(bytes + 84);
-    state->on = bytes[129];
-}
-
-static int foreign_output_state(struct output_state *state, int *foreign) {
-    struct output_state repeated;
-    void *output, *source = (void *)0;
-    u32 port = 0;
-    int edge, valid = 0;
-    *foreign = 0;
-    mutex_lock(BM_MUTEX);
-    output = BM_GET("output", 3);
-    if (output && *(u32 *)((u8 *)output + 44) == 3) {
-        edge = output_edge_for(output, &source, &port);
-        /* An ambiguous input must stay muted: it could still mix our carrier
-         * with another source. A single foreign edge belongs entirely to LG. */
-        if (edge == 0 || (edge == 1 && (source != source_block || port != 0x100))) {
-            *foreign = 1;
-            copy_output_state(output, state);
-            __atomic_thread_fence(__ATOMIC_ACQUIRE);
-            copy_output_state(output, &repeated);
-            valid = same_output_state(state, &repeated) && state->codec <= 4 &&
-                state->channels > 0 && state->channels <= 8 && valid_output_rate(state->rate) &&
-                state->acmod <= 7 && state->flag <= 1 && state->on <= 1;
-        }
-    }
-    mutex_unlock(BM_MUTEX);
-    return valid;
-}
-
-/* LG suppresses an output status equal to its cache. Replaying its current
- * tuple returns global clock/mute state even when the new source is PCM48
- * like the old one; the foreign connection itself is never changed. */
-static void hand_back_output(void) {
-    struct output_state state, current;
-    u32 rate = 0, flag = 0, clock_channels = 0;
-    unsigned int attempt;
-    int foreign = 0;
-    for (attempt = 0; attempt < 3; attempt++) {
-        if (!foreign_output_state(&state, &foreign) || output_clock(&rate, &flag, &clock_channels)) {
-            msleep(50);
-            continue;
-        }
-        update_clock(state.rate, state.channels, state.flag);
-        HAL_MUTE(1);
-        HAL_CHANNEL(state.channels, state.acmod);
-        HAL_FORMAT(state.codec != 0, state.rate);
-        HAL_CHANNEL(state.channels, state.acmod);
-        if (!foreign_output_state(&current, &foreign) || !same_output_state(&state, &current)) continue;
-        HAL_MUTE(0);
-        HAL_SET_ON(state.on);
-        if (foreign_output_state(&current, &foreign) && same_output_state(&state, &current)) {
-            printk("\0016earc_route: returned output to LG codec=%u channels=%u rate=%u\n",
-                   state.codec, state.channels, state.rate);
-            return;
-        }
-    }
-    if (foreign && (WORD(cs2) & (1U << 18))) HAL_MUTE(0);
-    printk("\0013earc_route: LG output handback did not settle; foreign=%d\n", foreign);
-}
-
-static void restore_route(void) {
-    void *current_source = (void *)0, *restored_source = (void *)0;
-    u32 current_port = 0;
-    int edge, restored = 0, restore_format = 0;
-    if (!__atomic_exchange_n(&applied, 0, __ATOMIC_SEQ_CST)) return;
-    __atomic_store_n(&hd_ready, 0, __ATOMIC_RELEASE);
-    mutex_lock(BM_MUTEX);
-    if (BM_GET("output", 3) == output_block) {
-        edge = output_edge(&current_source, &current_port);
-        /* A removed renderer leaves an empty input. A foreign connection
-         * belongs to LG's new source and must survive module cleanup. */
-        if (edge == 0 || (edge == 1 && current_source == source_block && current_port == 0x100)) {
-            void *current_baseline = BM_GET(restore_pcm ? "mixer" : "encoder", restore_pcm ? 0 : 3);
-            int disconnected = edge == 0 || DISCONNECT_LOCKED(output_block, 0) >= 0;
-            if (disconnected) {
-                restore_format = 1;
-                if (hd_saved) HAL_MUTE(1);
-                if (current_baseline) restored = CONNECT_LOCKED(current_baseline, 0, output_block, 0) >= 0;
-                if (restored) restored_source = current_baseline;
-            }
-        }
-    }
-    if (restore_format) {
-        if (hd_saved) HAL_CHANNEL(original_channels, original_acmod);
-        HAL_FORMAT(original_nonpcm, original_rate);
-        if (hd_saved) {
-            HAL_CHANNEL(original_channels, original_acmod);
-            HAL_AUDIO_MODE(original_audio_mode);
-        }
-    }
-    mutex_unlock(BM_MUTEX);
-    if (restore_format && hd_saved) {
-        u32 rate = 0, flag = 0, clock_channels = 0;
-        int still_owned, result;
-        current_source = (void *)0;
-        current_port = 0;
-        mutex_lock(BM_MUTEX);
-        edge = BM_GET("output", 3) == output_block ? output_edge(&current_source, &current_port) : -1;
-        still_owned = edge == 0 || (edge == 1 && restored_source && current_source == restored_source && current_port == 0);
-        mutex_unlock(BM_MUTEX);
-        if (!still_owned) {
-            hand_back_output();
-            return;
-        }
-        result = update_clock(original_clock_rate, original_clock_channels, original_clock_flag);
-        HAL_MUTE(original_hal_mute);
-        HAL_SET_ON(original_earc_on);
-        msleep(100);
-        printk("\0016earc_route: HD restore clock=%u flag=%u result=%d readback=%d\n",
-               original_clock_rate, original_clock_flag, result,
-               !output_clock(&rate, &flag, &clock_channels) && rate == original_clock_rate && flag == original_clock_flag);
-    } else if (hd_saved) {
-        hand_back_output();
-    }
-    printk(restored ? "\0016earc_route: original output route restored\n" :
-           restore_format ? "\0013earc_route: carrier disconnected and format restored; baseline source unavailable\n" :
-           "\0016earc_route: output ownership changed; preserving current route\n");
-}
-
-static int watch_route(void *unused) {
-    unsigned int tick = 0, previous = lease, phase = 0, stable = 0, attempts = 0;
-    (void)unused;
-    while (tick < 200 && !kthread_should_stop()) {
-        msleep(100);
-        tick++;
-        if (__atomic_load_n(&lease, __ATOMIC_ACQUIRE) != previous) {
-            previous = __atomic_load_n(&lease, __ATOMIC_ACQUIRE);
-            tick = 0;
-        }
-        if (!owns_route()) {
-            printk("\0016earc_route: output ownership lost\n");
-            break;
-        }
-        if (carrier_rate == 48000) {
-            if (WORD(nonpcm) != 1 || WORD(rate) != 48000) break;
-            continue;
-        }
-        if (phase && !hd_format_matches()) {
-            u32 rate = 0, flag = 0, clock_channels = 0;
-            HAL_MUTE(1);
-            __atomic_store_n(&hd_ready, 0, __ATOMIC_RELEASE);
-            output_clock(&rate, &flag, &clock_channels);
-            printk("\0016earc_route: HD format changed mode=%u CS0=%08x clock=%u flag=%u\n",
-                   WORD(control) & 7, WORD(cs0), rate, flag);
-            phase = stable = 0;
-        }
-        if (!phase) {
-            if (++stable < 2) continue;
-            if (++attempts > 8) {
-                printk("\0013earc_route: HD format recovery attempts exhausted\n");
-                break;
-            }
-            if (configure_hd() < 0) {
-                printk("\0013earc_route: HD setup lost its route or clock\n");
-                break;
-            }
-            phase = 1;
-            stable = 0;
-        } else if (phase == 1 && ++stable >= 2) {
-            if (!owns_route() || !hd_format_matches()) continue;
-            HAL_MUTE(original_hal_mute);
-            __atomic_store_n(&hd_ready, 1, __ATOMIC_RELEASE);
-            phase = 2;
-            stable = 0;
-            printk("\0016earc_route: HD ready after stable output format\n");
-        } else if (phase == 2 && ++stable >= 50) {
-            attempts = 0;
-            stable = 0;
-        }
-    }
-    restore_route();
-    /* Keep the task alive until module removal owns kthread_stop(). */
-    while (!kthread_should_stop()) msleep(100);
-    return 0;
-}
-
 /* Read-only state. The heap objects read here are block-infos looked up and
  * read under the block-manager mutex, which bm_destroy_block holds while it
  * frees them, and the clock object read by output_clock under its entry
@@ -582,8 +292,8 @@ static const char *check_parameters(void) {
     }
     if (fn_mutex_lock != (unsigned long)imported_mutex_lock || fn_mutex_unlock != (unsigned long)imported_mutex_unlock)
         return "fn_mutex_lock/fn_mutex_unlock differ from the kernel's exported symbols";
-    if (mode > 7 || renderer > 1 || restore_pcm > 1 || (carrier_rate != 48000 && carrier_rate != 192000))
-        return "mode, renderer, restore_pcm or carrier_rate out of range";
+    if (mode != 0 && mode != 7)
+        return "mode must be 0 (audit) or 7 (session)";
     if (window_seconds > 120)
         return "window_seconds out of range (max 120)";
     return 0;
@@ -759,13 +469,9 @@ static void hdmi_audit(void) {
         printk("\0016earc_route: hdmi passthrough: not available: %u symbol(s) missing\n", missing);
 }
 
-/* ---- HDMI passthrough active modes (mode>=2) ----
- * mode 2 self-tests the break handlers and a kprobe, then unloads. mode 3 opens
- * the DTS gate and stays loaded. mode 4 opens the gate and observes _set_output
- * calls. mode 5 does the same and overrides the DTS-core arguments for a bounded
- * window. mode 6 counts hits on the two DTS-HD sites in _cb_output_status and
- * changes nothing; mode 7 is mode 5 for a DTS core or DTS-HD stream, with those
- * two probes acting. Every kernel write is listed with its undo in the README; a failure
+/* ---- The session load (mode 7) ----
+ * Opens the DTS gate, accepts DTS-HD in _cb_output_status and overrides
+ * _set_output for a DTS stream from an HDMI input or an app holding the lease. Every kernel write is listed with its undo in the README; a failure
  * after a partial setup undoes it in reverse. These paths never run for mode 0
  * or mode 1 and add nothing to the route's code path.
  *
@@ -796,18 +502,26 @@ static int route_prehandler(struct target_kprobe *p, struct target_pt_regs *regs
     ed_u64 descriptor = regs->regs[1], index = regs->regs[0];
     ed_u32 mask_word = 0, codec = 0;
     ed_u8 open = 0, started = 0;
-    struct earc_adec_slot slot;
+    struct earc_adec_slot slot = {0};
     int has_slot = earc_adec_slot(&hdmi, index, &slot);
     (void)p;
     __atomic_add_fetch(&calls_seen, 1, __ATOMIC_RELAXED);
     if (descriptor) mask_word = *(volatile u32 *)(descriptor + hdmi.mask_offset);
+    if (descriptor && earc_app_policy_match(index, mask_word, __atomic_load_n(&app_route, __ATOMIC_ACQUIRE))) {
+        if (__atomic_add_fetch(&app_prints, 1, __ATOMIC_RELAXED) <= 5)
+            printk("\0016earc_route: app bypass index=%llu codec-arg=%u bypass-arg=%u\n",
+                   (unsigned long long)index, (u32)regs->regs[2], (u32)regs->regs[3]);
+        if (regs->regs[3] != 1) __atomic_add_fetch(&app_overrides, 1, __ATOMIC_RELAXED);
+        regs->regs[2] = 0;
+        regs->regs[3] = 1;
+        return 0;
+    }
     if (has_slot) {
         codec = *(volatile u32 *)slot.codec;
         open = *(volatile u8 *)slot.open;
         started = *(volatile u8 *)slot.started;
     }
-    if (!descriptor || !(hd_active ? earc_session_policy_match(index, mask_word, codec, open, started) :
-                         earc_policy_match(index, mask_word, codec, open, started))) {
+    if (!descriptor || !earc_session_policy_match(index, mask_word, codec, open, started)) {
         if (__atomic_add_fetch(&nomatch_prints, 1, __ATOMIC_RELAXED) <= 8) {
             if (has_slot)
                 printk("\0016earc_route: pass nomatch index=%llu desc=%d mask=0x%x adec%llu-codec=%u open=%u started=%u codec-arg=%u bypass-arg=%u\n",
@@ -824,7 +538,7 @@ static int route_prehandler(struct target_kprobe *p, struct target_pt_regs *regs
     if (__atomic_add_fetch(&match_prints, 1, __ATOMIC_RELAXED) <= 5)
         printk("\0016earc_route: pass match index=%llu codec-arg=%u bypass-arg=%u adec%llu-codec=%u\n",
                (unsigned long long)index, (u32)regs->regs[2], (u32)regs->regs[3], (unsigned long long)index, codec);
-    if (override_mode && __atomic_load_n(&window_open, __ATOMIC_ACQUIRE)) {
+    if (__atomic_load_n(&window_open, __ATOMIC_ACQUIRE)) {
         regs->regs[2] = 0;  /* codec -> 0 */
         regs->regs[3] = 1;  /* bypass -> 1 */
         __atomic_add_fetch(&overrides, 1, __ATOMIC_RELAXED);
@@ -878,8 +592,8 @@ static int hd_status_prehandler(struct target_kprobe *p, struct target_pt_regs *
     if (__atomic_add_fetch(accept ? &hd_accept_prints : &hd_status_prints, 1, __ATOMIC_RELAXED) <= (accept ? 5 : 8))
         printk("\0016earc_route: hd status codec=%u output-type=%u matched=%d adec0-codec=%u started=%u adec1-codec=%u started=%u decoder=%d: %s\n",
                event, type, matched <= 1 ? (int)matched : -1, codec[0], started[0], codec[1], started[1], decoder,
-               !accept ? "stock" : hd_active ? "accepted" : "would accept");
-    if (!accept || !hd_active) return 0;
+               accept ? "accepted" : "stock");
+    if (!accept) return 0;
     __atomic_add_fetch(&hd_status_accepts, 1, __ATOMIC_RELAXED);
     regs->pc = hdmi.hd_supported_branch;
     regs->pstate = earc_hd_accept_pstate(regs->pstate);
@@ -893,9 +607,9 @@ static int hd_name_prehandler(struct target_kprobe *p, struct target_pt_regs *re
     if (__atomic_add_fetch(substitute ? &hd_fix_prints : &hd_name_prints, 1, __ATOMIC_RELAXED) <= (substitute ? 5 : 8)) {
         u32 matched = __atomic_load_n(&matched_decoder, __ATOMIC_RELAXED);
         printk("\0016earc_route: hd name codec=%llu entries=%u matched=%d: %s\n", (unsigned long long)index, hd_name_entries,
-               matched <= 1 ? (int)matched : -1, !substitute ? "stock" : hd_active ? "substituted" : "would substitute");
+               matched <= 1 ? (int)matched : -1, substitute ? "substituted" : "stock");
     }
-    if (!substitute || !hd_active) return 0;
+    if (!substitute) return 0;
     __atomic_add_fetch(&hd_name_fixes, 1, __ATOMIC_RELAXED);
     regs->regs[earc_hd_name_reg(&hdmi)] = hd_name_last;
     regs->pc = hdmi.hd_name_load + 4;
@@ -1070,14 +784,21 @@ static void gate_restore(void) {
  * window_seconds 0 never expires. */
 static int window_thread(void *unused) {
     unsigned int ticks = 0, limit = window_seconds * 10;
+    u32 t;
     (void)unused;
-    if (window_seconds)
-        while (ticks < limit && !kthread_should_stop()) { msleep(100); ticks++; }
-    if (ticks >= limit && window_seconds) {
-        __atomic_store_n(&window_open, 0, __ATOMIC_RELEASE);
-        printk("\0016earc_route: override window of %u s elapsed; observing only\n", window_seconds);
+    while (!kthread_should_stop()) {
+        msleep(100);
+        if (window_seconds && ++ticks == limit) {
+            __atomic_store_n(&window_open, 0, __ATOMIC_RELEASE);
+            printk("\0016earc_route: override window of %u s elapsed; observing only\n", window_seconds);
+        }
+        t = __atomic_load_n(&app_ticks, __ATOMIC_ACQUIRE);
+        while (t && !__atomic_compare_exchange_n(&app_ticks, &t, t - 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {}
+        if (t == 1 && !__atomic_load_n(&app_ticks, __ATOMIC_ACQUIRE)) {
+            __atomic_store_n(&app_route, 0, __ATOMIC_RELEASE);
+            printk("\0016earc_route: app lease expired\n");
+        }
     }
-    while (!kthread_should_stop()) msleep(100);
     return 0;
 }
 
@@ -1097,42 +818,6 @@ static void passthrough_derive(void) {
     earc_hdmi_decode(code, layout.nonpcm, fn__stext & ~0xfffffUL, &hdmi);
 }
 
-static void passthrough_print_walk(const char *when) {
-    earc_hdmi_walk_list(&hdmi, fn__etext, fn__etext + HDMI_DATA_SPAN, hdmi_read, (void *)0, &pt_walk);
-    printk("\0016earc_route: break walk %s: %s nodes=%u kprobe=%d kprobe-ss=%d\n", when,
-           pt_walk.status == HW_COMPLETE ? "complete" : "incomplete", pt_walk.count,
-           pt_walk.saw_break, pt_walk.saw_step);
-}
-
-/* mode 2: register hooks (or confirm the kernel's), self-test, undo, unload.
- * Everything is always undone before returning. The return code distinguishes
- * the outcomes so the loader does not report a refusal or a failure as success:
- * -ECANCELED only when the self-test passed, the stage-a refusal code when it
- * refuses, -EIO when the self-test failed. */
-static int selftest_mode(void) {
-    int registered, refusal = stage_a_hooks(), ok;
-    if (refusal < 0) { passthrough_print_walk("after refusal"); return refusal; }
-    registered = hooks_registered;
-    ok = selftest() == 0;
-    passthrough_print_walk("with hooks");
-    hooks_unregister();
-    if (registered) synchronize_rcu();
-    passthrough_print_walk("after undo");
-    if (ok) {
-        printk("\0016earc_route: self-test passed; unloading\n");
-        return -125;
-    }
-    printk("\0013earc_route: self-test FAILED; unloading\n");
-    return -5;
-}
-
-/* mode 3: open the gate and stay loaded (cleanup restores it). */
-static int gate_mode(void) {
-    if (gate_open_patch() < 0) return -22;
-    printk("\0016earc_route: DTS gate open (mode 3); unload to restore\n");
-    return 0;
-}
-
 /* Both ADEC slots' codec and started (and open, when a _set_output probe reads
  * it) must pass hdmi_addr_ok before a pre-handler reads them. */
 static int adec_slots_ok(int need_open) {
@@ -1150,51 +835,6 @@ static int adec_slots_ok(int need_open) {
     return 1;
 }
 
-/* modes 4 (observe) and 5 (route override). One load: hooks + gate + probe. */
-static int session_mode(int override) {
-    if (!adec_slots_ok(1)) return -22;
-    if ((hdmi.set_output & 3) || hdmi.set_output < fn__stext || hdmi.set_output >= fn__etext) {
-        printk("\0013earc_route: refused; _set_output %llx outside kernel text\n", hdmi.set_output);
-        return -22;
-    }
-    if (override && !window_seconds && !supervised) {
-        printk("\0013earc_route: refused; window_seconds=0 needs supervised=1\n");
-        return -22;
-    }
-    if (stage_a_hooks() < 0) return -16;
-    if (selftest() < 0) { hooks_unregister(); synchronize_rcu(); return -16; }
-    if (gate_open_patch() < 0) { hooks_unregister(); synchronize_rcu(); return -22; }
-    override_mode = override;
-    route_probe.addr = (void *)hdmi.set_output;
-    route_probe.pre_handler = route_prehandler;
-    if (register_kprobe(&route_probe) < 0) {
-        printk("\0013earc_route: register_kprobe on _set_output failed\n");
-        gate_restore();
-        hooks_unregister();
-        synchronize_rcu();
-        return -16;
-    }
-    probe_registered = 1;
-    if (override) {
-        window_task = kthread_create_on_node(window_thread, (void *)0, -1, "earc-dts-window");
-        if ((u64)window_task >= (u64)-4095) {
-            window_task = (void *)0;
-            unregister_kprobe(&route_probe);
-            probe_registered = 0;
-            gate_restore();
-            hooks_unregister();
-            synchronize_rcu();
-            return -12;
-        }
-        wake_up_process(window_task);
-    }
-    printk("\0016earc_route: HDMI passthrough %s active on _set_output=%llx; gate open%s\n",
-           override ? "route(override)" : "observe", hdmi.set_output,
-           override ? "; override window running" : "");
-    if (override) printk("\0013earc_route: UNTESTED ON HARDWARE: this mode has never run on a TV\n");
-    return 0;
-}
-
 /* Tears down whatever the active modes set up, in reverse order. Safe to call
  * when nothing was set (modes 0 and 1). */
 static void passthrough_cleanup(void) {
@@ -1208,37 +848,27 @@ static void passthrough_cleanup(void) {
     if (touched) synchronize_rcu();
 }
 
-/* modes 6 (watch the two DTS-HD sites) and 7 (DTS core or DTS-HD session). Mode 6: hooks,
- * both self-tests and two counting probes; the gate stays shut and nothing is
- * changed. Mode 7: lg-g5-dts's dts-hd-route in one load, the gate, the two
- * probes acting, and the _set_output override on ADEC codec 48 or 51 in the
- * window.
+/* The session load: lg-g5-dts's dts-hd-route in one load (the gate, the two
+ * _cb_output_status probes and the _set_output override) plus the app lease.
  * The name probe goes in before the gate is opened and comes out after it is
  * restored: the open gate is what lets a codec-7 event reach LG's name load,
- * which reads past the table. The acceptance is not windowed (it is not in
- * lg-g5-dts): it has to last as long as the DSP instance the session
- * configured. Every failure undoes through passthrough_cleanup. */
-static int hd_mode(int active) {
-    ed_u64 sites[3] = {hdmi.hd_compare, hdmi.hd_name_load, hdmi.hd_supported_branch};
+ * which reads past the table. Every failure undoes through passthrough_cleanup. */
+static int session(void) {
+    ed_u64 sites[4] = {hdmi.hd_compare, hdmi.hd_name_load, hdmi.hd_supported_branch, hdmi.set_output};
     unsigned int i;
     int result = -16;
-    if (!adec_slots_ok(active)) return -22;
-    for (i = 0; i < 3; i++)
+    if (!adec_slots_ok(1)) return -22;
+    for (i = 0; i < 4; i++)
         if ((sites[i] & 3) || sites[i] < fn__stext || sites[i] >= fn__etext) {
-            printk("\0013earc_route: refused; _cb_output_status site %llx outside kernel text\n", sites[i]);
+            printk("\0013earc_route: refused; probe site %llx outside kernel text\n", sites[i]);
             return -22;
         }
-    if (active && ((hdmi.set_output & 3) || hdmi.set_output < fn__stext || hdmi.set_output >= fn__etext)) {
-        printk("\0013earc_route: refused; _set_output %llx outside kernel text\n", hdmi.set_output);
-        return -22;
-    }
-    if (active && !window_seconds && !supervised) {
+    if (!window_seconds && !supervised) {
         printk("\0013earc_route: refused; window_seconds=0 needs supervised=1\n");
         return -22;
     }
     if (stage_a_hooks() < 0) return -16;
     if (selftest() < 0 || selftest_redirect() < 0) goto undo;
-    hd_active = active;
     hd_name_probe.addr = (void *)hdmi.hd_name_load;
     hd_name_probe.pre_handler = hd_name_prehandler;
     hd_status_probe.addr = (void *)hdmi.hd_compare;
@@ -1250,7 +880,7 @@ static int hd_mode(int active) {
         }
         hd_probes_registered = 1;
     }
-    if (active && gate_native) {
+    if (gate_native) {
         /* Not ours to patch or restore; it must still be open now. */
         if (*(volatile u32 *)hdmi.gate != EARC_GATE_OPEN_W0 || *(volatile u32 *)(hdmi.gate + 4) != 0xd65f03c0u) {
             printk("\0013earc_route: refused; DTS gate no longer returns 1 (%08x %08x)\n", *(volatile u32 *)hdmi.gate,
@@ -1259,7 +889,7 @@ static int hd_mode(int active) {
             goto undo;
         }
         gate_open = 1;
-    } else if (active && gate_open_patch() < 0) { result = -22; goto undo; }
+    } else if (gate_open_patch() < 0) { result = -22; goto undo; }
     if (!hd_native) {
         if (register_kprobe(&hd_status_probe) < 0) {
             printk("\0013earc_route: register_kprobe on the _cb_output_status compare failed\n");
@@ -1267,28 +897,22 @@ static int hd_mode(int active) {
         }
         hd_probes_registered = 2;
     }
-    if (active) {
-        override_mode = 1;
-        route_probe.addr = (void *)hdmi.set_output;
-        route_probe.pre_handler = route_prehandler;
-        if (register_kprobe(&route_probe) < 0) {
-            printk("\0013earc_route: register_kprobe on _set_output failed\n");
-            goto undo;
-        }
-        probe_registered = 1;
-        window_task = kthread_create_on_node(window_thread, (void *)0, -1, "earc-dts-window");
-        if ((u64)window_task >= (u64)-4095) { window_task = (void *)0; result = -12; goto undo; }
-        wake_up_process(window_task);
+    route_probe.addr = (void *)hdmi.set_output;
+    route_probe.pre_handler = route_prehandler;
+    if (register_kprobe(&route_probe) < 0) {
+        printk("\0013earc_route: register_kprobe on _set_output failed\n");
+        goto undo;
     }
-    printk("\0016earc_route: %s on _cb_output_status compare=%llx (codec w%u, output x%u) name-load=%llx (x%u from index x%u, %u entries, substitute %llx)%s\n",
-           active ? "DTS core and DTS-HD passthrough active" : "DTS-HD watch", hdmi.hd_compare, earc_hd_codec_reg(&hdmi), hdmi.hd_output_reg,
-           hdmi.hd_name_load, earc_hd_name_reg(&hdmi), earc_hd_index_reg(&hdmi), hd_name_entries, (unsigned long long)hd_name_last,
-           active ? "; gate open; _set_output override window running" : "; nothing changed");
+    probe_registered = 1;
+    window_task = kthread_create_on_node(window_thread, (void *)0, -1, "earc-dts-window");
+    if ((u64)window_task >= (u64)-4095) { window_task = (void *)0; result = -12; goto undo; }
+    wake_up_process(window_task);
+    printk("\0016earc_route: DTS passthrough active on _cb_output_status compare=%llx (codec w%u, output x%u) name-load=%llx (x%u from index x%u, %u entries, substitute %llx); gate open; _set_output override running\n",
+           hdmi.hd_compare, earc_hd_codec_reg(&hdmi), hdmi.hd_output_reg, hdmi.hd_name_load, earc_hd_name_reg(&hdmi),
+           earc_hd_index_reg(&hdmi), hd_name_entries, (unsigned long long)hd_name_last);
     if (gate_native || hd_native)
         printk("\0016earc_route: stock kernel already has%s%s; left as it is\n", gate_native ? " the open DTS gate" : "",
                hd_native ? " codec-7 acceptance and its name (no _cb_output_status probes placed)" : "");
-    printk(active ? "\0013earc_route: EXPERIMENTAL: mode 7 has run on a C5 and a CS (33.31.68) only; decoder 0 never with a receiver\n" :
-           "\0013earc_route: EXPERIMENTAL: mode 6 has run on a C5 (33.31.68) only\n");
     return 0;
 undo:
     passthrough_cleanup();
@@ -1298,12 +922,12 @@ undo:
 static int passthrough_init(void) {
     const char *reason;
     passthrough_derive();
-    reason = earc_mode_refusal(&hdmi, mode);
-    if (!reason && mode >= 6) {
+    reason = earc_mode_refusal(&hdmi);
+    if (!reason) {
         hd_name_entries = hdmi_name_entries(hdmi.name_table);
-        reason = earc_hd_refusal(&hdmi, hd_name_entries, mode);
-        hd_native = !reason && mode == 7 && earc_hd_native(&hdmi, hd_name_entries);
-        gate_native = !reason && mode == 7 && hdmi.gate_state == GATE_SWITCHED;
+        reason = earc_hd_refusal(&hdmi, hd_name_entries);
+        hd_native = !reason && earc_hd_native(&hdmi, hd_name_entries);
+        gate_native = !reason && hdmi.gate_state == GATE_SWITCHED;
         /* hdmi_name_entries checked this entry as a pointer to a string in the kernel's data. */
         if (!reason) hd_name_last = *(volatile unsigned long *)(hdmi.name_table + 8UL * (hd_name_entries - 1));
     }
@@ -1311,89 +935,14 @@ static int passthrough_init(void) {
         printk("\0013earc_route: refused: %s\n", reason);
         return -22;
     }
-    /* The modes call register_kprobe directly; confirm the kernel resolved the
+    /* The session calls register_kprobe directly; confirm the kernel resolved the
      * same address the loader passed as fn_register_kprobe (a bad kallsyms). */
     if (hdmi.kprobe_register && hdmi.kprobe_register != (ed_u64)(unsigned long)&register_kprobe) {
         printk("\0013earc_route: refused; register_kprobe %llx != resolved %lx\n",
                hdmi.kprobe_register, (unsigned long)&register_kprobe);
         return -22;
     }
-    switch (mode) {
-    case 2: return selftest_mode();
-    case 3: return gate_mode();
-    case 4: return session_mode(0);
-    case 5: return session_mode(1);
-    case 6: return hd_mode(0);
-    case 7: return hd_mode(1);
-    default: return -22;
-    }
-}
-
-static int apply(void) {
-    int connected;
-    void *current_source = (void *)0;
-    u32 current_port = 0;
-    __atomic_store_n(&hd_ready, 0, __ATOMIC_RELEASE);
-    source_block = BM_GET("renderer", renderer);
-    old_source_block = BM_GET(restore_pcm ? "mixer" : "encoder", restore_pcm ? 0 : 3);
-    output_block = BM_GET("output", 3);
-    if (!source_block || !old_source_block || !output_block) return -19;
-    if (carrier_rate == 192000 && (output_clock(&original_clock_rate, &original_clock_flag, &original_clock_channels) ||
-        (original_clock_rate != 48000 && original_clock_rate != 192000))) return -19;
-    /* renderer_get_uid_pcm_bypass_head deletes the renderer's pipeline and
-     * builds a bypass one unless +76 (bypass pipeline) and +77 (PCM bypass)
-     * are both set. Refuse rather than let the print do that. */
-    if (!*((u8 *)source_block + 76) || !*((u8 *)source_block + 77)) {
-        printk("\0013earc_route: refused; renderer%u has no PCM bypass pipeline\n", renderer);
-        return -22;
-    }
-    printk("\0016earc_route: native PCM bypass head=%08x\n", PCM_HEAD(source_block));
-    mutex_lock(BM_MUTEX);
-    if (BM_GET("renderer", renderer) != source_block || BM_GET("output", 3) != output_block ||
-        BM_GET(restore_pcm ? "mixer" : "encoder", restore_pcm ? 0 : 3) != old_source_block ||
-        output_edge(&current_source, &current_port) != 1 || current_source != old_source_block || current_port != 0) {
-        mutex_unlock(BM_MUTEX);
-        printk("\0013earc_route: refused; the eARC output route changed during start\n");
-        return -16;
-    }
-    original_nonpcm = WORD(nonpcm);
-    original_rate = WORD(rate);
-    if (original_nonpcm > 1 || (original_rate != 48000 && original_rate != 192000)) {
-        mutex_unlock(BM_MUTEX);
-        printk("\0013earc_route: refused; unexpected eARC baseline nonpcm=%u rate=%u\n", original_nonpcm, original_rate);
-        return -22;
-    }
-    if (carrier_rate == 192000) {
-        original_channels = WORD(channel_count);
-        original_acmod = WORD(acmod);
-        original_audio_mode = WORD(control) & 7;
-        original_hal_mute = (WORD(cs2) >> 18) & 1;
-        original_earc_on = *((u8 *)output_block + 129);
-        if (*(u32 *)((u8 *)output_block + 44) != 3 || !*((u8 *)source_block + 77) ||
-            (original_channels != 2 && original_channels != 6 && original_channels != 8) ||
-            original_acmod > 7 || original_hal_mute != 0 || original_earc_on != 1) {
-            mutex_unlock(BM_MUTEX);
-            printk("\0013earc_route: refused HD baseline channels=%u acmod=%u mute=%u earc=%u\n",
-                   original_channels, original_acmod, original_hal_mute, original_earc_on);
-            return -22;
-        }
-        hd_saved = 1;
-        HAL_MUTE(1);
-        printk("\0016earc_route: HD baseline clock=%u flag=%u channels=%u acmod=%u mode=%u\n",
-               original_clock_rate, original_clock_flag, original_channels, original_acmod, original_audio_mode);
-    }
-    applied = 1;
-    DISCONNECT_LOCKED(output_block, 0);
-    connected = CONNECT_LOCKED(source_block, 0x100, output_block, 0);
-    mutex_unlock(BM_MUTEX);
-    printk("\0016earc_route: native PCM carrier route result=%d\n", connected);
-    if (connected < 0) { restore_route(); return connected; }
-    HAL_FORMAT(1, carrier_rate);
-    watchdog = kthread_create_on_node(watch_route, (void *)0, -1, "earc-guard");
-    if ((u64)watchdog >= (u64)-4095) { watchdog = (void *)0; restore_route(); return -12; }
-    wake_up_process(watchdog);
-    printk("\0016earc_route: renderer%u PCM-bypass -> eARC at %u; 20-second producer lease\n", renderer, carrier_rate);
-    return 0;
+    return session();
 }
 
 int init_module(void) {
@@ -1431,14 +980,11 @@ int init_module(void) {
         printk("\0016earc_route: audit complete; unloading\n");
         return -125;
     }
-    if (mode == 1) return apply();
     return passthrough_init();
 }
 
 void cleanup_module(void) {
     passthrough_cleanup();
-    if (watchdog) kthread_stop(watchdog);
-    restore_route();
     printk("\0016earc_route: unloaded\n");
 }
 
@@ -1505,6 +1051,17 @@ static int nonpcm_set(const char *value, const void *parameter) {
     return -22;
 }
 static const struct target_parameter_operations nonpcm_operations = {0, nonpcm_set, nonpcm_get, (void *)0};
+/* Writing the renderer index + 1 takes or renews the app lease; 0 releases it. */
+static int app_route_set(const char *value, const void *parameter) {
+    u32 route;
+    (void)parameter;
+    if ((value[0] != '0' && value[0] != '1' && value[0] != '2') || (value[1] && value[1] != '\n')) return -22;
+    route = (u32)(value[0] - '0');
+    __atomic_store_n(&app_route, route, __ATOMIC_RELEASE);
+    __atomic_store_n(&app_ticks, route ? EARC_APP_LEASE_TICKS : 0, __ATOMIC_RELEASE);
+    return 0;
+}
+static const struct target_parameter_operations app_route_operations = {0, app_route_set, param_get_uint, (void *)0};
 struct target_parameter {
     const char *name;
     struct target_module *module;
@@ -1531,12 +1088,6 @@ static const struct target_parameter parameters[] __attribute__((section("__para
     {"fn__stext", &__this_module, &ulong_operations, 0, -1, 0, &fn__stext},
     {"fn__etext", &__this_module, &ulong_operations, 0, -1, 0, &fn__etext},
     {"mode", &__this_module, &uint_operations, 0400, -1, 0, &mode},
-    {"renderer", &__this_module, &uint_operations, 0400, -1, 0, &renderer},
-    {"lease", &__this_module, &uint_operations, 0600, -1, 0, &lease},
-    {"active", &__this_module, &uint_operations, 0400, -1, 0, &applied},
-    {"restore_pcm", &__this_module, &uint_operations, 0400, -1, 0, &restore_pcm},
-    {"carrier_rate", &__this_module, &uint_operations, 0400, -1, 0, &carrier_rate},
-    {"hd_ready", &__this_module, &uint_operations, 0400, -1, 0, &hd_ready},
     /* HDMI passthrough (mode>=2): load-time inputs and read-only state. */
     {"window_seconds", &__this_module, &uint_operations, 0400, -1, 0, &window_seconds},
     {"supervised", &__this_module, &uint_operations, 0400, -1, 0, &supervised},
@@ -1555,7 +1106,9 @@ static const struct target_parameter parameters[] __attribute__((section("__para
     {"hd_status_accepts", &__this_module, &uint_operations, 0400, -1, 0, &hd_status_accepts},
     {"hd_name_seen", &__this_module, &uint_operations, 0400, -1, 0, &hd_name_seen},
     {"hd_name_fixes", &__this_module, &uint_operations, 0400, -1, 0, &hd_name_fixes},
-    {"earc_nonpcm", &__this_module, &nonpcm_operations, 0400, -1, 0, (void *)0}
+    {"earc_nonpcm", &__this_module, &nonpcm_operations, 0400, -1, 0, (void *)0},
+    {"app_route", &__this_module, &app_route_operations, 0600, -1, 0, &app_route},
+    {"app_overrides", &__this_module, &uint_operations, 0400, -1, 0, &app_overrides}
 };
 static const char module_license[] __attribute__((section(".modinfo"), used)) = "license=GPL";
 static const char module_vermagic[] __attribute__((section(".modinfo"), used)) = "vermagic=" EARC_VERMAGIC;

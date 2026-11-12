@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Decision logic for the HDMI-passthrough active modes (mode>=2), shared by the
+/* Decision logic for the session load (mode 7), shared by the
  * module and the host test so both run the same code, as earc_hdmi.h is. It
  * holds no kernel ABI and calls nothing: the kernel structs (struct kprobe,
  * struct pt_regs, struct break_hook) and the live register/patch/probe calls
@@ -7,11 +7,11 @@
  *
  *  - the break-hook decision (is the list already set up, must we register,
  *    or must we refuse for a conflict or an incomplete walk),
- *  - the DTS-core policy match a _set_output probe applies,
+ *  - the _set_output policies (an HDMI DTS stream, an app holding the lease),
  *  - the "only restore the word we wrote" gate rule,
  *  - the two DTS-HD probes in _cb_output_status (accept codec 7, keep its
  *    name load inside the table),
- *  - per-mode refusal from the derived HDMI layout.
+ *  - refusal from the derived HDMI layout.
  *
  * None of these writes anything; the module turns a decision into an action. */
 #ifndef EARC_PROBE_H
@@ -78,16 +78,7 @@ static int earc_adec_slot(const struct earc_hdmi_layout *h, ed_u64 index, struct
     return 1;
 }
 
-/* lg-g5-dts's DTS-core policy for a _set_output(index, descriptor, ...) call:
- * decoder index 0 or 1 (lg-g5-dts: 1 only), the descriptor's mask word == 0x20
- * (eARC), and that decoder's ADEC slot open and started on codec 48 (DTS). The
- * caller has already confirmed the descriptor pointer is non-null and read
- * these through earc_adec_slot's addresses. */
-static int earc_policy_match(ed_u64 index, ed_u32 mask_word, ed_u32 codec, ed_u8 open, ed_u8 started) {
-    return index <= 1 && mask_word == 0x20 && codec == 48 && open == 1 && started == 1;
-}
-
-/* ---- DTS-HD (modes 6 and 7): lg-g5-dts's tools/dts-hd-route ----
+/* ---- DTS-HD: lg-g5-dts's tools/dts-hd-route ----
  * LG's output-status codec for DTS-HD is 7 and the ADEC public codec is 51
  * (status_hooks.h, policy.h). _cb_output_status accepts codecs up to the derived
  * bound (4) and names the codec from a table of 6 entries, so codec 7 is turned
@@ -97,12 +88,16 @@ static int earc_policy_match(ed_u64 index, ed_u32 mask_word, ed_u32 codec, ed_u8
 #define EARC_OUTPUT_EARC    3   /* output type, at output+44 (earc_decode checks it in output_set_earc_on) */
 #define EARC_OUTPUT_TYPE_OFFSET 44
 
-/* Mode 7's _set_output policy: the same call, with the decoder's ADEC slot on
- * DTS core (48) or DTS-HD (51). lg-g5-dts's two modules apply one override
- * (codec argument 0, bypass 1) and differ only in this codec, so one stage
- * serves both streams and a core session runs with the name probe in place too. */
+/* An HDMI DTS stream: _set_output(index, descriptor, ...) for decoder 0 or 1 on
+ * eARC (mask 0x20) whose ADEC slot is open and started on DTS core (48) or
+ * DTS-HD (51). The caller null-checked the descriptor. */
 static int earc_session_policy_match(ed_u64 index, ed_u32 mask_word, ed_u32 codec, ed_u8 open, ed_u8 started) {
     return index <= 1 && mask_word == 0x20 && (codec == 48 || codec == EARC_HD_ADEC_CODEC) && open == 1 && started == 1;
+}
+
+/* An app holding the lease (app_route = renderer index + 1) gets LG's eARC bypass for that renderer. */
+static int earc_app_policy_match(ed_u64 index, ed_u32 mask_word, ed_u32 app_route) {
+    return app_route && index == app_route - 1 && mask_word == 0x20;
 }
 
 /* The registers the two probes read and write, from the probed instructions:
@@ -166,17 +161,15 @@ static int earc_hd_native(const struct earc_hdmi_layout *h, unsigned int name_en
     return h->hd_compare_bound >= EARC_HD_EVENT_CODEC && name_entries > h->hd_compare_bound;
 }
 
-/* What modes 6 and 7 need of _cb_output_status, beyond earc_mode_refusal.
+/* What the session needs of _cb_output_status, beyond earc_mode_refusal.
  * name_entries is the live count of the name table's entries. cb_reason covers
  * the compare, the supported branch, the name load and any breakpoint in the
- * function. On a native kernel (earc_hd_native) mode 7 needs no probe there, so
- * only the derivation itself is required; mode 6 has nothing to watch and
- * refuses. Returns the reason or 0. */
-static const char *earc_hd_refusal(const struct earc_hdmi_layout *h, unsigned int name_entries, int mode) {
+ * function. On a native kernel (earc_hd_native) no probe goes there, so only
+ * the derivation itself is required. Returns the reason or 0. */
+static const char *earc_hd_refusal(const struct earc_hdmi_layout *h, unsigned int name_entries) {
     if (h->cb_reason) return h->cb_reason;
     if (h->adec_reason) return h->adec_reason;
     if (h->hd_compare_bound >= EARC_HD_EVENT_CODEC) {
-        if (mode != 7) return "the acceptance compare already covers codec 7";
         if (name_entries <= h->hd_compare_bound) return "the codec-name table is smaller than the accepted codecs";
         return 0;
     }
@@ -199,44 +192,27 @@ static ed_u32 earc_gate_restore_word(ed_u32 current, ed_u32 written) {
     return current == written ? EARC_GATE_STOCK_W0 : 0;
 }
 
-/* Per-mode refusal from the derived layout, the code-fact half (address-range
- * checks are the module's, done against _etext at load). mode 2 needs the break
- * hooks derived; mode 3 needs the gate stock and patch service; modes 4 and 5
- * need both plus the _set_output probe site, the mask offset and ADEC state.
- * Mode 6 (watch the DTS-HD sites) needs the break hooks, mode 7 (DTS core and
- * DTS-HD) what mode 5 needs; both also need earc_hd_refusal. Returns the reason or 0. */
-static const char *earc_mode_refusal(const struct earc_hdmi_layout *h, int mode) {
-    int needs_hooks = mode == 2 || mode >= 4;
-    int needs_gate = mode == 3 || mode == 4 || mode == 5 || mode == 7;
-    int needs_probe = mode == 4 || mode == 5 || mode == 7;
-    if (needs_hooks) {
-        if (h->break_reason) return h->break_reason;
-        if (!h->break_fn || !h->step_fn) return "kprobe break handlers not derived";
-        /* Both are called through these addresses; a symbol the loader could
-         * not pass is 0 here. */
-        if (!h->break_register) return "register_kernel_break_hook not found";
-        if (!h->break_unregister) return "unregister_kernel_break_hook not found";
-        if (!h->break_fields_known) return "break-hook immediate and mask not derived (cannot check for a conflict)";
-    }
-    if (needs_gate) {
-        if (h->gate_state == GATE_BREAKPOINT) return "DTS gate holds a breakpoint (another tool is probing it)";
-        /* mov w0,#1; ret is the stock gate of C3/G3, G4 and 2026 kernels, so
-         * mode 7 takes it as already open and neither patches nor restores it.
-         * The loader refuses beside the known DTS modules; the single-stage
-         * modes 3 to 5 still refuse, as their test is the gate change itself. */
-        if (h->gate_state == GATE_SWITCHED && mode == 7) needs_gate = 0;
-        else if (h->gate_state == GATE_SWITCHED) return "DTS gate is already switched (another tool opened it)";
-        else if (h->gate_state != GATE_STOCK) return "DTS gate is not in its stock state";
-    }
-    if (needs_gate) {
+/* The session's refusal from the derived layout, the code-fact half (address
+ * checks are the module's, against _etext at load): the break hooks, the gate
+ * (stock, or already returning 1 as on C3/G3, G4 and 2026 kernels, which is
+ * neither patched nor restored) with its patch service, and the _set_output
+ * probe site, mask offset and ADEC state. Returns the reason or 0. */
+static const char *earc_mode_refusal(const struct earc_hdmi_layout *h) {
+    if (h->break_reason) return h->break_reason;
+    if (!h->break_fn || !h->step_fn) return "kprobe break handlers not derived";
+    /* Both are called through these addresses; a symbol the loader could not pass is 0 here. */
+    if (!h->break_register) return "register_kernel_break_hook not found";
+    if (!h->break_unregister) return "unregister_kernel_break_hook not found";
+    if (!h->break_fields_known) return "break-hook immediate and mask not derived (cannot check for a conflict)";
+    if (h->gate_state == GATE_BREAKPOINT) return "DTS gate holds a breakpoint (another tool is probing it)";
+    if (h->gate_state != GATE_STOCK && h->gate_state != GATE_SWITCHED) return "DTS gate is not in its stock state";
+    if (h->gate_state == GATE_STOCK) {
         if (!h->patch_text) return "aarch64_insn_patch_text not found";
         if (!h->cpus_read_lock || !h->cpus_read_unlock) return "cpus_read_lock/unlock not found";
     }
-    if (needs_probe) {
-        if (h->set_output_reason) return h->set_output_reason;
-        if (h->set_output_first_brk) return "_set_output entry holds a breakpoint";
-        if (h->adec_reason) return h->adec_reason;
-    }
+    if (h->set_output_reason) return h->set_output_reason;
+    if (h->set_output_first_brk) return "_set_output entry holds a breakpoint";
+    if (h->adec_reason) return h->adec_reason;
     return 0;
 }
 
