@@ -400,6 +400,34 @@ test("the SHA refusal distinguishes no-tool, unreadable, and malformed", functio
  * it silently never ran -- the C2 fields came back empty and the app refused with
  * "no working sha256sum". 2.7.7 was verified against the enable script only, which
  * was one of the two that happened to be correct. */
+/* Same failure on webOS 25: w25AppDtsSteps copied $APPBASE/payload/... under `set -u`
+ * without the prelude, so "Show DTS tracks in apps" stopped right after writing the
+ * marker and only took effect at the next boot (c0ssie1's CS and our C5, 2.7.77). */
+test("every generated webOS 25 script defines $APPBASE before using it", function () {
+  var scripts = {
+    "w25AppDtsSteps(on)": service.w25AppDtsSteps(true),
+    "w25AppDtsSteps(off)": service.w25AppDtsSteps(false),
+    "w25Enable": service.w25Enable(false),
+    "w25Disable": service.w25Disable(),
+    "w25Uninstall": service.w25Uninstall(),
+    "w25InitScriptBody": service.w25InitScriptBody(),
+    "w25PassthroughSteps(on)": service.w25PassthroughSteps(true),
+    "w25PassthroughSteps(off)": service.w25PassthroughSteps(false),
+    "w25HdmiSteps(on)": service.w25HdmiSteps(true),
+    "w25HdmiSteps(off)": service.w25HdmiSteps(false)
+  };
+  Object.keys(scripts).forEach(function (name) {
+    var lines = scripts[name].split("\n");
+    var use = lines.findIndex(function (l) {
+      return l.indexOf("$APPBASE") >= 0 && l.indexOf("APPBASE=/media") !== 0;
+    });
+    if (use === -1) return;
+    var def = lines.findIndex(function (l) { return l.indexOf("APPBASE=") === 0; });
+    assert.notStrictEqual(def, -1, name + " uses $APPBASE but never defines it");
+    assert.ok(def < use, name + " defines APPBASE at line " + def + " but uses it at " + use);
+  });
+});
+
 test("every generated C2 script defines $APPBASE before using it", function () {
   var scripts = {
     DETECT_PROBE: service.DETECT_PROBE,

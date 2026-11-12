@@ -297,7 +297,11 @@ static void run_request (gpointer data, gpointer unused)
     else if (input_query (&now) && g_strcmp0 (now.codec, "pcm"))
       g_debug ("lgroute: LG reports \"%s\", not restoring \"%s\"", now.codec, session->codec);
     else
-      input_set (session->pipeline, request->resource, session->codec, NULL, session->immersive);
+      /* It lands at track switches, where testers' DTS went silent or the TV hung. */
+      note ("restored %s's label at LG to codec \"%s\", immersive \"%s\": %s", request->resource,
+          session->codec, session->immersive,
+          input_set (session->pipeline, request->resource, session->codec, NULL, session->immersive)
+          ? "accepted" : "refused");
   } else {
     /* A G2 stream was still mixed 1.7 s after this report, where every other
      * one unmixed: the reply says whether LG took it. */
@@ -364,6 +368,10 @@ static void report_pcm (LgRoute *route)
  * thread can neither free it under us nor wait on a pad we are blocked in. */
 static void set_pcm (LgRoute *route, gboolean on)
 {
+  /* A failed route only waits for its disarm. A tester's TV logged a failed
+   * route turning LG's bypass on for the next track as its audio locked up. */
+  if (route->failed)
+    return;
   g_mutex_lock (&route_lock);
   GstElement *sink = route->sink ? gst_object_ref (route->sink) : NULL;
   g_mutex_unlock (&route_lock);
@@ -711,7 +719,8 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
   gboolean due = now >= route->next_check, was_unmixed = route->unmixed;
   /* Read on every buffer: LG can switch eARC back to mixed at any time, and a mixed
    * eARC plays the carrier as noise. It is one cheap ALSA ioctl read. */
-  int unmixed = lgroute_control_receiver () ? lgroute_control_unmixed () : -1;
+  char why[LGROUTE_WHY] = "sound output is not a receiver";
+  int unmixed = lgroute_control_receiver () ? lgroute_control_unmixed_why (why) : -1;
   /* LG's mixer word is what LG asked for, not what the kernel did. A tester's
    * TV log had LG's mixer taking the carrier as 8-channel PCM, its queue full,
    * while the word read unmixed: white noise at the receiver. The kernel's
@@ -731,9 +740,11 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
    * up on the next one, 1.7 s later, without the second it is meant to wait. */
   if (route->mixed_since && now - route->last_push > 500 * G_TIME_SPAN_MILLISECOND)
     route->mixed_since = 0;
+  /* An unavailable reading gets the same second: a tester's TrueHD route failed
+   * on one, at the moment LG switched tracks. */
   if (unmixed > 0)
     route->mixed_since = 0;
-  else if (!route->mixed_since && unmixed == 0)
+  else if (!route->mixed_since)
     route->mixed_since = now;
   /* LG's pipeline can re-report the real codec; describe the carrier again. */
   if (unmixed == 0 && due)
@@ -743,14 +754,18 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
     GST_INFO_OBJECT (route->element, "lgroute: eARC now %s (reading %d)",
         route->unmixed ? "unmixed, carrier passes" : "mixed or unavailable, sending silence", unmixed);
     gchar *lg = lg_output ();
-    note ("eARC %s%s", route->unmixed ? "unmixed, carrier passes" : in_mixer
-        ? "unmixed but LG's mixer has the carrier, sending silence" : "mixed, sending silence", lg);
+    if (unmixed < 0)
+      note ("eARC Pass Through unavailable (%s), sending silence%s", why, lg);
+    else
+      note ("eARC %s%s", route->unmixed ? "unmixed, carrier passes" : in_mixer
+          ? "unmixed but LG's mixer has the carrier, sending silence" : "mixed, sending silence", lg);
     g_free (lg);
   }
   /* LG's policy rewrites can mix briefly; only a lasting mix means TV sound overlays the carrier. */
-  if (unmixed < 0
-      || (route->mixed_since && now - route->mixed_since >= G_TIME_SPAN_SECOND)) {
-    route_fail (route, unmixed < 0 ? "eARC Pass Through unavailable"
+  if (route->mixed_since && now - route->mixed_since >= G_TIME_SPAN_SECOND) {
+    if (unmixed < 0)
+      g_snprintf (route->unavailable, sizeof route->unavailable, "eARC Pass Through unavailable (%s)", why);
+    route_fail (route, unmixed < 0 ? route->unavailable
         : in_mixer ? "LG keeps the carrier in its mixer" : "LG keeps eARC mixing on");
     return GST_PAD_PROBE_DROP;
   }
@@ -830,8 +845,68 @@ static GstElement *find_sink (GstObject *top, unsigned *count, unsigned *total)
   return sink;
 }
 
+/* TRUE once an LG audio sink under top has caps: the pipeline has played a
+ * track, so this first frame is a track switch and not the start of a file. */
+static gboolean sink_has_caps (GstObject *top)
+{
+  gboolean has = FALSE;
+  if (!GST_IS_BIN (top))
+    return FALSE;
+  GstIterator *iterator = gst_bin_iterate_all_by_element_factory_name (GST_BIN (top), "audiosink");
+  GValue value = G_VALUE_INIT;
+  for (GstIteratorResult result; !has && (result = gst_iterator_next (iterator, &value)) != GST_ITERATOR_DONE
+      && result != GST_ITERATOR_ERROR;) {
+    if (result == GST_ITERATOR_RESYNC) {
+      gst_iterator_resync (iterator);
+      continue;
+    }
+    GstPad *pad = gst_element_get_static_pad (g_value_get_object (&value), "sink");
+    has = pad && gst_pad_has_current_caps (pad);
+    if (pad) gst_object_unref (pad);
+    g_value_reset (&value);
+  }
+  g_value_unset (&value);
+  gst_iterator_free (iterator);
+  return has;
+}
+
+/* A tester's TrueHD to DTS switch read eARC unavailable once, and the DTS track
+ * stayed core only and silent; the end-of-session report read it healthy. LG
+ * rewires its eARC output at a track switch while the earlier track drains, so
+ * there it is read again for up to 500 ms. A first play does not wait. */
+static int earc_after_switch (LgRoute *route, char why[LGROUTE_WHY])
+{
+  GstObject *top = gst_object_ref (route->element), *parent;
+  while ((parent = gst_object_get_parent (top))) {
+    gst_object_unref (top);
+    top = parent;
+  }
+  gboolean switching = GST_IS_ELEMENT (top) && GST_STATE_TARGET (top) >= GST_STATE_PAUSED
+      && sink_has_caps (top);
+  gst_object_unref (top);
+  if (!switching)
+    return -1;
+  gchar first[LGROUTE_WHY];
+  g_strlcpy (first, why, sizeof first);
+  GstPad *input = gst_element_get_static_pad (route->element, "sink");
+  gint64 start = g_get_monotonic_time (), deadline = start + 500 * G_TIME_SPAN_MILLISECOND, now;
+  int unmixed = -1;
+  while (unmixed < 0 && (now = g_get_monotonic_time ()) < deadline
+      && !(input && GST_PAD_IS_FLUSHING (input))) {
+    g_usleep (MIN (50 * G_TIME_SPAN_MILLISECOND, deadline - now));
+    unmixed = lgroute_control_unmixed_why (why);
+  }
+  gst_clear_object (&input);
+  gchar *then = unmixed < 0 ? g_strdup_printf ("unavailable (%s)", why) : g_strdup (unmixed ? "unmixed" : "mixed");
+  note ("track switch: eARC Pass Through unavailable (%s), read again for %" G_GINT64_FORMAT " ms: %s",
+      first, (g_get_monotonic_time () - start) / G_TIME_SPAN_MILLISECOND, then);
+  g_free (then);
+  return unmixed;
+}
+
 gboolean lgroute_arm (LgRoute *route)
 {
+  char why[LGROUTE_WHY];
   g_mutex_lock (&route_lock);
   gboolean armed = route->sink != NULL;
   g_mutex_unlock (&route_lock);
@@ -845,8 +920,8 @@ gboolean lgroute_arm (LgRoute *route)
     note ("not armed: sound output is not a receiver");
     return FALSE;
   }
-  if (lgroute_control_unmixed () < 0) {
-    note ("not armed: eARC Pass Through unavailable");
+  if (lgroute_control_unmixed_why (why) < 0 && earc_after_switch (route, why) < 0) {
+    note ("not armed: eARC Pass Through unavailable (%s)", why);
     return FALSE;
   }
   GstElement *sink = NULL;

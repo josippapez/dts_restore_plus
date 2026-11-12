@@ -13,11 +13,15 @@ The single source of truth for the shipped binaries is:
 ```
 gst/                          four LG GStreamer 1.14.4 legacy plugins (CX/C2 app payload)
 webos25/restore/out/         libgstdtsdec.so                     (DTS decoder, ffmpeg dca static)
+                              lgroute-control                     (ALSA mixer validation/recovery helper)
 webos25/restore/truehd-out/  libgstlibav.so + libav*/libsw*      (TrueHD/MLP)
 webos25/restore/switch-out/  libgstadecswitch.so                 (track A stream-switch bin)
 webos25/restore/edid-out/    libedidaudio.so                     (eim hook: no DTS in HDMI EDIDs)
 webos25/restore/demux-out/   libgstisomp4.so, libgstmpegtsdemux.so (mp4/ts/m2ts DTS,
                               MP4 Dolby Vision profile 7), libgstmatroska.so (MKV DV profile 7)
+webos25/restore/ts114-out/   libgstmpegtsdemux.so                (1.14.4 build, C2 app profile)
+webos25/restore/kmod-out/    earc_route-5.4.ko (webos25/kmod, GPL-2.0-only; ships with the
+                              HDMI passthrough opt-in)
 ```
 
 The app's `webos25/app/payload/**` `.so` are **git-ignored** generated copies. At
@@ -28,12 +32,28 @@ Never edit a generated `payload/**` binary.
 **If you touch anything that affects those binaries, you MUST rebuild + re-verify
 + re-commit them, then re-release.** "Affects those binaries" includes:
 
-- `webos25/restore/src/gstdtsdec.c` (the DTS patch)
+- the sources of the committed binaries, all in `webos25/restore/src/`:
+  `gstdtsdec.c`, `gstdtsdec.h`, `dtsdec-track.h` (the DTS patch);
+  `lgroute.c`, `lgroute.h`, `lgroute-graph.h` (linked into `libgstdtsdec.so`);
+  `lgroute-control.c`, `lgroute-control.h` (linked into `libgstdtsdec.so` and
+  `libgstadecswitch.so`, and built alone as `out/lgroute-control`);
+  `gstadecswitch.c`, `gstadecswitch.h`; `edidaudio.c`, `edidaudio.h`
 - the `dts_support` demuxer patch, the DTS-HD substream (0x72) tsdemux patch, the Dolby
   Vision profile 7 matroska/qtdemux patches, or their version, in `webos25/restore/build-demux.sh`
-- `webos25/restore/build.sh`, `build-truehd.sh`, `build-demux.sh`, `build-switch.sh`
+- `webos25/restore/build.sh`, `build-truehd.sh`, `build-demux.sh`, `build-switch.sh`,
+  `build-edid.sh`, `build-ts114.sh`
   (toolchain, flags, pinned sources, ABI — for `build.sh` that includes the ffmpeg
   `n4.4.4` tag, its configure flags and the pinned Debian snapshot)
+- the kernel module in `webos25/kmod/`: `earc_route.c`, `earc_decode.h`, `earc_hdmi.h`,
+  `earc_probe.h`, `build.sh`, `build.py`. Rebuild with `webos25/kmod/build.sh` (see its
+  README), copy `out/earc_route-5.4.ko` into `webos25/restore/kmod-out/`, and run the
+  module on a TV of that kernel generation (audit, self-test, the mode `hdmi-watch.sh`
+  loads, unload) before committing it
+
+`earc-route-load.sh` and `hdmi-watch.sh` are not vendored: the release workflow copies
+them from `webos25/kmod/` into the CLI tarball's `kmod-out/` and the app's
+`payload/webos25-hdmi/`. The 6.12 module is not vendored: it has never run on a TV, and
+the opt-in refuses that kernel.
 
 Editing `install.sh` / `init_dts25.sh` / the app JS/HTML does **not** require a
 rebuild — but still cut a new release so the tarball/`.ipk` carry the change.
@@ -104,8 +124,8 @@ same texts; that copy is gitignored build output, never a second source. LGPL-2.
 requires handing recipients a copy of the license and the source offer, and
 `libgstdtsdec.so` links ffmpeg statically, so that offer (the source + `build.sh`) is also
 what lets a recipient relink it — see the per-artifact table in the root `README.md`.
-Since libdca was dropped (webos25-2.43) no artifact in that table is GPL; `GPL-2.0.txt` is
-still shipped, but nothing listed there requires it.
+Since libdca was dropped (webos25-2.43) the only GPL artifacts are the HDMI passthrough
+module and its two scripts (GPL-2.0-only), which `GPL-2.0.txt` covers.
 
 ## Rebuild + verify (only when the binaries are affected)
 
@@ -175,6 +195,8 @@ cp -Pf ../restore/truehd-out/libgstlibav.so ../restore/truehd-out/libav*.so* \
        ../restore/truehd-out/libsw*.so*                                 payload/webos25-truehd/
 cp -f  ../restore/demux-out/libgstisomp4.so ../restore/demux-out/libgstmpegtsdemux.so \
        ../restore/demux-out/libgstmatroska.so ../restore/demux-out/libgstmpegpsdemux.so payload/webos25-demux/
+cp -f  ../restore/kmod-out/earc_route-5.4.ko ../kmod/earc-route-load.sh ../kmod/hdmi-watch.sh \
+       payload/webos25-hdmi/
 cp -f  ../../gst/libgstlibav.so ../../gst/libgstisomp4.so \
        ../../gst/libgstmatroska.so ../../gst/libgstisomp4_1_8.so          payload/cx/
 npm install -g @webosose/ares-cli
@@ -187,7 +209,8 @@ All four root `gst/` files are required for packaging even though C2 binds
 
 ## Checklist
 
-- [ ] Binaries in `webos25/restore/**` current (rebuilt + on-device-verified if affected)
+- [ ] Binaries in `webos25/restore/**` current (rebuilt + on-device-verified if affected),
+      including `kmod-out/*.ko` against the `webos25/kmod/` sources
 - [ ] Four tracked root `gst/*.so` files copied into generated `payload/cx/`
 - [ ] `webos25/restore/out/BUILD-REPORT.txt` and `webos25/restore/demux-out/BUILD-REPORT.txt`
       reflect the current build

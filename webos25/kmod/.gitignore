@@ -1,0 +1,3 @@
+out/
+# The root .gitignore ignores LICENSE; this directory ships its own GPL-2.0 text.
+!LICENSE

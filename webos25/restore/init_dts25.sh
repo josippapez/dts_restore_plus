@@ -28,6 +28,9 @@
 #   W25_APPDTS=on|off
 #                 only set or restore tv.model.edidType live (the app's "Show
 #                 DTS tracks in apps" toggle), print EDIDTYPE=<value> and exit.
+#   W25_HDMI=on|off
+#                 only turn the HDMI-input DTS passthrough opt-in on or off (the
+#                 app's toggle), then exit. W25_HDMI=run is its supervisor.
 #   FORCE=1       explicit opt-in on a TV that is not in the verified table.
 #
 # Always exits 0: a non-zero webosbrew init script trips the failsafe that
@@ -113,8 +116,10 @@ EXPECT_GST=1.24
 #      EDIDs keep LG's stock audio list (no DTS).
 #   49 ...but not on a TV whose factory edidType already lists dts.
 #   50 DTS-HD/TrueHD over eARC allowed on the G3's LG sink build (33.31.68).
-#   51 verified stock plugin set for the G3 on firmware 33.31.68.
-W25_GATE_VERSION=51
+#   51 opt-in DTS passthrough from HDMI inputs (webos25/kmod hdmi-watch.sh) on the
+#      5.4.268 kernels, W25_HDMI=on|off|run; stand-down, self-heal and Disable stop it.
+#   52 verified stock plugin set for the G3 on firmware 33.31.68.
+W25_GATE_VERSION=52
 FP=/var/lib/webosbrew/dts25/stock.fp
 # Where the installed copy of THIS script lives, and the boot hook that symlinks
 # to it. Named here, in the shared block, so the read-only probe can fingerprint
@@ -245,8 +250,54 @@ w25_pt_stop_soft() {
   w25_log "WARN passthrough stop failed; continuing: $PT_STOP_OUT"
   echo "WARN_PT_STOP=${PT_STOP_OUT:-passthrough did not stop cleanly}"
 }
+# HDMI-input DTS passthrough opt-in: a supervisor (w25_hdmi_supervise) runs
+# webos25/kmod's hdmi-watch.sh from $HDMI_DIR. Here because stand-down, self-heal,
+# Disable and the app's probe stop it or report on it.
+HDMI_FLAG=/var/lib/webosbrew/dts25/hdmi-passthrough
+HDMI_DIR=/var/lib/webosbrew/dts25/hdmi
+HDMI_PID=/run/dts25/hdmi.pid
+HDMI_OUT=/run/dts25/hdmi-watch.out
+HDMI_EXIT=/run/dts25/hdmi-watch.exit
+w25_alive() { [ -n "$1" ] && [ -r "/proc/$1/stat" ] && [ "$(cut -d' ' -f3 "/proc/$1/stat" 2>/dev/null)" != Z ]; }
+# Why the opt-in cannot run on this TV, or nothing. The module and the scripts
+# have run only on 5.4.268 kernels; earc_route-6.12.ko has never run on a TV.
+w25_hdmi_refusal() {
+  case $(uname -r) in
+    5.4.268-329.ptl4tv.5|5.4.268-329.ptl4tv.2) ;;
+    6.12.*) echo kernel-6.12; return 0 ;;
+    *) echo kernel; return 0 ;;
+  esac
+  if [ -f /var/lib/lg-dts-core/enabled ]; then echo lg-dts-core
+  elif [ -f /var/lib/lg-dts-native/enabled ]; then echo glasshouse
+  elif [ ! -f "$HDMI_DIR/earc_route-5.4.ko" ] || [ ! -f "$HDMI_DIR/earc-route-load.sh" ] || [ ! -f "$HDMI_DIR/hdmi-watch.sh" ]; then echo payload
+  fi
+  return 0
+}
+# On TERM the supervisor stops hdmi-watch.sh, which reverts its writes, unloads
+# earc_route and exits 0, or 20 when the rollback is incomplete.
+w25_hdmi_stop() {
+  P=$(cat "$HDMI_PID" 2>/dev/null)
+  w25_alive "$P" || { rm -f "$HDMI_PID"; return 0; }
+  kill "$P" 2>/dev/null
+  i=0
+  while w25_alive "$P" && [ "$i" -lt 40 ]; do sleep 1; i=$((i + 1)); done
+  if w25_alive "$P"; then
+    echo 'ERROR=HDMI passthrough did not stop; it is still on.'
+    return 1
+  fi
+  [ "$(cat "$HDMI_EXIT" 2>/dev/null)" != 20 ] ||
+    echo 'WARN_HDMI=HDMI passthrough could not undo all of its changes. Restart the TV.'
+  return 0
+}
+w25_hdmi_stop_soft() {
+  HDMI_STOP_MSG=$(w25_hdmi_stop | sed -n 's/^ERROR=//p; s/^WARN_HDMI=//p' | head -n1)
+  [ -n "$HDMI_STOP_MSG" ] || return 0
+  w25_log "WARN HDMI passthrough stop: $HDMI_STOP_MSG"
+  echo "WARN_HDMI=$HDMI_STOP_MSG"
+}
 w25_stand_down() {
   w25_pt_stop_soft
+  w25_hdmi_stop_soft
   w25_drop_binds
   if w25_reg_is_ours; then
     w25_log "a registry of ours is still live; regenerating the stock registry so nothing of ours stays registered"
@@ -892,6 +943,92 @@ w25_appdts_off() {
     rm -f "$CFG_USER"
   return 0
 }
+# --- HDMI-input DTS passthrough opt-in (experimental, 5.4.268 kernels) ------------
+# hdmi-watch.sh loads earc_route and passes DTS from an HDMI input to an eARC
+# receiver while it runs (webos25/kmod/README.md). The supervisor below runs it
+# and decides what the HDMI inputs' EDIDs offer. They offer DTS only through the
+# "Show DTS tracks in apps" edidType, so the opt-in needs that on; the supervisor
+# takes the eim hook off only while an eARC receiver is the sound output, because
+# on the TV speakers DTS from an HDMI device plays as silence (measured on a C5).
+# Each hook change restarts eim and arccontroller, so a change waits until the
+# output has held for HDMI_SETTLE polls, and offering DTS again waits
+# HDMI_COOLDOWN seconds after the last change. Devices already plugged in read a
+# changed EDID only after a replug or a power cycle.
+HDMI_POLL=10
+HDMI_SETTLE=3
+HDMI_COOLDOWN=300
+w25_hdmi_receiver() {
+  grep -qx 'EArcOnOff=On' /proc/lgtv-driver/audio/sndout 2>/dev/null &&
+    w25_luna luna://com.webos.settingsservice/getSystemSettings '{"category":"sound","keys":["soundOutput"]}' |
+      grep -q '"soundOutput" *: *"external_arc"'
+}
+# Points the HDMI EDIDs at $1 (dts|nodts); returns 1 when nothing had to change.
+w25_hdmi_edid() {
+  case $(w25_edid_stock) in *dts*) return 1 ;; esac
+  if [ "$1" = dts ]; then
+    grep -q libedidaudio "$EIM_ENV" 2>/dev/null || return 1
+    w25_hdmi_hook_off
+  else
+    [ -f "$APPDTS_FLAG" ] && ! w25_eim_hooked || return 1
+    w25_hdmi_hook_on
+  fi
+  return 0
+}
+w25_hdmi_poll() {
+  now=nodts
+  w25_hdmi_receiver && now=dts
+  if [ "$now" = "$want" ]; then same=$((same + 1)); else want=$now same=1; fi
+  [ "$same" -ge "$HDMI_SETTLE" ] || return 0
+  [ "$want" = nodts ] || [ $(($(date +%s) - changed)) -ge "$HDMI_COOLDOWN" ] || return 0
+  w25_hdmi_edid "$want" || return 0
+  changed=$(date +%s)
+  w25_log "hdmi: HDMI inputs now $want"
+}
+w25_hdmi_supervise() {
+  ( set -C; echo "$$" > "$HDMI_PID" ) 2>/dev/null || return 0
+  quit=
+  trap 'quit=1' INT TERM HUP
+  sh "$HDMI_DIR/hdmi-watch.sh" </dev/null >"$HDMI_OUT" 2>&1 &
+  watcher=$!
+  want= same=0 changed=0
+  while [ -z "$quit" ] && w25_alive "$watcher"; do
+    w25_hdmi_poll
+    sleep "$HDMI_POLL" & wait $!
+  done
+  kill "$watcher" 2>/dev/null
+  wait "$watcher"
+  echo "$?" > "$HDMI_EXIT"
+  w25_hdmi_edid nodts
+  rm -f "$HDMI_PID"
+}
+w25_hdmi_start() {
+  [ -f "$HDMI_FLAG" ] || return 0
+  w25_alive "$(cat "$HDMI_PID" 2>/dev/null)" && return 0
+  WHY=$(w25_hdmi_refusal)
+  if [ -n "$WHY" ]; then
+    w25_log "hdmi: not started ($WHY)"
+    return 0
+  fi
+  mkdir -p /run/dts25
+  rm -f "$HDMI_PID" "$HDMI_OUT" "$HDMI_EXIT"
+  W25_HDMI=run setsid sh "$INIT_SELF" </dev/null >/dev/null 2>&1 &
+}
+# The app's toggle. Waits until hdmi-watch.sh is watching or has stopped.
+w25_hdmi_on() {
+  WHY=$(w25_hdmi_refusal)
+  [ -n "$WHY" ] || case "$(w25_edid_stock) $(w25_edid_get)" in *dts*) ;; *) WHY=appdts ;; esac
+  if [ -n "$WHY" ]; then
+    echo "HDMI_REFUSED=$WHY"
+    return 0
+  fi
+  : > "$HDMI_FLAG" || return 1
+  w25_hdmi_start
+  i=0
+  while [ "$i" -lt 30 ] && [ ! -f "$HDMI_EXIT" ] && ! grep -q 'watching the HDMI input' "$HDMI_OUT" 2>/dev/null; do
+    sleep 1
+    i=$((i + 1))
+  done
+}
 # W25_PT=start|stop: only start or stop the watcher, for the app's toggle, so
 # turning passthrough on or off takes effect without a restart.
 if [ -n "${W25_PT:-}" ]; then
@@ -910,6 +1047,15 @@ if [ -n "${W25_APPDTS:-}" ]; then
     off) w25_appdts_off ;;
   esac
   echo "EDIDTYPE=$(w25_edid_get)"
+  exit 0
+fi
+# W25_HDMI=on|off: the app's HDMI passthrough toggle; run: the supervisor itself.
+if [ -n "${W25_HDMI:-}" ]; then
+  case $W25_HDMI in
+    on) w25_hdmi_on || exit 1 ;;
+    off) w25_hdmi_stop || exit 1; rm -f "$HDMI_FLAG" ;;
+    run) w25_hdmi_supervise ;;
+  esac
   exit 0
 fi
 # W25_STAND_DOWN=1: revert to stock and exit. Deliberately a mode of its own
@@ -966,6 +1112,7 @@ w25_unowned() {
 w25_self_heal() {
   w25_log "SELF-HEAL: $HEAL_WHY -- reverting every override"
   w25_pt_stop_soft
+  w25_hdmi_stop_soft
   w25_drop_binds
   if ! w25_stock_registry; then
     w25_log "SELF-HEAL DEFERRED: LG's registry could not be rebuilt, so our plugins and the boot hook are KEPT (deleting them now would leave the live registry pointing at missing plugins). Retrying at the next boot."
@@ -1100,6 +1247,7 @@ w25_appdts_start() {
 w25_appdts_start
 w25_pt_stop_soft
 w25_pt_start
+w25_hdmi_start
 # --- APPLY 2c) container demuxers with DTS re-enabled (mp4/ts/m2ts DTS -> audio/x-dts).
 #         Patched isomp4/mpegtsdemux/mpegpsdemux default dts_support=TRUE; patched matroska
 #         signals Dolby Vision profile 7. Bound BEFORE the regen below so the

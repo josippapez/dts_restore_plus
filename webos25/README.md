@@ -57,6 +57,23 @@ TrueHD, gain controls, or A/B compare). The webOS-25 CLI does not install this
 profile. See [`app/README.md`](app/README.md#webos22-o22-gst118--exact-firmware-legacy-override-experimental-not-hardware-verified)
 and [`docs/FIRMWARE-COMPATIBILITY.md`](docs/FIRMWARE-COMPATIBILITY.md#implemented-c2-app-policy-version-260).
 
+## Reporting a TV
+
+To report an unsupported or refused TV, run this on the TV as root and paste the whole
+output into a GitHub issue:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/josippapez/dts_restore_plus/main/webos25/restore/report-tv.sh | sh
+```
+
+`report-tv.sh` is read-only: it writes nothing but a scratch file in `/tmp` that it
+removes, and it gives up on any read of LG's audio driver after 5 seconds. It prints the
+loader/ABI, GStreamer and identity values, the stock plugin hashes, any existing
+install, the profile the app would pick, the app, boot and eARC route logs, LG audio
+sink and DSP crash lines, and the eARC state. It also prints `KERNEL_RELEASE` (`uname -r`,
+report version 5), which decides whether the HDMI kernel module in
+[`kmod/`](kmod/README.md) can support the TV.
+
 ## Folder layout
 
 - `restore/` — the CLI tool: prebuilt decoders (`out/`, `truehd-out/`) + container
@@ -207,7 +224,10 @@ defaults to off.
 **HDMI inputs keep their stock audio list (gate 48).** LG's `eim` builds the EDID for
 every HDMI input from the same value, so on its own the opt-in adds DTS and DTS-HD to
 all of them. The TV cannot decode DTS that arrives over HDMI: measured on a C5, a Google
-TV Streamer then sent a DTS 5.1 track as DTS and the TV stayed silent. So while the
+TV Streamer then sent a DTS 5.1 track as DTS and the TV stayed silent. (The app's
+experimental HDMI passthrough opt-in sends HDMI-input DTS on to an eARC receiver, and takes
+this hook off only while that receiver is the sound output; see
+[`app/README.md`](app/README.md) and [`kmod/README.md`](kmod/README.md).) So while the
 opt-in is on, and the factory edidType has no `dts` (gate 49: a TV that ships with it
 keeps it on its inputs), `eim` preloads `libedidaudio.so` (`src/edidaudio.c`, built by
 `build-edid.sh`), which makes LG's EDID builder use the edidType without `+dts`. The
@@ -264,8 +284,19 @@ Media Player, through seeking, pausing and volume changes. Also tested over opti
 - **Optical carries the core only.** S/PDIF has the bandwidth for the DTS 5.1 core and
   nothing more: DTS-HD MA, DTS:X and TrueHD need eARC.
 - **Core by default.** The experimental **Full DTS-HD / TrueHD** eARC opt-in uses
-  LG-managed routing on an exact sink-build allowlist, verified on a C2 with a Samsung
-  Q995GF; DTS:X, Atmos and other TV/receiver combinations are unverified.
+  LG-managed routing on an exact allowlist of LG audio sink builds
+  (`w25_pt_sink_verified` in `restore/init_dts25.sh`: three builds). Reported working:
+  a C2 with a Samsung Q995GF (DTS-HD and TrueHD; the code does not say which listed build that is); a G2
+  (OLED55G26LA, 33.22.95) with a Denon AVR-S770H (DTS-HD and TrueHD 7.1 bitstream); a G3
+  (OLED77G36LA, 33.31.68) with a Marantz receiver (TrueHD Atmos reported by the tester).
+  Separately, a CS (33.31.68) with a Samsung HW-Q930F played DTS, DTS-HD and DTS:X
+  demos with app 2.7.71 or later (discussion #17).
+  On any other sink build the boot script does not write `/run/dts25/sink-ok`, the app
+  reports "This TV's LG audio sink build is not on the tested list", and HD is refused
+  (core and decode still work). The only things that read `/run/dts25/sink-ok` are the app's readiness check and the
+  plugin, and they test only that the file exists, so creating it by hand lifts the
+  refusal until the boot script or the app's passthrough toggle runs again (both delete
+  it first). That is untested. Other TV/receiver combinations are unverified.
 - **Videos only.** LG applies −3 dB / +3 dB to audio-only files (music), which breaks
   the bitstream, so an audio-only DTS file can come out as loud noise.
 - **48 kHz, 16-bit DTS core** (every DTS track in MKV, MP4 and TS). Anything else is

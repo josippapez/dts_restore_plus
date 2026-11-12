@@ -1,0 +1,73 @@
+digraph {
+ rankdir="LR";
+ node [color=black, fillcolor=white, style=filled, shape=box, fontname="sans"]
+ subgraph cluster_proc_0 {
+  label="proc_0";
+ }
+  subgraph cluster_input_0x1 {
+   label="input1";
+  input_1_out100 [label="out100", fillcolor=lightgrey];
+  input_1_out0 [label="out0", fillcolor=lightgrey];
+  }
+  subgraph cluster_renderer_0x1 {
+   label="renderer1";
+  renderer_1_in0 [label="in0", fillcolor=lightgrey];
+  renderer_1_in100 [label="in100", fillcolor=lightgrey];
+  renderer_1_out0 [label="out0", fillcolor=lightgrey];
+  }
+  subgraph cluster_decoder_0x1 {
+   label="decoder1";
+  decoder_1_in100 [label="in100", fillcolor=lightgrey];
+  decoder_1_in0 [label="in0", fillcolor=lightgrey];
+  decoder_1_out100 [label="out100", fillcolor=lightgrey];
+  decoder_1_out0 [label="out0", fillcolor=lightgrey];
+  }
+  subgraph cluster_output_0x2 {
+   label="output2";
+  output_2_in0 [label="in0", fillcolor=lightgrey];
+  }
+  subgraph cluster_output_0x0 {
+   label="output0";
+  output_0_in0 [label="in0", fillcolor=lightgrey];
+  }
+  subgraph cluster_output_0x1 {
+   label="output1";
+  output_1_in0 [label="in0", fillcolor=lightgrey];
+  }
+  subgraph cluster_mixer_0x0 {
+   label="mixer0";
+  mixer_0_in1 [label="in1", fillcolor=lightgrey];
+  mixer_0_inb [label="inb", fillcolor=lightgrey];
+  mixer_0_ina [label="ina", fillcolor=lightgrey];
+  mixer_0_out2 [label="out2", fillcolor=lightgrey];
+  mixer_0_out0 [label="out0", fillcolor=lightgrey];
+  }
+  subgraph cluster_se_0x1005 {
+   label="se1005";
+  }
+  subgraph cluster_se_0x1004 {
+   label="se1004";
+  }
+  subgraph cluster_se_0x1003 {
+   label="se1003";
+  }
+  subgraph cluster_se_0x1002 {
+   label="se1002";
+  }
+  subgraph cluster_se_0x1001 {
+   label="se1001";
+  se_1001_in1 [label="in1", fillcolor=lightgrey];
+  se_1001_in0 [label="in0", fillcolor=lightgrey];
+  se_1001_out0 [label="out0", fillcolor=lightgrey];
+  }
+ input_1_out100 -> decoder_1_in100 [label=""]
+ input_1_out0 -> decoder_1_in0 [label=""]
+ renderer_1_out0 -> mixer_0_in1 [label=""]
+ decoder_1_out100 -> renderer_1_in100 [label=""]
+ decoder_1_out0 -> renderer_1_in0 [label=""]
+ mixer_0_out2 -> se_1001_in1 [label=""]
+ mixer_0_out0 -> output_2_in0 [label=""]
+ mixer_0_out0 -> se_1001_in0 [label=""]
+ mixer_0_out0 -> output_1_in0 [label=""]
+ se_1001_out0 -> output_0_in0 [label=""]
+}

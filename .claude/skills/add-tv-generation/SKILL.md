@@ -42,6 +42,21 @@ Homebrew `squashfs`; the bundled unsquashfs silently emits only `.pak`.
 **`unsquashfs -l rootfs.pak` lists the whole tree without extracting**, which answers
 most questions below for the price of the download alone.
 
+## 1b. The kernel for the HDMI module (`webos25/kmod`)
+
+The eARC/HDMI kernel module is built per kernel release, so a new release needs its
+kernel image, not just the userspace plugins. Use the same archive index: each EPK
+entry has a `kernelVersion` field, so find firmwares on the user's release (from
+`uname -r`, or `KERNEL_RELEASE=` in `report-tv.sh` output) and match their boards by
+`firmwareotaID`. After the download and `zipFileSha256` check above, the kernel is
+`/boot/Image.lz4-<release>` in the extracted rootfs. On 33.22.x the EPK has no
+`kernel.pak`, so the rootfs is the only place. The remaining steps (LZ4P unpacking,
+symbol table, stock module, capture directory, allowlist, tests) are in
+[`webos25/kmod/README.md`](../../../webos25/kmod/README.md#adding-a-kernel).
+
+In auto mode, building or running `epk2extract` may be blocked. Ask the user to
+approve it, or to run it themselves.
+
 ## 2. Decide the mechanism from the image
 
 Three things decide everything. Extract them and stop guessing.
