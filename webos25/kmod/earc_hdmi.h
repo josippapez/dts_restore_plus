@@ -23,8 +23,8 @@
  * registers it can write. A register value carries the place it was defined, so
  * two reads are known to see the same value only inside one block.
  *
- * This header derives code facts only. Data reads the audit needs (ADEC 1's
- * live codec/open/started, the codec-name table, the break-hook list) are done
+ * This header derives code facts only. Data reads the audit needs (ADEC 0's and
+ * 1's live codec/open/started, the codec-name table, the break-hook list) are done
  * by the caller through the addresses derived here; the list walk is here too,
  * with the memory read passed in, so the module and the test run the same code.
  * Freestanding, static state, decode-once. */
@@ -85,8 +85,10 @@ struct earc_hdmi_layout {
     ed_u64 mask_offset;
     const char *set_output_reason;
     /* 4. ADEC public-state table: slot = base + index*stride; the three field
-     * offsets inside a slot; ADEC 1's three absolute addresses. */
+     * offsets inside a slot; ADEC 0's (slot 0 = base) and ADEC 1's three
+     * absolute addresses. */
     ed_u64 adec_base, adec_stride, adec_open_off, adec_started_off, adec_codec_off;
+    ed_u64 adec0_codec, adec0_open, adec0_started;
     ed_u64 adec1_codec, adec1_open, adec1_started;
     const char *adec_reason;
     /* 5. _cb_output_status DTS-HD sites. hd_shape 1: `cmp codec,#bound; b.ls`
@@ -358,8 +360,8 @@ struct hd_slot_scan {
  * while a register still holds that slot. Exact: every such access must be
  * through one slot value (one base, stride and index), and that index must be
  * the value checked by a `cmp wI,#1; b.hi` earlier in the same block. The
- * 5.4.268-329.ptl4tv.2 kernel (33.22.x) compares signed, `b.gt`: it also
- * rejects every index above 1 and accepts 1, the only slot read. */
+ * 5.4.268-329.ptl4tv.2 kernel (33.22.x) compares signed, `b.gt`: it too
+ * accepts 0 and 1, the only slots read, and rejects every index above 1. */
 static void hd_slot_scan(const struct earc_code *f, struct hd_slot_scan *s) {
     unsigned int i, j, bounds = 0, bound_reg[8], bound_at[8];
     ed_u16 bound_def[8];
@@ -436,6 +438,9 @@ static void hd_adec(const struct earc_code *fns, struct earc_hdmi_layout *out) {
     if (out->adec_codec_off + 4 > codec.stride || out->adec_open_off >= codec.stride || out->adec_started_off >= codec.stride) {
         out->adec_reason = "a field offset lies outside the slot"; return;
     }
+    out->adec0_codec = codec.base + out->adec_codec_off;
+    out->adec0_open = codec.base + out->adec_open_off;
+    out->adec0_started = codec.base + out->adec_started_off;
     slot1 = codec.base + codec.stride;
     out->adec1_codec = slot1 + out->adec_codec_off;
     out->adec1_open = slot1 + out->adec_open_off;

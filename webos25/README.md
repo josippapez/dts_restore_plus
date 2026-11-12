@@ -224,9 +224,10 @@ defaults to off.
 **HDMI inputs keep their stock audio list (gate 48).** LG's `eim` builds the EDID for
 every HDMI input from the same value, so on its own the opt-in adds DTS and DTS-HD to
 all of them. The TV cannot decode DTS that arrives over HDMI: measured on a C5, a Google
-TV Streamer then sent a DTS 5.1 track as DTS and the TV stayed silent. (That is true of the
-shipped app. An experimental, unshipped kernel module can send HDMI-input DTS on to an
-eARC receiver; see [`kmod/README.md`](kmod/README.md).) So while the
+TV Streamer then sent a DTS 5.1 track as DTS and the TV stayed silent. (The app's
+experimental HDMI passthrough opt-in sends HDMI-input DTS on to an eARC receiver, and takes
+this hook off only while that receiver is the sound output; see
+[`app/README.md`](app/README.md) and [`kmod/README.md`](kmod/README.md).) So while the
 opt-in is on, and the factory edidType has no `dts` (gate 49: a TV that ships with it
 keeps it on its inputs), `eim` preloads `libedidaudio.so` (`src/edidaudio.c`, built by
 `build-edid.sh`), which makes LG's EDID builder use the edidType without `+dts`. The

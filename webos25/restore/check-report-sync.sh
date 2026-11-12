@@ -1,11 +1,9 @@
 #!/bin/sh
 # check-report-sync.sh -- report-tv.sh must compute the SAME profile the app does.
 #
-# report-tv.sh duplicates the C2 gate from the app's DETECT_PROBE (it has to: it
-# runs standalone, with no app installed). Duplication drifts silently, and a
-# report script that disagrees with the gate it is meant to explain is worse than
-# no report at all -- it sends the maintainer after the wrong value. So assert the
-# gate lines are byte-identical, modulo the JS string quoting around them.
+# report-tv.sh duplicates the app's profile selection logic so it can run
+# standalone. Verify that critical detection rules remain synchronized
+# between service.js and report-tv.sh.
 set -eu
 here=$(dirname "$0")
 SVC="$here/../app/service/service.js"
@@ -33,9 +31,10 @@ check "gate: float-abi" '[ "$FLOAT_ABI" = "soft" ] || C2_GATE_FAIL="$C2_GATE_FAI
 check "W25 loader/abi condition" '[ "$LOADER" = "ld-linux.so.3" ] && [ "$FLOAT_ABI" = "soft" ]'
 check "float ABI hard bit" '[ "$((val & 0x400))" -ne 0 ]'
 check "float ABI soft bit" '[ "$((val & 0x200))" -ne 0 ]'
-check "C2 profiles kept from override" 'case "$PROFILE" in webos22-o22-gst118|webos22-o22-c2-diagnostic) C2_KEEP=1 ;; *) C2_KEEP=0 ;; esac'
-check "native-dts override guard" 'if [ "$HAS_DTS_AUDIODEC" = "yes" ] && [ "$C2_KEEP" = 0 ]; then'
-check "native-dts gated split" 'if [ "$DCA_RANK" = "0" ]; then PROFILE=native-dts-gated'
+check "native DTS protected profiles" 'webos22-o22-gst118|webos22-o22-c2-diagnostic|webos25-armel-gst124) ;;'
+check "native DTS override guard" 'if [ "$HAS_DTS_AUDIODEC" = "yes" ]; then'
+check "native DTS gated split" 'if [ "$DCA_RANK" = "0" ]; then PROFILE=native-dts-gated'
+check "native DTS fallback" 'else PROFILE=native-dts; fi'
 check "GST_MM derivation" 'GST_MM=$(printf "%s" "$GST_VERSION" | cut -d. -f1-2)'
 # The loader must be chosen from the plugin's own ELF identity, not from which
 # loader filename sorts first -- a TV carrying BOTH loaders (issue #5) picked the
@@ -44,7 +43,7 @@ check "plugin ELF class/machine -> arch" '01/2800) PLUGIN_ARCH=arm32 ;;'
 check "loader chosen from plugin arch" 'arm32) LD=$(first_glob "/lib/ld-linux.so.3 /lib/ld-linux-armhf.so.3" 2>/dev/null) ;;'
 
 if [ "$fails" -ne 0 ]; then
-  echo "FAILED: $fails gate line(s) out of sync between service.js and report-tv.sh"
+  echo "FAILED: $fails profile detection check(s) out of sync between service.js and report-tv.sh"
   exit 1
 fi
-echo "ALL CHECKS PASSED (report-tv.sh gate matches the app)"
+echo "ALL CHECKS PASSED (report-tv.sh profile detection matches the app)"

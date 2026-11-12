@@ -147,6 +147,7 @@ var APP_INSTALL  = "$APPBASE";
 var PAYLOAD_W25     = APP_INSTALL + "/payload/webos25";          // libgstdtsdec.so + libgstadecswitch.so
 var PAYLOAD_W25_THD = APP_INSTALL + "/payload/webos25-truehd";   // libgstlibav.so + ffmpeg libs
 var PAYLOAD_W25_DMX = APP_INSTALL + "/payload/webos25-demux";    // patched isomp4 + mpegtsdemux + matroska
+var PAYLOAD_W25_HDMI = APP_INSTALL + "/payload/webos25-hdmi";    // earc_route-5.4.ko + its loader + hdmi-watch.sh
 var PAYLOAD_CX      = APP_INSTALL + "/payload/cx";               // CX demuxer/libav .so set
 // C2-only, deliberately NOT in payload/cx: that directory is shared with the
 // cx-armv7-gst114 profile, and adding a TS demuxer there would change CX behaviour.
@@ -279,6 +280,9 @@ var W25_INIT_HEAD = [
   "#   W25_APPDTS=on|off",
   "#                 only set or restore tv.model.edidType live (the app's \"Show",
   "#                 DTS tracks in apps\" toggle), print EDIDTYPE=<value> and exit.",
+  "#   W25_HDMI=on|off",
+  "#                 only turn the HDMI-input DTS passthrough opt-in on or off (the",
+  "#                 app's toggle), then exit. W25_HDMI=run is its supervisor.",
   "#   FORCE=1       explicit opt-in on a TV that is not in the verified table.",
   "#",
   "# Always exits 0: a non-zero webosbrew init script trips the failsafe that",
@@ -367,7 +371,10 @@ var W25_COMPAT_SH = [
   "#      EDIDs keep LG's stock audio list (no DTS).",
   "#   49 ...but not on a TV whose factory edidType already lists dts.",
   "#   50 DTS-HD/TrueHD over eARC allowed on the G3's LG sink build (33.31.68).",
-  "W25_GATE_VERSION=50",
+  "#   51 opt-in DTS passthrough from HDMI inputs (webos25/kmod hdmi-watch.sh) on the",
+  "#      5.4.268 kernels, W25_HDMI=on|off|run; stand-down, self-heal and Disable stop it.",
+  "#   52 verified stock plugin set for the G3 on firmware 33.31.68.",
+  "W25_GATE_VERSION=52",
   "FP=/var/lib/webosbrew/dts25/stock.fp",
   "# Where the installed copy of THIS script lives, and the boot hook that symlinks",
   "# to it. Named here, in the shared block, so the read-only probe can fingerprint",
@@ -498,8 +505,54 @@ var W25_COMPAT_SH = [
   "  w25_log \"WARN passthrough stop failed; continuing: $PT_STOP_OUT\"",
   "  echo \"WARN_PT_STOP=${PT_STOP_OUT:-passthrough did not stop cleanly}\"",
   "}",
+  "# HDMI-input DTS passthrough opt-in: a supervisor (w25_hdmi_supervise) runs",
+  "# webos25/kmod's hdmi-watch.sh from $HDMI_DIR. Here because stand-down, self-heal,",
+  "# Disable and the app's probe stop it or report on it.",
+  "HDMI_FLAG=/var/lib/webosbrew/dts25/hdmi-passthrough",
+  "HDMI_DIR=/var/lib/webosbrew/dts25/hdmi",
+  "HDMI_PID=/run/dts25/hdmi.pid",
+  "HDMI_OUT=/run/dts25/hdmi-watch.out",
+  "HDMI_EXIT=/run/dts25/hdmi-watch.exit",
+  "w25_alive() { [ -n \"$1\" ] && [ -r \"/proc/$1/stat\" ] && [ \"$(cut -d' ' -f3 \"/proc/$1/stat\" 2>/dev/null)\" != Z ]; }",
+  "# Why the opt-in cannot run on this TV, or nothing. The module and the scripts",
+  "# have run only on 5.4.268 kernels; earc_route-6.12.ko has never run on a TV.",
+  "w25_hdmi_refusal() {",
+  "  case $(uname -r) in",
+  "    5.4.268-329.ptl4tv.5|5.4.268-329.ptl4tv.2) ;;",
+  "    6.12.*) echo kernel-6.12; return 0 ;;",
+  "    *) echo kernel; return 0 ;;",
+  "  esac",
+  "  if [ -f /var/lib/lg-dts-core/enabled ]; then echo lg-dts-core",
+  "  elif [ -f /var/lib/lg-dts-native/enabled ]; then echo glasshouse",
+  "  elif [ ! -f \"$HDMI_DIR/earc_route-5.4.ko\" ] || [ ! -f \"$HDMI_DIR/earc-route-load.sh\" ] || [ ! -f \"$HDMI_DIR/hdmi-watch.sh\" ]; then echo payload",
+  "  fi",
+  "  return 0",
+  "}",
+  "# On TERM the supervisor stops hdmi-watch.sh, which reverts its writes, unloads",
+  "# earc_route and exits 0, or 20 when the rollback is incomplete.",
+  "w25_hdmi_stop() {",
+  "  P=$(cat \"$HDMI_PID\" 2>/dev/null)",
+  "  w25_alive \"$P\" || { rm -f \"$HDMI_PID\"; return 0; }",
+  "  kill \"$P\" 2>/dev/null",
+  "  i=0",
+  "  while w25_alive \"$P\" && [ \"$i\" -lt 40 ]; do sleep 1; i=$((i + 1)); done",
+  "  if w25_alive \"$P\"; then",
+  "    echo 'ERROR=HDMI passthrough did not stop; it is still on.'",
+  "    return 1",
+  "  fi",
+  "  [ \"$(cat \"$HDMI_EXIT\" 2>/dev/null)\" != 20 ] ||",
+  "    echo 'WARN_HDMI=HDMI passthrough could not undo all of its changes. Restart the TV.'",
+  "  return 0",
+  "}",
+  "w25_hdmi_stop_soft() {",
+  "  HDMI_STOP_MSG=$(w25_hdmi_stop | sed -n 's/^ERROR=//p; s/^WARN_HDMI=//p' | head -n1)",
+  "  [ -n \"$HDMI_STOP_MSG\" ] || return 0",
+  "  w25_log \"WARN HDMI passthrough stop: $HDMI_STOP_MSG\"",
+  "  echo \"WARN_HDMI=$HDMI_STOP_MSG\"",
+  "}",
   "w25_stand_down() {",
   "  w25_pt_stop_soft",
+  "  w25_hdmi_stop_soft",
   "  w25_drop_binds",
   "  if w25_reg_is_ours; then",
   "    w25_log \"a registry of ours is still live; regenerating the stock registry so nothing of ours stays registered\"",
@@ -708,6 +761,10 @@ var W25_COMPAT_SH = [
   "# CS: the same o22 binary set as the C2/G2 rows (firmware 33.31.68). An OLED55CS6LA",
   "# passed all four self-tests and played the DTS and TrueHD test files with sound.",
   "1.24|0fd6d65ac9e3a78b393a615eaff8ac0b|cf4d9bb9e3c3ad83f1a75a399d2f0b93|772fb3b29e224423035eec9e93615b23|OLED*CS*|LG CS OLED55CS6LA (webOS 10.3.1, GStreamer 1.24.0)",
+  "# G3 on firmware 33.31.68: the same stock plugin hashes as the C2/G2 rows above.",
+  "# The owner of an OLED77G36LA passed all four self-tests and confirmed audio",
+  "# playback with the bundled DTS and TrueHD test files.",
+  "1.24|0fd6d65ac9e3a78b393a615eaff8ac0b|cf4d9bb9e3c3ad83f1a75a399d2f0b93|772fb3b29e224423035eec9e93615b23|OLED*G3*|LG G3 OLED77G36LA (webOS 10.3.1, GStreamer 1.24.0)",
   "# G2 on webOS 10.2.2 (firmware 33.22.95): its own builds of all three plugins",
   "# (owner report). An OLED55G26LA played DTS-HD MA 5.1 and TrueHD 7.1 decoded and",
   "# as bitstream to a Denon AVR-S770H after opting in.",
@@ -1144,6 +1201,92 @@ var W25_INIT_MAIN = [
   "    rm -f \"$CFG_USER\"",
   "  return 0",
   "}",
+  "# --- HDMI-input DTS passthrough opt-in (experimental, 5.4.268 kernels) ------------",
+  "# hdmi-watch.sh loads earc_route and passes DTS from an HDMI input to an eARC",
+  "# receiver while it runs (webos25/kmod/README.md). The supervisor below runs it",
+  "# and decides what the HDMI inputs' EDIDs offer. They offer DTS only through the",
+  "# \"Show DTS tracks in apps\" edidType, so the opt-in needs that on; the supervisor",
+  "# takes the eim hook off only while an eARC receiver is the sound output, because",
+  "# on the TV speakers DTS from an HDMI device plays as silence (measured on a C5).",
+  "# Each hook change restarts eim and arccontroller, so a change waits until the",
+  "# output has held for HDMI_SETTLE polls, and offering DTS again waits",
+  "# HDMI_COOLDOWN seconds after the last change. Devices already plugged in read a",
+  "# changed EDID only after a replug or a power cycle.",
+  "HDMI_POLL=10",
+  "HDMI_SETTLE=3",
+  "HDMI_COOLDOWN=300",
+  "w25_hdmi_receiver() {",
+  "  grep -qx 'EArcOnOff=On' /proc/lgtv-driver/audio/sndout 2>/dev/null &&",
+  "    w25_luna luna://com.webos.settingsservice/getSystemSettings '{\"category\":\"sound\",\"keys\":[\"soundOutput\"]}' |",
+  "      grep -q '\"soundOutput\" *: *\"external_arc\"'",
+  "}",
+  "# Points the HDMI EDIDs at $1 (dts|nodts); returns 1 when nothing had to change.",
+  "w25_hdmi_edid() {",
+  "  case $(w25_edid_stock) in *dts*) return 1 ;; esac",
+  "  if [ \"$1\" = dts ]; then",
+  "    grep -q libedidaudio \"$EIM_ENV\" 2>/dev/null || return 1",
+  "    w25_hdmi_hook_off",
+  "  else",
+  "    [ -f \"$APPDTS_FLAG\" ] && ! w25_eim_hooked || return 1",
+  "    w25_hdmi_hook_on",
+  "  fi",
+  "  return 0",
+  "}",
+  "w25_hdmi_poll() {",
+  "  now=nodts",
+  "  w25_hdmi_receiver && now=dts",
+  "  if [ \"$now\" = \"$want\" ]; then same=$((same + 1)); else want=$now same=1; fi",
+  "  [ \"$same\" -ge \"$HDMI_SETTLE\" ] || return 0",
+  "  [ \"$want\" = nodts ] || [ $(($(date +%s) - changed)) -ge \"$HDMI_COOLDOWN\" ] || return 0",
+  "  w25_hdmi_edid \"$want\" || return 0",
+  "  changed=$(date +%s)",
+  "  w25_log \"hdmi: HDMI inputs now $want\"",
+  "}",
+  "w25_hdmi_supervise() {",
+  "  ( set -C; echo \"$$\" > \"$HDMI_PID\" ) 2>/dev/null || return 0",
+  "  quit=",
+  "  trap 'quit=1' INT TERM HUP",
+  "  sh \"$HDMI_DIR/hdmi-watch.sh\" </dev/null >\"$HDMI_OUT\" 2>&1 &",
+  "  watcher=$!",
+  "  want= same=0 changed=0",
+  "  while [ -z \"$quit\" ] && w25_alive \"$watcher\"; do",
+  "    w25_hdmi_poll",
+  "    sleep \"$HDMI_POLL\" & wait $!",
+  "  done",
+  "  kill \"$watcher\" 2>/dev/null",
+  "  wait \"$watcher\"",
+  "  echo \"$?\" > \"$HDMI_EXIT\"",
+  "  w25_hdmi_edid nodts",
+  "  rm -f \"$HDMI_PID\"",
+  "}",
+  "w25_hdmi_start() {",
+  "  [ -f \"$HDMI_FLAG\" ] || return 0",
+  "  w25_alive \"$(cat \"$HDMI_PID\" 2>/dev/null)\" && return 0",
+  "  WHY=$(w25_hdmi_refusal)",
+  "  if [ -n \"$WHY\" ]; then",
+  "    w25_log \"hdmi: not started ($WHY)\"",
+  "    return 0",
+  "  fi",
+  "  mkdir -p /run/dts25",
+  "  rm -f \"$HDMI_PID\" \"$HDMI_OUT\" \"$HDMI_EXIT\"",
+  "  W25_HDMI=run setsid sh \"$INIT_SELF\" </dev/null >/dev/null 2>&1 &",
+  "}",
+  "# The app's toggle. Waits until hdmi-watch.sh is watching or has stopped.",
+  "w25_hdmi_on() {",
+  "  WHY=$(w25_hdmi_refusal)",
+  "  [ -n \"$WHY\" ] || case \"$(w25_edid_stock) $(w25_edid_get)\" in *dts*) ;; *) WHY=appdts ;; esac",
+  "  if [ -n \"$WHY\" ]; then",
+  "    echo \"HDMI_REFUSED=$WHY\"",
+  "    return 0",
+  "  fi",
+  "  : > \"$HDMI_FLAG\" || return 1",
+  "  w25_hdmi_start",
+  "  i=0",
+  "  while [ \"$i\" -lt 30 ] && [ ! -f \"$HDMI_EXIT\" ] && ! grep -q 'watching the HDMI input' \"$HDMI_OUT\" 2>/dev/null; do",
+  "    sleep 1",
+  "    i=$((i + 1))",
+  "  done",
+  "}",
   "# W25_PT=start|stop: only start or stop the watcher, for the app's toggle, so",
   "# turning passthrough on or off takes effect without a restart.",
   "if [ -n \"${W25_PT:-}\" ]; then",
@@ -1162,6 +1305,15 @@ var W25_INIT_MAIN = [
   "    off) w25_appdts_off ;;",
   "  esac",
   "  echo \"EDIDTYPE=$(w25_edid_get)\"",
+  "  exit 0",
+  "fi",
+  "# W25_HDMI=on|off: the app's HDMI passthrough toggle; run: the supervisor itself.",
+  "if [ -n \"${W25_HDMI:-}\" ]; then",
+  "  case $W25_HDMI in",
+  "    on) w25_hdmi_on || exit 1 ;;",
+  "    off) w25_hdmi_stop || exit 1; rm -f \"$HDMI_FLAG\" ;;",
+  "    run) w25_hdmi_supervise ;;",
+  "  esac",
   "  exit 0",
   "fi",
   "# W25_STAND_DOWN=1: revert to stock and exit. Deliberately a mode of its own",
@@ -1218,6 +1370,7 @@ var W25_INIT_MAIN = [
   "w25_self_heal() {",
   "  w25_log \"SELF-HEAL: $HEAL_WHY -- reverting every override\"",
   "  w25_pt_stop_soft",
+  "  w25_hdmi_stop_soft",
   "  w25_drop_binds",
   "  if ! w25_stock_registry; then",
   "    w25_log \"SELF-HEAL DEFERRED: LG's registry could not be rebuilt, so our plugins and the boot hook are KEPT (deleting them now would leave the live registry pointing at missing plugins). Retrying at the next boot.\"",
@@ -1352,6 +1505,7 @@ var W25_INIT_MAIN = [
   "w25_appdts_start",
   "w25_pt_stop_soft",
   "w25_pt_start",
+  "w25_hdmi_start",
   "# --- APPLY 2c) container demuxers with DTS re-enabled (mp4/ts/m2ts DTS -> audio/x-dts).",
   "#         Patched isomp4/mpegtsdemux/mpegpsdemux default dts_support=TRUE; patched matroska",
   "#         signals Dolby Vision profile 7. Bound BEFORE the regen below so the",
@@ -1894,30 +2048,24 @@ var DETECT_PROBE = [
   '    arch_tag="$LOADER"; [ "$arch_tag" = "unknown" ] && arch_tag=$(uname -m 2>/dev/null || echo arch)',
   '    PROFILE="unknown-gst${GST_MM}-${arch_tag}" ;;',
   'esac',
-  '# A registered dts_audiodec means LG ships a working DTS decoder on this set, but',
-  '# that alone does NOT mean there is nothing to do: on 2023 sets the decoder is',
-  '# present while the Matroska `enable-dts` gate is OFF, so DTS is built in but',
-  '# disabled and the app IS needed. Split the two cases on the measured gate.',
-  '# Deliberately behavioral, not a model list. webOS 25 and CX are unaffected:',
-  '# neither registers dts_audiodec, and our payload adds dtsdec/avdec_dca, never',
-  '# dts_audiodec.',
-  // ...but a registered dts_audiodec is NOT proof of a usable decoder. On the C2
-  // family the element registers while libgstlibav.so is a 128 KB stub with no
-  // decoder internals at all (see FIRMWARE-COMPATIBILITY.md), so "built in but
-  // disabled" is false there and this override was stealing the exact-matched C2
-  // profile -- the owner in issue #1 matched all eleven C2 gates and still got the
-  // `gated` screen with no opt-in. An exact identity+hash match against a firmware
-  // we extracted and confirmed has no decoder outranks "an element is registered",
-  // so never let the behavioral guess displace it.
-  // The C2-family diagnostic profile is excluded for the same reason: it is the only
-  // profile that reports WHICH C2 gate missed (C2_GATE_FAIL), and letting the override
-  // relabel it made that message unreachable on screen for precisely the TVs it was
-  // written for -- the owner in issue #1 never saw it.
-  'case "$PROFILE" in webos22-o22-gst118|webos22-o22-c2-diagnostic) C2_KEEP=1 ;; *) C2_KEEP=0 ;; esac',
-  'if [ "$HAS_DTS_AUDIODEC" = "yes" ] && [ "$C2_KEEP" = 0 ]; then',
-  '  if [ "$DCA_RANK" = "0" ]; then PROFILE=native-dts-gated',
-  '  else PROFILE=native-dts; fi',
-  'fi',
+  // Use the native DTS heuristic as a fallback. The G3 on GStreamer 1.24
+  // still registers dts_audiodec with avdec_dca at rank 0. Relabelling it as
+  // native-dts-gated hides Enable before the webOS 25 compatibility check can
+  // evaluate the stock plugin hashes and model ID, so the webOS 25 case is decided
+  // after that check (NATIVE DTS ON WEBOS 25, below).
+  // Keep the C2 restore and diagnostic profiles too. On that family, registration
+  // can coexist with a stub libgstlibav.so, and relabelling hides the failed C2
+  // checks that the diagnostic profile reports (issue #1).
+  // On profiles that fall through, the measured rank still distinguishes native
+  // DTS from the gated case seen on older C3 firmware. Keep report-tv.sh in sync.
+  'case "$PROFILE" in',
+  '  webos22-o22-gst118|webos22-o22-c2-diagnostic|webos25-armel-gst124) ;;',
+  '  *)',
+  '    if [ "$HAS_DTS_AUDIODEC" = "yes" ]; then',
+  '      if [ "$DCA_RANK" = "0" ]; then PROFILE=native-dts-gated',
+  '      else PROFILE=native-dts; fi',
+  '    fi ;;',
+  'esac',
   'echo "PROFILE=$PROFILE"',
   ''
 ].concat(c2InspectorLines(c2Config()), [
@@ -1960,6 +2108,15 @@ var DETECT_PROBE = [
   "echo \"FP_FORCED=$(w25_fp_get forced)\"",
   "echo \"FP_WRITTEN=$(w25_fp_get written)\"",
   "w25_gate",
+  "# --- NATIVE DTS ON WEBOS 25 ---",
+  "# A webOS 25 set that registers LG's dts_audiodec keeps the restore profile only",
+  "# when the gate knows it: a verified row, the same stock plugins as one, or our",
+  "# own install (forced, drift). Any other one has LG's own DTS decoder.",
+  "if [ \"$PROFILE\" = webos25-armel-gst124 ] && [ \"$HAS_DTS_AUDIODEC\" = yes ] && [ \"$VERDICT\" = unverified ] && [ \"${TABLE_NEAR_MATCH:-0}\" = 0 ]; then",
+  "  if [ \"$DCA_RANK\" = \"0\" ]; then PROFILE=native-dts-gated; else PROFILE=native-dts; fi",
+  "  echo \"PROFILE=$PROFILE\"",
+  "fi",
+  "# --- END NATIVE DTS ON WEBOS 25 ---",
   "echo \"COMPAT_VERDICT=$VERDICT\"",
   "echo \"COMPAT_REASON=$REASON\"",
   "echo \"COMPAT_LABEL=$LABEL\"",
@@ -2036,7 +2193,17 @@ var DETECT_PROBE = [
   "echo \"PAYLOAD_STAGED_PRESENT=$PD_PRESENT\"",
   "echo \"PAYLOAD_HASHABLE=$PD_HASHABLE\"",
   "echo \"PAYLOAD_DRIFT_FILES=$(echo $PD_DRIFT)\"",
-  "echo \"PAYLOAD_MISSING_FILES=$(echo $PD_MISSING)\""
+  "echo \"PAYLOAD_MISSING_FILES=$(echo $PD_MISSING)\"",
+  "",
+  "# --- PROBE 9: HDMI-input DTS passthrough opt-in (read-only) ---",
+  "echo \"HDMI_FLAG=$([ -f \"$HDMI_FLAG\" ] && echo 1 || echo 0)\"",
+  "echo \"HDMI_KERNEL=$(uname -r)\"",
+  "echo \"HDMI_REFUSAL=$(w25_hdmi_refusal)\"",
+  "echo \"HDMI_RUNNING=$(w25_alive \"$(cat \"$HDMI_PID\" 2>/dev/null)\" && echo 1 || echo 0)\"",
+  "echo \"HDMI_EXIT=$(cat \"$HDMI_EXIT\" 2>/dev/null)\"",
+  "echo \"HDMI_LOADER=$(grep -m1 '^earc-route: ' \"$HDMI_OUT\" 2>/dev/null)\"",
+  "# Installed but not enabled: the opt-in still runs, with a warning.",
+  "echo \"HDMI_TOOLS=$([ -d /var/lib/lg-dts-core ] && printf 'lg-dts-core '; [ -d /var/lib/lg-dts-native ] && printf glasshouse)\""
 ]).join("\n");
 
 /**
@@ -2543,6 +2710,8 @@ function w25Enable(force) {
     'if [ -f "' + PAYLOAD_W25 + '/lgroute-control" ]; then',
     '  replace_file "' + PAYLOAD_W25 + '/lgroute-control" "' + W25_DEST + '/lgroute-control" && chmod 0755 "' + W25_DEST + '/lgroute-control" && log "installed lgroute-control" || log "WARN: staging lgroute-control failed"',
     'else log "note: lgroute-control payload absent; DTS-HD passthrough unavailable"; fi',
+    // 1d. Stage the HDMI-input DTS passthrough opt-in. Mirrors install.sh step 1d.
+    w25HdmiStageSteps(),
     // 2. Stage the TrueHD payload (preserve the .so version symlinks).
     'mkdir -p "' + W25_THD_LIBS + '" || { log "FATAL: cannot create ' + W25_THD_LIBS + '"; exit 0; }',
     'if [ -f "' + PAYLOAD_W25_THD + '/libgstlibav.so" ]; then',
@@ -2673,6 +2842,7 @@ function w25DisableSteps() {
     'log "=== disable (webos25) start ==="'
   ].concat(W25_COMPAT_SH, [
     'w25_pt_stop_soft',
+    'w25_hdmi_stop_soft',
     'if [ -L "' + W25_HOOK + '" ] || [ -e "' + W25_HOOK + '" ]; then rm -f "' + W25_HOOK + '" && log "removed boot hook"; else log "boot hook not present"; fi',
     // Prints WARN_UNMOUNT=<targets> and returns non-zero if a target survived even
     // a lazy detach, i.e. the revert did not actually happen. Surfaced to the
@@ -3445,6 +3615,8 @@ function w25StatusProbe() {
     'P=$(cat ' + W25_PT_RUN + '/watcher.pid 2>/dev/null); echo "PT_OUT=$([ -n "$P" ] && [ -d /proc/$P ] && cut -d" " -f2- ' + W25_PT_RUN + '/sound-output 2>/dev/null)"',
     // The boot hook's last apply outcome: "<epoch> <on|skipped|failed> <message>".
     'echo "APPDTS_LAST=$(head -n1 ' + W25_DEST + '/appdts.last 2>/dev/null)"',
+    // eim with the hook loaded keeps DTS out of the HDMI inputs' EDIDs.
+    'echo "EIM_HOOKED=$(grep -q libedidaudio /proc/$(pidof eim | cut -d" " -f1)/maps 2>/dev/null && echo 1 || echo 0)"',
     'echo "EDIDTYPE=$(script -q -e -c "luna-send -n 1 luna://com.webos.service.config/getConfigs \'{\\"configNames\\":[\\"tv.model.edidType\\"]}\'" /dev/null 2>/dev/null | sed -n \'s/.*"tv.model.edidType":"\\([^"]*\\)".*/\\1/p\' | head -n1)"'
   ].join("\n");
 }
@@ -3668,6 +3840,15 @@ service.register("status", function (message) {
         base.appDtsActive = (kv.EDIDTYPE || "").toLowerCase().indexOf("dts") !== -1;
         var last = /^(\d+) (\S+) (.*)$/.exec(kv.APPDTS_LAST || "");
         base.appDtsLast = last ? { at: +last[1], result: last[2], message: last[3] } : null;
+        base.hdmiRequested = p.HDMI_FLAG === "1";
+        base.hdmiKernel = p.HDMI_KERNEL || "";
+        base.hdmiRefusal = p.HDMI_REFUSAL || "";
+        base.hdmiRefusalText = w25HdmiReason(p.HDMI_REFUSAL, p.HDMI_KERNEL);
+        base.hdmiRunning = p.HDMI_RUNNING === "1";
+        base.hdmiExit = p.HDMI_EXIT || "";
+        base.hdmiLoader = p.HDMI_LOADER || "";
+        base.hdmiToolsNote = w25HdmiToolsNote(p.HDMI_TOOLS);
+        base.hdmiDtsOffered = base.appDtsActive && kv.EIM_HOOKED !== "1";
         base.verified = c.verdict === "verified";
         message.respond(base);
       });
@@ -4013,6 +4194,129 @@ service.register("setAppDts", function (message) {
   });
 });
 
+/* =======================================================================
+ * HDMI-input DTS passthrough opt-in (experimental, 5.4.268 kernels)
+ * ---------------------------------------------------------------------
+ * The boot script's supervisor runs webos25/kmod's hdmi-watch.sh and decides
+ * what the HDMI inputs' EDIDs offer (W25_HDMI=on|off, see "HDMI-input DTS
+ * passthrough opt-in" there). Its marker survives Disable like the other opt-ins.
+ * ===================================================================== */
+var W25_HDMI_DEST = W25_DEST + "/hdmi";
+
+/** Stage the HDMI payload through a rename, so a running watcher keeps its files. */
+function w25HdmiStageSteps() {
+  return [
+    'mkdir -p "' + W25_HDMI_DEST + '" || log "WARN: cannot create ' + W25_HDMI_DEST + '"',
+    'for f in earc_route-5.4.ko earc-route-load.sh hdmi-watch.sh; do',
+    '  if [ -f "' + PAYLOAD_W25_HDMI + '/$f" ]; then replace_file "' + PAYLOAD_W25_HDMI + '/$f" "' + W25_HDMI_DEST + '/$f" && log "installed $f" || log "WARN: copy $f failed"; else log "note: ' + PAYLOAD_W25_HDMI + '/$f absent; HDMI passthrough unavailable"; fi',
+    'done'
+  ].join("\n");
+}
+
+function w25HdmiSteps(on) {
+  var b64init = require("zlib").gzipSync(Buffer.from(w25InitScriptBody(), "utf8")).toString("base64");
+  var lines = [
+    "set -u",
+    APPBASE_PRELUDE,
+    'LOG=' + LOG,
+    'log() { echo "[dts25-hdmi $(date \'+%Y-%m-%d %H:%M:%S\')] $*" >> "$LOG" 2>&1; }',
+    'replace_file() { cp -Pf "$1" "$2.new" && mv -f "$2.new" "$2" && return 0; rm -f "$2.new"; return 1; }',
+    // The mode lives in the boot script, so install the current one first.
+    'mkdir -p "' + W25_DEST + '" 2>/dev/null',
+    'base64 -d <<\'B64EOF\' | gzip -dc > "' + W25_INIT_SCRIPT + '"',
+    b64init,
+    "B64EOF",
+    'chmod 0755 "' + W25_INIT_SCRIPT + '"'
+  ];
+  if (on) lines.push(w25HdmiStageSteps());
+  lines.push('W25_HDMI=' + (on ? "on" : "off") + ' sh "' + W25_INIT_SCRIPT + '" </dev/null || exit 1');
+  lines.push('P=$(cat /run/dts25/hdmi.pid 2>/dev/null); echo "HDMI_RUNNING=$([ -n "$P" ] && [ -d "/proc/$P" ] && echo 1 || echo 0)"');
+  lines.push("echo \"HDMI_LOADER=$(grep -m1 '^earc-route: ' /run/dts25/hdmi-watch.out 2>/dev/null)\"");
+  lines.push("echo OK");
+  lines.push("exit 0");
+  return lines.join("\n");
+}
+
+/** The reason code from w25_hdmi_refusal (or the toggle's appdts), as a sentence. */
+function w25HdmiReason(code, kernel) {
+  switch (code) {
+    case "kernel-6.12": return "Not supported yet on this kernel (" + kernel + "): its module has never run on a TV.";
+    case "kernel": return "Not supported on this kernel (" + (kernel || "unknown") + ").";
+    case "lg-dts-core": return "lg-dts-core is enabled on this TV. Disable it first: its kernel hooks would collide with this one's.";
+    case "glasshouse": return "Glasshouse DTS forwarding is enabled on this TV. Disable it first: its kernel hooks would collide with this one's.";
+    case "payload": return "The HDMI passthrough files are not installed. Press Enable to install them.";
+    case "appdts": return "Turn on Show DTS tracks in apps first: HDMI devices are offered DTS through it.";
+  }
+  return "";
+}
+
+/** Another DTS tool that is installed but not enabled does not block the opt-in. */
+function w25HdmiToolsNote(tools) {
+  var names = (tools || "").split(/\s+/).filter(Boolean).map(function (t) {
+    return t === "glasshouse" ? "Glasshouse DTS forwarding" : t;
+  });
+  if (!names.length) return "";
+  return names.join(" and ") + (names.length > 1 ? " are" : " is") +
+    " installed on this TV. Keep it disabled while HDMI passthrough is on.";
+}
+
+service.register("setHdmiPassthrough", function (message) {
+  var want = !!(message.payload && message.payload.enabled);
+  detectProfile().then(function (d) {
+    var p = d.probes || {};
+    if (d.profile !== PROFILE_W25) {
+      message.respond({
+        returnValue: false, profile: d.profile, supported: false,
+        errorText: "HDMI passthrough is only available on the webOS 25 profile (found '" + d.profile + "')."
+      });
+      return;
+    }
+    return rootExec(w25HdmiSteps(want)).then(function (r) {
+      var kv = parseKv(r.stdout);
+      var refused = w25HdmiReason(kv.HDMI_REFUSED, p.HDMI_KERNEL);
+      if (refused || kv.ERROR || !/^OK$/m.test(r.stdout || "")) {
+        message.respond({ returnValue: false, errorText: refused || kv.ERROR || "HDMI passthrough could not be changed." });
+        return;
+      }
+      var running = kv.HDMI_RUNNING === "1";
+      logActionResult("hdmi-passthrough", d.profile, want ? (running ? "on" : "not-running") : "off", r.stdout);
+      var note = want ? w25HdmiToolsNote(p.HDMI_TOOLS) : kv.WARN_HDMI || "";
+      var summary = !want ? "HDMI passthrough off."
+        : running ? "HDMI passthrough on: watching the HDMI input."
+        : "HDMI passthrough did not start" + (kv.HDMI_LOADER ? ": " + kv.HDMI_LOADER : ". Open the HDMI log.");
+      message.respond({
+        returnValue: !want || running,
+        profile: d.profile,
+        enabled: want,
+        running: running,
+        summary: summary + (note ? " " + note : ""),
+        errorText: !want || running ? undefined : summary
+      });
+    });
+  }).catch(function (e) {
+    message.respond({ returnValue: false, errorText: e.errorText || e.message || String(e) });
+  });
+});
+
+/* The newest lines of the running (or last) watcher's log: watch.log in the log
+ * directory hdmi-watch.sh prints, or its output when it stopped before creating one. */
+function w25HdmiLogSteps() {
+  return [
+    'OUT=/run/dts25/hdmi-watch.out',
+    'D=$(sed -n \'s|.*logs: \\(/tmp/dts25-hdmi-watch-[0-9]*-[0-9]*\\).*|\\1|p\' "$OUT" 2>/dev/null | tail -n 1)',
+    'if [ -n "$D" ] && [ -f "$D/watch.log" ]; then echo "$D/watch.log"; tail -n 80 "$D/watch.log"; else tail -n 80 "$OUT" 2>/dev/null; fi',
+    'exit 0'
+  ].join("\n");
+}
+
+service.register("hdmiLog", function (message) {
+  rootExec(w25HdmiLogSteps()).then(function (r) {
+    message.respond({ returnValue: true, log: r.stdout || "" });
+  }).catch(function (e) {
+    message.respond({ returnValue: false, errorText: e.errorText || e.message || String(e) });
+  });
+});
+
 service.register("setMakeupGain", function (message) {
   var p = message.payload || {};
   var dts = clampGainDb(p.dts);
@@ -4353,6 +4657,7 @@ function runMechanism(message, action) {
         warnings.push("Passthrough did not stop cleanly (" + kv.WARN_PT_STOP +
           "). If TV sounds stay silent over eARC, reboot the TV.");
       }
+      if (kv.WARN_HDMI) warnings.push(kv.WARN_HDMI);
       if (kv.REG_REVERTED !== undefined) {
         res.registryReverted = kv.REG_REVERTED === "1";
         if (!res.registryReverted) {

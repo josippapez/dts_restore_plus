@@ -145,6 +145,7 @@ static u64 hd_name_last;           /* the name table's last entry: a string in t
 static u32 hd_status_seen, hd_status_accepts, hd_name_seen, hd_name_fixes;
 static u32 hd_status_prints, hd_accept_prints, hd_name_prints, hd_fix_prints;
 static u32 nonpcm_ready;           /* layout.nonpcm is derived and range-checked */
+static u32 matched_decoder = EARC_NO_DECODER;  /* the last _set_output match's decoder (0 or 1) */
 
 static const struct {
     const char *name;
@@ -661,7 +662,7 @@ static const char *gate_state_name(int state) {
 }
 
 /* Read-only HDMI-passthrough audit. Derives the HDMI set from LG's code and
- * prints it; reads a few live data words (ADEC 1's state, the codec-name
+ * prints it; reads a few live data words (ADEC 0's and 1's state, the codec-name
  * table, the kernel-image nodes of the break-hook list) through the derived,
  * bounds-checked addresses. Writes nothing, calls nothing new, imports nothing.
  * A missing symbol or unmatched pattern is reported, never a refusal. */
@@ -695,13 +696,17 @@ static void hdmi_audit(void) {
     if (!hdmi.adec_reason) {
         printk("\0016earc_route: hdmi adec table=%llx stride=%llu codec=+%llu open=+%llu started=+%llu\n",
                hdmi.adec_base, hdmi.adec_stride, hdmi.adec_codec_off, hdmi.adec_open_off, hdmi.adec_started_off);
-        if (hdmi_addr_ok(hdmi.adec1_codec, 4, 4) && hdmi_addr_ok(hdmi.adec1_open, 1, 1) && hdmi_addr_ok(hdmi.adec1_started, 1, 1))
-            printk("\0016earc_route: hdmi adec1 codec@%llx=%u open@%llx=%u started@%llx=%u\n",
-                   hdmi.adec1_codec, *(volatile u32 *)hdmi.adec1_codec, hdmi.adec1_open, *(volatile u8 *)hdmi.adec1_open,
-                   hdmi.adec1_started, *(volatile u8 *)hdmi.adec1_started);
-        else
-            printk("\0013earc_route: hdmi adec1 address out of range codec=%llx open=%llx started=%llx\n",
-                   hdmi.adec1_codec, hdmi.adec1_open, hdmi.adec1_started);
+        for (i = 0; i < 2; i++) {
+            struct earc_adec_slot slot;
+            earc_adec_slot(&hdmi, i, &slot);
+            if (hdmi_addr_ok(slot.codec, 4, 4) && hdmi_addr_ok(slot.open, 1, 1) && hdmi_addr_ok(slot.started, 1, 1))
+                printk("\0016earc_route: hdmi adec%u codec@%llx=%u open@%llx=%u started@%llx=%u\n", i,
+                       slot.codec, *(volatile u32 *)slot.codec, slot.open, *(volatile u8 *)slot.open,
+                       slot.started, *(volatile u8 *)slot.started);
+            else
+                printk("\0013earc_route: hdmi adec%u address out of range codec=%llx open=%llx started=%llx\n", i,
+                       slot.codec, slot.open, slot.started);
+        }
     } else {
         printk("\0016earc_route: hdmi adec not available: %s\n", hdmi.adec_reason);
     }
@@ -779,34 +784,46 @@ static __attribute__((noinline)) int selftest_fn(int x) { return x + 1; }
 static int (*volatile selftest_call)(int) = selftest_fn;
 
 /* Runs in breakpoint context (BRK #4 handler). Reads only the derived,
- * load-time bounds-checked ADEC addresses and the caller's descriptor (null
- * checked), updates atomics, and for mode 5 rewrites x2/x3 within the window.
+ * load-time bounds-checked ADEC addresses of the call's decoder (only for index
+ * 0 or 1, through earc_adec_slot) and the caller's descriptor (null checked),
+ * updates atomics, records the matched decoder for the DTS-HD acceptance, and
+ * for modes 5 and 7 rewrites x2/x3 within the window.
  * It calls no kernel function but printk (first 5 matches, first 8
  * non-matches) and we only ever probe _set_output, two instructions of
  * _cb_output_status and the self-test leaf, never a handler, so no probe
  * recursion is possible. */
 static int route_prehandler(struct target_kprobe *p, struct target_pt_regs *regs) {
-    ed_u64 descriptor = regs->regs[1];
-    ed_u32 mask_word = 0, codec;
-    ed_u8 open, started;
+    ed_u64 descriptor = regs->regs[1], index = regs->regs[0];
+    ed_u32 mask_word = 0, codec = 0;
+    ed_u8 open = 0, started = 0;
+    struct earc_adec_slot slot;
+    int has_slot = earc_adec_slot(&hdmi, index, &slot);
     (void)p;
     __atomic_add_fetch(&calls_seen, 1, __ATOMIC_RELAXED);
     if (descriptor) mask_word = *(volatile u32 *)(descriptor + hdmi.mask_offset);
-    codec = *(volatile u32 *)hdmi.adec1_codec;
-    open = *(volatile u8 *)hdmi.adec1_open;
-    started = *(volatile u8 *)hdmi.adec1_started;
-    if (!descriptor || !(hd_active ? earc_session_policy_match(regs->regs[0], mask_word, codec, open, started) :
-                         earc_policy_match(regs->regs[0], mask_word, codec, open, started))) {
-        if (__atomic_add_fetch(&nomatch_prints, 1, __ATOMIC_RELAXED) <= 8)
-            printk("\0016earc_route: pass nomatch index=%llu desc=%d mask=0x%x adec1-codec=%u open=%u started=%u codec-arg=%u bypass-arg=%u\n",
-                   (unsigned long long)regs->regs[0], descriptor != 0, mask_word, codec, open, started,
-                   (u32)regs->regs[2], (u32)regs->regs[3]);
+    if (has_slot) {
+        codec = *(volatile u32 *)slot.codec;
+        open = *(volatile u8 *)slot.open;
+        started = *(volatile u8 *)slot.started;
+    }
+    if (!descriptor || !(hd_active ? earc_session_policy_match(index, mask_word, codec, open, started) :
+                         earc_policy_match(index, mask_word, codec, open, started))) {
+        if (__atomic_add_fetch(&nomatch_prints, 1, __ATOMIC_RELAXED) <= 8) {
+            if (has_slot)
+                printk("\0016earc_route: pass nomatch index=%llu desc=%d mask=0x%x adec%llu-codec=%u open=%u started=%u codec-arg=%u bypass-arg=%u\n",
+                       (unsigned long long)index, descriptor != 0, mask_word, (unsigned long long)index, codec, open, started,
+                       (u32)regs->regs[2], (u32)regs->regs[3]);
+            else
+                printk("\0016earc_route: pass nomatch index=%llu desc=%d mask=0x%x no-adec-slot codec-arg=%u bypass-arg=%u\n",
+                       (unsigned long long)index, descriptor != 0, mask_word, (u32)regs->regs[2], (u32)regs->regs[3]);
+        }
         return 0;
     }
     __atomic_add_fetch(&calls_matched, 1, __ATOMIC_RELAXED);
+    __atomic_store_n(&matched_decoder, (u32)index, __ATOMIC_RELAXED);
     if (__atomic_add_fetch(&match_prints, 1, __ATOMIC_RELAXED) <= 5)
-        printk("\0016earc_route: pass match index=%llu codec-arg=%u bypass-arg=%u adec1-codec=%u\n",
-               (unsigned long long)regs->regs[0], (u32)regs->regs[2], (u32)regs->regs[3], codec);
+        printk("\0016earc_route: pass match index=%llu codec-arg=%u bypass-arg=%u adec%llu-codec=%u\n",
+               (unsigned long long)index, (u32)regs->regs[2], (u32)regs->regs[3], (unsigned long long)index, codec);
     if (override_mode && __atomic_load_n(&window_open, __ATOMIC_ACQUIRE)) {
         regs->regs[2] = 0;  /* codec -> 0 */
         regs->regs[3] = 1;  /* bypass -> 1 */
@@ -836,20 +853,32 @@ static int redirect_prehandler(struct target_kprobe *p, struct target_pt_regs *r
 /* The two DTS-HD probes (lg-g5-dts status_hooks.h), in breakpoint context like
  * route_prehandler: no lock, no sleep, printk for a bounded number of hits,
  * atomics, the probed function's own registers and the bounds-checked ADEC
- * addresses. The output pointer is the one _cb_output_status itself read
- * through before the compare. In mode 6 both only count and print. */
+ * addresses of both slots (earc_hd_accept_decoder picks the one that counts).
+ * The output pointer is the one _cb_output_status itself read through before
+ * the compare. In mode 6 both only count and print. matched= is the recorded
+ * decoder, -1 before the first _set_output match. */
 static int hd_status_prehandler(struct target_kprobe *p, struct target_pt_regs *regs) {
     ed_u64 output = regs->regs[hdmi.hd_output_reg];
-    u32 event = (u32)regs->regs[earc_hd_codec_reg(&hdmi)], type = 0, codec = *(volatile u32 *)hdmi.adec1_codec;
-    u8 started = *(volatile u8 *)hdmi.adec1_started;
-    int accept;
+    u32 event = (u32)regs->regs[earc_hd_codec_reg(&hdmi)], type = 0;
+    u32 matched = __atomic_load_n(&matched_decoder, __ATOMIC_RELAXED);
+    ed_u32 codec[2];
+    ed_u8 started[2];
+    int decoder = -1, accept;
     (void)p;
+    codec[0] = *(volatile u32 *)hdmi.adec0_codec;
+    codec[1] = *(volatile u32 *)hdmi.adec1_codec;
+    started[0] = *(volatile u8 *)hdmi.adec0_started;
+    started[1] = *(volatile u8 *)hdmi.adec1_started;
     __atomic_add_fetch(&hd_status_seen, 1, __ATOMIC_RELAXED);
-    if (output) type = *(volatile u32 *)(output + EARC_OUTPUT_TYPE_OFFSET);
-    accept = output && earc_hd_accept(event, type, codec, started);
+    if (output) {
+        type = *(volatile u32 *)(output + EARC_OUTPUT_TYPE_OFFSET);
+        decoder = earc_hd_accept_decoder(event, type, matched, codec, started);
+    }
+    accept = decoder >= 0;
     if (__atomic_add_fetch(accept ? &hd_accept_prints : &hd_status_prints, 1, __ATOMIC_RELAXED) <= (accept ? 5 : 8))
-        printk("\0016earc_route: hd status codec=%u output-type=%u adec1-codec=%u started=%u: %s\n", event, type, codec,
-               started, !accept ? "stock" : hd_active ? "accepted" : "would accept");
+        printk("\0016earc_route: hd status codec=%u output-type=%u matched=%d adec0-codec=%u started=%u adec1-codec=%u started=%u decoder=%d: %s\n",
+               event, type, matched <= 1 ? (int)matched : -1, codec[0], started[0], codec[1], started[1], decoder,
+               !accept ? "stock" : hd_active ? "accepted" : "would accept");
     if (!accept || !hd_active) return 0;
     __atomic_add_fetch(&hd_status_accepts, 1, __ATOMIC_RELAXED);
     regs->pc = hdmi.hd_supported_branch;
@@ -861,9 +890,11 @@ static int hd_name_prehandler(struct target_kprobe *p, struct target_pt_regs *re
     int substitute = earc_hd_name_substitute(index, hd_name_entries);
     (void)p;
     __atomic_add_fetch(&hd_name_seen, 1, __ATOMIC_RELAXED);
-    if (__atomic_add_fetch(substitute ? &hd_fix_prints : &hd_name_prints, 1, __ATOMIC_RELAXED) <= (substitute ? 5 : 8))
-        printk("\0016earc_route: hd name codec=%llu entries=%u: %s\n", (unsigned long long)index, hd_name_entries,
-               !substitute ? "stock" : hd_active ? "substituted" : "would substitute");
+    if (__atomic_add_fetch(substitute ? &hd_fix_prints : &hd_name_prints, 1, __ATOMIC_RELAXED) <= (substitute ? 5 : 8)) {
+        u32 matched = __atomic_load_n(&matched_decoder, __ATOMIC_RELAXED);
+        printk("\0016earc_route: hd name codec=%llu entries=%u matched=%d: %s\n", (unsigned long long)index, hd_name_entries,
+               matched <= 1 ? (int)matched : -1, !substitute ? "stock" : hd_active ? "substituted" : "would substitute");
+    }
     if (!substitute || !hd_active) return 0;
     __atomic_add_fetch(&hd_name_fixes, 1, __ATOMIC_RELAXED);
     regs->regs[earc_hd_name_reg(&hdmi)] = hd_name_last;
@@ -1102,14 +1133,26 @@ static int gate_mode(void) {
     return 0;
 }
 
+/* Both ADEC slots' codec and started (and open, when a _set_output probe reads
+ * it) must pass hdmi_addr_ok before a pre-handler reads them. */
+static int adec_slots_ok(int need_open) {
+    struct earc_adec_slot slot;
+    unsigned int i;
+    for (i = 0; i < 2; i++) {
+        earc_adec_slot(&hdmi, i, &slot);
+        if (!hdmi_addr_ok(slot.codec, 4, 4) || !hdmi_addr_ok(slot.started, 1, 1) ||
+            (need_open && !hdmi_addr_ok(slot.open, 1, 1))) {
+            printk("\0013earc_route: refused; ADEC%u address out of range codec=%llx open=%llx started=%llx\n",
+                   i, slot.codec, slot.open, slot.started);
+            return 0;
+        }
+    }
+    return 1;
+}
+
 /* modes 4 (observe) and 5 (route override). One load: hooks + gate + probe. */
 static int session_mode(int override) {
-    if (!hdmi_addr_ok(hdmi.adec1_codec, 4, 4) || !hdmi_addr_ok(hdmi.adec1_open, 1, 1) ||
-        !hdmi_addr_ok(hdmi.adec1_started, 1, 1)) {
-        printk("\0013earc_route: refused; ADEC1 address out of range codec=%llx open=%llx started=%llx\n",
-               hdmi.adec1_codec, hdmi.adec1_open, hdmi.adec1_started);
-        return -22;
-    }
+    if (!adec_slots_ok(1)) return -22;
     if ((hdmi.set_output & 3) || hdmi.set_output < fn__stext || hdmi.set_output >= fn__etext) {
         printk("\0013earc_route: refused; _set_output %llx outside kernel text\n", hdmi.set_output);
         return -22;
@@ -1179,12 +1222,7 @@ static int hd_mode(int active) {
     ed_u64 sites[3] = {hdmi.hd_compare, hdmi.hd_name_load, hdmi.hd_supported_branch};
     unsigned int i;
     int result = -16;
-    if (!hdmi_addr_ok(hdmi.adec1_codec, 4, 4) || !hdmi_addr_ok(hdmi.adec1_started, 1, 1) ||
-        (active && !hdmi_addr_ok(hdmi.adec1_open, 1, 1))) {
-        printk("\0013earc_route: refused; ADEC1 address out of range codec=%llx open=%llx started=%llx\n",
-               hdmi.adec1_codec, hdmi.adec1_open, hdmi.adec1_started);
-        return -22;
-    }
+    if (!adec_slots_ok(active)) return -22;
     for (i = 0; i < 3; i++)
         if ((sites[i] & 3) || sites[i] < fn__stext || sites[i] >= fn__etext) {
             printk("\0013earc_route: refused; _cb_output_status site %llx outside kernel text\n", sites[i]);
@@ -1249,7 +1287,8 @@ static int hd_mode(int active) {
     if (gate_native || hd_native)
         printk("\0016earc_route: stock kernel already has%s%s; left as it is\n", gate_native ? " the open DTS gate" : "",
                hd_native ? " codec-7 acceptance and its name (no _cb_output_status probes placed)" : "");
-    printk("\0013earc_route: UNTESTED ON HARDWARE: this mode has never run on a TV\n");
+    printk(active ? "\0013earc_route: EXPERIMENTAL: mode 7 has run on a C5 and a CS (33.31.68) only; decoder 0 never with a receiver\n" :
+           "\0013earc_route: EXPERIMENTAL: mode 6 has run on a C5 (33.31.68) only\n");
     return 0;
 undo:
     passthrough_cleanup();

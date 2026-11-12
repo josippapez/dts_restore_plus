@@ -319,6 +319,8 @@ static int run_oracle(const struct oracle *o, const struct kernel *k, struct ear
  * The G2 33.22.95 row (5.4.268-329.ptl4tv.2) was derived by hand from that
  * image's disassembly and kallsyms; there the slot array is the address formed
  * itself, and both ADEC functions bound the index with a signed `b.gt`.
+ * ADEC 0 is the slot array itself (adec_base + 8 / +10 / +20): its open,
+ * started and codec equal ADEC 1's minus the 96-byte stride in every row.
  * What one pattern fixes for a whole generation is asserted per generation:
  * mask +20, ADEC stride 96 / codec +20 / open +8 / started +10, break fn +16 /
  * immediate +24 / mask +26, HD bound 4, six name entries, and the sites: 5.4
@@ -326,45 +328,54 @@ static int run_oracle(const struct oracle *o, const struct kernel *k, struct ear
 struct hdmi_oracle {
     const char *sha256, *label;
     int generation;
-    ed_u64 set_output, adec_base, adec1_open, adec1_started, adec1_codec;
+    ed_u64 set_output, adec_base, adec0_open, adec0_started, adec0_codec, adec1_open, adec1_started, adec1_codec;
     ed_u64 break_list, break_fn, step_fn, patch_text, kprobe_reg, kprobe_unreg, cpu_lock, cpu_unlock;
     ed_u64 nonpcm_phys, cb, name_table;
 };
 static const struct hdmi_oracle hdmi_oracles[] = {
     {"49859c6561689f7fb62d683eed77c9e0d415b8a62fbf6b374626a2a1d5e44f94", "C5 33.31.68", 0,
-     0xffffffc010cd5a60ULL, 0xffffffc01262a238ULL, 0xffffffc01262a2a0ULL, 0xffffffc01262a2a2ULL, 0xffffffc01262a2acULL,
+     0xffffffc010cd5a60ULL, 0xffffffc01262a238ULL, 0xffffffc01262a240ULL, 0xffffffc01262a242ULL, 0xffffffc01262a24cULL,
+     0xffffffc01262a2a0ULL, 0xffffffc01262a2a2ULL, 0xffffffc01262a2acULL,
      0xffffffc011a54090ULL, 0xffffffc01108b410ULL, 0xffffffc01108b300ULL, 0xffffffc01108b070ULL, 0xffffffc01017e7e0ULL, 0xffffffc01017dbc0ULL, 0xffffffc0100b8ed0ULL, 0xffffffc0100b9004ULL,
      0x262a9bcULL, 0xffffffc010cb3d44ULL, 0xffffffc0115493d8ULL},
     {"c219532590e1d691a459ef8c0faab95745d04d36b6cbee4a32685409f3e7460e", "G5 33.31.69", 0,
-     0xffffffc010f5e550ULL, 0xffffffc01264ce48ULL, 0xffffffc01264ceb0ULL, 0xffffffc01264ceb2ULL, 0xffffffc01264cebcULL,
+     0xffffffc010f5e550ULL, 0xffffffc01264ce48ULL, 0xffffffc01264ce50ULL, 0xffffffc01264ce52ULL, 0xffffffc01264ce5cULL,
+     0xffffffc01264ceb0ULL, 0xffffffc01264ceb2ULL, 0xffffffc01264cebcULL,
      0xffffffc011f94090ULL, 0xffffffc011330bc0ULL, 0xffffffc011330ab0ULL, 0xffffffc011330820ULL, 0xffffffc01017e7e0ULL, 0xffffffc01017dbc0ULL, 0xffffffc0100b8ed0ULL, 0xffffffc0100b9004ULL,
      0x264d5c4ULL, 0xffffffc010f3c834ULL, 0xffffffc011a11698ULL},
     {"0606410b32b19fd10f77bb3bdd9b5c618380c717076638418169b7e7bbff80db", "G2 33.31.68 (CS)", 0,
-     0xffffffc010cd44e0ULL, 0xffffffc012605218ULL, 0xffffffc012605280ULL, 0xffffffc012605282ULL, 0xffffffc01260528cULL,
+     0xffffffc010cd44e0ULL, 0xffffffc012605218ULL, 0xffffffc012605220ULL, 0xffffffc012605222ULL, 0xffffffc01260522cULL,
+     0xffffffc012605280ULL, 0xffffffc012605282ULL, 0xffffffc01260528cULL,
      0xffffffc011b04090ULL, 0xffffffc011088cd0ULL, 0xffffffc011088bc0ULL, 0xffffffc011088930ULL, 0xffffffc01017e7e0ULL, 0xffffffc01017dbc0ULL, 0xffffffc0100b8ed0ULL, 0xffffffc0100b9004ULL,
      0x260594cULL, 0xffffffc010cb2d54ULL, 0xffffffc0115ea500ULL},
     {"0192cf4f875affcbd505732ecc13d5fc67b38ae16f09d132ab21cbebdfa22503", "G2 33.22.95", 0,
-     0xffffffc010cd8a70ULL, 0xffffffc0125f41e0ULL, 0xffffffc0125f4248ULL, 0xffffffc0125f424aULL, 0xffffffc0125f4254ULL,
+     0xffffffc010cd8a70ULL, 0xffffffc0125f41e0ULL, 0xffffffc0125f41e8ULL, 0xffffffc0125f41eaULL, 0xffffffc0125f41f4ULL,
+     0xffffffc0125f4248ULL, 0xffffffc0125f424aULL, 0xffffffc0125f4254ULL,
      0xffffffc011af4090ULL, 0xffffffc01108d090ULL, 0xffffffc01108cf80ULL, 0xffffffc01108ccf0ULL, 0xffffffc01017e740ULL, 0xffffffc01017db20ULL, 0xffffffc0100b8e90ULL, 0xffffffc0100b8fc4ULL,
      0x25f4934ULL, 0xffffffc010cb73c4ULL, 0xffffffc0115ea4b0ULL},
     {"53c3cb3d1f23a3da5e698df0a39848e850bbaa26692978e85845a12530775085", "C5 43.21.77", 1,
-     0xffffffc080f5f4acULL, 0xffffffc082efedb8ULL, 0xffffffc082efee20ULL, 0xffffffc082efee22ULL, 0xffffffc082efee2cULL,
+     0xffffffc080f5f4acULL, 0xffffffc082efedb8ULL, 0xffffffc082efedc0ULL, 0xffffffc082efedc2ULL, 0xffffffc082efedccULL,
+     0xffffffc082efee20ULL, 0xffffffc082efee22ULL, 0xffffffc082efee2cULL,
      0xffffffc082284890ULL, 0xffffffc0813e3c94ULL, 0xffffffc0813e3bfcULL, 0xffffffc0813e3a4cULL, 0xffffffc08013c404ULL, 0xffffffc08013b760ULL, 0xffffffc08003f4c0ULL, 0xffffffc08003f9acULL,
      0x2eff5bcULL, 0xffffffc080f39bb8ULL, 0xffffffc08190e0d0ULL},
     {"b19d1c3df9c5315a84314d9d817c080996ea037d967c68d76e11eba66da50cb2", "C5 43.21.73", 1,
-     0xffffffc080f5f4acULL, 0xffffffc082efedb8ULL, 0xffffffc082efee20ULL, 0xffffffc082efee22ULL, 0xffffffc082efee2cULL,
+     0xffffffc080f5f4acULL, 0xffffffc082efedb8ULL, 0xffffffc082efedc0ULL, 0xffffffc082efedc2ULL, 0xffffffc082efedccULL,
+     0xffffffc082efee20ULL, 0xffffffc082efee22ULL, 0xffffffc082efee2cULL,
      0xffffffc082284890ULL, 0xffffffc0813e1694ULL, 0xffffffc0813e15fcULL, 0xffffffc0813e144cULL, 0xffffffc08013c404ULL, 0xffffffc08013b760ULL, 0xffffffc08003f4c0ULL, 0xffffffc08003f9acULL,
      0x2eff5bcULL, 0xffffffc080f39bb8ULL, 0xffffffc08190e0d0ULL},
     {"44fe793cee4fe916a1896ba2f377fe38aac78137688d6137ad23253b5d8ded32", "G5 43.21.71", 1,
-     0xffffffc080fb3f2cULL, 0xffffffc0829fef20ULL, 0xffffffc0829fef88ULL, 0xffffffc0829fef8aULL, 0xffffffc0829fef94ULL,
+     0xffffffc080fb3f2cULL, 0xffffffc0829fef20ULL, 0xffffffc0829fef28ULL, 0xffffffc0829fef2aULL, 0xffffffc0829fef34ULL,
+     0xffffffc0829fef88ULL, 0xffffffc0829fef8aULL, 0xffffffc0829fef94ULL,
      0xffffffc0824b4890ULL, 0xffffffc0814479d4ULL, 0xffffffc08144793cULL, 0xffffffc08144778cULL, 0xffffffc08013c404ULL, 0xffffffc08013b760ULL, 0xffffffc08003f4c0ULL, 0xffffffc08003f9acULL,
      0x29ff71cULL, 0xffffffc080f8e638ULL, 0xffffffc081b11e00ULL},
     {"859189a41f6d3de71bfdd0bf47afaae257a539443e958c26f489d9e63c86dd5d", "G5 43.21.77", 1,
-     0xffffffc080fb3ff4ULL, 0xffffffc0829fef20ULL, 0xffffffc0829fef88ULL, 0xffffffc0829fef8aULL, 0xffffffc0829fef94ULL,
+     0xffffffc080fb3ff4ULL, 0xffffffc0829fef20ULL, 0xffffffc0829fef28ULL, 0xffffffc0829fef2aULL, 0xffffffc0829fef34ULL,
+     0xffffffc0829fef88ULL, 0xffffffc0829fef8aULL, 0xffffffc0829fef94ULL,
      0xffffffc0824b4890ULL, 0xffffffc081447a94ULL, 0xffffffc0814479fcULL, 0xffffffc08144784cULL, 0xffffffc08013c404ULL, 0xffffffc08013b760ULL, 0xffffffc08003f4c0ULL, 0xffffffc08003f9acULL,
      0x29ff71cULL, 0xffffffc080f8e700ULL, 0xffffffc081b11e00ULL},
     {"ef593fd32dfa6f1b95efda3bd55a02b9a71485f2db078c49dd4cd53eb3d92e0a", "G2 43.21.74", 1,
-     0xffffffc080f5ef70ULL, 0xffffffc082ec8d90ULL, 0xffffffc082ec8df8ULL, 0xffffffc082ec8dfaULL, 0xffffffc082ec8e04ULL,
+     0xffffffc080f5ef70ULL, 0xffffffc082ec8d90ULL, 0xffffffc082ec8d98ULL, 0xffffffc082ec8d9aULL, 0xffffffc082ec8da4ULL,
+     0xffffffc082ec8df8ULL, 0xffffffc082ec8dfaULL, 0xffffffc082ec8e04ULL,
      0xffffffc082324890ULL, 0xffffffc0813deed4ULL, 0xffffffc0813dee3cULL, 0xffffffc0813dec8cULL, 0xffffffc08013c404ULL, 0xffffffc08013b760ULL, 0xffffffc08003f4c0ULL, 0xffffffc08003f9acULL,
      0x2ec9564ULL, 0xffffffc080f3a168ULL, 0xffffffc0819af178ULL},
 };
@@ -385,6 +396,7 @@ static int run_hdmi_oracle(const struct hdmi_oracle *o, const struct kernel *k, 
     static const ed_u64 site[2][3] = {{0x48, 0x148, 0x108}, {0x60, 0x68, 0xf0}};
     struct earc_hdmi_walk walk;
     int before = failures;
+    unsigned int i;
     earc_hdmi_decode(k->hdmi, nonpcm, k->stext & ~0xfffffULL, h);
     check(o->label, "hdmi gate state (stock)", h->gate_state, GATE_STOCK);
     check_reason(o->label, "set_output", h->set_output_reason);
@@ -396,9 +408,21 @@ static int run_hdmi_oracle(const struct hdmi_oracle *o, const struct kernel *k, 
     check(o->label, "hdmi adec codec offset", h->adec_codec_off, 20);
     check(o->label, "hdmi adec open offset", h->adec_open_off, 8);
     check(o->label, "hdmi adec started offset", h->adec_started_off, 10);
+    check(o->label, "hdmi adec0 open", h->adec0_open, o->adec0_open);
+    check(o->label, "hdmi adec0 started", h->adec0_started, o->adec0_started);
+    check(o->label, "hdmi adec0 codec", h->adec0_codec, o->adec0_codec);
     check(o->label, "hdmi adec1 open", h->adec1_open, o->adec1_open);
     check(o->label, "hdmi adec1 started", h->adec1_started, o->adec1_started);
     check(o->label, "hdmi adec1 codec", h->adec1_codec, o->adec1_codec);
+    /* The slot the _set_output pre-handler reads for index 0 and 1. */
+    for (i = 0; i < 2; i++) {
+        struct earc_adec_slot slot = {0, 0, 0};
+        int got = earc_adec_slot(h, i, &slot);
+        check(o->label, i ? "hdmi slot for index 1: codec" : "hdmi slot for index 0: codec", slot.codec, i ? o->adec1_codec : o->adec0_codec);
+        check(o->label, i ? "hdmi slot for index 1: open" : "hdmi slot for index 0: open", slot.open, i ? o->adec1_open : o->adec0_open);
+        check(o->label, i ? "hdmi slot for index 1: started" : "hdmi slot for index 0: started", slot.started, i ? o->adec1_started : o->adec0_started);
+        check(o->label, "hdmi slot given for index 0 and 1", (ed_u64)got, 1);
+    }
     check_reason(o->label, "cb_output_status", h->cb_reason);
     check(o->label, "hdmi cb_output_status", h->cb_output_status, o->cb);
     check(o->label, "hdmi hd shape", (ed_u64)h->hd_shape, (ed_u64)o->generation + 1);
@@ -578,7 +602,12 @@ static void policy_case(const char *what, ed_u64 idx, ed_u32 mask, ed_u32 codec,
 }
 static void policy_tests(void) {
     policy_case("DTS core match", 1, 0x20, 48, 1, 1, 1);
-    policy_case("wrong decoder index", 0, 0x20, 48, 1, 1, 0);
+    policy_case("DTS core match on decoder 0", 0, 0x20, 48, 1, 1, 1);
+    policy_case("index 2: no ADEC slot", 2, 0x20, 48, 1, 1, 0);
+    policy_case("index 4: AMIXER 0, no ADEC slot", 4, 0x20, 48, 1, 1, 0);
+    policy_case("index 12: AMIXER 8, no ADEC slot", 12, 0x20, 48, 1, 1, 0);
+    policy_case("index 0xffffffff", 0xffffffffULL, 0x20, 48, 1, 1, 0);
+    policy_case("index 2^32+1", 0x100000001ULL, 0x20, 48, 1, 1, 0);
     policy_case("not eARC mask", 1, 0x14, 48, 1, 1, 0);
     policy_case("wrong codec", 1, 0x20, 4, 1, 1, 0);
     policy_case("not open", 1, 0x20, 48, 0, 1, 0);
@@ -807,15 +836,64 @@ static void hd_refusal_tests(void) {
             !earc_session_policy_match(1, 0x20, 0, 1, 1) && !earc_session_policy_match(1, 0x20, 21, 1, 1) &&
             !earc_session_policy_match(1, 0x20, 47, 1, 1) && !earc_session_policy_match(1, 0x20, 49, 1, 1) &&
             !earc_session_policy_match(1, 0x20, 50, 1, 1) && !earc_session_policy_match(1, 0x20, 52, 1, 1));
-    hd_case("mode 7 policy", "still needs decoder index 1, the eARC mask, open and started, for both codecs",
-            !earc_session_policy_match(0, 0x20, 51, 1, 1) && !earc_session_policy_match(1, 0x14, 51, 1, 1) &&
-            !earc_session_policy_match(1, 0x20, 51, 0, 1) && !earc_session_policy_match(1, 0x20, 51, 1, 0) &&
-            !earc_session_policy_match(0, 0x20, 48, 1, 1) && !earc_session_policy_match(1, 0x14, 48, 1, 1) &&
-            !earc_session_policy_match(1, 0x20, 48, 0, 1) && !earc_session_policy_match(1, 0x20, 48, 1, 0));
+    hd_case("mode 7 policy", "matches decoder 0 as well as 1, for both codecs",
+            earc_session_policy_match(0, 0x20, 48, 1, 1) && earc_session_policy_match(0, 0x20, 51, 1, 1));
+    hd_case("mode 7 policy", "still needs the eARC mask, open and started, for both codecs and both decoders",
+            !earc_session_policy_match(1, 0x14, 51, 1, 1) && !earc_session_policy_match(0, 0x14, 51, 1, 1) &&
+            !earc_session_policy_match(1, 0x20, 51, 0, 1) && !earc_session_policy_match(0, 0x20, 51, 0, 1) &&
+            !earc_session_policy_match(1, 0x20, 51, 1, 0) && !earc_session_policy_match(0, 0x20, 51, 1, 0) &&
+            !earc_session_policy_match(1, 0x14, 48, 1, 1) && !earc_session_policy_match(0, 0x14, 48, 1, 1) &&
+            !earc_session_policy_match(1, 0x20, 48, 0, 1) && !earc_session_policy_match(0, 0x20, 48, 0, 1) &&
+            !earc_session_policy_match(1, 0x20, 48, 1, 0) && !earc_session_policy_match(0, 0x20, 48, 1, 0));
+    hd_case("mode 7 policy", "matches no index without an ADEC slot (2, 4, 12, 0xffffffff, 2^32+1)",
+            !earc_session_policy_match(2, 0x20, 51, 1, 1) && !earc_session_policy_match(4, 0x20, 51, 1, 1) &&
+            !earc_session_policy_match(12, 0x20, 48, 1, 1) && !earc_session_policy_match(0xffffffffULL, 0x20, 51, 1, 1) &&
+            !earc_session_policy_match(0x100000001ULL, 0x20, 48, 1, 1));
     hd_case("mode 5 policy", "still matches ADEC codec 48 only, not 51",
-            earc_policy_match(1, 0x20, 48, 1, 1) && !earc_policy_match(1, 0x20, 51, 1, 1));
+            earc_policy_match(1, 0x20, 48, 1, 1) && !earc_policy_match(1, 0x20, 51, 1, 1) && !earc_policy_match(0, 0x20, 51, 1, 1));
     hd_case("hd accept", "still refuses ADEC codec 48: a core stream's status event is never redirected",
             !earc_hd_accept(7, 3, 48, 1) && earc_hd_accept(7, 3, 51, 1));
+}
+
+/* earc_adec_slot gives slot 0 or 1 and nothing for any other index, so the
+ * _set_output pre-handler never reads past the two derived slots. */
+static void adec_slot_tests(void) {
+    static const ed_u64 outside[] = {2, 3, 4, 12, 0xffffffffULL, 0x100000001ULL, ~0ULL};
+    struct earc_hdmi_layout h;
+    struct earc_adec_slot slot;
+    unsigned int i;
+    int ok = 1;
+    good_hdmi_layout(&h);
+    h.adec0_codec = 0x1014; h.adec0_open = 0x1008; h.adec0_started = 0x100a;
+    h.adec1_codec = 0x1074; h.adec1_open = 0x1068; h.adec1_started = 0x106a;
+    ok = earc_adec_slot(&h, 0, &slot) && slot.codec == 0x1014 && slot.open == 0x1008 && slot.started == 0x100a &&
+         earc_adec_slot(&h, 1, &slot) && slot.codec == 0x1074 && slot.open == 0x1068 && slot.started == 0x106a;
+    for (i = 0; i < sizeof(outside) / sizeof(outside[0]); i++) {
+        slot.codec = slot.open = slot.started = 0x5a5a;
+        ok = ok && !earc_adec_slot(&h, outside[i], &slot) && slot.codec == 0x5a5a && slot.open == 0x5a5a && slot.started == 0x5a5a;
+    }
+    hd_case("adec slot", "index 0 and 1 give their own slot; 2, 3, 4, 12, 0xffffffff, 2^32+1 and 2^64-1 give none and set nothing", ok);
+}
+
+/* The DTS-HD acceptance reads the matched decoder's slot, or either slot
+ * before any match. */
+static void hd_decoder_tests(void) {
+    const ed_u32 on1[2] = {0, 51}, on0[2] = {51, 0}, both[2] = {51, 51}, core[2] = {48, 48}, none[2] = {0, 0};
+    const ed_u8 up[2] = {1, 1}, down[2] = {0, 0};
+    hd_case("hd decoder", "matched 0: accepts on ADEC 0 started on 51, not on a stale ADEC 1",
+            earc_hd_accept_decoder(7, 3, 0, on0, up) == 0 && earc_hd_accept_decoder(7, 3, 0, on1, up) == -1);
+    hd_case("hd decoder", "matched 1: accepts on ADEC 1 started on 51, not on a stale ADEC 0",
+            earc_hd_accept_decoder(7, 3, 1, on1, up) == 1 && earc_hd_accept_decoder(7, 3, 1, on0, up) == -1);
+    hd_case("hd decoder", "no match yet: either slot started on 51 accepts, neither refuses",
+            earc_hd_accept_decoder(7, 3, EARC_NO_DECODER, on0, up) == 0 && earc_hd_accept_decoder(7, 3, EARC_NO_DECODER, on1, up) == 1 &&
+            earc_hd_accept_decoder(7, 3, EARC_NO_DECODER, both, up) == 0 && earc_hd_accept_decoder(7, 3, EARC_NO_DECODER, none, up) == -1);
+    hd_case("hd decoder", "any matched value above 1 is no match and reads only slots 0 and 1",
+            earc_hd_accept_decoder(7, 3, 4, on1, up) == 1 && earc_hd_accept_decoder(7, 3, 0xffffffffU, on0, up) == 0 &&
+            earc_hd_accept_decoder(7, 3, 12, none, up) == -1);
+    hd_case("hd decoder", "still refuses a stopped slot, ADEC on 48, codec 5, the optical output",
+            earc_hd_accept_decoder(7, 3, 1, on1, down) == -1 && earc_hd_accept_decoder(7, 3, 0, on0, down) == -1 &&
+            earc_hd_accept_decoder(7, 3, EARC_NO_DECODER, core, up) == -1 && earc_hd_accept_decoder(5, 3, 1, on1, up) == -1 &&
+            earc_hd_accept_decoder(7, 2, 0, on0, up) == -1);
 }
 
 #define NOP 0xd503201fU
@@ -1365,6 +1443,8 @@ int main(int argc, char **argv) {
     gate_tests();
     mode_refusal_tests();
     hd_refusal_tests();
+    adec_slot_tests();
+    hd_decoder_tests();
     if (first[0][0] >= 0 && first[1][0] >= 0) generation_test("C5", &layouts[first[0][0]], &layouts[first[1][0]]);
     else printf("SKIP C5 5.4/6.12 difference test: needs both oracle kernels\n");
     if (first[0][1] >= 0 && first[1][1] >= 0) generation_test("G5", &layouts[first[0][1]], &layouts[first[1][1]]);

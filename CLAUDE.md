@@ -13,17 +13,20 @@ Fork of [`lgstreamer/dts_restore`](https://github.com/lgstreamer/dts_restore). T
   + play-by-ear). Its `payload/**/*.so` are **git-ignored** and vendored from
   `webos25/restore/**` at packaging time.
 - `webos25/kmod/`: self-adapting eARC/HDMI passthrough kernel module (GPL-2.0-only,
-  experimental). Not packaged by the release workflow; the `.ko` is built locally and
-  never committed. See its README.
+  experimental). Its 5.4 build is vendored in `webos25/restore/kmod-out/`; the
+  app's experimental HDMI passthrough opt-in ships `earc_route-5.4.ko` with
+  `earc-route-load.sh` and `hdmi-watch.sh`. See its README.
 - `gst/` — upstream CX binaries (unchanged).
 
 ## Non-negotiable rules
 
 1. **Prebuilt binaries are vendored + on-device-verified.** The committed `.so` in
-   `webos25/restore/{out,truehd-out,demux-out}` are the source of truth. If you change
+   `webos25/restore/{out,truehd-out,demux-out}` and the `.ko` in `webos25/restore/kmod-out`
+   are the source of truth. If you change
    a binary-affecting file (any of the C sources in `webos25/restore/src/`, the `dts_support`
-   patch or pins in `build-demux.sh`, or any `build*.sh`; full list in `RELEASING.md`), you MUST rebuild, **verify on a real
-   webOS-25 TV**, and re-commit the `.so` in the same change. See
+   patch or pins in `build-demux.sh`, any `build*.sh`, or the module sources and build
+   scripts in `webos25/kmod/`; full list in `RELEASING.md`), you MUST rebuild, **verify on a real
+   webOS-25 TV**, and re-commit the binary in the same change. See
    [`.claude/rules/releasing.md`](.claude/rules/releasing.md) and [`RELEASING.md`](RELEASING.md).
 2. **Release by tagging.** After any change to be shipped, cut a release:
    `git tag webos25-<X.Y> && git push origin webos25-<X.Y>` → the **Release (webOS 25)**

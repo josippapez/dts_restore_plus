@@ -82,6 +82,10 @@ STOP_VERSION=$(sed -n 's/^W25_GATE_VERSION=//p' "$STOP_SCRIPT" 2>/dev/null | hea
 if [ "${STOP_VERSION:-0}" -ge 35 ] 2>/dev/null; then
   W25_PT=stop sh "$STOP_SCRIPT" || log "WARN passthrough stop failed; continuing (a reboot clears /run/dts25)"
 fi
+# HDMI passthrough (W25_HDMI exists since 51): its watcher unloads earc_route.
+if [ "${STOP_VERSION:-0}" -ge 51 ] 2>/dev/null; then
+  W25_HDMI=off sh "$STOP_SCRIPT" || log "WARN HDMI passthrough stop failed; continuing"
+fi
 
 # --- 1. Remove boot hook ---------------------------------------------------
 if [ -L "$HOOK" ] || [ -e "$HOOK" ]; then

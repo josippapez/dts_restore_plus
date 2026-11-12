@@ -16,7 +16,7 @@ var {service, C, sh, write, run, ok, initFn, SERVICE} = require("./helpers");
  * C2 family that element registers over a 128 KB stub with no decoder internals,
  * so the override must yield to the exact gate -- while still firing for C3/C4,
  * where the decoder is real and the demuxer gate is the actual problem. */
-test("dts_audiodec override yields to an exact C2 match but still fires elsewhere", function () {
+test("native DTS detection preserves the webOS 25 and C2 profiles", function () {
   var probe = service.DETECT_PROBE;
   var start = probe.indexOf("# --- PROFILE SELECTION ---");
   var end = probe.indexOf('echo "PROFILE=$PROFILE"');
@@ -51,6 +51,13 @@ test("dts_audiodec override yields to an exact C2 match but still fires elsewher
     audiodec: "yes", rank: "0"
   }), C.C2, "an exact C2 match must not be relabelled native-dts-gated");
 
+  // The updated G3 keeps the webOS 25 restore path even with the stock DTS element
+  // registered. The separate compatibility check decides whether Enable can run.
+  assert.strictEqual(profileFor({
+    gst: "1.24.0", hw: "HE_DTV_W23O_AFABATAA", pid: "OLED77G36LA",
+    webos: "10.3.1", fw: "33.31.68", audiodec: "yes", rank: "0"
+  }), "webos25-armel-gst124");
+
   // C3: decoder is real, demuxer gate off -> the override is correct here.
   assert.strictEqual(profileFor({
     gst: "1.18.4", hw: "HE_DTV_W23O_AFAAATAA", pid: "OLED55C34LA",
@@ -78,6 +85,40 @@ test("dts_audiodec override yields to an exact C2 match but still fires elsewher
     fw: "99.99.99", audiodec: "yes", rank: "0"
   }), "webos22-o22-c2-diagnostic",
     "a near-miss C2 must keep its diagnostic profile, not become native-dts-gated");
+});
+
+/* A webOS 25 set with LG's own dts_audiodec keeps the restore profile only when the
+ * compatibility check knows it. The G3 row needed the exemption, but applied to every
+ * 1.24 set it offered "Try anyway" to TVs that already have LG's DTS decoder. */
+test("native DTS on webOS 25 is decided by the compatibility check", function () {
+  var probe = service.DETECT_PROBE;
+  var start = probe.indexOf("# --- NATIVE DTS ON WEBOS 25 ---");
+  var end = probe.indexOf("# --- END NATIVE DTS ON WEBOS 25 ---");
+  assert.ok(start > 0 && end > start, "native DTS block not found in DETECT_PROBE");
+  var block = probe.slice(start, end);
+  function profileAfterGate(v) {
+    var pre = [
+      "set -u", "PROFILE=webos25-armel-gst124",
+      "HAS_DTS_AUDIODEC=" + v.audiodec, "DCA_RANK=" + v.rank, "VERDICT=" + v.verdict
+    ].concat(v.near ? ["TABLE_NEAR_MATCH=" + v.near] : []).join("\n");
+    var r = sh(pre + "\n" + block + '\nprintf "%s" "$PROFILE"');
+    assert.strictEqual(r.status, 0, "native DTS block failed: " + r.stderr);
+    var lines = r.stdout.trim().split("\n");
+    return lines[lines.length - 1].trim();
+  }
+  // Not in the table, LG's decoder ranked: native DTS, as before the G3 row.
+  assert.strictEqual(profileAfterGate({audiodec: "yes", rank: "290", verdict: "unverified"}), "native-dts");
+  // Not in the table, LG's decoder at rank 0: the gated native case.
+  assert.strictEqual(profileAfterGate({audiodec: "yes", rank: "0", verdict: "unverified"}), "native-dts-gated");
+  // The G3: a verified row keeps the restore profile.
+  assert.strictEqual(profileAfterGate({audiodec: "yes", rank: "0", verdict: "verified"}), "webos25-armel-gst124");
+  // Same stock plugins as a verified TV, another model: keeps it, so Try anyway is offered.
+  assert.strictEqual(profileAfterGate({audiodec: "yes", rank: "0", verdict: "unverified", near: "1"}), "webos25-armel-gst124");
+  // Already installed by us: keeps it, so Disable stays reachable.
+  assert.strictEqual(profileAfterGate({audiodec: "yes", rank: "0", verdict: "forced"}), "webos25-armel-gst124");
+  assert.strictEqual(profileAfterGate({audiodec: "yes", rank: "0", verdict: "drift"}), "webos25-armel-gst124");
+  // No LG decoder: the restore profile, whatever the verdict.
+  assert.strictEqual(profileAfterGate({audiodec: "no", rank: "absent", verdict: "unverified"}), "webos25-armel-gst124");
 });
 
 /* Issue #3: a C1 on GStreamer 1.16.2 was refused as unknown, while upstream
@@ -405,7 +446,9 @@ test("every generated webOS 25 script defines $APPBASE before using it", functio
     "w25Uninstall": service.w25Uninstall(),
     "w25InitScriptBody": service.w25InitScriptBody(),
     "w25PassthroughSteps(on)": service.w25PassthroughSteps(true),
-    "w25PassthroughSteps(off)": service.w25PassthroughSteps(false)
+    "w25PassthroughSteps(off)": service.w25PassthroughSteps(false),
+    "w25HdmiSteps(on)": service.w25HdmiSteps(true),
+    "w25HdmiSteps(off)": service.w25HdmiSteps(false)
   };
   Object.keys(scripts).forEach(function (name) {
     var lines = scripts[name].split("\n");

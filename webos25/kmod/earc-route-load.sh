@@ -290,13 +290,13 @@ case "$want_mode" in
     else echo "earc-route: PASSTHROUGH FAILED (insmod status $status: $result): $last"; exit 1; fi ;;
   6)
     if [ "$status" = 0 ] && [ "$(param hd_probes_registered)" = 2 ]; then
-      echo "earc-route: DTS-HD WATCH ACTIVE ($options) selftest=$(param selftest_passed) gate_open=$(param gate_open); nothing changed; UNTESTED ON HARDWARE ($last)"
+      echo "earc-route: DTS-HD WATCH ACTIVE ($options) selftest=$(param selftest_passed) gate_open=$(param gate_open); nothing changed; EXPERIMENTAL ($last)"
     else echo "earc-route: DTS-HD WATCH FAILED (insmod status $status: $result): $last"; exit 1; fi ;;
   7)
     # hd_probes_registered is 0 where the stock kernel already accepts and
     # names codec 7 (no _cb_output_status probes are needed), else 2.
     hd=$(param hd_probes_registered)
     if [ "$status" = 0 ] && [ "$(param probe_registered)" = 1 ] && { [ "$hd" = 2 ] || [ "$hd" = 0 ]; }; then
-      echo "earc-route: PASSTHROUGH ACTIVE ($options) selftest=$(param selftest_passed) gate_open=$(param gate_open); UNTESTED ON HARDWARE ($last)"
+      echo "earc-route: PASSTHROUGH ACTIVE ($options) selftest=$(param selftest_passed) gate_open=$(param gate_open); EXPERIMENTAL ($last)"
     else echo "earc-route: PASSTHROUGH FAILED (insmod status $status: $result): $last"; exit 1; fi ;;
 esac
