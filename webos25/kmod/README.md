@@ -720,8 +720,8 @@ other DTS tools, already loaded) run only at `--apply`/`--session`; its refusal 
 printed and the script stops.
 
 `--apply` and `--session` then: load `earc-route-load.sh --dts-hd`
-(`window_seconds=<seconds+20>`, or `window_seconds=0 supervised=1`);
-restart `extinput-integration.service`; wait up to 10 s for the decoder, chosen
+(`window_seconds=<seconds+30>`, or `window_seconds=0 supervised=1`);
+restart `extinput-integration.service`; wait up to 20 s for the decoder, chosen
 again at each read because the restart can move the input to the other decoder,
 to be on the same port and read the kind's `UserCodec` and `Start=1`. If the
 decoder moved, the script prints `The input-service restart moved HDMI port n

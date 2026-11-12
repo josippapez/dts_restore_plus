@@ -242,10 +242,10 @@ trap 'exit 130' INT
 trap 'exit 143' TERM HUP
 
 # One load opens the DTS check and arms the route hook, and the window starts
-# now: it has to cover the ADEC wait below (10 s) as well as the test. A core
+# now: it has to cover the ADEC wait below (20 s) as well as the test. A core
 # session loads the DTS-HD stage too: it overrides both codecs and guards LG's
 # codec-name load, which a source switching to a DTS-HD track would reach.
-options="window_seconds=$((seconds+20))"
+options="window_seconds=$((seconds+30))"
 [ "$session" = 0 ] || options='window_seconds=0 supervised=1'
 # shellcheck disable=SC2086 # options is a word list
 if sh "$HERE/earc-route-load.sh" --dts-hd $options > "$logdir/loader.txt" 2>&1; then load_status=0; else load_status=$?; fi
@@ -260,16 +260,17 @@ systemctl restart extinput-integration.service
 # nodes. The input reads as not DTS for a moment after the restart (a CS run
 # aborted here on the first read), so only the last read decides. The decoder
 # is detected again each time: the restart can move the input to the other
-# decoder. The port must stay the same.
+# decoder. The port must stay the same. On a CS the decoder started on DTS
+# 9 s after the restart, so the wait is 20 s.
 i=0
-while [ "$i" -lt 10 ]; do
+while [ "$i" -lt 20 ]; do
     detect
     if [ -n "$found" ] && stream_now && grep -qx "Connect=HDMI_PORT$port" "$AUDIO/adec.p$found" &&
        grep -qx "UserCodec=$adec_codec" "$AUDIO/adec.p$found" && grep -qx 'Start=1' "$AUDIO/adec.p$found"; then break; fi
     i=$((i+1)); sleep 1
 done
-if [ "$i" -ge 10 ]; then
-    stream_now || { echo "$label input did not come back within 10 s of the input-service restart; aborting."; exit 1; }
+if [ "$i" -ge 20 ]; then
+    stream_now || { echo "$label input did not come back within 20 s of the input-service restart; aborting."; exit 1; }
     echo 'ADEC did not start; aborting.'; exit 1
 fi
 if [ "$found" != "$dec" ]; then

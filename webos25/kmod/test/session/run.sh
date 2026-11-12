@@ -39,6 +39,8 @@ echo "cset numid=92 $4" >> "$FAKE_EVENTS"
 # back at the next sleep (as on a CS), "forever" leaves it. FAKE_DEC: the
 # decoder a restart starts (default 1). FAKE_FROM: at the first restart the
 # input leaves that decoder (Connect=UNKNOWN, Start=0) for FAKE_DEC, on port 0.
+# FAKE_LATE=N: the first restart turns the input to PCM and leaves the decoder
+# stopped; N sleeps later the input is DTS again and the decoder starts.
 stub systemctl 'echo "systemctl $*" >> "$FAKE_EVENTS"
 A=$DTS25_ROOT/proc/lgtv-driver/audio h=$DTS25_ROOT/proc/lgtv-driver/audio/hdmi d=${FAKE_DEC:-1}
 if [ -n "${FAKE_BLIP:-}" ] && [ ! -e "$DTS25_ROOT/blipped" ]; then
@@ -49,6 +51,10 @@ if [ -n "${FAKE_FROM:-}" ] && [ ! -e "$DTS25_ROOT/moved" ]; then
   touch "$DTS25_ROOT/moved"
   sed -i.bak -e "s/^Connect=.*/Connect=UNKNOWN/" -e "s/^Start=.*/Start=0/" "$A/adec.p$FAKE_FROM"
   sed -i.bak "s/^Connect=.*/Connect=HDMI_PORT0/" "$A/adec.p$d"
+fi
+if [ -n "${FAKE_LATE:-}" ] && [ ! -e "$DTS25_ROOT/late-done" ]; then
+  touch "$DTS25_ROOT/late-done"; cp "$h" "$DTS25_ROOT/hdmi.late"; sed -i.bak "s/^Codec=.*/Codec=PCM/" "$h"
+  echo "$FAKE_LATE" > "$DTS25_ROOT/late-left"; exit 0
 fi
 [ "${FAKE_ADEC:-start}" = never ] || sed -i.bak -e "s/^UserCodec=.*/UserCodec=${FAKE_ADEC_CODEC:-DTS}/" -e "s/^Start=.*/Start=1/" "$A/adec.p$d"'
 stub lsmod 'echo "Module Size Used by"; [ ! -e "$DTS25_ROOT/sys/module/earc_route" ] || echo "earc_route 16384 0"'
@@ -62,6 +68,13 @@ sed -i.bak "s/^$name=\(([a-z]*)\).*/$name=\1$value/" "$f"'
 # "sleep 2" is the DTS-HD muted wait: it is logged, and the eARC non-PCM word
 # only becomes FAKE_NONPCM (default 1) during it.
 stub sleep '[ ! -f "$DTS25_ROOT/hdmi.real" ] || mv "$DTS25_ROOT/hdmi.real" "$DTS25_ROOT/proc/lgtv-driver/audio/hdmi"
+if [ -f "$DTS25_ROOT/late-left" ]; then
+  left=$(($(cat "$DTS25_ROOT/late-left") - 1)); echo "$left" > "$DTS25_ROOT/late-left"
+  if [ "$left" -le 0 ]; then
+    rm "$DTS25_ROOT/late-left"; mv "$DTS25_ROOT/hdmi.late" "$DTS25_ROOT/proc/lgtv-driver/audio/hdmi"
+    sed -i.bak -e "s/^UserCodec=.*/UserCodec=DTS/" -e "s/^Start=.*/Start=1/" "$DTS25_ROOT/proc/lgtv-driver/audio/adec.p${FAKE_DEC:-1}"
+  fi
+fi
 if [ "$1" = 2 ]; then
   echo "sleep 2" >> "$FAKE_EVENTS"
   echo "${FAKE_NONPCM:-1}" > "$DTS25_ROOT/sys/module/earc_route/parameters/earc_nonpcm"
@@ -106,7 +119,7 @@ setup() {  # a DTS core input on HDMI port 0, decoder 1, eARC on, ADEC idle
     cp "$SCRIPT" "$WORK/app/hdmi-session.sh"
     printf '#!/bin/sh\n%s\n' "$LOADER" > "$WORK/app/earc-route-load.sh"
     : > "$WORK/events"
-    unset FAKE_UID FAKE_EARC FAKE_ROUTE FAKE_ADEC FAKE_LOADER FAKE_ADEC_CODEC FAKE_NONPCM FAKE_BLIP FAKE_RENDERER FAKE_DEC FAKE_FROM
+    unset FAKE_UID FAKE_EARC FAKE_ROUTE FAKE_ADEC FAKE_LOADER FAKE_ADEC_CODEC FAKE_NONPCM FAKE_BLIP FAKE_RENDERER FAKE_DEC FAKE_FROM FAKE_LATE
 }
 hd_setup() {  # hd_setup CODEC: the same TV with a DTS-HD stream named CODEC
     setup
@@ -148,7 +161,7 @@ systemctl restart extinput-integration.service" ] || bad "numid 92 / service not
 P=/proc/aaudio/processors/dsp0/hdmi1/021c0001/prop
 P0=/proc/aaudio/processors/dsp0/hdmi0/021d0001/prop
 G=/proc/aaudio/processors/dsp2/gain/041b0001/prop
-HAPPY="load --dts-hd window_seconds=35
+HAPPY="load --dts-hd window_seconds=45
 systemctl restart extinput-integration.service
 cset numid=92 2,1,0,0,1
 write $G mute-input false
@@ -172,7 +185,7 @@ write $P drop false
 rmmod earc_route
 cset numid=92 2,1,0,0,1
 systemctl restart extinput-integration.service"
-HD_HAPPY="load --dts-hd window_seconds=35
+HD_HAPPY="load --dts-hd window_seconds=45
 systemctl restart extinput-integration.service
 cset numid=92 2,1,0,0,1
 write $G mute-input true
@@ -350,7 +363,7 @@ $RESTORE"
     name='stops when the loader refuses'; cases=$((cases+1)); setup
     FAKE_LOADER=refuse; export FAKE_LOADER
     run --apply 15; expect_status 1; expect_out 'REFUSED: another DTS tool is loaded: dts_gate'
-    expect_events 'load --dts-hd window_seconds=35'
+    expect_events 'load --dts-hd window_seconds=45'
     cmp -s "$FIX/hdmi1.prop" "$R$P" || bad "prop changed"
     case "$out" in *'Rollback incomplete'*) bad "rollback incomplete" ;; esac
 
@@ -370,7 +383,7 @@ $RESTORE"
     name='session ends with 10 on source loss'; cases=$((cases+1)); setup
     echo 3 > "$R/lose-after"
     run --session; expect_status 10; expect_out 'Input changed; ending test.'
-    expect_events "$(echo "$HAPPY" | sed 's/window_seconds=35/window_seconds=0 supervised=1/')
+    expect_events "$(echo "$HAPPY" | sed 's/window_seconds=45/window_seconds=0 supervised=1/')
 $RESTORE"
     expect_restored
 
@@ -387,9 +400,16 @@ $RESTORE"
 $RESTORE"
     expect_restored
 
+    name='the decoder starts on DTS 12 s after the service restart'; cases=$((cases+1)); setup
+    FAKE_LATE=12; export FAKE_LATE
+    run --apply 15; expect_status 0; expect_out 'DTS core test running for 15 seconds'
+    expect_events "$HAPPY
+$RESTORE"
+    expect_restored
+
     name='input never comes back after the service restart: rolled back'; cases=$((cases+1)); setup
     FAKE_BLIP=forever; export FAKE_BLIP
-    run --apply 15; expect_status 1; expect_out 'DTS core input did not come back within 10 s'
+    run --apply 15; expect_status 1; expect_out 'DTS core input did not come back within 20 s'
     case "$(cat "$WORK/events")" in *'codec 5'*) bad "wrote codec 5" ;; esac
     [ ! -e "$R/sys/module/earc_route" ] || bad "module still loaded"
     case "$out" in *'Rollback incomplete'*) bad "rollback incomplete" ;; esac
@@ -448,7 +468,7 @@ $(echo "$HD_RESTORE" | sed 's/\(mute-[a-z]*put\) false/\1 true/')"
     name='DTS-HD session ends with 10 on source loss'; cases=$((cases+1)); hd_setup UNKNOWN_DTS_HD
     echo 4 > "$R/lose-after"
     run --session; expect_status 10; expect_out 'DTS-HD supervised session active'; expect_out 'Input changed; ending test.'
-    expect_events "$(echo "$HD_HAPPY" | sed 's/window_seconds=35/window_seconds=0 supervised=1/')
+    expect_events "$(echo "$HD_HAPPY" | sed 's/window_seconds=45/window_seconds=0 supervised=1/')
 $HD_UNMUTE
 $HD_RESTORE"
     expect_restored
