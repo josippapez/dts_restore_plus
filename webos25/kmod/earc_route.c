@@ -1214,8 +1214,9 @@ static int hd_mode(int active) {
     }
     if (active && gate_native) {
         /* Not ours to patch or restore; it must still be open now. */
-        if (*(volatile u32 *)hdmi.gate != EARC_GATE_OPEN_W0) {
-            printk("\0013earc_route: refused; DTS gate no longer returns 1 (%08x)\n", *(volatile u32 *)hdmi.gate);
+        if (*(volatile u32 *)hdmi.gate != EARC_GATE_OPEN_W0 || *(volatile u32 *)(hdmi.gate + 4) != 0xd65f03c0u) {
+            printk("\0013earc_route: refused; DTS gate no longer returns 1 (%08x %08x)\n", *(volatile u32 *)hdmi.gate,
+                   *(volatile u32 *)(hdmi.gate + 4));
             result = -22;
             goto undo;
         }
