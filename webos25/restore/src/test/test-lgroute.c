@@ -16,6 +16,7 @@
 #define LGROUTE_AREN "/tmp/lgroute-test-run/aren0"
 #define LGROUTE_SINK_WAIT (600 * G_TIME_SPAN_MILLISECOND)
 #define LGROUTE_SNDOUT "/tmp/lgroute-test-run/sndout"
+#define LGROUTE_APP_ROUTE "/tmp/lgroute-test-run/app_route"
 #include "../lgroute.h"
 #include "../lgroute-graph.h"
 
@@ -23,6 +24,7 @@ static const char *graph;
 static gboolean graph_ok = TRUE, receiver = TRUE, writes_ok = TRUE, short_write;
 static int unmixed_result = 1, checks, formats, graph_reads;
 static char destination[128];
+static int last_lease = -1, lease_writes;
 
 static gboolean
 read_graph (const gchar *filename, gchar **contents, gsize *length, GError **error)
@@ -48,6 +50,11 @@ static ssize_t
 write_property (int fd, const void *buffer, size_t size)
 {
   g_assert_cmpint (fd, ==, 123);
+  if (!strcmp (destination, LGROUTE_APP_ROUTE)) {
+    last_lease = atoi (buffer);
+    lease_writes++;
+    return size;
+  }
   if (!writes_ok) return -1;
   g_assert_cmpstr (destination, ==, LGROUTE_INSTANCES "/04260026/cmd");
   static const char expected[] = "0x50020020 192000 8 16 0 0 192000 8 16\n";
@@ -322,6 +329,13 @@ static void resume_tests (void)
   g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
   g_assert_false (last_silent);
 
+  route.lease = 2;
+  route.next_check = 0;
+  lease_writes = 0;
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  g_assert_cmpint (lease_writes, ==, 1);
+  g_assert_cmpint (last_lease, ==, 2);
+
   /* 3. A new id: the renderer restarts, so setup is redone with the new caps. */
   int formats_before = formats;
   send_event (&route, gst_event_new_stream_start ("b"));
@@ -332,6 +346,8 @@ static void resume_tests (void)
   g_assert_true (route.configured); g_assert_cmpint (formats, ==, formats_before + 1);
   g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
   lgroute_disarm (&route);
+  g_assert_cmpint (last_lease, ==, 0);
+  g_assert_cmpint (route.lease, ==, 0);
 
   /* 4. A new id whose caps never arrive fails cleanly instead of passing carrier. */
   reset (&route);

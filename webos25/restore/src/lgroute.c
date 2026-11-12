@@ -48,6 +48,21 @@ GST_DEBUG_CATEGORY_STATIC (lgroute_debug);
 #endif
 /* This TV's kernel has reported its bypass route in LGROUTE_SNDOUT since boot. */
 #define BYPASS_SEEN LGROUTE_RUN "/bypass-seen"
+#ifndef LGROUTE_APP_ROUTE
+#define LGROUTE_APP_ROUTE "/sys/module/earc_route/parameters/app_route"
+#endif
+
+static void app_lease (gint value)
+{
+  gchar text[4];
+  int fd = open (LGROUTE_APP_ROUTE, O_WRONLY | O_CLOEXEC);
+  if (fd < 0)
+    return;
+  gint length = g_snprintf (text, sizeof text, "%d\n", value);
+  if (write (fd, text, length) != length)
+    GST_DEBUG ("lgroute: app_route write failed");
+  close (fd);
+}
 
 static void vnote (const gchar *format, va_list args)
 {
@@ -773,8 +788,11 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
     route_fail (route, "LG plays the carrier too slowly");
     return GST_PAD_PROBE_DROP;
   }
-  if (due)
+  if (due) {
     route->next_check = now + 250 * G_TIME_SPAN_MILLISECOND;
+    if (route->lease)
+      app_lease (route->lease);
+  }
   /* Mixed eARC would play the carrier as noise, and so does a carrier LG plays
    * at the wrong speed (a tester heard seconds of it before the third slow
    * window): send silence until LG unmixes and the pace is back. */
@@ -970,6 +988,7 @@ gboolean lgroute_arm (LgRoute *route)
     gboolean mixer = FALSE;
     g_object_get (sink, "index", &index, "mixer", &mixer, NULL);
     g_snprintf (resource, sizeof resource, "%s%u", mixer ? "AMIXER" : "ADEC", index);
+    route->lease = !mixer && index <= 1 ? (gint) index + 1 : 0;
   }
   /* The probes run at once on sticky events, so the route is published first.
    * Until our caps reach the sink, what arrives there is the earlier stream's. */
@@ -1020,6 +1039,9 @@ void lgroute_disarm (LgRoute *route)
   route->first = route->feeding = route->configured = route->unmixed = FALSE;
   route->restart_pending = route->waiting = route->draining = route->in_mixer = FALSE;
   route->restarts = 0;
+  if (route->lease)
+    app_lease (0);
+  route->lease = 0;
   route->restart_after = 0;
   route->stream_id[0] = 0;
   route->resource[0] = 0;
