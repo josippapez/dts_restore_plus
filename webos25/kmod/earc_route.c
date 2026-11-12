@@ -139,6 +139,8 @@ static void *window_task;
 static struct target_kprobe hd_name_probe, hd_status_probe, redirect_probe;
 static int hd_active;              /* mode 7: act; mode 6: count and print only */
 static u32 hd_probes_registered, hd_name_entries;
+/* Set at load for mode 7 when the stock kernel already has the change (earc_probe.h). */
+static int hd_native, gate_native;
 static u64 hd_name_last;           /* the name table's last entry: a string in the kernel image */
 static u32 hd_status_seen, hd_status_accepts, hd_name_seen, hd_name_fixes;
 static u32 hd_status_prints, hd_accept_prints, hd_name_prints, hd_fix_prints;
@@ -1203,17 +1205,29 @@ static int hd_mode(int active) {
     hd_name_probe.pre_handler = hd_name_prehandler;
     hd_status_probe.addr = (void *)hdmi.hd_compare;
     hd_status_probe.pre_handler = hd_status_prehandler;
-    if (register_kprobe(&hd_name_probe) < 0) {
-        printk("\0013earc_route: register_kprobe on the _cb_output_status name load failed\n");
-        goto undo;
+    if (!hd_native) {
+        if (register_kprobe(&hd_name_probe) < 0) {
+            printk("\0013earc_route: register_kprobe on the _cb_output_status name load failed\n");
+            goto undo;
+        }
+        hd_probes_registered = 1;
     }
-    hd_probes_registered = 1;
-    if (active && gate_open_patch() < 0) { result = -22; goto undo; }
-    if (register_kprobe(&hd_status_probe) < 0) {
-        printk("\0013earc_route: register_kprobe on the _cb_output_status compare failed\n");
-        goto undo;
+    if (active && gate_native) {
+        /* Not ours to patch or restore; it must still be open now. */
+        if (*(volatile u32 *)hdmi.gate != EARC_GATE_OPEN_W0) {
+            printk("\0013earc_route: refused; DTS gate no longer returns 1 (%08x)\n", *(volatile u32 *)hdmi.gate);
+            result = -22;
+            goto undo;
+        }
+        gate_open = 1;
+    } else if (active && gate_open_patch() < 0) { result = -22; goto undo; }
+    if (!hd_native) {
+        if (register_kprobe(&hd_status_probe) < 0) {
+            printk("\0013earc_route: register_kprobe on the _cb_output_status compare failed\n");
+            goto undo;
+        }
+        hd_probes_registered = 2;
     }
-    hd_probes_registered = 2;
     if (active) {
         override_mode = 1;
         route_probe.addr = (void *)hdmi.set_output;
@@ -1231,6 +1245,9 @@ static int hd_mode(int active) {
            active ? "DTS core and DTS-HD passthrough active" : "DTS-HD watch", hdmi.hd_compare, earc_hd_codec_reg(&hdmi), hdmi.hd_output_reg,
            hdmi.hd_name_load, earc_hd_name_reg(&hdmi), earc_hd_index_reg(&hdmi), hd_name_entries, (unsigned long long)hd_name_last,
            active ? "; gate open; _set_output override window running" : "; nothing changed");
+    if (gate_native || hd_native)
+        printk("\0016earc_route: stock kernel already has%s%s; left as it is\n", gate_native ? " the open DTS gate" : "",
+               hd_native ? " codec-7 acceptance and its name (no _cb_output_status probes placed)" : "");
     printk("\0013earc_route: UNTESTED ON HARDWARE: this mode has never run on a TV\n");
     return 0;
 undo:
@@ -1244,7 +1261,9 @@ static int passthrough_init(void) {
     reason = earc_mode_refusal(&hdmi, mode);
     if (!reason && mode >= 6) {
         hd_name_entries = hdmi_name_entries(hdmi.name_table);
-        reason = earc_hd_refusal(&hdmi, hd_name_entries);
+        reason = earc_hd_refusal(&hdmi, hd_name_entries, mode);
+        hd_native = !reason && mode == 7 && earc_hd_native(&hdmi, hd_name_entries);
+        gate_native = !reason && mode == 7 && hdmi.gate_state == GATE_SWITCHED;
         /* hdmi_name_entries checked this entry as a pointer to a string in the kernel's data. */
         if (!reason) hd_name_last = *(volatile unsigned long *)(hdmi.name_table + 8UL * (hd_name_entries - 1));
     }

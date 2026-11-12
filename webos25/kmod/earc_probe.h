@@ -121,14 +121,28 @@ static int earc_hd_name_substitute(ed_u64 index, unsigned int entries) {
     return index >= entries;
 }
 
+/* Some stock kernels already accept codec 7 and name it from inside the table:
+ * C3/G3 33.31.68 and G4 23.23.30 compare against 9 and have 11 names. Mode 7
+ * then places neither DTS-HD probe; LG's own compare and load already do what
+ * the probes would. */
+static int earc_hd_native(const struct earc_hdmi_layout *h, unsigned int name_entries) {
+    return h->hd_compare_bound >= EARC_HD_EVENT_CODEC && name_entries > h->hd_compare_bound;
+}
+
 /* What modes 6 and 7 need of _cb_output_status, beyond earc_mode_refusal.
  * name_entries is the live count of the name table's entries. cb_reason covers
  * the compare, the supported branch, the name load and any breakpoint in the
- * function. Returns the reason or 0. */
-static const char *earc_hd_refusal(const struct earc_hdmi_layout *h, unsigned int name_entries) {
+ * function. On a native kernel (earc_hd_native) mode 7 needs no probe there, so
+ * only the derivation itself is required; mode 6 has nothing to watch and
+ * refuses. Returns the reason or 0. */
+static const char *earc_hd_refusal(const struct earc_hdmi_layout *h, unsigned int name_entries, int mode) {
     if (h->cb_reason) return h->cb_reason;
     if (h->adec_reason) return h->adec_reason;
-    if (h->hd_compare_bound >= EARC_HD_EVENT_CODEC) return "the acceptance compare already covers codec 7";
+    if (h->hd_compare_bound >= EARC_HD_EVENT_CODEC) {
+        if (mode != 7) return "the acceptance compare already covers codec 7";
+        if (name_entries <= h->hd_compare_bound) return "the codec-name table is smaller than the accepted codecs";
+        return 0;
+    }
     if (h->hd_output_reg > 30) return "the output register at the acceptance compare was not derived";
     if (earc_hd_codec_reg(h) == 31 || earc_hd_index_reg(h) == 31 || earc_hd_name_reg(h) == 31)
         return "a probed _cb_output_status instruction uses SP or ZR";
@@ -169,8 +183,15 @@ static const char *earc_mode_refusal(const struct earc_hdmi_layout *h, int mode)
     }
     if (needs_gate) {
         if (h->gate_state == GATE_BREAKPOINT) return "DTS gate holds a breakpoint (another tool is probing it)";
-        if (h->gate_state == GATE_SWITCHED) return "DTS gate is already switched (another tool opened it)";
-        if (h->gate_state != GATE_STOCK) return "DTS gate is not in its stock state";
+        /* mov w0,#1; ret is the stock gate of C3/G3, G4 and 2026 kernels, so
+         * mode 7 takes it as already open and neither patches nor restores it.
+         * The loader refuses beside the known DTS modules; the single-stage
+         * modes 3 to 5 still refuse, as their test is the gate change itself. */
+        if (h->gate_state == GATE_SWITCHED && mode == 7) needs_gate = 0;
+        else if (h->gate_state == GATE_SWITCHED) return "DTS gate is already switched (another tool opened it)";
+        else if (h->gate_state != GATE_STOCK) return "DTS gate is not in its stock state";
+    }
+    if (needs_gate) {
         if (!h->patch_text) return "aarch64_insn_patch_text not found";
         if (!h->cpus_read_lock || !h->cpus_read_unlock) return "cpus_read_lock/unlock not found";
     }

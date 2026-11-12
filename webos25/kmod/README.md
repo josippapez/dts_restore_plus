@@ -181,13 +181,37 @@ hardcoded addresses replaced by the derived set and the audit's break-hook walk.
 `earc_probe.h` holds the pure decisions (shared with the test); `earc_route.c`
 holds the kernel ABI and the live calls. Each mode first runs the same HDMI
 derivation the audit runs and **refuses** (never degrades) unless every item it
-depends on derived cleanly, the DTS check is stock (for modes that touch it), no
+depends on derived cleanly, the DTS check is stock (for modes that touch it;
+mode 7 also takes a check that already returns 1, see below), no
 probe-relevant site holds a breakpoint, and `_set_output`'s entry is
 kprobe-placeable (`earc_mode_refusal`). Modes 6 and 7 also need
 `earc_hd_refusal`: the `_cb_output_status` sites derived with no breakpoint in
-the function, the ADEC table, a compare bound below 7, the output register, no
-SP/ZR in the probed instructions, both kprobe-placeable, and a live name table
-with more entries than the bound.
+the function, the ADEC table, a compare bound below 7 (mode 7 also takes 7 or
+more, see below), the output register, no SP/ZR in the probed instructions,
+both kprobe-placeable, and a live name table with more entries than the bound.
+
+**Kernels that already have the change (mode 7 only).** Some stock kernels
+ship what mode 7 would patch or probe in. Mode 7 then leaves it as it is,
+instead of refusing:
+
+| Stock kernel | DTS check | `_cb_output_status` | Mode 7 places |
+|---|---|---|---|
+| C2/CS/G2, C5, G5 (5.4 and 6.12) | `mov w0,#0` | `cmp wC,#4`, 6 names | gate patch, both status probes, `_set_output` probe |
+| 2026 OLED (`W26O` 43.11.81, 43.21.98) | `mov w0,#1` | `cmp wC,#4`, 6 names | both status probes, `_set_output` probe |
+| C3/G3 (`W23O` 33.31.68), G4 (`W24O` 23.23.30) | `mov w0,#1` | `cmp wC,#9`, 11 names | `_set_output` probe only |
+
+A check that already returns 1 is neither patched nor restored (`gate_open=1`,
+`gate_opened_by_us=0`); mode 7 re-reads it before arming and refuses if it no
+longer returns 1. The words are the same as another tool's patch would leave,
+so this relies on the loader refusing beside the known DTS modules. A compare
+of 7 or more with codec 7 named inside the table needs neither status probe
+(`hd_probes_registered=0`): LG's code accepts and names codec 7 itself. Modes 3
+to 5 still refuse an open check, and mode 6 refuses a compare of 7 or more
+(nothing to watch). Host-tested on the images above; **not run on any of these
+TVs.** The loader's release allowlist admits C3/G3 (5.4.268-329.ptl4tv.5) and
+`W26O` 43.21.98 (6.12.44-352); G4 (5.4.268-320) and `W26O` 43.11.81
+(6.12.44-347) still need a stock-module capture before they are added. LG
+documents native DTS on C3/G3 and C4/G4, so try them stock first.
 
 | Mode | Loader | What it does | Stays loaded |
 |---|---|---|---|
@@ -196,7 +220,7 @@ with more entries than the bound.
 | 4 | `--observe` | Stage a + opens the gate + a counting kprobe on `_set_output` (no register change) | yes |
 | 5 | `--dts-core` | Stage a + opens the gate + a kprobe on `_set_output` that overrides the DTS-core route for a bounded window | yes |
 | 6 | `--observe-hd` | Stage a + the redirect self-test + counting kprobes on the `_cb_output_status` compare and name load. The gate stays shut; no register, flag or pc is changed | yes |
-| 7 | `--dts-hd` | The session stage for DTS core and DTS-HD: stage a + the redirect self-test + the `_cb_output_status` name-load kprobe + opens the gate + the `_cb_output_status` compare kprobe (acts for DTS-HD only) + the `_set_output` kprobe overriding the route of a DTS core or DTS-HD stream (ADEC codec 48 or 51) for a bounded window | yes |
+| 7 | `--dts-hd` | The session stage for DTS core and DTS-HD: stage a + the redirect self-test + the `_cb_output_status` name-load kprobe + opens the gate + the `_cb_output_status` compare kprobe (acts for DTS-HD only) + the `_set_output` kprobe overriding the route of a DTS core or DTS-HD stream (ADEC codec 48 or 51) for a bounded window. Skips the gate patch or the two status probes where the stock kernel already has them | yes |
 
 **Composition.** A real session needs the DTS check open **and** the `_set_output`
 probe active from one load (a module loads once), so modes 4 and 5 include opening
@@ -319,7 +343,7 @@ redundant wait: `unregister_kernel_break_hook` (and `unregister_kprobe`, through
 | one kprobe on the `_cb_output_status` name load (modes 6, 7; in mode 7 before the gate is opened) | `register_kprobe` | `unregister_kprobe`, after the gate is restored |
 | one kprobe on the `_cb_output_status` compare (modes 6, 7; in mode 7 after the gate is opened) | `register_kprobe` | `unregister_kprobe`, before the gate is restored |
 | one kprobe on the self-test leaf (modes 2, 4, 5; twice in modes 6, 7) | `register_kprobe` | `unregister_kprobe`, within init |
-| one instruction: DTS check word 0 `mov w0,#0` -> `mov w0,#1` (modes 3, 4, 5, 7) | `aarch64_insn_patch_text` under `cpus_read_lock` | patch back to `mov w0,#0`, but only if the live word is still the one we wrote |
+| one instruction: DTS check word 0 `mov w0,#0` -> `mov w0,#1` (modes 3, 4, 5, 7; not in mode 7 when it is already `mov w0,#1`) | `aarch64_insn_patch_text` under `cpus_read_lock` | patch back to `mov w0,#0`, but only if the live word is still the one we wrote |
 
 **Failure paths** undo in reverse: self-test fail -> unregister hooks, `synchronize_rcu`; gate-patch fail -> unregister hooks, `synchronize_rcu`; probe-register fail -> restore gate, unregister hooks, `synchronize_rcu`; window-thread fail -> unregister probe, restore gate, unregister hooks, `synchronize_rcu`. `cleanup_module` (modes 3-5) stops the window thread, unregisters the probe, restores the gate, unregisters the hooks, then `synchronize_rcu`. It does **not** repair the audio graph: like lg-g5-dts, that is left to the session script.
 Modes 6 and 7 take every failure through that same cleanup, which also removes the two `_cb_output_status` probes. Mode 7 sets up in the order hooks, self-tests, name-load probe, gate, compare probe, `_set_output` probe, window thread, and the cleanup runs it backwards: window thread, `_set_output` probe, compare probe, gate, name-load probe, hooks, `synchronize_rcu`. Their failure points are the self-tests, the name-load `register_kprobe`, the gate patch (mode 7), the other two `register_kprobe` calls and the window thread (mode 7).

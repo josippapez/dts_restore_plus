@@ -655,9 +655,12 @@ static void hd_case(const char *label, const char *what, int ok) {
     else { printf("FAIL %s: %s\n", label, what); failures++; }
 }
 
-/* On every kernel given: the two sites and their registers derive, modes 6 and
- * 7 accept the image, and each decision acts and does not act with that
- * kernel's own bound and table size. */
+/* On every kernel given: the two sites and their registers derive, mode 7
+ * accepts the image, and each decision acts and does not act with that
+ * kernel's own bound and table size. A kernel that already accepts and names
+ * codec 7 (C3/G3, G4) is accepted by mode 7 without probes and refused by
+ * mode 6; one whose stock gate already returns 1 (C3/G3, G4, 2026) is accepted
+ * by mode 7 without a gate patch. */
 static void hd_probe_test(const struct kernel *k, ed_u64 nonpcm) {
     struct earc_hdmi_layout h;
     unsigned int entries, codec, output, index, name, i;
@@ -666,10 +669,24 @@ static void hd_probe_test(const struct kernel *k, ed_u64 nonpcm) {
     int keep = 1;
     earc_hdmi_decode(k->hdmi, nonpcm, k->stext & ~0xfffffULL, &h);
     entries = hdmi_entries(k, h.name_table);
-    reason = earc_hd_refusal(&h, entries);
-    if (!reason) reason = earc_mode_refusal(&h, 6);
+    reason = earc_hd_refusal(&h, entries, 7);
     if (!reason) reason = earc_mode_refusal(&h, 7);
-    if (reason) { printf("FAIL %s: hd modes refuse a stock image: %s\n", k->dir, reason); failures++; return; }
+    if (reason) { printf("FAIL %s: mode 7 refuses a stock image: %s\n", k->dir, reason); failures++; return; }
+    if (h.gate_state == GATE_SWITCHED)
+        hd_case(k->dir, "stock DTS gate already returns 1: mode 7 accepts it without patching, modes 3 to 5 still refuse",
+                earc_mode_refusal(&h, 3) && earc_mode_refusal(&h, 4) && earc_mode_refusal(&h, 5));
+    if (earc_hd_native(&h, entries)) {
+        printf("  %s hd native: cmp w%u,#%llu, %u names; no probes placed\n", k->dir, earc_hd_codec_reg(&h),
+               h.hd_compare_bound, entries);
+        hd_case(k->dir, "stock compare already accepts codec 7 and LG's own name load stays inside the table; mode 6 refuses",
+                h.hd_compare_word == (0x7100001fU | ((ed_u32)h.hd_compare_bound << 10) | (earc_hd_codec_reg(&h) << 5)) &&
+                EARC_HD_EVENT_CODEC <= h.hd_compare_bound && EARC_HD_EVENT_CODEC < entries &&
+                earc_hd_refusal(&h, entries, 6) != 0);
+        return;
+    }
+    reason = earc_hd_refusal(&h, entries, 6);
+    if (!reason) reason = earc_mode_refusal(&h, 6);
+    if (reason) { printf("FAIL %s: mode 6 refuses a stock image: %s\n", k->dir, reason); failures++; return; }
     codec = earc_hd_codec_reg(&h); output = h.hd_output_reg; index = earc_hd_index_reg(&h); name = earc_hd_name_reg(&h);
     bound = h.hd_compare_bound;
     printf("  %s hd sites: shape %d compare=%#llx (cmp w%u,#%llu) supported=%#llx output=x%u name-load=%#llx (x%u <- index x%u) entries=%u\n",
@@ -714,10 +731,14 @@ static void good_hd_layout(struct earc_hdmi_layout *h) {
     h->hd_name_word = 0xf8647847U;      /* ldr x7, [x2, x4, lsl #3] */
     h->hd_output_reg = 19;
 }
+static void hd_refusal_case_mode(const char *what, const struct earc_hdmi_layout *h, unsigned int entries, int mode,
+                                 const char *expect) {
+    const char *r = earc_hd_refusal(h, entries, mode);
+    if (expect ? r && strstr(r, expect) : !r) printf("PASS hd refusal (%s, mode %d): %s\n", what, mode, r ? r : "accepted");
+    else { printf("FAIL hd refusal (%s, mode %d): got %s\n", what, mode, r ? r : "accepted"); failures++; }
+}
 static void hd_refusal_case(const char *what, const struct earc_hdmi_layout *h, unsigned int entries, const char *expect) {
-    const char *r = earc_hd_refusal(h, entries);
-    if (expect ? r && strstr(r, expect) : !r) printf("PASS hd refusal (%s): %s\n", what, r ? r : "accepted");
-    else { printf("FAIL hd refusal (%s): got %s\n", what, r ? r : "accepted"); failures++; }
+    hd_refusal_case_mode(what, h, entries, 6, expect);
 }
 static void hd_refusal_tests(void) {
     struct earc_hdmi_layout h;
@@ -734,6 +755,19 @@ static void hd_refusal_tests(void) {
     hd_refusal_case("adec not derived", &h, 6, "adec not derived");
     good_hd_layout(&h); h.hd_compare_bound = 7;
     hd_refusal_case("bound already covers codec 7", &h, 8, "already covers codec 7");
+    /* Native kernels (C3/G3, G4: cmp #9, 11 names): mode 7 needs no probe. */
+    good_hd_layout(&h); h.hd_compare_bound = 9; h.hd_compare_word = 0x710024dfU;  /* cmp w6, #9 */
+    hd_refusal_case_mode("native bound 9, 11 names", &h, 11, 7, 0);
+    hd_refusal_case_mode("native bound 9, 11 names: nothing to watch", &h, 11, 6, "already covers codec 7");
+    hd_refusal_case_mode("native bound 9, only 9 names", &h, 9, 7, "smaller than the accepted codecs");
+    good_hd_layout(&h); h.hd_compare_bound = 9; h.hd_output_reg = 32; h.hd_name_word |= 31;
+    hd_refusal_case_mode("native: probe-site registers are not needed", &h, 11, 7, 0);
+    good_hd_layout(&h); h.hd_compare_bound = 9; h.cb_reason = "holds a breakpoint (another tool is probing it)";
+    hd_refusal_case_mode("native, but a breakpoint in _cb_output_status", &h, 11, 7, "holds a breakpoint");
+    good_hd_layout(&h);
+    hd_case("hd native", "only a bound of 7 or more with the codec named inside the table",
+            !earc_hd_native(&h, 6) && (h.hd_compare_bound = 9, earc_hd_native(&h, 11)) && !earc_hd_native(&h, 9) &&
+            (h.hd_compare_bound = 7, earc_hd_native(&h, 8)));
     good_hd_layout(&h); h.hd_output_reg = 32;
     hd_refusal_case("output register not derived", &h, 6, "output register");
     good_hd_layout(&h); h.hd_name_word |= 31;
@@ -747,7 +781,17 @@ static void hd_refusal_tests(void) {
     hd_refusal_case("name table not readable", &h, 0, "smaller than the accepted codecs");
     good_hd_layout(&h); h.gate_state = GATE_SWITCHED;
     refusal_case("gate switched (mode 6 does not depend)", &h, 6, 0);
-    refusal_case("gate already switched", &h, 7, 1);
+    refusal_case("stock gate already returns 1 (C3/G3, G4, 2026)", &h, 7, 0);
+    refusal_case("gate already switched", &h, 4, 1);
+    refusal_case("gate already switched", &h, 5, 1);
+    h.patch_text = 0; h.cpus_read_lock = 0;
+    refusal_case("gate already open: nothing to patch, so patch_text/cpus lock not needed", &h, 7, 0);
+    good_hd_layout(&h); h.patch_text = 0;
+    refusal_case("stock gate and patch_text missing", &h, 7, 1);
+    good_hd_layout(&h); h.gate_state = GATE_BREAKPOINT;
+    refusal_case("gate holds a breakpoint", &h, 7, 1);
+    good_hd_layout(&h); h.gate_state = GATE_UNKNOWN;
+    refusal_case("gate in an unknown state", &h, 7, 1);
     good_hd_layout(&h); h.break_reason = "break not derived";
     refusal_case("break not derived", &h, 6, 1);
     refusal_case("break not derived", &h, 7, 1);
@@ -811,7 +855,7 @@ static const char *setout_reason(const struct earc_hdmi_layout *h) { return h->s
 static const char *adec_reason(const struct earc_hdmi_layout *h) { return h->adec_reason; }
 static const char *cb_reason(const struct earc_hdmi_layout *h) { return h->cb_reason; }
 static const char *break_reason(const struct earc_hdmi_layout *h) { return h->break_reason; }
-static const char *hd_reason(const struct earc_hdmi_layout *h) { return earc_hd_refusal(h, 6); }
+static const char *hd_reason(const struct earc_hdmi_layout *h) { return earc_hd_refusal(h, 6, 6); }
 
 #define HDMI_MUTATION(name) \
     static int name(ed_u32 *w, ed_u32 n, const struct earc_code *f, const struct earc_hdmi_layout *g)
