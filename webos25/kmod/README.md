@@ -800,7 +800,9 @@ only) use the C5's decoder-1 status files edited into decoder-0 states.
 `hdmi-session.sh --session` ends at the first seek or input switch and has to
 be run again by hand. `hdmi-watch.sh` loads `earc_route` once
 (`earc-route-load.sh --dts-hd window_seconds=0 supervised=1`), so the DTS check
-is already open when a stream arrives, and then polls the input once a second.
+is already open when a stream arrives, and then polls the input once a second,
+or every 3 s after a minute with no DTS (each read of the HDMI status file adds
+three lines to the kernel log).
 In one C5 run with the check open before DTS arrived, the decoder accepted the
 stream on its own, and again after a seek (input `NO_AUDIO`, then MAT for about
 3 s, then DTS) and after switching inputs away and back, with no input-service

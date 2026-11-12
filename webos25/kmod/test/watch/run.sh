@@ -9,7 +9,9 @@
 # sends TERM to its parent, which is the watcher (sleep 1 & wait). Stubs for
 # id, amixer, systemctl, lsmod, rmmod, dmesg, tee and sleep come first in PATH
 # and append one line per action to an event log; a state change appends
-# "-- <state>". The tee stub applies "name value" to the fake prop file.
+# "-- <state>". The tee stub applies "name value" to the fake prop file. The
+# sleep stub also records each length in $DTS25_ROOT/sleeps, and cat and sed
+# count the reads of the HDMI status file in $DTS25_ROOT/hdmi-reads.
 # shellcheck disable=SC2016 # the stub bodies expand when the stubs run
 set -eu
 
@@ -42,6 +44,10 @@ stub rmmod 'echo "rmmod $*" >> "$FAKE_EVENTS"
 [ "${FAKE_RMMOD:-ok}" = ok ] || { echo "rmmod: ERROR: Module $1 is in use" >&2; exit 1; }
 rm -rf "$DTS25_ROOT/sys/module/$1"'
 stub dmesg 'echo "[ 1.0] earc_route: fake kernel line"'
+for tool in cat sed; do
+    stub "$tool" 'for a; do [ "$a" != "$DTS25_ROOT/proc/lgtv-driver/audio/hdmi" ] || echo x >> "$DTS25_ROOT/hdmi-reads"; done
+exec '"$(command -v "$tool")"' "$@"'
+done
 stub tee 'line=$(cat); f=$1; echo "write ${f#$DTS25_ROOT} $line" >> "$FAKE_EVENTS"
 name=${line%% *}; value=${line#* }
 sed -i.bak "s/^$name=\(([a-z]*)\).*/$name=\1$value/" "$f"'
@@ -94,6 +100,7 @@ if [ "$1" = 2 ]; then
   echo "$v" > "$R/sys/module/earc_route/parameters/earc_nonpcm"
   exit 0
 fi
+echo "$1" >> "$R/sleeps"
 if [ -s "$R/timeline" ]; then
   next=$(head -n 1 "$R/timeline"); sed -i.bak 1d "$R/timeline"; fake-state "$next"
   exit 0
@@ -500,6 +507,18 @@ $STOP"
 $STOP"
     [ "$(printf '%s\n' "$out" | grep -c "$HINT")" = 2 ] || bad "the hint is not printed once per stream"
     case "$out" in *'attempt failed'*) bad "counted as a failed attempt" ;; esac
+
+    name='one read of the HDMI status file per poll'; cases=$((cases+1)); setup pcm 'pcm*5'
+    run; expect_status 0; expect_clean
+    # Six polls and the read at stop.
+    [ "$(wc -l < "$R/hdmi-reads" | tr -d ' ')" = 7 ] || bad "$(wc -l < "$R/hdmi-reads" | tr -d ' ') reads of the HDMI status file, expected 7"
+
+    name='idle after 60 polls without DTS: polled every 3 s, every second again on DTS'; cases=$((cases+1))
+    setup pcm 'pcm*61' 'dts*3'
+    run; expect_status 0; expect_clean
+    expect_out 'DTS core applied'
+    want=$(i=0; while [ "$i" -lt 59 ]; do echo 1; i=$((i+1)); done; echo 3; echo 3; echo 3; echo 1; echo 1; echo 1)
+    [ "$(cat "$R/sleeps")" = "$want" ] || bad "poll intervals: $(tr '\n' ' ' < "$R/sleeps")"
 
     name='rmmod fails: rollback incomplete, exit 20'; cases=$((cases+1))
     FAKE_RMMOD=fail; export FAKE_RMMOD

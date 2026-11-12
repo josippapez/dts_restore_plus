@@ -16,7 +16,8 @@
 # (same writes, same order, on hdmiN and renderer N); a change of the stream,
 # the port or the decoder reverts it at once. TERM, INT or HUP
 # reverts, unloads the module and exits 0. Exit 1: refused, or three attempts
-# in a row failed.
+# in a row failed. After a minute with no DTS it polls every 3 s instead: each
+# read of the TV's HDMI status file adds three lines to the kernel log.
 #
 # It never restarts the input service: on a C5 a restart left one HDMI input
 # playing another's audio until a TV restart. With the module loaded first, the
@@ -45,6 +46,9 @@ COUNTERS='calls_seen calls_matched overrides hd_status_seen hd_status_accepts hd
 
 value() {  # value FILE KEY: what follows the first "KEY=" line
     sed -n "s/^$2=//p" "$1" | head -n 1
+}
+field() {  # field TEXT KEY: the same, from text already read
+    printf '%s\n' "$1" | sed -n "s/^$2=//p" | head -n 1
 }
 # tee, not a redirection, only so that the host test can stub the write.
 put() {  # put FILE 'name value'
@@ -88,7 +92,8 @@ nap() { sleep "$1" & wait $!; }
 # Sets kind (core, hd, none), dec (1, 0 or empty, with decnote saying why when
 # two decoders qualify), the chosen decoder's instance prop and port, and seen.
 read_input() {
-    seen="AudioData=$(value "$AUDIO/hdmi" AudioData) Codec=$(value "$AUDIO/hdmi" Codec) SamplingRate=$(value "$AUDIO/hdmi" SamplingRate)"
+    h=$(cat "$AUDIO/hdmi") || h=''  # read once: every read adds three lines to the kernel log
+    seen="AudioData=$(field "$h" AudioData) Codec=$(field "$h" Codec) SamplingRate=$(field "$h" SamplingRate)"
     case "$seen" in
         'AudioData=1 Codec=DTS SamplingRate=48000'|'AudioData=1 Codec=UNKNOWN_DTS SamplingRate=48000') kind=core ;;
         'AudioData=1 Codec=DTS_HD SamplingRate=192000'|'AudioData=1 Codec=UNKNOWN_DTS_HD SamplingRate=192000') kind=hd ;;
@@ -150,7 +155,7 @@ started_within() {  # started_within SECONDS
 loaded=0 applied=0 touched=0 unmuted=0 incomplete=0
 a_kind='' a_dec='' a_port='' a_prop='' a_dsp='' a_restore='' gain=''
 saved_prop='' saved_gain=''
-cand='' polls=0 fails=0 backoff=0 hinted=0 last=''
+cand='' polls=0 fails=0 backoff=0 hinted=0 last='' quiet=0 interval=1
 applies=0 reverts=0
 
 # 0 applied; 1 failed (why says why; counts towards the three); 2 the stream
@@ -260,6 +265,13 @@ revert() {
 poll() {
     read_input
     [ "$kind" != none ] || backoff=0 hinted=0
+    # Idle after 60 polls with no DTS and nothing applied; any DTS polls every second again.
+    if [ "$kind" = none ] && [ "$applied" = 0 ]; then
+        [ "$quiet" -ge 60 ] || quiet=$((quiet+1))
+    else
+        quiet=0
+    fi
+    if [ "$quiet" -ge 60 ]; then interval=3; else interval=1; fi
     if [ "$applied" = 1 ] && { [ "$kind" != "$a_kind" ] || [ "$dec" != "$a_dec" ] || [ "$port" != "$a_port" ] || [ "$prop" != "$a_prop" ]; }; then
         say "input changed ($seen); reverting"
         revert || { say 'Revert failed; stopping.'; exit 20; }
@@ -342,5 +354,5 @@ cat "$logdir/loader.txt"
 say "watching the HDMI input; stop with TERM, INT or HUP (logs: $logdir)"
 while :; do
     poll
-    nap 1
+    nap "$interval"
 done
