@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: GPL-2.0-only
 # hdmi-watch.sh -- keeps DTS passthrough (DTS core or DTS-HD) from an HDMI
 # input to an eARC receiver going across seeks and input switches, on a rooted
-# LG webOS 25 TV. Run on a C5 without an eARC receiver; never with one.
+# LG webOS 25 TV. It has only run on a C5 without an eARC receiver. On a
+# receiver TV, start with the receiver's volume low.
 #
 #   sh hdmi-watch.sh                                 foreground; Ctrl-C stops it
 #   nohup sh hdmi-watch.sh > /dev/null 2>&1 &        background; kill <pid> stops it
