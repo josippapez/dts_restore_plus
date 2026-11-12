@@ -177,6 +177,15 @@ NOT covered: TrueHD in .mp4. qtdemux.c has no TrueHD/MLP codepath at all (no
 `mlpa` fourcc handling), so that needs new code, not a gate flip — still
 unsupported and documented as such.
 
+Dolby Vision profile 7 STDL in TS/M2TS
+-------------------------------------
+The rebuilt TS demuxer includes profile 7 in its existing Dolby Vision HEVC
+caps branch. The owner tested single-track dual-layer MEL and FEL playback
+in both TS and M2TS on an LG G3 with local test package 2.7.78.
+
+  libgstmpegtsdemux.so SHA256 b0ecf1e37fc02a24739014e0005f208f7031a21455d90ad7f303096cf7c5f2b6
+  ELF32 ARM EABI5 soft-float, e_flags 0x05000200, maximum GLIBC 2.7
+
 DTS in .vob / MPEG-PS (libgstmpegpsdemux.so, NOT YET VERIFIED ON A TV)
 ----------------------------------------------------------------------
 LG's player says "This video doesn't support audio" for a DTS .vob. Reported cause,
