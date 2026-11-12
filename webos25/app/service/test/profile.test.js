@@ -108,6 +108,8 @@ test("native DTS on webOS 25 is decided by the compatibility check", function ()
   }
   // Not in the table, LG's decoder ranked: native DTS, as before the G3 row.
   assert.strictEqual(profileAfterGate({audiodec: "yes", rank: "290", verdict: "unverified"}), "native-dts");
+  // An absent DCA rank still reports native DTS when LG's decoder is registered.
+  assert.strictEqual(profileAfterGate({audiodec: "yes", rank: "absent", verdict: "unverified", near: "0"}), "native-dts");
   // Not in the table, LG's decoder at rank 0: the gated native case.
   assert.strictEqual(profileAfterGate({audiodec: "yes", rank: "0", verdict: "unverified"}), "native-dts-gated");
   // The G3: a verified row keeps the restore profile.
