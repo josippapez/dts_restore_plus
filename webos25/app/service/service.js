@@ -3842,7 +3842,7 @@ service.register("testfiles", function (message) {
 var W25_APPDTS_FLAG = W25_DEST + "/appdts.enabled";
 
 function w25AppDtsSteps(on) {
-  var lines = ["set -u", 'FLAG=' + W25_APPDTS_FLAG, 'mkdir -p "$(dirname "$FLAG")" 2>/dev/null'];
+  var lines = ["set -u", APPBASE_PRELUDE, 'FLAG=' + W25_APPDTS_FLAG, 'mkdir -p "$(dirname "$FLAG")" 2>/dev/null'];
   lines.push(on ? ': > "$FLAG"' : 'rm -f "$FLAG"');
   // The mode lives in the boot script, so install the CURRENT one first: a TV
   // enabled by an older app still runs that app's script, which would not know

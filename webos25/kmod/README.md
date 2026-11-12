@@ -760,6 +760,11 @@ Tester steps: start DTS core (48 kHz) or DTS-HD playback on the HDMI input with
 an eARC receiver connected and eARC on; run `sh hdmi-session.sh --check` and send
 its output; only if it says `CHECK OK`, run `sh hdmi-session.sh --apply 30`, watch
 the receiver's format display, and send the printed log directory's contents.
+To keep DTS going while you watch, instead of a 30-second test, run
+`sh hdmi-session.sh --session` (not yet reported from any TV). It runs until the
+stream on the input changes, so a seek or an input switch ends it and you run it
+again. Keep the SSH session open while it runs. Ctrl-C stops it and puts the TV
+back.
 Successful script exit is not proof of sound or DTS lock.
 
 **Verified:** the host test (`sh test/session/run.sh`, under sh, dash and busybox

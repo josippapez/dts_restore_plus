@@ -131,7 +131,7 @@ can still install (the installer just warns first), using the same binaries.
 | OLED C1 / G1 | 6.x | 1.14-class | Community-confirmed |
 | OLED C2 / G2 | "22" | stock **1.18.2**; legacy payload 1.14.4 | The root CX installer still only warns and applies its one legacy recipe. DTS Enabler 2.6.0 instead offers a fail-closed, exact-firmware **experimental opt-in** for global `W22O` `04.40.93`/`04.40.93.01`; firmware/QEMU evidence only, **not hardware-verified** ([firmware evidence](webos25/docs/FIRMWARE-COMPATIBILITY.md)) |
 | NanoCell / LCD (UN7xxx, NANO7xx, 2020–2021) | 5.x / 6.x | 1.14-class | Community-confirmed |
-| webOS 22 / 23 / 24 (C3/C4, G3/G4, Realtek B2/B3) | 22 / 23 / 24 | stock **1.18.2 / 1.18.5**; webOS 24 unextracted | B2/C3/B3 receive diagnostic refusal profiles; C4/G4 remains unknown. No forceable restore mechanism ([firmware evidence](webos25/docs/FIRMWARE-COMPATIBILITY.md)) |
+| webOS 22 / 23 / 24 (C3/C4, G3/G4, Realtek B2/B3) | 22 / 23 / 24 | stock **1.18.2 / 1.18.5**; webOS 24 unextracted | C4/G4 already have DTS from LG (decode and passthrough) and need nothing from this project. C3/G3 have LG's DTS decoder too, but local MKV playback is gated. B2/B3 receive diagnostic refusal profiles. No forceable restore mechanism ([firmware evidence](webos25/docs/FIRMWARE-COMPATIBILITY.md)) |
 | webOS 25 (C5/G5) | "10" | **1.24** | Not these binaries — needs a separate soft-float armel 1.24 build ([webos25/README.md](webos25/README.md)) |
 
 ## Persistence — what survives a reboot
