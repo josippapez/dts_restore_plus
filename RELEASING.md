@@ -20,6 +20,8 @@ webos25/restore/edid-out/    libedidaudio.so                     (eim hook: no D
 webos25/restore/demux-out/   libgstisomp4.so, libgstmpegtsdemux.so (mp4/ts/m2ts DTS,
                               MP4 Dolby Vision profile 7), libgstmatroska.so (MKV DV profile 7)
 webos25/restore/ts114-out/   libgstmpegtsdemux.so                (1.14.4 build, C2 app profile)
+webos25/restore/kmod-out/    earc_route-5.4.ko (webos25/kmod, GPL-2.0-only; ships with the
+                              HDMI passthrough opt-in)
 ```
 
 The app's `webos25/app/payload/**` `.so` are **git-ignored** generated copies. At
@@ -42,9 +44,16 @@ Never edit a generated `payload/**` binary.
   `build-edid.sh`, `build-ts114.sh`
   (toolchain, flags, pinned sources, ABI — for `build.sh` that includes the ffmpeg
   `n4.4.4` tag, its configure flags and the pinned Debian snapshot)
+- the kernel module in `webos25/kmod/`: `earc_route.c`, `earc_decode.h`, `earc_hdmi.h`,
+  `earc_probe.h`, `build.sh`, `build.py`. Rebuild with `webos25/kmod/build.sh` (see its
+  README), copy `out/earc_route-5.4.ko` into `webos25/restore/kmod-out/`, and run the
+  module on a TV of that kernel generation (audit, self-test, the mode `hdmi-watch.sh`
+  loads, unload) before committing it
 
-`webos25/kmod/` (the eARC/HDMI passthrough kernel module) is not part of any of this: the
-release workflow does not package it, and its `.ko` files are built locally and never committed.
+`earc-route-load.sh` and `hdmi-watch.sh` are not vendored: the release workflow copies
+them from `webos25/kmod/` into the CLI tarball's `kmod-out/` and the app's
+`payload/webos25-hdmi/`. The 6.12 module is not vendored: it has never run on a TV, and
+the opt-in refuses that kernel.
 
 Editing `install.sh` / `init_dts25.sh` / the app JS/HTML does **not** require a
 rebuild — but still cut a new release so the tarball/`.ipk` carry the change.
@@ -115,8 +124,8 @@ same texts; that copy is gitignored build output, never a second source. LGPL-2.
 requires handing recipients a copy of the license and the source offer, and
 `libgstdtsdec.so` links ffmpeg statically, so that offer (the source + `build.sh`) is also
 what lets a recipient relink it — see the per-artifact table in the root `README.md`.
-Since libdca was dropped (webos25-2.43) no artifact in that table is GPL; `GPL-2.0.txt` is
-still shipped, but nothing listed there requires it.
+Since libdca was dropped (webos25-2.43) the only GPL artifacts are the HDMI passthrough
+module and its two scripts (GPL-2.0-only), which `GPL-2.0.txt` covers.
 
 ## Rebuild + verify (only when the binaries are affected)
 
@@ -186,6 +195,8 @@ cp -Pf ../restore/truehd-out/libgstlibav.so ../restore/truehd-out/libav*.so* \
        ../restore/truehd-out/libsw*.so*                                 payload/webos25-truehd/
 cp -f  ../restore/demux-out/libgstisomp4.so ../restore/demux-out/libgstmpegtsdemux.so \
        ../restore/demux-out/libgstmatroska.so ../restore/demux-out/libgstmpegpsdemux.so payload/webos25-demux/
+cp -f  ../restore/kmod-out/earc_route-5.4.ko ../kmod/earc-route-load.sh ../kmod/hdmi-watch.sh \
+       payload/webos25-hdmi/
 cp -f  ../../gst/libgstlibav.so ../../gst/libgstisomp4.so \
        ../../gst/libgstmatroska.so ../../gst/libgstisomp4_1_8.so          payload/cx/
 npm install -g @webosose/ares-cli
@@ -198,7 +209,8 @@ All four root `gst/` files are required for packaging even though C2 binds
 
 ## Checklist
 
-- [ ] Binaries in `webos25/restore/**` current (rebuilt + on-device-verified if affected)
+- [ ] Binaries in `webos25/restore/**` current (rebuilt + on-device-verified if affected),
+      including `kmod-out/*.ko` against the `webos25/kmod/` sources
 - [ ] Four tracked root `gst/*.so` files copied into generated `payload/cx/`
 - [ ] `webos25/restore/out/BUILD-REPORT.txt` and `webos25/restore/demux-out/BUILD-REPORT.txt`
       reflect the current build

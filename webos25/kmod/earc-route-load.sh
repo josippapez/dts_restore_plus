@@ -276,10 +276,10 @@ case "$want_mode" in
     else echo "earc-route: PASSTHROUGH FAILED (insmod status $status: $result): $last"; exit 1; fi ;;
   6)
     if [ "$status" = 0 ] && [ "$(param hd_probes_registered)" = 2 ]; then
-      echo "earc-route: DTS-HD WATCH ACTIVE ($options) selftest=$(param selftest_passed) gate_open=$(param gate_open); nothing changed; UNTESTED ON HARDWARE ($last)"
+      echo "earc-route: DTS-HD WATCH ACTIVE ($options) selftest=$(param selftest_passed) gate_open=$(param gate_open); nothing changed; EXPERIMENTAL ($last)"
     else echo "earc-route: DTS-HD WATCH FAILED (insmod status $status: $result): $last"; exit 1; fi ;;
   7)
     if [ "$status" = 0 ] && [ "$(param probe_registered)" = 1 ] && [ "$(param hd_probes_registered)" = 2 ]; then
-      echo "earc-route: PASSTHROUGH ACTIVE ($options) selftest=$(param selftest_passed) gate_open=$(param gate_open); UNTESTED ON HARDWARE ($last)"
+      echo "earc-route: PASSTHROUGH ACTIVE ($options) selftest=$(param selftest_passed) gate_open=$(param gate_open); EXPERIMENTAL ($last)"
     else echo "earc-route: PASSTHROUGH FAILED (insmod status $status: $result): $last"; exit 1; fi ;;
 esac

@@ -31,11 +31,15 @@ sites and changes nothing, `mode=7` is the session load for both DTS core and
 DTS-HD. These modes write
 to kernel memory (break-hook list, up to three kprobes, one patched instruction);
 every write is listed with its undo under
-[HDMI passthrough active modes](#hdmi-passthrough-active-modes-mode2). `mode=0`
-and `mode=1` are unchanged, byte for byte.
+[HDMI passthrough active modes](#hdmi-passthrough-active-modes-mode2). `mode=1`
+is unchanged; `mode=0` also prints ADEC 0's state. Modes 4, 5 and 7 and both
+scripts handle either HDMI audio decoder, 0 or 1 (*Decoder 0 and decoder 1*,
+under the active modes).
 
 Status: both builds host-tested against the kernels listed under Test.
-Experimental, root over SSH, not shipped in the app or the release.
+Experimental. The release ships `earc_route-5.4.ko`, `earc-route-load.sh` and
+`hdmi-watch.sh` for the app's HDMI passthrough opt-in on the 5.4.268 kernels (see
+[In the app](#in-the-app-hdmi-passthrough-opt-in)); everything else here is root over SSH.
 
 On 2026-11-11 a tester's LG CS (OLED55CS6LA, firmware 33.31.68, kernel
 5.4.268-329.ptl4tv.5) with a Samsung HW-Q930F over eARC and a set-top box on
@@ -65,10 +69,19 @@ unload left the TV stock.
 Not run on any TV: `mode=5`; kernel 5.4.268-329.ptl4tv.2 (33.22.x), which is
 host-tested only; the 6.12 build and kernel.
 
-The module and the loader still print `UNTESTED ON HARDWARE` for modes 5, 6 and 7.
-That message is out of date for mode 7, which has run on a C5 and, with a receiver,
-on a CS. It will be reworded in a later build.
-Neither `.ko` is committed (`out/` is ignored). Neither generation uses
+The module and the loader print `UNTESTED ON HARDWARE` for mode 5, which has never
+run, and `EXPERIMENTAL` for modes 6 and 7, naming the TVs each has run on.
+
+Decoder 0 is host-tested only. No session has run on decoder 0, and the CS run
+above used the scripts that handled decoder 1 only. Only a TV with an eARC
+receiver can confirm the decoder-0 override: on the C5's speakers `_set_output`
+never matches (`mask=0x2`). Every `pass match`, `pass nomatch` and `hd` line
+prints the decoder, so the next receiver run shows which one played.
+`out/` is ignored. The committed copies the release ships are in
+`webos25/restore/kmod-out/`: the build of commit 3a70b90 (`earc_route-5.4.ko` sha256
+`2d7a168354f9d9c756f0d02b466f57ae7b95e97bbbbe7b44a85573cde02b66e9`, `earc_route-6.12.ko`
+`17ce26b08f651f24a09e605bce186233c207bc3bf6ce0325ee9f6a190ed4006e`). After a rebuild,
+copy the new `.ko` there (RELEASING.md). Neither generation uses
 MODVERSIONS (no `__versions`, no CRCs) or BTI, so no `-mbranch-protection` flag is
 needed; both kernels have PAC on.
 
@@ -146,7 +159,7 @@ does not pass `_etext` and is at most 16 KiB.
 |---|---|
 | DTS gate and its state | `aud_hal_dts_supported`'s two words: stock (`mov w0,#0; ret`), switched (`mov w0,#1; ret`: another tool is active), a breakpoint (another tool is probing it), or unknown |
 | `_set_output` kprobe site, mask offset | its first word (a kprobe can sit on it; any `brk` there is reported as another tool's probe), and the offset of the only 32-bit load from a copy of argument 1 whose loaded register is compared with an immediate (0x14). That 0x20 in that word means eARC is fixed in the source |
-| ADEC table base, stride, codec/open/started | `alsa_decoder_codec`: `slot = constant + index * stride` from `sbfiz x,xI,#1,#32; add x,x,wI,sxtw; add xS,<constant>,x,lsl #5` (stride 96), the index being the value `cmp wI,#1; b.hi` checked in the same block (`b.gt`, signed, on 5.4.268-329.ptl4tv.2: it too accepts index 1 and rejects every index above it); codec is the only 32-bit store through the slot, open the only byte offset loaded through it. `alsa_decoder_start` must form the same base and stride and load exactly two slot bytes, open and started. ADEC 1 = base + stride |
+| ADEC table base, stride, codec/open/started | `alsa_decoder_codec`: `slot = constant + index * stride` from `sbfiz x,xI,#1,#32; add x,x,wI,sxtw; add xS,<constant>,x,lsl #5` (stride 96), the index being the value `cmp wI,#1; b.hi` checked in the same block (`b.gt`, signed, on 5.4.268-329.ptl4tv.2: it too accepts indexes 0 and 1 and rejects every index above them); codec is the only 32-bit store through the slot, open the only byte offset loaded through it. `alsa_decoder_start` must form the same base and stride and load exactly two slot bytes, open and started. ADEC 0 = base, ADEC 1 = base + stride |
 | `_cb_output_status` DTS-HD sites | the event codec is the word loaded from argument 0. Exactly one compare of it with an immediate is the acceptance: shape 1 (5.4) `cmp codec,#4; b.ls` to the 32-bit store of the codec, shape 2 (6.12) the last compare of the chain `cmp #2; b.eq; b.ls; cmp #3; b.eq; cmp #4; b.ne`, whose `b.ne` falls through into that store. The store is the supported branch; the one `ldr x,[constant, codec, lsl #3]` is the name load and gives the table. The output register (x19 on every kernel measured) is the base register of that store, taken only if the engine shows it holding argument 2 at the compare |
 | break-hook list head, hook fields | `register_kernel_break_hook`: its only pre-indexed 64-bit load from a constant base. `call_break_hook`, which must compute the same head: its one `blr`, the one `ldr xN,[xN]` (the node), the one 64-bit load from the node into the `blr` register (`fn`, +16), and, of the node's two 16-bit loads, the one `cmp x, w, uxth` compares (immediate, +24) and the other (mask, +26) |
 | kprobe handlers, service symbols | by name: `kprobe_breakpoint_handler`, `kprobe_breakpoint_ss_handler`, `kretprobe_breakpoint_handler` (6.12 only), `aarch64_insn_patch_text`, `cpus_read_{lock,unlock}`, `[un]register_kprobe`, `[un]register_kernel_break_hook`. In the kernels' ksymtab: `[un]register_kprobe`, `cpus_read_{lock,unlock}`; not exported: the patch function and the break-hook pair |
@@ -157,7 +170,7 @@ its offset as another tool's probe, before the pattern is judged; `brk #0x800`
 (`BUG()`) is not.
 
 Live reads, all through derived addresses inside the 64 MiB after `_etext`,
-nothing written: ADEC 1's codec, open and started; the name table's entries and
+nothing written: ADEC 0's and ADEC 1's codec, open and started; the name table's entries and
 strings; and the break-hook list. That walk starts at the head and reads, for at
 most 32 nodes, only `next`, `fn` and the word after `fn`, and only from nodes
 inside the kernel image: those are static objects that are never freed, and
@@ -217,8 +230,9 @@ policy codec, so one load of mode 7 has the gate, the two status probes and the
 `_set_output` override on ADEC codec 48 or 51. It serves a DTS core session as
 well as a DTS-HD one: a core session then runs with the name probe in place, and
 a core-to-HD track change never passes through an open gate without it. The
-compare probe still acts only for event codec 7 while ADEC 1 is started on codec
-51. Mode 5 is unchanged: codec 48 only, no status probes.
+compare probe still acts only for event codec 7 while an ADEC slot is started on
+codec 51 (which slot: *Decoder 0 and decoder 1* below). Mode 5
+is unchanged apart from the decoder: codec 48 only, no status probes.
 
 LG's output-status event for DTS-HD carries codec 7. `_cb_output_status` only
 runs past its entry for output types 2 and 3 (optical and eARC; any other type
@@ -228,7 +242,7 @@ log name from a 6-entry table, so codec 7 already reads past that table in
 stock code once the gate lets a DTS-HD stream start. The two probes:
 
 - *compare* (`hd-compare`, `cmp wC,#4`): for event codec 7 on an output of type
-  3 while ADEC 1 is started on codec 51, continue at the supported branch
+  3 while the ADEC slot it reads is started on codec 51, continue at the supported branch
   (`hd-supported`, the `str wC,[xOutput,#68]`) with the codec register untouched
   and the compare skipped, as its `b.ls` (5.4) or the fall-through of its `b.ne`
   (6.12) would. Unlike lg-g5-dts, which leaves the flags of an earlier compare,
@@ -259,6 +273,42 @@ does not open the gate, because the sites are reached by any output-status event
 on an optical or eARC output, whatever the codec. On 6.12 the derived compare is
 the last of a chain, so mode 6 sees there only events with codec 4 or above; the
 name load sees every event on both generations.
+
+**Decoder 0 and decoder 1.** These TVs have two HDMI audio decoders: `adec.p0`,
+with the DSP instance `dsp0/hdmi0`, and `adec.p1`, with `dsp0/hdmi1`. On a C5 an
+HDMI input keeps the decoder it used last, so a source can play on either one.
+lg-g5-dts, and this module before, overrode decoder 1 only.
+
+`_set_output`'s first argument is the main-audio decoder. `_connect_output` and
+`_connect_output_all` compute it with `common_input_convert_index`: ADEC port N
+(0 to 3) stays N, and AMIXER port N becomes N + 4. In its bypass branch the
+function connects renderer `index` to the mixer (`bm_connect_block_reserved_out`)
+and calls `decoder_set_output_mode(index, 1, 1)`. That function takes only 0 or
+1 and indexes the same ADEC table, so for 0 and 1 the ADEC slot, the renderer and
+the decoder are one number. The kernel builds the compressed path the same way
+for both decoders: `input_set_type`, `decoder_preconnect`,
+`renderer_preconnect` and `renderer_create_bypass_pipeline` check no index. The
+bypass gain block the scripts unmute belongs to mixer 0 and serves both
+decoders. All of this comes from the C5 33.31.68 disassembly and has not been
+seen on a TV.
+
+- *Policy* (modes 4, 5 and 7): index 0 or 1, read through that decoder's slot.
+  `earc_adec_slot` gives the slot of index 0 or 1 and nothing for any other
+  index, so a mixer input (4 to 12) never reads past the two derived slots.
+  The mask, codec, open and started conditions are unchanged.
+- *Matched decoder:* each policy match records its index (an atomic word). The
+  DTS-HD acceptance then reads only that decoder's slot. Before the first
+  match, either slot started on codec 51 accepts. Mode 6 has no `_set_output`
+  probe, and in mode 7 nothing guarantees that the first match comes before a
+  status event. After a match the other slot is ignored, because a decoder can
+  stay open on an earlier input. `_cb_output_status`'s DTS-HD path itself reads
+  no ADEC state; the ADEC condition comes from lg-g5-dts. The name-load probe
+  does not depend on the decoder.
+- *Prints:* `pass match index=N ... adecN-codec=`, `pass nomatch index=N ...
+  adecN-codec= open= started=` (`no-adec-slot` for an index above 1),
+  `hd status ... matched=M adec0-codec= started= adec1-codec= started=
+  decoder=D: ...` and `hd name ... matched=M`, where M is the recorded decoder
+  (-1 before a match) and D the decoder accepted for (-1 for stock).
 
 **Known limitation of modes 3, 4 and 5 (unverified).** They open the gate with
 no name probe. While one of them is loaded and a DTS-HD source plays on an
@@ -360,7 +410,7 @@ caller's descriptor (null-checked), updates atomics, and (mode 5, in-window)
 rewrites x2/x3. The two `_cb_output_status` pre-handlers (modes 6, 7) obey the
 same contract: they read the probed instruction's own registers, the output's
 type word through the output pointer the function itself has just read through
-(null-checked), and ADEC 1's codec and started flag; they print the first 8
+(null-checked), and both ADEC slots' codec and started flags; they print the first 8
 stock and first 5 acting hits each (`earc_route: hd status codec=... `,
 `earc_route: hd name codec=...`), and in mode 7 write `pc`, the NZCV flags and
 the name register. The name written there is a pointer into the kernel image
@@ -451,7 +501,10 @@ The HDMI set has its own sha-keyed oracle, asserted whenever its image is given,
 with or without an eARC oracle for it: the kernels above plus the tester's
 CS kernel (G2 33.31.68, whose values are also the ones its `.ko` files use) and
 G2 33.22.95 (kernel 5.4.268-329.ptl4tv.2, derived by hand from its disassembly).
-The other rows were checked against an independent static derivation. `_set_output`
+The other rows were checked against an independent static derivation. Each row
+also holds ADEC 0's three addresses: the slot array's own base plus 8, 10 and 20,
+which equal ADEC 1's minus the 96-byte stride in every row (C5 33.31.68: codec
+`...a24c`, open `...a240`, started `...a242`). `_set_output`
 of every capture must pass the validity rule with its kallsyms size (2308 to
 2544 bytes). The break-hook walk runs on each image (the list is empty before
 boot) and on lists built in test memory: complete with both kprobe handlers,
@@ -470,7 +523,10 @@ The active-mode decision logic (`earc_probe.h`) is tested off-TV through the sam
 code the module runs: the break-hook decision on synthetic lists walked by
 `earc_hdmi_walk_list` (already registered, register, a node answering #4 or #6,
 immediate/mask unknown, an incomplete walk); the DTS-core policy over a table of
-cases; the gate "restore only what we wrote" rule; and `earc_mode_refusal` for
+cases (decoder 0 and 1 match; indexes 2, 4, 12, 0xffffffff and 2^32+1 do not);
+`earc_adec_slot` (slot 0 and slot 1 for index 0 and 1, nothing for any other
+index); the DTS-HD slot choice (only the matched decoder's slot after a match,
+either slot before one, never a slot above 1); the gate "restore only what we wrote" rule; and `earc_mode_refusal` for
 each mode when an item it depends on is missing (break hooks for mode 2, the gate
 and patch service for mode 3, `_set_output`/ADEC for modes 4-5), including that a
 mode does not refuse on an item it does not depend on.
@@ -548,7 +604,8 @@ exists; the audit only reports those. **Do not play DTS-HD while modes 3 to 5
 (`--open-gate`, `--observe`, `--dts-core`) are loaded: see the known limitation
 above. For a real session, DTS core included, load `--dts-hd`.** **Modes 2, 3, 4, 6 and 7 have run on one C5
 without a receiver and left it stock, and mode 7 ran with a receiver on a CS (see
-Status above); mode 5 has never run; nothing has run on 6.12.** Read-only parameters report the
+Status above); mode 5 has never run; nothing has run on 6.12; no session has run
+on decoder 0.** Read-only parameters report the
 state: `gate_open`, `gate_opened_by_us`, `hooks_registered`, `probe_registered`,
 `selftest_passed`, `window_open`, `calls_seen`, `calls_matched`, `overrides`,
 and for modes 6 and 7 `hd_probes_registered` (2 when both are in),
@@ -565,7 +622,7 @@ is hand-declared as `{flags, set, get, free}` (`get` at +16, static-asserted):
 with the buffer and the parameter and returns its count unchanged, and
 `param_get_uint`'s own format is `"%u\n"`, so the getter writes the number and
 the newline itself.
-In dmesg, modes 4 and 5 print `earc_route: pass nomatch ...` for the first 8 `_set_output` calls that miss the policy, with every input of the decision: `index`, `desc` (0 = null descriptor, `mask` then shown as 0), `mask`, ADEC 1 `adec1-codec`/`open`/`started`, and the call's `codec-arg`/`bypass-arg`.
+In dmesg, modes 4, 5 and 7 print `earc_route: pass nomatch ...` for the first 8 `_set_output` calls that miss the policy, with every input of the decision: `index`, `desc` (0 = null descriptor, `mask` then shown as 0), `mask`, that decoder's `adec<index>-codec`/`open`/`started` (`no-adec-slot` for an index above 1, which has no ADEC slot), and the call's `codec-arg`/`bypass-arg`.
 
 `earc_route-5.4.ko` and `earc_route-6.12.ko` sit next to the script; `uname -r`
 picks one, with its stock module path and `struct module` layout:
@@ -617,7 +674,7 @@ sh hdmi-session.sh --session          # runs until the source changes; exit 10 o
 **Two kinds of session.** The stream on the HDMI input decides the kind, and
 the preflight says which (`live DTS core at 48 kHz` or `live DTS-HD at 192 kHz`):
 
-| Kind | `/proc/lgtv-driver/audio/hdmi` | Loader | `adec.p1` waits for | DSP instance writes |
+| Kind | `/proc/lgtv-driver/audio/hdmi` | Loader | `adec.pN` waits for | DSP instance writes |
 |---|---|---|---|---|
 | DTS core | `Codec=DTS` or `UNKNOWN_DTS`, `SamplingRate=48000` | `--dts-hd` | `UserCodec=DTS` | `codec 5`, `mode 1`, `data-drop-mode 1`, `drop-output-data false`, `start 1`, `drop 0` |
 | DTS-HD | `Codec=DTS_HD` or `UNKNOWN_DTS_HD`, `SamplingRate=192000` | `--dts-hd` | `UserCodec=DTS_HD` | `codec 6`, `mode 4`, `sampling-freq 192000`, `channel-num 8`, `data-drop-mode 1`, `drop-output-data false`, `start 1`, `drop 0` |
@@ -647,25 +704,33 @@ filled in at boot, so the pairing is not confirmed there.
 The decoder is chosen as in `hdmi-watch.sh`: `adec.pN` carries the input when it
 is connected to the port of its own instance `dsp0/hdmiN` and it or the instance
 is started (`UserCodec` decides between two). When nothing is started yet (a stock
-TV refuses DTS), decoder 1 is used only if `adec.p1`/`hdmi1` is the one connected
-pair, since the input-service restart is what starts it; otherwise it refuses.
+TV refuses DTS), the decoder is used only if `adec.pN`/`hdmiN` is the one connected
+pair, decoder 0 or 1, since the input-service restart is what starts it;
+otherwise it refuses. Both decoders are handled: decoder N's session writes
+`hdmiN`'s instance and needs renderer N's route. The bypass gain block is mixer
+0's, the same for both.
 
 `--check` changes nothing. It requires: root; a live stream of one of the two
-kinds (`AudioData=1`); `EArcOnOff=On`; one `dsp0/hdmi1` DSP instance whose
-`hdmi-port=(int)n` is connected on `adec.p1` (an input on `adec.p0` is
-refused: the module only overrides decoder 1); ALSA numid 92 equal to
+kinds (`AudioData=1`); `EArcOnOff=On`; a decoder N chosen as above, whose one
+`dsp0/hdmiN` DSP instance has its `hdmi-port=(int)n` connected on `adec.pN`;
+ALSA numid 92 equal to
 `2,1,0,0,1`; at most one gain block feeding a bypass block in
 `/proc/aaudio/dot_module_connection`. The loader's own checks (ABI, derivation,
 other DTS tools, already loaded) run only at `--apply`/`--session`; its refusal is
 printed and the script stops.
 
 `--apply` and `--session` then: load `earc-route-load.sh --dts-hd`
-(`window_seconds=<seconds+20>`, or `window_seconds=0 supervised=1`);
-restart `extinput-integration.service`; wait up to 10 s for `adec.p1` to read the
-kind's `UserCodec` and `Start=1`; set numid 92 to its own value so LG's driver
-builds the downstream connection; require `renderer_1_out100 -> mixer_0_in100`
-and `mixer_0_out100 -> output_3_in0` in `dot_block_connection`; find the one gain
-block feeding a bypass block.
+(`window_seconds=<seconds+30>`, or `window_seconds=0 supervised=1`);
+restart `extinput-integration.service`; wait up to 20 s for the decoder, chosen
+again at each read because the restart can move the input to the other decoder,
+to be on the same port and read the kind's `UserCodec` and `Start=1`. If the
+decoder moved, the script prints `The input-service restart moved HDMI port n
+from decoder A to decoder B` and saves that decoder's instance as the original
+it restores (nothing was written to the other one). It then sets numid 92 to its
+own value so LG's driver builds the downstream connection; requires
+`renderer_N_out100 -> mixer_0_in100`
+and `mixer_0_out100 -> output_3_in0` in `dot_block_connection`; and finds the one
+gain block feeding a bypass block.
 
 - *DTS core:* unmute that gain block, write the DSP instance values, then sample
   state each second.
@@ -736,14 +801,19 @@ wait loop above came from that.
 on kernel 5.4.268-329.ptl4tv.2 (33.22.x) or on 6.12. No DTS-HD stream has been
 played into a C5 (so its `Codec=` name there is unmeasured), and the DTS-HD states
 in the host test are synthetic, including the `output_arc` prop file, which has no
-real sample because the C5 has no eARC output instance.
+real sample because the C5 has no eARC output instance. No session has run on
+decoder 0; its host-test cases (decoder 0 playing or only connected, the C5's
+stale `adec.p1`, a move between decoders at the restart, renderer 1's route
+only) use the C5's decoder-1 status files edited into decoder-0 states.
 
 ## HDMI passthrough watcher (`hdmi-watch.sh`)
 
 `hdmi-session.sh --session` ends at the first seek or input switch and has to
 be run again by hand. `hdmi-watch.sh` loads `earc_route` once
 (`earc-route-load.sh --dts-hd window_seconds=0 supervised=1`), so the DTS check
-is already open when a stream arrives, and then polls the input once a second.
+is already open when a stream arrives, and then polls the input once a second,
+or every 3 s after a minute with no DTS (each read of the HDMI status file adds
+three lines to the kernel log).
 In one C5 run with the check open before DTS arrived, the decoder accepted the
 stream on its own, and again after a seek (input `NO_AUDIO`, then MAT for about
 3 s, then DTS) and after switching inputs away and back, with no input-service
@@ -776,18 +846,18 @@ over), or when the loader refuses.
   the module loaded); skip, pause and play, or switch inputs and back to restart
   the stream.` and keeps watching. This is not a failed attempt.
 - *Apply.* A DTS core or DTS-HD stream (the kinds in the session table above) on
-  decoder 1, with `EArcOnOff=On` and numid 92 at `2,1,0,0,1`, seen on two
+  decoder N (0 or 1), with `EArcOnOff=On` and numid 92 at `2,1,0,0,1`, seen on two
   polls in a row, gets the same writes in the same order as `hdmi-session.sh`
-  (numid 92, route check, the one gain block, the DSP instance; DTS-HD muted
-  until `earc_nonpcm` reads 1). If `adec.p1` has not started on the stream's
-  codec within 3 s, the attempt fails. The DSP instance and gain values are saved once per
+  (numid 92, route check on `renderer_N_out100`, the one gain block, the
+  `hdmiN` DSP instance; DTS-HD muted until `earc_nonpcm` reads 1). If `adec.pN`
+  has not started on the stream's codec within 3 s, the attempt fails. The DSP instance and gain values are saved once per
   run, from the first instance it writes, and saved again only for a new
   instance or gain block.
 - *Revert*, at once, when the stream's kind, port, decoder or DSP instance
   changes: mute the gain block, then, if the instance still has our port and
   codec, `drop 1`, `start 0`, the saved values and the saved gain mute values
   (otherwise LG has rewritten it and it is left alone), then numid 92 to its own
-  value. A core to DTS-HD change is a
+  value. A core to DTS-HD change, or a move to the other decoder, is a
   revert and then a new apply.
 - *Stop* (TERM, INT or HUP): revert, `rmmod earc_route`, numid 92. If DTS is
   still live it prints `DTS is still playing on HDMI; switch to another input and
@@ -795,10 +865,6 @@ over), or when the loader refuses.
 - A failed attempt (no compressed route, no single gain block, the decoder never
   started, `earc_nonpcm` not 1) is reverted and not retried until the stream
   ends. Three in a row stop the watcher.
-- **Decoder 0 is not handled**: the module overrides decoder 1 only. A DTS stream
-  on decoder 0 is logged once per stream with a capture (`decoder0-N/`: both
-  ADEC files, both dot files, the `hdmi0` and `hdmi1` props, the last `pass nomatch` kernel
-  line) and left alone.
 
 Exit codes: 0 stopped cleanly; 1 refused, or three failed attempts in a row; 20
 the rollback is incomplete (`Rollback incomplete; restart the TV.`). Logs go to
@@ -806,6 +872,23 @@ the rollback is incomplete (`Rollback incomplete; restart the TV.`). Logs go to
 change, apply and revert, with the module counters), `loader.txt`, the saved
 originals, the last `route.dot` and `module.log`.
 
-**Verified:** the host test (`sh test/watch/run.sh`, under sh and bash); on a C5
-without an eARC receiver, decoder and port detection through seeks, a track
-restart and an input switch, and the stop. Never run with a receiver.
+**Verified:** the host test (`sh test/watch/run.sh`, under sh, bash and dash),
+including decoder 0 and moves between the decoders; on a C5 without an eARC
+receiver, decoder and port detection through seeks, a track restart and an input
+switch, and the stop. Never run with a receiver. Decoder 0 has never been applied
+on a TV: the C5 run predates it (that build only logged decoder 0).
+
+## In the app (HDMI passthrough opt-in)
+
+DTS Enabler offers `hdmi-watch.sh` as a separate, experimental opt-in on the two 5.4.268
+kernels; its card says "not supported yet" on 6.12. The boot script
+(`webos25/restore/init_dts25.sh`, "HDMI-input DTS passthrough opt-in") stages
+`earc_route-5.4.ko`, `earc-route-load.sh` and `hdmi-watch.sh` into
+`/var/lib/webosbrew/dts25/hdmi/` and runs the watcher from there under a supervisor,
+at boot and from the app's toggle (`W25_HDMI=on|off sh init_dts25.sh` over SSH). Turning
+it off, Disable and Uninstall send the watcher TERM; an exit 20 is reported as "restart
+the TV". Turn on refuses beside an enabled lg-dts-core or Glasshouse helper, and needs
+"Show DTS tracks in apps" on, because the HDMI EDIDs offer DTS only through that
+opt-in's edidType. The supervisor takes that opt-in's eim hook off, so HDMI devices are
+offered DTS, only while an eARC receiver is the sound output. The rules and the
+trade-offs are in [`../app/README.md`](../app/README.md).

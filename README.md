@@ -248,15 +248,16 @@ This fork adds a few work-in-progress components alongside the core tool:
   own README for the design, build, and the on-TV test that gates the approach. **Not yet
   validated on hardware.**
 - **`webos25/kmod/`**: an experimental kernel module that sends DTS from an HDMI input to an
-  eARC receiver on webOS 25 (root over SSH). Not shipped in the app or the release. See its
-  [README](webos25/kmod/README.md).
+  eARC receiver on webOS 25. The app offers it as an experimental opt-in on the 5.4.268
+  kernels. See its [README](webos25/kmod/README.md).
 - **`webos25/app/`** — the shipping "DTS Enabler" Homebrew app: a GUI for the verified
   webOS-25 mechanism plus the exact-firmware experimental C2/G2 profile described above.
 
 ## License
 
 This project's own code (installer scripts, the app, the service) is **GNU LGPL v2.1 or later**,
-same as GStreamer and its plugins. So is every shipped binary below; each keeps its own license:
+same as GStreamer and its plugins. So is every shipped binary below except the HDMI
+passthrough module and its scripts, which are GPL-2.0-only; each keeps its own license:
 
 | Shipped artifact | License | Why |
 |---|---|---|
@@ -265,6 +266,7 @@ same as GStreamer and its plugins. So is every shipped binary below; each keeps 
 | `webos25/restore/demux-out/libgst{isomp4,mpegtsdemux,matroska,mpegpsdemux}.so` | LGPL-2.1-or-later | built from gst-plugins-good / -bad |
 | `webos25/restore/truehd-out/libgstlibav.so`, `libav*.so*`, `libsw*.so*` | LGPL-2.1-or-later | ffmpeg 4.4 configured **without** `--enable-gpl` / `--enable-version3` (see `webos25/restore/build-truehd.sh`) |
 | `webos25/restore/out/libgstdtsdec.so` | LGPL-2.1-or-later | gst-plugins-bad `ext/dts` (LGPL) with ffmpeg n4.4.4's `dca` decoder linked in **statically**, configured **without** `--enable-gpl` / `--enable-version3` / `--enable-nonfree` (see `webos25/restore/build.sh`). Before webos25-2.43 it linked libdca and was GPL-2.0-or-later |
+| `webos25/restore/kmod-out/earc_route-5.4.ko`, `webos25/kmod/earc-route-load.sh`, `hdmi-watch.sh` | GPL-2.0-only | `webos25/kmod/`, derived from Glasshouse and lg-g5-dts (see `webos25/kmod/NOTICE`); nothing else links it |
 
 Because `libgstdtsdec.so` links ffmpeg statically, LGPL-2.1 section 6 applies: the published
 plugin source and `webos25/restore/build.sh` let anyone rebuild ffmpeg, modify it and relink the
