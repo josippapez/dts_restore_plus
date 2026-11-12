@@ -1,16 +1,11 @@
-# DTS + TrueHD/MLP audio restore for webOS 25 (LG C5)
+# DTS + TrueHD/MLP audio restore for webOS 25
 
-Restores **DTS** *and* **Dolby TrueHD / MLP** audio playback on a rooted LG C5 /
-webOS 25 TV. Both codecs are **verified working on a real LG C5**, persistent
-across reboot (a boot hook re-applies everything). Reversibility: most changes
-are **bind-mounts** over a stock file, undone by Disable/Uninstall — a reboot drops
-the mounts but the boot hook re-applies them, so only Disable/Uninstall turns it off —
-the one exception is the GStreamer plugin registry, a persistent `cp -f`
-reverted by regenerating a clean stock registry — and it only applies to a TV
-whose stock plugins match a **verified set**, refusing (with an explicit
-experimental opt-in) otherwise. See
-[Compatibility gate, reversibility, and self-heal](#compatibility-gate-reversibility-and-self-heal)
-below.
+Restores **DTS** and **Dolby TrueHD / MLP** audio playback on rooted LG TVs
+that match a verified webOS 25 configuration. The boot hook reapplies the changes
+after reboot. Disable or Uninstall removes the bind mounts and regenerates a clean
+stock GStreamer plugin registry if it was replaced. Unverified configurations
+require an explicit experimental opt-in. See the verified TV sets under
+[Compatibility gate, reversibility, and self-heal](#compatibility-gate-reversibility-and-self-heal).
 
 ## Quick install (prebuilt — no build needed)
 
@@ -323,6 +318,7 @@ GStreamer major.minor version:
 |---|---|---|---|---|
 | LG C5 OLED77C51LA (webOS 10.3.1) | 1.24.0 | `0fd6d65ac9e3a78b393a615eaff8ac0b` | `57fe57060774f248c05af5a411fc9a8f` | `9b84a95cf29bc025553c7dee829b7cc1` |
 | LG G5 OLED77G55LW (webOS 10.3.1) | 1.24.0 | `0fd6d65ac9e3a78b393a615eaff8ac0b` | `57fe57060774f248c05af5a411fc9a8f` | `9b84a95cf29bc025553c7dee829b7cc1` |
+| LG G3 OLED77G36LA (webOS 10.3.1, firmware 33.31.68) | 1.24.0 | `0fd6d65ac9e3a78b393a615eaff8ac0b` | `cf4d9bb9e3c3ad83f1a75a399d2f0b93` | `772fb3b29e224423035eec9e93615b23` |
 | LG G2 OLED77G26LA/OLED77G29LA (webOS 10.3.1) | 1.24.0 | `0fd6d65ac9e3a78b393a615eaff8ac0b` | `cf4d9bb9e3c3ad83f1a75a399d2f0b93` | `772fb3b29e224423035eec9e93615b23` |
 | LG C2 OLED55C21LA (webOS 10.3.1) | 1.24.0 | `0fd6d65ac9e3a78b393a615eaff8ac0b` | `cf4d9bb9e3c3ad83f1a75a399d2f0b93` | `772fb3b29e224423035eec9e93615b23` |
 | LG CS OLED55CS6LA (webOS 10.3.1) | 1.24.0 | `0fd6d65ac9e3a78b393a615eaff8ac0b` | `cf4d9bb9e3c3ad83f1a75a399d2f0b93` | `772fb3b29e224423035eec9e93615b23` |
