@@ -217,3 +217,15 @@ the same mechanism tsdemux has and which the shipped patch already survives.
 Bound over /usr/lib/gstreamer-1.0/libgstmpegpsdemux.so only when staged AND that
 file exists; not fingerprinted and not a reason to refuse. Needs an on-TV check
 that the stock file exists at that path and that a DTS .vob plays.
+
+Known trade-off for HDMV TrueHD-only input
+-----------------------------------------
+The AC-3 compatibility slot remains in the stream collection even when
+the source contains no AC-3 PES packets. This preserves the audio track
+indices expected by FFmpeg and Jellyfin.
+
+Confirmed on an LG G3: LG's native player displays the additional AC-3
+track for a TrueHD-only M2TS file, but the track contains no audio.
+
+The QEMU regression tests verify that the empty slot remains present
+and emits zero bytes.
