@@ -1,16 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Derives, from LG's own code, everything HDMI-input -> eARC passthrough would
- * need on the running TV, by symbol name and one exact instruction pattern each,
- * for the audit to print. It is the AUDIT half of the "DTS from HDMI inputs to
- * an eARC receiver" feature: it changes nothing, registers no probe or hook,
- * patches nothing, and calls no new kernel function. The active half is not
- * implemented here.
- *
- * Kept separate from struct earc_layout and the eARC route on purpose: the route
- * and its audit behave exactly as before, and a TV where an HDMI-set symbol is
- * missing or a pattern does not match still loads the route. Every failure here
- * is a "not available: <reason>" string on the item, never a refusal of the
- * module.
+/* Derives code facts for the audit and active session from LG's kernel.
  *
  * Two analyses. _cb_output_status goes through earc_decode.h's dataflow engine,
  * used as it is. _set_output (636 instructions on 5.4, above ED_MAX_INSNS), the
@@ -33,9 +22,8 @@
 
 #include "earc_decode.h"
 
-/* HDMI-set functions passed by the loader (fn_<name>, and sz_<name> for the
- * analysed ones). The others are resolved by name and printed only: never
- * called, never imported. kretprobe_breakpoint_handler exists on 6.12 only. */
+/* Loader symbols; analysed functions also need sz_<name>.
+ * kretprobe_breakpoint_handler exists on 6.12 only. */
 #define EARC_HDMI_FUNCTIONS(X) \
     X(aud_hal_dts_supported, 1) \
     X(_set_output, 1) \
@@ -47,8 +35,6 @@
     X(aimc_set_property, 1) \
     X(KDRV_HDMI21_HAL_Rx_GetAudioInfo, 0) \
     X(input_drop_data, 1) \
-    X(input_start, 0) \
-    X(input_stop, 0) \
     X(aimc_register_named_event, 0) \
     X(aimc_unregister_named_event, 0) \
     X(register_kernel_break_hook, 1) \
@@ -67,7 +53,8 @@
     X(__vfs_write, 1) \
     X(vfs_write, 1) \
     X(misc_register, 0) \
-    X(misc_deregister, 0)
+    X(misc_deregister, 0) \
+    X(sndout_earc_output_type, 1)
 
 #define EARC_HDMI_ENUM(name, analysed) HF_##name,
 enum earc_hdmi_function { EARC_HDMI_FUNCTIONS(EARC_HDMI_ENUM) HF_COUNT };
@@ -144,6 +131,10 @@ struct earc_hdmi_layout {
     /* struct file_operations' write, open and release slots, from the kernel's own calls. */
     unsigned int fops_write, fops_open, fops_release;
     const char *fops_reason;
+    /* sndout_earc_output_type: the mix flag LG writes, at request + mix_offset. */
+    ed_u64 mix_entry;
+    unsigned int mix_offset;
+    const char *mix_reason;
 };
 
 /* ---- block-sound register tracker over one function ---- */
@@ -781,14 +772,12 @@ static void hd_input_properties(const struct earc_code *fns, struct earc_hdmi_la
     out->property_reason = 0;
 }
 
-/* input_drop_data(input, bool) starts `mov x19,x0; and w20,w1,#0xff` and loads the
- * uid with `ldr w0,[x0,#uid]`; the restart helpers are called by address. */
+/* input_drop_data(input, bool) loads its uid with `ldr w0,[x0,#uid]`. */
 static void hd_input_format(const struct earc_code *fns, struct earc_hdmi_layout *out) {
     const struct earc_code *drop = &fns[HF_input_drop_data];
     unsigned int index, moves = 0, masks = 0, uids = 0;
     out->format_reason = "HDMI format-change helpers not found";
-    if (!drop->words || !fns[HF_input_start].address || !fns[HF_input_stop].address ||
-        !fns[HF_aimc_register_named_event].address || !fns[HF_aimc_unregister_named_event].address ||
+    if (!drop->words || !fns[HF_aimc_register_named_event].address || !fns[HF_aimc_unregister_named_event].address ||
         !out->decoder_lock)
         return;
     for (index = 0; index < drop->count && index < 16; index++) {
@@ -861,6 +850,43 @@ static void hd_fops(const struct earc_code *fns, struct earc_hdmi_layout *out) {
     out->fops_reason = 0;
 }
 
+/* LG's "Sndout EARC Outputtype" put: five words from the ALSA request (x1); the
+ * fifth, the mix flag, is the one checked with `ccmp wM,#1` (0 or 1 only) and
+ * stored once. Measured: `ldr x24,[x19,#0x68]` after `mov x19,x1` on 5.4 and 6.12. */
+static void hd_mix(const struct earc_code *fns, struct earc_hdmi_layout *out) {
+    const struct earc_code *f = &fns[HF_sndout_earc_output_type];
+    unsigned int i, j, request = 32, reg = 32, loads = 0, checks = 0;
+    out->mix_reason = "sndout_earc_output_type not given";
+    if (!f->words || f->count < 8) return;
+    out->mix_entry = f->address;
+    if (hf_is_brk(f->words[0]) || !hf_kprobe_placeable(f->words[0])) {
+        out->mix_reason = "sndout_earc_output_type entry is not kprobe-placeable";
+        return;
+    }
+    for (i = 0; i < f->count && i < 16; i++)
+        if ((f->words[i] & 0xffffffe0u) == 0xaa0103e0u) { request = f->words[i] & 31; break; }  /* mov xR, x1 */
+    for (i = 0; request < 31 && i < f->count; i++) {
+        ed_u32 op = f->words[i];
+        if ((op & 0xffc003e0u) != (0xf9400000u | (request << 5))) continue;  /* ldr xM,[xR,#off] */
+        for (j = i + 1; j < f->count && j <= i + 64; j++)
+            /* ccmp wM,#1,#nzcv,cond: opcode, imm5 = 1 and Rn; cond and nzcv vary. */
+            if ((f->words[j] & 0xffff0fe0u) == (0x7a410800u | ((op & 31) << 5))) {
+                reg = op & 31;
+                out->mix_offset = ((op >> 10) & 0xfff) * 8;
+                loads++;
+                break;
+            }
+    }
+    for (i = 0; reg < 31 && i < f->count; i++)
+        if ((f->words[i] & 0xffc0001fu) == (0xb9000000u | reg)) checks++;  /* str wM,[x,#imm] */
+    if (loads != 1 || !checks) {
+        out->mix_reason = "the mix flag's load and check were not found exactly once";
+        out->mix_offset = 0;
+        return;
+    }
+    out->mix_reason = 0;
+}
+
 static void hd_symbols(const struct earc_code *fns, struct earc_hdmi_layout *out) {
     out->patch_text = fns[HF_aarch64_insn_patch_text].address;
     out->kprobe_register = fns[HF_register_kprobe].address;
@@ -890,6 +916,7 @@ static void earc_hdmi_decode(const struct earc_code *fns, ed_u64 nonpcm_virtual,
     hd_input_properties(fns, out);
     hd_input_format(fns, out);
     hd_fops(fns, out);
+    hd_mix(fns, out);
     out->nonpcm_virtual = nonpcm_virtual;
     out->nonpcm_physical = (nonpcm_virtual && nonpcm_virtual >= stext_align) ? nonpcm_virtual - stext_align : 0;
 }

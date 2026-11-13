@@ -88,6 +88,15 @@ int lgroute_control_unmixed_why (char why[LGROUTE_WHY])
   if (result < 0) g_strlcpy (why, "Sndout EARC OnOff is 0, not on", LGROUTE_WHY);
   return result;
 }
+/* Whether a clear of the mix word takes (earc_route's probe in place); counts calls. */
+static gboolean unmix_takes;
+static int unmixes;
+int lgroute_control_unmix (void)
+{
+  unmixes++;
+  if (unmix_takes && unmixed_result == 0) unmixed_result = 1;
+  return 0;
+}
 static gboolean
 read_or_graph (const gchar *filename, gchar **contents, gsize *length, GError **error)
 {
@@ -928,6 +937,19 @@ static void lease_tests (void)
   lgroute_disarm (&route);
   g_assert_false (lease_open);
   g_assert_cmpint (route.lease_fd, ==, -1);
+
+  /* LG starts the stream mixed (eARC's mix word on after a reboot): the leased
+   * route clears it and the carrier passes, without a relabel. */
+  reset (&route); caps_event (&route); graph = after;
+  unmixed_result = 0; unmix_takes = TRUE; unmixes = 0;
+  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
+  g_assert_cmpint (unmixes, ==, 1);
+  g_assert_true (route.unmixed);
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  g_assert_false (last_silent);
+  g_assert_cmpint (unmixes, ==, 1);
+  lgroute_disarm (&route);
+  unmix_takes = FALSE; unmixed_result = 1;
 
   /* Another pipeline holds it (EBUSY), or the module is gone: decode. */
   lease_open = 1;

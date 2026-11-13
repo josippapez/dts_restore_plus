@@ -57,7 +57,6 @@ extern int register_kprobe(void *kp);
 extern void unregister_kprobe(void *kp);
 extern void cpus_read_lock(void);
 extern void cpus_read_unlock(void);
-extern void synchronize_rcu(void);
 /* Exported on both generations; copy_from_user is inlined there. Returns bytes not copied. */
 extern unsigned long __arch_copy_from_user(void *to, const void *from, unsigned long n);
 #define copy_from_user __arch_copy_from_user
@@ -119,8 +118,7 @@ static u32 mode;
 static struct target_kprobe route_probe, selftest_probe;
 static struct target_break_hook hook_probe, hook_step;  /* BRK imm 4 and imm 6 */
 static u32 hooks_registered, probe_registered, gate_open, gate_opened_by_us, selftest_passed;
-static ed_u32 gate_written;
-static u32 calls_seen, calls_matched, overrides, match_prints, nomatch_prints;
+static u32 calls_seen, calls_matched, overrides, nomatch_prints;
 static u32 selftest_hits;
 static void *window_task;
 /* DTS-HD: the two _cb_output_status probes. */
@@ -134,7 +132,8 @@ static u32 hd_status_prints, hd_accept_prints, hd_name_prints, hd_fix_prints;
 /* Mode 7's app lease: renderer index + 1 while a /dev/earc_route holder has it open. */
 static u32 app_route, app_overrides, app_prints, lease_registered;
 static u32 matched_decoder = EARC_NO_DECODER;  /* the last _set_output match's decoder (0 or 1) */
-static struct target_kprobe input_start_probe, input_property_probe;
+static struct target_kprobe input_start_probe, input_property_probe, mix_probe;
+static u32 mix_registered, mix_clears;
 static u32 input_probes_registered, input_starts, input_properties;
 static u64 input_codec_format, input_mode_format;
 /* hdmi_dts_format_changed: the DSP raises it on a DTS sub-type change and sets
@@ -169,10 +168,7 @@ static void (*const volatile imported_mutex_unlock)(void *) = mutex_unlock;
 
 static struct earc_layout layout;
 
-/* HDMI-passthrough audit set (optional): the loader passes fn_/sz_ for each.
- * These are read and printed in the audit only; none is called, and the service
- * functions (patch_text, kprobe, cpu locks) are addresses only. A missing or
- * invalid HDMI symbol disables only the HDMI audit, never the route. */
+/* Loader symbols for the HDMI audit and active session. */
 #define EARC_HDMI_ADDRESS(name, analysed) static unsigned long fn_##name;
 EARC_HDMI_FUNCTIONS(EARC_HDMI_ADDRESS)
 #undef EARC_HDMI_ADDRESS
@@ -552,9 +548,9 @@ static int route_prehandler(struct target_kprobe *p, struct target_pt_regs *regs
         }
         return 0;
     }
-    __atomic_add_fetch(&calls_matched, 1, __ATOMIC_RELAXED);
+    u32 matched_count = __atomic_add_fetch(&calls_matched, 1, __ATOMIC_RELAXED);
     __atomic_store_n(&matched_decoder, (u32)index, __ATOMIC_RELAXED);
-    if (__atomic_add_fetch(&match_prints, 1, __ATOMIC_RELAXED) <= 5)
+    if (matched_count <= 5)
         printk("\0016earc_route: pass match index=%llu codec-arg=%u bypass-arg=%u adec%llu-codec=%u\n",
                (unsigned long long)index, (u32)regs->regs[2], (u32)regs->regs[3], (unsigned long long)index, codec);
     regs->regs[2] = 0;  /* codec -> 0 */
@@ -596,7 +592,7 @@ static int input_property_prehandler(struct target_kprobe *probe, struct target_
     if (decoder == 2) return 0;
     type = *(volatile u32 *)(regs->sp + hdmi.input_type_offset);
     frequency = *(volatile u32 *)(regs->sp + hdmi.input_type_offset + 4);
-    value = earc_input_property(type, frequency, mode_property, original, 0);
+    value = earc_input_property(type, frequency, mode_property, original);
     if (value == original) return 0;
     regs->regs[2] = value;
     if (__atomic_add_fetch(&input_properties, 1, __ATOMIC_RELAXED) <= 8)
@@ -695,12 +691,6 @@ static void hooks_unregister(void) {
     UNREGISTER_BREAK_HOOK(&hook_probe);
     hooks_registered = 0;
 }
-/* Callers follow hooks_unregister (and unregister_kprobe) with an explicit
- * synchronize_rcu. That is a second, redundant wait: unregister_kernel_break_hook
- * calls synchronize_rcu itself (both generations), and unregister_kprobe does so
- * through unregister_kprobes. We keep it, as lg-g5-dts does, but it is a backstop,
- * not the only grace period. */
-
 /* Stage a: walk the kernel's break-hook list and act. Returns 0 (hooks present,
  * whether the kernel's or newly ours), or a negative refusal. */
 static struct earc_hdmi_walk pt_walk;
@@ -851,7 +841,6 @@ static int gate_open_patch(void) {
         printk("\0013earc_route: DTS gate patch failed result=%d\n", result);
         return result;
     }
-    gate_written = EARC_GATE_OPEN_W0;
     gate_opened_by_us = 1;
     gate_open = 1;
     printk("\0016earc_route: DTS gate opened; words now %08x %08x\n",
@@ -868,7 +857,7 @@ static void gate_restore(void) {
     if (!gate_opened_by_us) return;
     cpus_read_lock();
     current = *(volatile u32 *)hdmi.gate;
-    want = earc_gate_restore_word(current, gate_written);
+    want = earc_gate_restore_word(current);
     if (!want) {
         cpus_read_unlock();
         printk("\0013earc_route: DTS gate first word %08x is not ours; leaving it\n", current);
@@ -931,6 +920,19 @@ static struct target_miscdevice lease_device;
 #define MISC_REGISTER ((int (*)(struct target_miscdevice *))fn_misc_register)
 #define MISC_DEREGISTER ((void (*)(struct target_miscdevice *))fn_misc_deregister)
 
+/* LG turns eARC mixing on for a codec missing from the receiver's list (DTS on
+ * most soundbars), which plays the carrier as noise. While the lease is held,
+ * LG's own "Sndout EARC Outputtype" write is entered with the mix word cleared. */
+static int mix_prehandler(struct target_kprobe *p, struct target_pt_regs *regs) {
+    long *mix = (long *)(regs->regs[1] + hdmi.mix_offset);
+    (void)p;
+    if (__atomic_load_n(&app_route, __ATOMIC_ACQUIRE) && *mix) {
+        *mix = 0;
+        __atomic_add_fetch(&mix_clears, 1, __ATOMIC_RELAXED);
+    }
+    return 0;
+}
+
 static int lease_register(void) {
     if (hdmi.fops_reason) {
         printk("\0013earc_route: refused; no lease device: %s\n", hdmi.fops_reason);
@@ -973,19 +975,18 @@ static int adec_slots_ok(int need_open) {
 /* Tears down whatever the session set up, in reverse order. Safe to call when
  * nothing was set. */
 static void passthrough_cleanup(void) {
-    int touched = input_probes_registered || probe_registered || hd_probes_registered || hooks_registered || gate_opened_by_us;
     if (input_probes_registered == 2) { unregister_kprobe(&input_start_probe); input_probes_registered = 1; }
     if (window_task) { kthread_stop(window_task); window_task = (void *)0; }
     if (lease_registered) { MISC_DEREGISTER(&lease_device); lease_registered = 0; }
     format_unsubscribe(0);
     format_unsubscribe(1);
     if (input_probes_registered) { unregister_kprobe(&input_property_probe); input_probes_registered = 0; }
+    if (mix_registered) { unregister_kprobe(&mix_probe); mix_registered = 0; }
     if (probe_registered) { unregister_kprobe(&route_probe); probe_registered = 0; }
     if (hd_probes_registered == 2) { unregister_kprobe(&hd_status_probe); hd_probes_registered = 1; }
     gate_restore();
     if (hd_probes_registered) { unregister_kprobe(&hd_name_probe); hd_probes_registered = 0; }
     hooks_unregister();
-    if (touched) synchronize_rcu();
 }
 
 /* The session load: lg-g5-dts's dts-hd-route in one load (the gate, the two
@@ -1059,6 +1060,18 @@ static int session(void) {
     if ((u64)window_task >= (u64)-4095) { window_task = (void *)0; result = -12; goto undo; }
     wake_up_process(window_task);
     if (lease_register() < 0) goto undo;
+    if (hdmi.mix_reason) {
+        printk("\0013earc_route: refused; %s\n", hdmi.mix_reason);
+        result = -22;
+        goto undo;
+    }
+    mix_probe.addr = (void *)hdmi.mix_entry;
+    mix_probe.pre_handler = mix_prehandler;
+    if (register_kprobe(&mix_probe) < 0) {
+        printk("\0013earc_route: register_kprobe on sndout_earc_output_type failed\n");
+        goto undo;
+    }
+    mix_registered = 1;
     printk("\0016earc_route: DTS passthrough active on _cb_output_status compare=%llx (codec w%u, output x%u) name-load=%llx (x%u from index x%u, %u entries, substitute %llx); gate open; _set_output override running\n",
            hdmi.hd_compare, earc_hd_codec_reg(&hdmi), hdmi.hd_output_reg, hdmi.hd_name_load, earc_hd_name_reg(&hdmi),
            earc_hd_index_reg(&hdmi), hd_name_entries, (unsigned long long)hd_name_last);
@@ -1240,6 +1253,7 @@ static const struct target_parameter parameters[] __attribute__((section("__para
     {"hd_name_seen", &__this_module, &uint_operations, 0400, -1, 0, &hd_name_seen},
     {"hd_name_fixes", &__this_module, &uint_operations, 0400, -1, 0, &hd_name_fixes},
     {"app_route", &__this_module, &uint_operations, 0400, -1, 0, &app_route},
+    {"mix_clears", &__this_module, &uint_operations, 0400, -1, 0, &mix_clears},
     {"app_overrides", &__this_module, &uint_operations, 0400, -1, 0, &app_overrides},
     {"input_probes_registered", &__this_module, &uint_operations, 0400, -1, 0, &input_probes_registered},
     {"input_starts", &__this_module, &uint_operations, 0400, -1, 0, &input_starts},

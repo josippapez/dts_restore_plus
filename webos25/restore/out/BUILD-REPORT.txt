@@ -56,10 +56,10 @@ libgstdtsdec.so
                 gst_element_register_dtsdec, gst_plugin_dtsdec_register,
                 gst_plugin_dtsdec_get_desc, gst_truehd_mat_get_type and the
                 lgroute_* / lgroute_control_* helpers
-  size        : 3468488 bytes
-  md5         : 8f24467561cf4dcc22020d17386cd1f4
-  sha1        : 298d651bac539216cdf1401d82b5abc8a37db46e
-  sha256      : 2292009b512a8461c05f3c880cecdbabaa27cd478d5dd3cb85f63138372a0580
+  size        : 3463644 bytes
+  md5         : c34065c2cb4864c5ee8519b545dee4cc
+  sha1        : 84866647472d5237e8ca3947915a0c583241e8cf
+  sha256      : a63825a1164693573b6e50129ceacb57b3800d24477b092104fd2636bb55cadb
 
 lgroute-control
 ---------------
@@ -71,12 +71,12 @@ lgroute-control
   NEEDED      : libc.so.6
   purpose     : `--check` reads LG's "Sndout EARC OnOff" / "Sndout EARC
                 Outputtype" ALSA controls; it never writes them
-  size        : 13096 bytes
-  md5         : be369e8d3c759f460e83e9bd5918a9e0
-  sha256      : 10d442fd679e954ef04f5e7390a5ed13961c84362fc725a3c47e7ce707ec5304
+  size        : 13276 bytes
+  md5         : 4317a8b102cbb15615c5e373215289e9
+  sha256      : e06579deb5f38eb9ebbd1f7a1d61995c0550ffd592c8fc30681a483e2ec1d3be
 
 switch-out/libgstadecswitch.so (built by build-switch.sh)
-  sha256      : 13cf6fce6e1bcc9037e57cec222d73d7eef6cc9a7bd40fd1fa2844b3b8e59733
+  sha256      : 45d149ad16b5ab7d8bf5e10bf8db97c51ad9472d058ff53b935eafa8ae957170
 
 Replaces libgstdtsdec.so md5 41742e9ec2ce0754724b4d260c9fc09e (NEEDED
 libdca.so.0, RUNPATH /var/lib/webosbrew/dts25/libs) + libdca.so.0 md5
@@ -171,13 +171,14 @@ committed adecswitch did not rebuild byte-identically from its source (only the
 line numbers passed to gst_debug_log differed), so this one is built from the
 source as committed. Verified on the C5 (decode identical to the previous build,
 installer and TV report clean). Not verified on a receiver.
-The 2026-11-13 build drops the luna PCM relabel: the HD route arms only with
-earc_route loaded, holds its lease as an open /dev/earc_route (written once,
-closed on disarm; the kernel drops it on a crash or kill), and decodes the core
-when the lease is refused. Verified on a C2 (33.31.68) with an eARC receiver:
-DTS-HD MA played as Pass-Through with no luna call, the lease ended with the
-clip and with kill -9 of the media pipeline, and with the module unloaded the
-route refused to arm and played the core.
+The 2026-11-13 build uses the /dev/earc_route lease instead of the luna PCM
+relabel and clears an existing eARC mix flag through LG's ALSA setter. The
+kernel probe prevents re-enabling mixing while the lease is held. On the C2
+(33.31.68), the rebuilt decoder passed MP4/TS/M2TS decode smoke tests; the
+5.4 module passed load, self-tests, lease release and unload. Earlier receiver
+replays passed the carrier but did not reliably finish EOS. The EOS-retention
+experiment was removed; clean repeated EOS remains unverified. The 6.12 build
+has host/QEMU coverage only, not real-TV verification.
 
 This report is maintained by hand: update it whenever out/libgstdtsdec.so is
 rebuilt (build.sh prints the ABI values above).

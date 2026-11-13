@@ -63,7 +63,7 @@ static int app_lease (gint value)
   return fd;
 }
 
-static void vnote (const gchar *format, va_list args)
+void lgroute_log (const gchar *format, ...)
 {
   FILE *log = fopen (ROUTE_LOG, "a");
   if (log && fseek (log, 0, SEEK_END) == 0 && ftell (log) > 65536)
@@ -74,27 +74,13 @@ static void vnote (const gchar *format, va_list args)
   gchar *when = g_date_time_format (now, "%T.%f");
   g_date_time_unref (now);
   fprintf (log, "%.12s ", when);
+  va_list args;
+  va_start (args, format);
   vfprintf (log, format, args);
+  va_end (args);
   fputc ('\n', log);
   g_free (when);
   fclose (log);
-}
-
-static void note (const gchar *format, ...) G_GNUC_PRINTF (1, 2);
-static void note (const gchar *format, ...)
-{
-  va_list args;
-  va_start (args, format);
-  vnote (format, args);
-  va_end (args);
-}
-
-void lgroute_log (const gchar *format, ...)
-{
-  va_list args;
-  va_start (args, format);
-  vnote (format, args);
-  va_end (args);
 }
 
 /* Guards the LgRoute fields that name what is armed (sink, sinkpad, probe ids,
@@ -182,7 +168,7 @@ static gboolean configure_converter (LgRoute *route)
   gboolean own = node && strstr (graph, node);
   gboolean ok = lgroute_bypass_converter (graph, own ? tail : NULL, uid);
   if (own && !ok)
-    note ("this renderer's bypass (lipsync %s) has no PCM converter", tail);
+    lgroute_log ("this renderer's bypass (lipsync %s) has no PCM converter", tail);
   route->own = own;
   g_free (node);
   g_free (graph);
@@ -290,7 +276,7 @@ static void route_fail (LgRoute *route, const gchar *reason)
   route->failed = TRUE;
   route->reason = reason;
   GST_WARNING_OBJECT (route->element, "lgroute: HD transport failed: %s", reason);
-  note ("failed, decoding instead: %s", reason);
+  lgroute_log ("failed, decoding instead: %s", reason);
 }
 
 static gboolean pad_has_carrier (GstPad *pad)
@@ -329,7 +315,7 @@ static gboolean restart_wanted (LgRoute *route, const gchar *why)
     return FALSE;
   route->restart_pending = TRUE;
   route->restart_after = 0;
-  note ("%s: restarting LG's renderer once the sink plays", why);
+  lgroute_log ("%s: restarting LG's renderer once the sink plays", why);
   return TRUE;
 }
 
@@ -372,7 +358,7 @@ static gboolean carrier_slow (LgRoute *route, gsize size, gint64 now)
   if (took > 3 * route->window_media) {
     route->slow_windows++;
     gchar *lg = lg_output ();
-    note ("carrier slow: %" G_GUINT64_FORMAT " ms of audio took %" G_GUINT64_FORMAT " ms, sending silence%s",
+    lgroute_log ("carrier slow: %" G_GUINT64_FORMAT " ms of audio took %" G_GUINT64_FORMAT " ms, sending silence%s",
         route->window_media / GST_MSECOND, took / GST_MSECOND, lg);
     g_free (lg);
   } else {
@@ -417,7 +403,7 @@ static GstPadProbeReturn event_probe (GstPad *pad, GstPadProbeInfo *info, gpoint
         set_pcm (route, TRUE);
       }
       /* The end of the id tells tracks and our own restarts apart. */
-      note ("new stream \"%.60s\", route setup %s", id + (strlen (id) > 60 ? strlen (id) - 60 : 0),
+      lgroute_log ("new stream \"%.60s\", route setup %s", id + (strlen (id) > 60 ? strlen (id) - 60 : 0),
           route->first ? "redone on the next buffer" : "waits for caps");
     }
     return GST_PAD_PROBE_OK;
@@ -435,7 +421,7 @@ static GstPadProbeReturn event_probe (GstPad *pad, GstPadProbeInfo *info, gpoint
       if (!restart_wanted (route, "seek right after the start (resume)"))
         route_fail (route, "seek right after the start (resume)");
     } else
-      note ("flush, converter %s %s", route->converter, converter_present (route) ? "present" : "gone");
+      lgroute_log ("flush, converter %s %s", route->converter, converter_present (route) ? "present" : "gone");
   }
   if (GST_EVENT_TYPE (event) == GST_EVENT_CAPS) {
     GstCaps *caps = NULL, *carrier = lgroute_carrier_caps ();
@@ -504,7 +490,7 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
        * 8-22 ms apart on every switch back to TrueHD and on a DTS track switch. */
       if (route->waiting) {
         if (!route->draining)
-          note ("earlier stream still draining, passed through");
+          lgroute_log ("earlier stream still draining, passed through");
         route->draining = TRUE;
         return GST_PAD_PROBE_OK;
       }
@@ -521,7 +507,7 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
     }
     GST_INFO_OBJECT (route->element, "lgroute: bypass converter configured, first carrier buffer");
     route->configured_at = g_get_monotonic_time ();
-    note ("configured converter %s%s", route->converter, route->own ? " of this renderer" : "");
+    lgroute_log ("configured converter %s%s", route->converter, route->own ? " of this renderer" : "");
     /* After a track switch LG's renderer keeps the old track's pace: a G3 and
      * another tester's TV played every such carrier four times too slowly. Restart it, as
      * after a resume. */
@@ -540,7 +526,7 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
       route_fail (route, "earc_route did not take the lease");
       return GST_PAD_PROBE_DROP;
     }
-    note ("earc_route holds LG's bypass for %s", route->resource);
+    lgroute_log ("earc_route holds LG's bypass for %s", route->resource);
   } else {
     GstBuffer *buffer = gst_buffer_make_writable (GST_PAD_PROBE_INFO_BUFFER (info));
     if (!buffer)
@@ -558,6 +544,10 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
    * eARC plays the carrier as noise. It is one cheap ALSA ioctl read. */
   char why[LGROUTE_WHY] = "sound output is not a receiver";
   int unmixed = lgroute_control_receiver () ? lgroute_control_unmixed_why (why) : -1;
+  /* LG mixes a codec the receiver does not list; with the lease, earc_route keeps
+   * LG from setting the mix word again once this clears it. */
+  if (unmixed == 0 && route->lease_fd >= 0 && lgroute_control_unmix () == 0)
+    unmixed = lgroute_control_unmixed_why (why);
   /* LG's mixer word is what LG asked for, not what the kernel did. A tester's
    * TV log had LG's mixer taking the carrier as 8-channel PCM, its queue full,
    * while the word read unmixed: white noise at the receiver. The kernel's
@@ -589,9 +579,9 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
         route->unmixed ? "unmixed, carrier passes" : "mixed or unavailable, sending silence", unmixed);
     gchar *lg = lg_output ();
     if (unmixed < 0)
-      note ("eARC Pass Through unavailable (%s), sending silence%s", why, lg);
+      lgroute_log ("eARC Pass Through unavailable (%s), sending silence%s", why, lg);
     else
-      note ("eARC %s%s", route->unmixed ? "unmixed, carrier passes" : in_mixer
+      lgroute_log ("eARC %s%s", route->unmixed ? "unmixed, carrier passes" : in_mixer
           ? "unmixed but LG's mixer has the carrier, sending silence" : "mixed, sending silence", lg);
     g_free (lg);
   }
@@ -733,7 +723,7 @@ static int earc_after_switch (LgRoute *route, char why[LGROUTE_WHY])
   }
   gst_clear_object (&input);
   gchar *then = unmixed < 0 ? g_strdup_printf ("unavailable (%s)", why) : g_strdup (unmixed ? "unmixed" : "mixed");
-  note ("track switch: eARC Pass Through unavailable (%s), read again for %" G_GINT64_FORMAT " ms: %s",
+  lgroute_log ("track switch: eARC Pass Through unavailable (%s), read again for %" G_GINT64_FORMAT " ms: %s",
       first, (g_get_monotonic_time () - start) / G_TIME_SPAN_MILLISECOND, then);
   g_free (then);
   return unmixed;
@@ -748,19 +738,19 @@ gboolean lgroute_arm (LgRoute *route)
   if (armed)
     return !route->failed;
   if (route->failed) {
-    note ("not armed: gave up earlier on this track (%s)", route->reason ? route->reason : "?");
+    lgroute_log ("not armed: gave up earlier on this track (%s)", route->reason ? route->reason : "?");
     return FALSE;
   }
   if (!lgroute_control_receiver ()) {
-    note ("not armed: sound output is not a receiver");
+    lgroute_log ("not armed: sound output is not a receiver");
     return FALSE;
   }
   if (access (LGROUTE_LEASE, W_OK)) {
-    note ("not armed: earc_route is not loaded");
+    lgroute_log ("not armed: earc_route is not loaded");
     return FALSE;
   }
   if (lgroute_control_unmixed_why (why) < 0 && earc_after_switch (route, why) < 0) {
-    note ("not armed: eARC Pass Through unavailable (%s)", why);
+    lgroute_log ("not armed: eARC Pass Through unavailable (%s)", why);
     return FALSE;
   }
   GstElement *sink = NULL;
@@ -789,7 +779,7 @@ gboolean lgroute_arm (LgRoute *route)
      * verified build, no audio sink yet (and the pipeline starting, playing or
      * stopping), or another sink in its place. */
     gchar *sinks = sink_names (top);
-    note ("not armed: %u verified LG sinks in the pipeline (%u audiosink elements; %s is %s, going %s; sinks:%s)",
+    lgroute_log ("not armed: %u verified LG sinks in the pipeline (%u audiosink elements; %s is %s, going %s; sinks:%s)",
         count, total, GST_OBJECT_NAME (top),
         GST_IS_ELEMENT (top) ? gst_element_state_get_name (GST_STATE (top)) : "?",
         GST_IS_ELEMENT (top) ? gst_element_state_get_name (GST_STATE_PENDING (top)) : "?",
@@ -812,7 +802,7 @@ gboolean lgroute_arm (LgRoute *route)
     route->lease = !mixer && index <= 1 ? (gint) index + 1 : 0;
   }
   if (!route->lease) {
-    note ("not armed: %s has no earc_route lease", resource[0] ? resource : "LG's sink");
+    lgroute_log ("not armed: %s has no earc_route lease", resource[0] ? resource : "LG's sink");
     gst_object_unref (pad);
     gst_object_unref (sink);
     return FALSE;
@@ -840,7 +830,7 @@ gboolean lgroute_arm (LgRoute *route)
   /* What LG's renderer is set up for when a track switch arms the route. */
   GstCaps *playing = gst_pad_get_current_caps (pad);
   gchar *was = playing && !route->first ? gst_caps_to_string (playing) : NULL;
-  note ("armed on %s%s%.200s", resource[0] ? resource : "LG sink", was ? ", sink has " : "", was ? was : "");
+  lgroute_log ("armed on %s%s%.200s", resource[0] ? resource : "LG sink", was ? ", sink has " : "", was ? was : "");
   g_free (was);
   if (playing) gst_caps_unref (playing);
   return TRUE;
@@ -873,7 +863,7 @@ void lgroute_disarm (LgRoute *route)
   if (lease_fd >= 0)
     close (lease_fd);
   if (sink)
-    note ("disarmed");
+    lgroute_log ("disarmed");
   if (pad) {
     if (events) gst_pad_remove_probe (pad, events);
     if (buffers) gst_pad_remove_probe (pad, buffers);

@@ -107,9 +107,8 @@ static int earc_input_start_match(ed_u64 index, ed_u32 codec, ed_u8 open, ed_u64
         (codec == EARC_CORE_ADEC_CODEC || codec == EARC_HD_ADEC_CODEC);
 }
 
-static ed_u32 earc_input_property(ed_u32 type, ed_u32 frequency, int mode_property, ed_u32 original, int forced_pcm) {
+static ed_u32 earc_input_property(ed_u32 type, ed_u32 frequency, int mode_property, ed_u32 original) {
     ed_u32 codec, mode;
-    if (forced_pcm) return original;
     if (type == 4 || type == 1004) { codec = 5; mode = type == 4 ? 1 : 6; }
     else if (type == 202 || type == 1202) { codec = 6; mode = type == 202 ? 4 : 7; }
     else if (type == 203 || type == 1203) { codec = frequency >= 192000 ? 6 : 5; mode = type == 203 ? 5 : 8; }
@@ -141,8 +140,7 @@ static int earc_hd_accept(ed_u32 event_codec, ed_u32 output_type, ed_u32 adec_co
  * After a match only that decoder's slot counts: the other decoder can stay
  * open on an earlier input (a C5 kept adec.p1 open on an idle input while
  * adec.p0 played), so its slot says nothing about this output. Before any
- * match (mode 6 has no _set_output probe; in mode 7 nothing orders the first
- * match before a status event) nothing says which decoder feeds the output, so
+ * match (nothing orders it before a status event) nothing says which decoder feeds the output, so
  * either slot started on 51 accepts: lg-g5-dts's rule on ADEC 1, applied to
  * both decoders. Only codec[0..1] and started[0..1] are read, whatever
  * `matched` holds. Returns the decoder accepted for, or -1. */
@@ -202,14 +200,11 @@ static const char *earc_hd_refusal(const struct earc_hdmi_layout *h, unsigned in
     return 0;
 }
 
-/* The gate state machine's restore rule: restore the stock first word only if
- * the current first word is still the one this module wrote. `current` is the
- * live first word; `written` is what we patched in (0x52800020). Returns the
- * word to write back, or 0 if nothing should be written. */
+/* Restore the stock word only while the live word is still ours. */
 #define EARC_GATE_STOCK_W0  0x52800000u  /* mov w0, #0 */
 #define EARC_GATE_OPEN_W0   0x52800020u  /* mov w0, #1 */
-static ed_u32 earc_gate_restore_word(ed_u32 current, ed_u32 written) {
-    return current == written ? EARC_GATE_STOCK_W0 : 0;
+static ed_u32 earc_gate_restore_word(ed_u32 current) {
+    return current == EARC_GATE_OPEN_W0 ? EARC_GATE_STOCK_W0 : 0;
 }
 
 /* The session's refusal from the derived layout, the code-fact half (address

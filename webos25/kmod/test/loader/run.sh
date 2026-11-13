@@ -30,7 +30,12 @@ for macro, text, name in (('EARC_FUNCTIONS', decode, 'FUNCTIONS'), ('EARC_HDMI_F
     if header(text, macro) != script(name):
         print('FAIL loader %s differs from %s' % (name, macro))
         sys.exit(1)
+from pathlib import Path
+module = Path(sys.argv[3]).with_name('earc_route.c').read_text()
+handler = module.split('static int input_property_prehandler(', 1)[1].split('\n}', 1)[0]
+assert re.search(r'\|\|\s*regs->regs\[hdmi.input_forced_reg\]\) return 0;', handler.split('earc_input_property(', 1)[0]), 'forced PCM must return before property rewriting'
 print('PASS loader function lists equal EARC_FUNCTIONS and EARC_HDMI_FUNCTIONS')
+print('PASS forced PCM bypasses property rewriting')
 PY
 
 # fake_module PATH VERMAGIC SIZE INIT EXIT

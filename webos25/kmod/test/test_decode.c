@@ -596,9 +596,9 @@ static void hook_decision_tests(void) {
 
 /* ---- gate "restore only what we wrote" ---- */
 static void gate_tests(void) {
-    int ok = earc_gate_restore_word(EARC_GATE_OPEN_W0, EARC_GATE_OPEN_W0) == EARC_GATE_STOCK_W0 &&
-             earc_gate_restore_word(EARC_GATE_STOCK_W0, EARC_GATE_OPEN_W0) == 0 &&
-             earc_gate_restore_word(0xdeadbeefU, EARC_GATE_OPEN_W0) == 0;
+    int ok = earc_gate_restore_word(EARC_GATE_OPEN_W0) == EARC_GATE_STOCK_W0 &&
+             earc_gate_restore_word(EARC_GATE_STOCK_W0) == 0 &&
+             earc_gate_restore_word(0xdeadbeefU) == 0;
     if (ok) printf("PASS gate restore: restores only our word, leaves a stock or foreign word\n");
     else { printf("FAIL gate restore\n"); failures++; }
 }
@@ -1454,19 +1454,18 @@ static void input_policy_tests(void) {
     check("input policy", "PCM decoder", earc_input_start_match(1, 1, 1, 1), 0);
     check("input policy", "invalid index", earc_input_start_match(2, 48, 1, 1), 0);
     check("input policy", "native input", earc_input_start_match(1, 48, 1, 17), 0);
-    check("input policy", "core codec", earc_input_property(4, 48000, 0, 0, 0), 5);
-    check("input policy", "HD codec", earc_input_property(202, 192000, 0, 0, 0), 6);
-    check("input policy", "HD mode", earc_input_property(202, 192000, 1, 1, 0), 4);
-    check("input policy", "unknown HD mode", earc_input_property(1202, 192000, 1, 1, 0), 7);
-    check("input policy", "forced PCM", earc_input_property(202, 192000, 0, 0, 1), 0);
-    check("input policy", "PCM mode", earc_input_property(202, 192000, 1, 0, 0), 0);
-    check("input policy", "native codec", earc_input_property(4, 48000, 0, 5, 0), 5);
-    check("input policy", "native HRA", earc_input_property(203, 192000, 1, 5, 0), 5);
-    check("input policy", "HRA mode", earc_input_property(203, 48000, 1, 1, 0), 5);
-    check("input policy", "unknown HRA mode", earc_input_property(1203, 48000, 1, 1, 0), 8);
-    check("input policy", "HRA low rate", earc_input_property(203, 48000, 0, 0, 0), 5);
-    check("input policy", "HRA high rate", earc_input_property(203, 192000, 0, 0, 0), 6);
-    check("input policy", "AC3", earc_input_property(3, 48000, 0, 0, 0), 0);
+    check("input policy", "core codec", earc_input_property(4, 48000, 0, 0), 5);
+    check("input policy", "HD codec", earc_input_property(202, 192000, 0, 0), 6);
+    check("input policy", "HD mode", earc_input_property(202, 192000, 1, 1), 4);
+    check("input policy", "unknown HD mode", earc_input_property(1202, 192000, 1, 1), 7);
+    check("input policy", "PCM mode", earc_input_property(202, 192000, 1, 0), 0);
+    check("input policy", "native codec", earc_input_property(4, 48000, 0, 5), 5);
+    check("input policy", "native HRA", earc_input_property(203, 192000, 1, 5), 5);
+    check("input policy", "HRA mode", earc_input_property(203, 48000, 1, 1), 5);
+    check("input policy", "unknown HRA mode", earc_input_property(1203, 48000, 1, 1), 8);
+    check("input policy", "HRA low rate", earc_input_property(203, 48000, 0, 0), 5);
+    check("input policy", "HRA high rate", earc_input_property(203, 192000, 0, 0), 6);
+    check("input policy", "AC3", earc_input_property(3, 48000, 0, 0), 0);
 }
 
 int main(int argc, char **argv) {
@@ -1513,6 +1512,8 @@ int main(int argc, char **argv) {
              hdmi_layout.property_entry, hdmi_layout.input_frame_size, hdmi_layout.input_type_offset,
              hdmi_layout.input_forced_reg, hdmi_layout.input_format_count);
         fops_test(&kernels[n], &hdmi_layout);
+        check_reason(dir, "eARC mix flag", hdmi_layout.mix_reason);
+        check(dir, "eARC mix flag offset", hdmi_layout.mix_offset, 0x68);
         hd_probe_test(&kernels[n], layouts[n].nonpcm);
         if (ho && run_hdmi_oracle(ho, &kernels[n], layouts[n].nonpcm, &hdmi_layout) && !hdmi_refused[ho->generation]) {
             hdmi_refusal_tests(&kernels[n], layouts[n].nonpcm, &hdmi_layout);

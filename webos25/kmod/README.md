@@ -300,26 +300,22 @@ line has no such parameter), so every 5.4 TV lacks the two break hooks while
 registers the #4, #6 and #7 hooks, so stage a should find them already present
 (`already`); not confirmed on a TV.
 
-The explicit `synchronize_rcu` after each unregister is a second,
-redundant wait: `unregister_kernel_break_hook` (and `unregister_kprobe`, through
-`unregister_kprobes`) already wait a grace period on both generations.
-
 **Kernel writes and their undo.** Nothing else writes kernel memory.
 
 | Write | Made by | Undo |
 |---|---|---|
-| break-hook list: add our #4 and #6 nodes | stage a (only if not already present) | `unregister_kernel_break_hook` (#6 then #4), then `synchronize_rcu` |
+| break-hook list: add our #4 and #6 nodes | stage a (only if not already present) | `unregister_kernel_break_hook` (#6 then #4) |
 | one kprobe on `_set_output` | `register_kprobe` | `unregister_kprobe` |
 | one kprobe on the `_cb_output_status` name load (before the gate is opened) | `register_kprobe` | `unregister_kprobe`, after the gate is restored |
 | one kprobe on the `_cb_output_status` compare (after the gate is opened) | `register_kprobe` | `unregister_kprobe`, before the gate is restored |
 | one kprobe on the self-test leaf (twice) | `register_kprobe` | `unregister_kprobe`, within init |
 | one instruction: DTS check word 0 `mov w0,#0` -> `mov w0,#1` (not when it is already `mov w0,#1`) | `aarch64_insn_patch_text` under `cpus_read_lock` | patch back to `mov w0,#0`, but only if the live word is still the one we wrote |
 
-**Failure paths** all go through `passthrough_cleanup`, which `cleanup_module` also runs. It does **not** repair the audio graph: like lg-g5-dts, that is left to the session script. The load sets up in the order hooks, self-tests, name-load probe, gate, compare probe, `_set_output` probe, window thread, and the cleanup runs it backwards: window thread, `_set_output` probe, compare probe, gate, name-load probe, hooks, `synchronize_rcu`. On a kernel that already has the change, it skips the gate patch (but re-reads the gate and refuses if it no longer returns 1) or the two `_cb_output_status` probes (`hd_probes_registered=0`).
+**Failure paths** all go through `passthrough_cleanup`, which `cleanup_module` also runs. On a kernel that already has the change, it skips the gate patch or the two `_cb_output_status` probes (`hd_probes_registered=0`).
 
 **New imports** (called directly; build.py proves each is exported by every kernel
 of the generation): `register_kprobe`, `unregister_kprobe`, `cpus_read_lock`,
-`cpus_read_unlock`, `synchronize_rcu`. `register_kernel_break_hook`,
+`cpus_read_unlock`. `register_kernel_break_hook`,
 `unregister_kernel_break_hook` and `aarch64_insn_patch_text` are not exported and
 are called through their kallsyms addresses.
 
@@ -395,7 +391,7 @@ refuses unless, per generation:
 - the imports are only the printk symbol above, `mutex_lock`/`mutex_unlock`,
   `msleep`, the kthread calls, `param_{set,get}_{uint,ulong}` and, for the active
   modes, `register_kprobe`, `unregister_kprobe`, `cpus_read_lock`,
-  `cpus_read_unlock` and `synchronize_rcu`; each one is in every kernel's PREL32
+  `cpus_read_unlock`; each one is in every kernel's PREL32
   ksymtab (`struct kernel_symbol` is `{value, name, namespace}` offsets on both)
   at its kallsyms address, the name spelled exactly (6.12 merges `mutex_lock`
   into the tail of `ww_mutex_lock`). The image base for that proof is

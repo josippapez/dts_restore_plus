@@ -35,14 +35,14 @@ GENERATIONS = {
     '6.12': {'vermagic': '6.12.44 SMP preempt mod_unload aarch64', 'abi': (0x4c0, 0x138, 0x480),
              'printk': '_printk', 'kprobe': (0x80, 0x78)},
 }
-# The active modes (mode>=2) call these five directly; each is proven exported by
+# Direct imports, each proven exported by
 # every kernel of the generation (prel32_exports). register_kernel_break_hook,
 # unregister_kernel_break_hook and aarch64_insn_patch_text are NOT exported and
 # are called through kallsyms addresses, so they are not imports.
 IMPORTS = {'mutex_lock', 'mutex_unlock', 'msleep', 'kthread_create_on_node', 'wake_up_process',
            'kthread_stop', 'kthread_should_stop', 'param_set_uint', 'param_get_uint',
            'param_set_ulong', 'param_get_ulong',
-           'register_kprobe', 'unregister_kprobe', 'cpus_read_lock', 'cpus_read_unlock', 'synchronize_rcu',
+           'register_kprobe', 'unregister_kprobe', 'cpus_read_lock', 'cpus_read_unlock',
            '__arch_copy_from_user'}
 
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
