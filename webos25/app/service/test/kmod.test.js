@@ -135,13 +135,6 @@ test("a load the TV did not survive is not retried at boot; turning DTS-HD on cl
     var on = service.w25PassthroughSteps(true, true);
     assert.ok(on.indexOf('rm -f "$KMOD_DIR/loading"') < on.indexOf("R=$(w25_kmod_refusal)"), "the user's retry clears the marker first");
     assert.doesNotMatch(service.w25PassthroughSteps(true), /loading/, "only DTS-HD on retries");
-    var start = initFn("w25_kmod_start");
-    assert.ok(start.includes('[ "$WHY" != crashed ] || w25_kmod_crash_alert'), "boot tells the user once it refuses after a crash");
-    var alert = initFn("w25_kmod_crash_alert");
-    assert.match(alert, /createAlert/);
-    assert.match(alert, /"onclick":"luna:\/\/com\.webos\.applicationManager\/launch","params":\{"id":"io\.github\.josippapez\.dtsenabler"\}/);
-    assert.match(alert, /\) <\/dev\/null >\/dev\/null 2>&1 &$/m, "detached, so the boot hook does not wait for it");
-    JSON.parse(/'(\{"sourceId".*\})'/.exec(alert)[1]);
   } finally {
     fs.rmSync(dir, {recursive: true, force: true});
   }

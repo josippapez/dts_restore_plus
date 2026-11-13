@@ -110,7 +110,6 @@
     return mech || "none";
   }
 
-  var kmodCrashShown = false;
   function renderStatus(s) {
     s = s || {};
     var profile = s.profile || "unknown";
@@ -405,12 +404,7 @@
     toast("Detecting target…", "busy");
     return callService("status", {}).then(function (res) {
       renderStatus(res);
-      if (res.kmodCrashed && !kmodCrashShown) {
-        kmodCrashShown = true;
-        toast(res.kmodRefusal, "err");
-      } else {
-        toast("Detected: " + (res.profile || "unknown"), res.supported ? "ok" : "err");
-      }
+      toast("Detected: " + (res.profile || "unknown"), res.supported ? "ok" : "err");
       return res;   // callers poll on this (see doAppDts)
     }).catch(function (err) {
       toast("Status failed: " + errText(err), "err");

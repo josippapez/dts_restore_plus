@@ -1213,10 +1213,7 @@ var W25_INIT_MAIN = [
   "  ( set -C; echo \"$$\" > \"$KMOD_PID\" ) 2>/dev/null || return 0",
   "  quit=",
   "  trap 'quit=1' INT TERM HUP",
-  "  # Spans only the load (self-tests, probes, gate patch), about a second: a marker",
-  "  # found at boot means the TV went down during it, so w25_kmod_refusal says",
-  "  # \"crashed\" and a bad load cannot become a reboot loop. A normal power-off",
-  "  # lands outside it.",
+  "  # Spans only the load: a marker found at boot means the TV went down during it.",
   "  : > \"$KMOD_DIR/loading\" && sync",
   "  sh \"$KMOD_DIR/earc-route-load.sh\" --dts-hd </dev/null >\"$KMOD_OUT\" 2>&1",
   "  loaded=$?",
@@ -1232,24 +1229,12 @@ var W25_INIT_MAIN = [
   "  if [ ! -d \"$KMOD_MODULE\" ] || rmmod earc_route 2>>\"$KMOD_OUT\"; then echo 0; else echo 20; fi > \"$KMOD_EXIT\"",
   "  rm -f \"$KMOD_PID\"",
   "}",
-  "# Detached: at boot the notification service starts after this hook.",
-  "w25_kmod_crash_alert() {",
-  "  ( i=0",
-  "    while [ \"$i\" -lt 180 ]; do",
-  "      systemctl is-active bootmode-normal-boot-done.service >/dev/null 2>&1 && break",
-  "      i=$((i + 1)); sleep 1",
-  "    done",
-  "    luna-send -n 1 -a com.webos.service.secondscreen.gateway luna://com.webos.notification/createAlert '{\"sourceId\":\"io.github.josippapez.dtsenabler\",\"message\":\"<b>DTS Enabler</b><br/>The TV restarted while the DTS-HD kernel module was loading, so DTS-HD passthrough is paused and receivers get the DTS core.<br/><br/>To retry, open DTS Enabler and turn Full DTS-HD off and on.\",\"buttons\":[{\"label\":\"Open DTS Enabler\",\"onclick\":\"luna://com.webos.applicationManager/launch\",\"params\":{\"id\":\"io.github.josippapez.dtsenabler\"}},{\"label\":\"Later\"}]}' >/dev/null 2>&1 ||",
-  "      toast \"DTS Enabler: DTS-HD paused after a restart during its kernel module load. Turn Full DTS-HD off and on to retry.\"",
-  "  ) </dev/null >/dev/null 2>&1 &",
-  "}",
   "w25_kmod_start() {",
   "  w25_module_wanted || return 0",
   "  w25_alive \"$(cat \"$KMOD_PID\" 2>/dev/null)\" && return 0",
   "  WHY=$(w25_kmod_refusal)",
   "  if [ -n \"$WHY\" ]; then",
   "    w25_log \"earc_route: not loaded ($WHY)\"",
-  "    [ \"$WHY\" != crashed ] || w25_kmod_crash_alert",
   "    return 0",
   "  fi",
   "  mkdir -p /run/dts25",
@@ -3797,7 +3782,6 @@ service.register("status", function (message) {
         base.passthroughHdReason = w25HdReason(kv.HD_REASON, base.passthroughOutput);
         base.kmodKernel = p.KMOD_KERNEL || "";
         base.kmodRefusal = w25KmodReason(p.KMOD_REFUSAL, p.KMOD_KERNEL);
-        base.kmodCrashed = p.KMOD_REFUSAL === "crashed";
         base.kmodLoaded = p.KMOD_LOADED === "1";
         base.kmodLoader = p.KMOD_LOADER || "";
         base.appDtsRequested = kv.APPDTS_FLAG === "1";
