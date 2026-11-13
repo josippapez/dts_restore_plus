@@ -263,6 +263,28 @@ test("the verified set covers the G2 on firmware 33.22.95", function () {
   assert.strictEqual(r.stdout.trim(), "verified|LG G2 OLED55G26LA (webOS 10.2.2, GStreamer 1.24.0)", r.stderr);
 });
 
+test("native ES is selected only for the exact tested C2 build", function () {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dts-native-es-"));
+  try {
+    var release = path.join(dir, "release");
+    write(release, "Rockhopper release 10.3.1-3006 (ponytail-papikonda)\n");
+    var fn = initFn("w25_native_es").split("/etc/starfish-release").join(release);
+    var hash = "90dba3ef32704ce4096bf1e6045d2879d0c2192d507bc04d1e8e98437f420a43";
+    function select(model, kernel, sink) {
+      return sh(['w25_product_id() { echo "' + model + '"; }',
+        'uname() { echo "' + kernel + '"; }', fn, 'w25_native_es "' + sink + '"'].join("\n")).status;
+    }
+    assert.strictEqual(select("OLED42C27LA", "5.4.268-329.ptl4tv.5", hash), 0);
+    assert.notStrictEqual(select("OLED55G26LA", "5.4.268-329.ptl4tv.5", hash), 0);
+    assert.notStrictEqual(select("OLED42C27LA", "6.12.44-352", hash), 0);
+    assert.notStrictEqual(select("OLED42C27LA", "5.4.268-329.ptl4tv.5", "unknown"), 0);
+    write(release, "Rockhopper release 10.3.1-3007 (ponytail-papikonda)\n");
+    assert.notStrictEqual(select("OLED42C27LA", "5.4.268-329.ptl4tv.5", hash), 0);
+  } finally {
+    fs.rmSync(dir, {recursive: true, force: true});
+  }
+});
+
 test("HD sink allowlist accepts exact tested hashes only", function () {
   var fn = initFn("w25_pt_sink_verified");
   var known = "90dba3ef32704ce4096bf1e6045d2879d0c2192d507bc04d1e8e98437f420a43";

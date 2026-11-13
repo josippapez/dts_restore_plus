@@ -1,9 +1,9 @@
 # eARC route kernel module (webOS 25, kernels 5.4.268 and 6.12.44)
 
-`earc_route-<generation>.ko` lets a DTS bitstream from an HDMI input or an app
-reach an eARC receiver: one load opens LG's DTS check, accepts DTS-HD in
-`_cb_output_status`, and overrides `_set_output` to LG's bypass for an HDMI DTS
-stream or an app holding the `/dev/earc_route` lease. It is built once per kernel generation,
+`earc_route-<generation>.ko` lets a bitstream reach an eARC receiver through
+LG's bypass. The tested C2 app path uses `mode=8` (`--app`): only the lease,
+output override and mix protection, without a DTS gate patch or HDMI hooks.
+`mode=7` retains HDMI DTS forwarding. It is built once per kernel generation,
 from one source: `earc_route-5.4.ko` (webOS 25 firmware 33.31.x, kernel
 5.4.268-329.ptl4tv.5, and 33.22.x, kernel 5.4.268-329.ptl4tv.2) and
 `earc_route-6.12.ko` (firmware 43.21.x, kernel 6.12.44-352), the generation-specific values passed as `-D` macros by `build.py`.
@@ -27,7 +27,8 @@ handles either HDMI audio decoder, 0 or 1, and keeps an HDMI input on DTS by its
 (see [HDMI input](#hdmi-input-mode7)).
 
 Status: both builds host-tested against the kernels listed under Test.
-Experimental. The release ships both builds and `earc-route-load.sh` for the app
+Experimental. Automatic loading on 6.12 is disabled pending real-TV verification.
+The release ships both builds and `earc-route-load.sh` for the app
 (see [In the app](#in-the-app)); everything else here is root over SSH.
 
 On 2026-11-11 a tester's LG CS (OLED55CS6LA, firmware 33.31.68, kernel
@@ -332,7 +333,7 @@ zero the struct and set only `addr` and `pre_handler`. The sizes are
 `-D` macros from `build.py`; the `_Static_assert`s, compiled per generation, are
 the layout check (the captures hold no kprobe instance to measure directly).
 
-**6.12.** Everything works: `aarch64_insn_patch_text` has the same signature
+**6.12 (host-tested only).** `aarch64_insn_patch_text` has the same signature
 (`int(void **addrs, u32 *insns, int cnt)`), the pre-handler contract is the same
 (return non-zero to skip single-stepping; we return 0), the break-hook layout and
 the registration/patch call conventions match 5.4. Nothing refuses on 6.12 for a
@@ -618,9 +619,7 @@ play as DTS on the soundbar; the module loads with both probes and unloads clean
 
 ## In the app
 
-DTS Enabler loads the module while DTS-HD passthrough is on: its HD route needs the
-`/dev/earc_route` lease. The boot script (`webos25/restore/init_dts25.sh`) stages it into
-`/var/lib/webosbrew/dts25/hdmi/` and holds it loaded; turning DTS-HD off, Disable and
-Uninstall unload it, and a module that will not unload is reported as "restart the TV".
-The module's HDMI-input probes are loaded with it but no app setting offers DTS to HDMI
-devices; see [`../app/README.md`](../app/README.md).
+DTS Enabler uses a systemd oneshot to load the module while DTS-HD is on.
+Turning DTS-HD off, Disable and Uninstall unload it; busy unloads are reported.
+The exact tested C2 build uses app-only mode; other supported profiles retain
+mode 7. No app setting offers DTS to HDMI devices; see [`../app/README.md`](../app/README.md).

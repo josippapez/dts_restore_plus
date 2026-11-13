@@ -57,9 +57,9 @@ libgstdtsdec.so
                 gst_plugin_dtsdec_get_desc, gst_truehd_mat_get_type and the
                 lgroute_* / lgroute_control_* helpers
   size        : 3463644 bytes
-  md5         : c34065c2cb4864c5ee8519b545dee4cc
-  sha1        : 84866647472d5237e8ca3947915a0c583241e8cf
-  sha256      : a63825a1164693573b6e50129ceacb57b3800d24477b092104fd2636bb55cadb
+  md5         : 39d34b3464b5ad1a844e83182ee2f252
+  sha1        : 58de293518293113cc988ad94a702ba739dcf8cc
+  sha256      : 1d8004c3be8b936e709fde78d85942e40b471f600cfc4ad35ef59d278d0536ca
 
 lgroute-control
 ---------------
@@ -171,14 +171,16 @@ committed adecswitch did not rebuild byte-identically from its source (only the
 line numbers passed to gst_debug_log differed), so this one is built from the
 source as committed. Verified on the C5 (decode identical to the previous build,
 installer and TV report clean). Not verified on a receiver.
-The 2026-11-13 build uses the /dev/earc_route lease instead of the luna PCM
-relabel and clears an existing eARC mix flag through LG's ALSA setter. The
-kernel probe prevents re-enabling mixing while the lease is held. On the C2
-(33.31.68), the rebuilt decoder passed MP4/TS/M2TS decode smoke tests; the
-5.4 module passed load, self-tests, lease release and unload. Earlier receiver
-replays passed the carrier but did not reliably finish EOS. The EOS-retention
-experiment was removed; clean repeated EOS remains unverified. The 6.12 build
-has host/QEMU coverage only, not real-TV verification.
+The 2026-11-13 build selects native ES on the exact tested C2 build at startup,
+keeps ES buffers off LG's PCM converter, and avoids synthetic renderer restarts.
+Its app-only kernel mode keeps the lease, output override and mix protection;
+the DTS gate, status probes and HDMI hooks stay untouched. On C2 33.31.68,
+three TS repeats, MP4, M2TS, TrueHD MKV, pause/resume and a backward seek reached
+EOS without new DSP faults. Decoded DTS/TrueHD with the module unloaded also
+reached EOS. These latest tests are pipeline evidence, not an audibility verdict.
+Managed load/stop, busy-descriptor refusal and mode-7 idle load/unload passed.
+6.12 remains host-tested only and disabled for automatic loading. DTS MKV and
+BD-framed TrueHD TS/M2TS were not exercised with this build.
 
 This report is maintained by hand: update it whenever out/libgstdtsdec.so is
 rebuilt (build.sh prints the ABI values above).

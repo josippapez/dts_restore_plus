@@ -10,6 +10,7 @@ typedef struct {
   GstPad *sinkpad;
   gulong events, buffers;
   gboolean first, feeding, configured, failed, unmixed, restart_pending, waiting, draining, own;
+  gboolean native_es;
   gboolean in_mixer;   /* the kernel feeds eARC from LG's mixer, whatever the mixer word says */
   guint restarts;
   gint64 next_check, mixed_since, configured_at;

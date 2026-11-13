@@ -1,5 +1,4 @@
-/* LG-managed PCM bypass transport. The first ES event survives the PCM-only
- * RTS/converter; lipsync retypes subsequent carrier data as ES.
+/* LG-managed HD bypass transport, native ES on the verified C2 build.
  * SPDX-License-Identifier: LGPL-2.1-or-later */
 #define _GNU_SOURCE
 #include "lgroute.h"
@@ -149,7 +148,6 @@ static gboolean own_bypass_tail (gchar uid[9])
   return TRUE;
 }
 
-/* PCMCVT_CMD_SET_ALLFMT: 192 kHz, 8 ch, 16-bit in and out; LG's gain is left alone. */
 static gboolean configure_converter (LgRoute *route)
 {
   static const char cmd[] = "0x50020020 192000 8 16 0 0 192000 8 16\n";
@@ -166,14 +164,31 @@ static gboolean configure_converter (LgRoute *route)
    * chain in the graph is ours, as before. */
   gchar *node = own_bypass_tail (tail) ? g_strdup_printf ("lipsync_%s_", tail) : NULL;
   gboolean own = node && strstr (graph, node);
-  gboolean ok = lgroute_bypass_converter (graph, own ? tail : NULL, uid);
-  if (own && !ok)
-    lgroute_log ("this renderer's bypass (lipsync %s) has no PCM converter", tail);
+  gboolean ok = FALSE;
+  gchar **lines = g_strsplit (graph, "\n", -1);
+  for (guint index = 0; route->native_es && own && lines[index]; index++) {
+    gchar source[96], target[96], source_impl[32], target_impl[32], source_uid[9], target_uid[9];
+    if (sscanf (lines[index], " %95s -> %95[^; ]", source, target) == 2
+        && lgroute_graph_node (source, source_impl, source_uid)
+        && lgroute_graph_node (target, target_impl, target_uid)
+        && !strcmp (source_impl, "queue") && !strcmp (target_impl, "lipsync")
+        && !strcmp (target_uid, tail)) {
+      g_strlcpy (uid, tail, sizeof route->converter);
+      ok = TRUE;
+      break;
+    }
+  }
+  g_strfreev (lines);
+  if (!route->native_es) {
+    ok = lgroute_bypass_converter (graph, own ? tail : NULL, uid);
+    if (own && !ok)
+      lgroute_log ("this renderer's bypass (lipsync %s) has no PCM converter", tail);
+  }
   route->own = own;
   g_free (node);
   g_free (graph);
-  if (!ok)
-    return FALSE;
+  if (!ok || route->native_es)
+    return ok;
   gchar *path = g_strdup_printf (LGROUTE_INSTANCES "/%s/cmd", uid);
   int fd = open (path, O_WRONLY | O_CLOEXEC);
   g_free (path);
@@ -195,7 +210,7 @@ static void set_pcm (LgRoute *route, gboolean on)
   g_mutex_unlock (&route_lock);
   if (!sink)
     return;
-  g_object_set (sink, "pcm-multi-ch", on, NULL);
+  g_object_set (sink, "pcm-multi-ch", on && !route->native_es, NULL);
   gst_object_unref (sink);
 }
 
@@ -311,7 +326,7 @@ static gboolean sink_playing (LgRoute *route)
  * Twice at most; after that the decoder takes over. */
 static gboolean restart_wanted (LgRoute *route, const gchar *why)
 {
-  if (route->restarts >= 2)
+  if (route->native_es || route->restarts >= 2)
     return FALSE;
   route->restart_pending = TRUE;
   route->restart_after = 0;
@@ -417,7 +432,8 @@ static GstPadProbeReturn event_probe (GstPad *pad, GstPadProbeInfo *info, gpoint
     /* A resume seeks right after the route starts. Every resume a tester logged
      * flushed within 30 ms of the setup and then stayed silent or played noise,
      * while seeks later in playback kept working: decode instead. */
-    if (route->configured && g_get_monotonic_time () - route->configured_at < G_TIME_SPAN_SECOND) {
+    if (!route->native_es && route->configured
+      && g_get_monotonic_time () - route->configured_at < G_TIME_SPAN_SECOND) {
       if (!restart_wanted (route, "seek right after the start (resume)"))
         route_fail (route, "seek right after the start (resume)");
     } else
@@ -473,7 +489,10 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
       if (!buffer)
         return GST_PAD_PROBE_DROP;
       GST_PAD_PROBE_INFO_DATA (info) = buffer;
-      GST_BUFFER_FLAG_UNSET (buffer, ES_FLAG);
+      if (route->native_es)
+        GST_BUFFER_FLAG_SET (buffer, ES_FLAG);
+      else
+        GST_BUFFER_FLAG_UNSET (buffer, ES_FLAG);
       return silence (info);
     }
     if (!restart_renderer (route)) {
@@ -498,16 +517,18 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
       return GST_PAD_PROBE_DROP;
     }
     route->first = FALSE;
-    /* The first ES event must leave with the flag clear. */
     set_pcm (route, FALSE);
     route->configured = configure_converter (route);
     if (!route->configured) {
       route_fail (route, "bypass converter missing, ambiguous, or not configurable");
       return GST_PAD_PROBE_DROP;
     }
-    GST_INFO_OBJECT (route->element, "lgroute: bypass converter configured, first carrier buffer");
+    GST_INFO_OBJECT (route->element, "lgroute: bypass transport verified, first carrier buffer");
     route->configured_at = g_get_monotonic_time ();
-    lgroute_log ("configured converter %s%s", route->converter, route->own ? " of this renderer" : "");
+    if (route->native_es)
+      lgroute_log ("native ES bypass tail %s of this renderer", route->converter);
+    else
+      lgroute_log ("configured converter %s%s", route->converter, route->own ? " of this renderer" : "");
     /* After a track switch LG's renderer keeps the old track's pace: a G3 and
      * another tester's TV played every such carrier four times too slowly. Restart it, as
      * after a resume. */
@@ -532,7 +553,10 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
     if (!buffer)
       return GST_PAD_PROBE_DROP;
     GST_PAD_PROBE_INFO_DATA (info) = buffer;
-    GST_BUFFER_FLAG_UNSET (buffer, ES_FLAG);
+    if (route->native_es)
+      GST_BUFFER_FLAG_SET (buffer, ES_FLAG);
+    else
+      GST_BUFFER_FLAG_UNSET (buffer, ES_FLAG);
     if (!route->feeding) {
       set_pcm (route, TRUE);
       route->feeding = TRUE;
@@ -640,6 +664,7 @@ void lgroute_init (LgRoute *route, GstElement *element)
   memset (route, 0, sizeof *route);
   route->element = element;
   route->lease_fd = -1;
+  route->native_es = !access (LGROUTE_RUN "/native-es", F_OK);
 }
 
 /* The first verified LG sink under top; count the verified ones, total every audiosink. */

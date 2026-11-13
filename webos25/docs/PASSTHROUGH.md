@@ -15,14 +15,15 @@ with app 2.7.71 or later (discussion #17). Other combinations are unverified.
 
 ## Full DTS-HD over eARC
 
-LG connects its PCM bypass itself with active eARC and mixing disabled. The
-transport keeps FFmpeg's IEC 61937 packing on a 192 kHz carrier. HD needs Digital
-Sound Output on Pass Through: Auto re-encodes and mixes TV sounds in.
+The exact tested C2 build uses LG's native ES bypass and app-only module mode,
+without synthetic renderer restarts. Other profiles keep the PCM bypass.
+Both carry FFmpeg's IEC 61937 packing at 192 kHz. HD needs Digital Sound Output
+on Pass Through: Auto re-encodes and mixes TV sounds in.
 
 LG mixes any input codec missing from the receiver's short eARC list, which omits
 DTS on many soundbars. The decoder holds `earc_route`'s `/dev/earc_route` lease, which
 forces the bypass; without the module loaded HD is not offered. The carrier stays
-silent until eARC is unmixed. Nothing writes LG's mixer; if LG keeps mixing on for a
+silent until eARC is unmixed. The helper clears eARC mixing; if it stays on for a
 second, the stream falls back to the core.
 
 LG's mixer word is only its request. The kernel says which route it took in

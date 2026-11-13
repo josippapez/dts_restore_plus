@@ -301,8 +301,8 @@ static const char *check_parameters(void) {
     }
     if (fn_mutex_lock != (unsigned long)imported_mutex_lock || fn_mutex_unlock != (unsigned long)imported_mutex_unlock)
         return "fn_mutex_lock/fn_mutex_unlock differ from the kernel's exported symbols";
-    if (mode != 0 && mode != 7)
-        return "mode must be 0 (audit) or 7 (session)";
+    if (mode != 0 && mode != 7 && mode != 8)
+        return "mode must be 0 (audit), 7 (HDMI and apps) or 8 (apps)";
     return 0;
 }
 
@@ -531,6 +531,7 @@ static int route_prehandler(struct target_kprobe *p, struct target_pt_regs *regs
         regs->regs[3] = 1;
         return 0;
     }
+    if (mode == 8) return 0;
     if (has_slot) {
         codec = *(volatile u32 *)slot.codec;
         open = *(volatile u8 *)slot.open;
@@ -999,14 +1000,15 @@ static int session(void) {
                       hdmi.input_compare, hdmi.property_entry};
     unsigned int i;
     int result = -16;
-    if (!adec_slots_ok(1)) return -22;
-    for (i = 0; i < sizeof(sites) / sizeof(sites[0]); i++)
+    if (mode == 7 && !adec_slots_ok(1)) return -22;
+    for (i = 0; mode == 7 && i < sizeof(sites) / sizeof(sites[0]); i++)
         if ((sites[i] & 3) || sites[i] < fn__stext || sites[i] >= fn__etext) {
             printk("\0013earc_route: refused; probe site %llx outside kernel text\n", sites[i]);
             return -22;
         }
     if (stage_a_hooks() < 0) return -16;
     if (selftest() < 0 || selftest_redirect() < 0) goto undo;
+    if (mode == 7) {
     input_property_probe.addr = (void *)hdmi.property_entry;
     input_property_probe.pre_handler = input_property_prehandler;
     if (register_kprobe(&input_property_probe) < 0) {
@@ -1049,6 +1051,7 @@ static int session(void) {
         }
         hd_probes_registered = 2;
     }
+    }
     route_probe.addr = (void *)hdmi.set_output;
     route_probe.pre_handler = route_prehandler;
     if (register_kprobe(&route_probe) < 0) {
@@ -1056,9 +1059,11 @@ static int session(void) {
         goto undo;
     }
     probe_registered = 1;
+    if (mode == 7) {
     window_task = kthread_create_on_node(window_thread, (void *)0, -1, "earc-dts-window");
     if ((u64)window_task >= (u64)-4095) { window_task = (void *)0; result = -12; goto undo; }
     wake_up_process(window_task);
+    }
     if (lease_register() < 0) goto undo;
     if (hdmi.mix_reason) {
         printk("\0013earc_route: refused; %s\n", hdmi.mix_reason);
@@ -1072,6 +1077,10 @@ static int session(void) {
         goto undo;
     }
     mix_registered = 1;
+    if (mode == 8) {
+        printk("\0016earc_route: app transport active; lease, output override and mix protection only\n");
+        return 0;
+    }
     printk("\0016earc_route: DTS passthrough active on _cb_output_status compare=%llx (codec w%u, output x%u) name-load=%llx (x%u from index x%u, %u entries, substitute %llx); gate open; _set_output override running\n",
            hdmi.hd_compare, earc_hd_codec_reg(&hdmi), hdmi.hd_output_reg, hdmi.hd_name_load, earc_hd_name_reg(&hdmi),
            earc_hd_index_reg(&hdmi), hd_name_entries, (unsigned long long)hd_name_last);
@@ -1096,7 +1105,8 @@ static int passthrough_init(void) {
     const char *reason;
     unsigned int index;
     hdmi_derive(0);
-    reason = earc_mode_refusal(&hdmi);
+    reason = mode == 8 ? earc_app_refusal(&hdmi) : earc_mode_refusal(&hdmi);
+    if (mode == 7) {
     if (!reason) reason = hdmi.input_reason;
     if (!reason) reason = hdmi.property_reason;
     if (!reason && !hdmi_addr_ok(hdmi.input_table, 8, 24)) reason = "HDMI input table outside kernel data";
@@ -1117,6 +1127,7 @@ static int passthrough_init(void) {
         gate_native = !reason && hdmi.gate_state == GATE_SWITCHED;
         /* hdmi_name_entries checked this entry as a pointer to a string in the kernel's data. */
         if (!reason) hd_name_last = *(volatile unsigned long *)(hdmi.name_table + 8UL * (hd_name_entries - 1));
+    }
     }
     if (reason) {
         printk("\0013earc_route: refused: %s\n", reason);
@@ -1256,6 +1267,8 @@ static const struct target_parameter parameters[] __attribute__((section("__para
     {"mix_clears", &__this_module, &uint_operations, 0400, -1, 0, &mix_clears},
     {"app_overrides", &__this_module, &uint_operations, 0400, -1, 0, &app_overrides},
     {"input_probes_registered", &__this_module, &uint_operations, 0400, -1, 0, &input_probes_registered},
+    {"lease_registered", &__this_module, &uint_operations, 0400, -1, 0, &lease_registered},
+    {"mix_registered", &__this_module, &uint_operations, 0400, -1, 0, &mix_registered},
     {"input_starts", &__this_module, &uint_operations, 0400, -1, 0, &input_starts},
     {"input_properties", &__this_module, &uint_operations, 0400, -1, 0, &input_properties},
     {"format_changes", &__this_module, &uint_operations, 0400, -1, 0, &format_changes}

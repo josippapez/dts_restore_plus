@@ -985,6 +985,76 @@ static void race_tests (void)
   }
 }
 
+static void native_es_tests (void)
+{
+  LgRoute selected;
+  g_assert_true (g_file_set_contents (LGROUTE_RUN "/native-es", "", -1, NULL));
+  lgroute_init (&selected, NULL);
+  g_assert_true (selected.native_es);
+  g_unlink (LGROUTE_RUN "/native-es");
+  lgroute_init (&selected, NULL);
+  g_assert_false (selected.native_es);
+#ifdef __linux__
+  int device = open (LGROUTE_AREN, O_RDWR | O_CREAT, 0600);
+  g_assert_cmpint (device, >=, 0);
+  LgRoute route;
+  g_assert_cmpint (g_mkdir_with_parents (LGROUTE_INSTANCES "/04230029", 0700), ==, 0);
+  reset (&route);
+  route.native_es = TRUE;
+  caps_event (&route);
+  g_assert_false (((TestSink *) route.sink)->pcm);
+  graph = "digraph {\nqueue_04180027_0000000000000001_out0 -> lipsync_04230029_0000000000000002_in0;\n}\n";
+  aren_tail = 0x04230029;
+  int formats_before = formats;
+  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
+  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
+  g_assert_false (((TestSink *) route.sink)->pcm);
+  g_assert_cmpint (formats, ==, formats_before);
+  g_assert_true (lease_open);
+  send_event (&route, gst_event_new_flush_stop (TRUE));
+  g_assert_false (route.failed);
+  g_assert_false (route.restart_pending);
+  g_assert_false (restart_wanted (&route, "track switch"));
+  g_assert_cmpint (route.restarts, ==, 0);
+  send_event (&route, gst_event_new_stream_start ("native-next-track"));
+  caps_event (&route);
+  route.draining = TRUE;
+  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
+  g_assert_false (route.restart_pending);
+  g_assert_cmpint (route.restarts, ==, 0);
+  g_assert_cmpint (formats, ==, formats_before);
+  send_event (&route, gst_event_new_eos ());
+  g_assert_true (lease_open);
+  lgroute_disarm (&route);
+  g_assert_false (lease_open);
+  reset (&route);
+  route.native_es = TRUE;
+  caps_event (&route);
+  graph = "digraph {\nqueue_04180027_0000000000000001_out0 -> lipsync_04230029_0000000000000002_in0;\n}\n";
+  aren_tail = 0;
+  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_DROP);
+  g_assert_false (lease_open);
+  lgroute_disarm (&route);
+  reset (&route);
+  route.native_es = TRUE;
+  caps_event (&route);
+  aren_tail = 0x04230030;
+  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_DROP);
+  g_assert_false (lease_open);
+  lgroute_disarm (&route);
+  reset (&route);
+  route.native_es = TRUE;
+  caps_event (&route);
+  graph = after;
+  aren_tail = 0x04230035;
+  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_DROP);
+  g_assert_cmpint (formats, ==, formats_before);
+  lgroute_disarm (&route);
+  g_rmdir (LGROUTE_INSTANCES "/04230029");
+  close (device);
+#endif
+}
+
 int main (int argc, char **argv)
 {
   gst_init (&argc, &argv);
@@ -1270,6 +1340,7 @@ int main (int argc, char **argv)
   handoff_tests ();
   lease_tests ();
   race_tests ();
-  g_print ("LG route: bypass converter, carrier flags, CAPS changes and failure refusal pass\n");
+  native_es_tests ();
+  g_print ("LG route: PCM/native ES transport, carrier flags, CAPS changes and failure refusal pass\n");
   return 0;
 }

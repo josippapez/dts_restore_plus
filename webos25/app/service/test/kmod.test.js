@@ -18,7 +18,7 @@ function oneLine(name) {
 function tmp(prefix) { return fs.mkdtempSync(path.join(os.tmpdir(), prefix)); }
 function read(file) { return fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null; }
 
-test("the module runs on the 5.4.268 and 6.12 kernels, beside no enabled DTS tool, with its payload", function () {
+test("the module runs on verified 5.4 kernels and refuses unverified 6.12", function () {
   var dir = tmp("dts-kmod-refusal-");
   try {
     var kmod = path.join(dir, "hdmi"), core = path.join(dir, "lg-dts-core"), gh = path.join(dir, "lg-dts-native");
@@ -31,11 +31,11 @@ test("the module runs on the 5.4.268 and 6.12 kernels, beside no enabled DTS too
     }
     assert.strictEqual(refusal("5.4.268-329.ptl4tv.5"), "[]");
     assert.strictEqual(refusal("5.4.268-329.ptl4tv.2"), "[]");
-    assert.strictEqual(refusal("6.12.44-352"), "[]");
+    assert.strictEqual(refusal("6.12.44-352"), "[kernel-6.12]");
     assert.strictEqual(refusal("6.6.1"), "[kernel]");
     assert.strictEqual(refusal("5.4.268-329.ptl4tv.9"), "[kernel]");
     fs.unlinkSync(path.join(kmod, "earc_route-6.12.ko"));
-    assert.strictEqual(refusal("6.12.44-352"), "[payload]", "each kernel needs its own build");
+    assert.strictEqual(refusal("6.12.44-352"), "[kernel-6.12]");
     write(path.join(gh, "enabled"));
     assert.strictEqual(refusal("5.4.268-329.ptl4tv.5"), "[glasshouse]");
     write(path.join(core, "enabled"));
@@ -58,8 +58,6 @@ test("a process counts as alive until it is a zombie", function () {
   }
 });
 
-/* The holder and its stop, with a fake loader that "loads" the module by creating
- * its sysfs directory, and an rmmod that removes it, or fails (exit 20). */
 function holder(rmmodFails, loadFails) {
   var dir = tmp("dts-kmod-hold-");
   var kmod = path.join(dir, "hdmi"), run = path.join(dir, "run"), module = path.join(dir, "module");
@@ -73,51 +71,41 @@ function holder(rmmodFails, loadFails) {
     : 'mkdir -p "' + module + '"; echo "earc-route: PASSTHROUGH ACTIVE (mode=7) EXPERIMENTAL"'));
   var vars = ["KMOD_DIR=" + kmod, "KMOD_PID=" + run + "/hdmi.pid", "KMOD_OUT=" + run + "/hdmi-watch.out",
     "KMOD_EXIT=" + run + "/hdmi-watch.exit", "KMOD_MODULE=" + module, "PT_FLAG=" + pt, "HD_FLAG=" + hd,
+    "KMOD_UNIT=dts25-test.service", 'systemctl() { :; }',
     oneLine("w25_module_wanted"), "w25_log() { :; }",
     rmmodFails ? "rmmod() { echo 'rmmod: busy' >&2; return 1; }" : 'rmmod() { rm -rf "' + module + '"; }',
     // macOS has no /proc: the same zombie rule, from ps.
     'w25_alive() { [ -n "$1" ] || return 1; s=$(ps -o stat= -p "$1" 2>/dev/null) || return 1; case $s in Z*|"") return 1 ;; esac; }'];
   var hold = path.join(dir, "hold.sh");
-  // Polls every 0.1 s here instead of 10 s.
-  write(hold, vars.concat([initFn("w25_kmod_hold").replace("sleep 10", "sleep 0.1"), "w25_kmod_hold"]).join("\n"));
+  write(hold, vars.concat([initFn("w25_kmod_hold"), "w25_kmod_hold"]).join("\n"));
   var stop = vars.concat([initFn("w25_kmod_stop"), initFn("w25_kmod_stop_soft")]).join("\n");
   return {dir: dir, run: run, module: module, hd: hd, hold: hold, stop: stop};
 }
-function waitFor(cond, ms) {
-  var end = Date.now() + ms;
-  while (Date.now() < end) { if (cond()) return true; spawnSync("sleep", ["0.1"]); }
-  return cond();
-}
 function loaded(h) { return /PASSTHROUGH ACTIVE/.test(read(h.run + "/hdmi-watch.out") || ""); }
 
-test("stopping the holder unloads the module and records its exit; 20 asks for a restart", function () {
+test("managed stop verifies the module is gone even without a holder PID", function () {
   [false, true].forEach(function (fails) {
     var h = holder(fails);
     try {
-      var child = require("node:child_process").spawn("sh", [h.hold], {stdio: "ignore"});
-      assert.ok(waitFor(function () { return loaded(h); }, 5000));
+      ok(sh(fs.readFileSync(h.hold, "utf8")), "module load");
+      assert.ok(loaded(h));
       var r = sh(h.stop + "\nw25_kmod_stop; echo \"status=$?\"");
-      assert.match(r.stdout, /status=0/);
-      assert.strictEqual(/WARN_KMOD=.*Restart the TV/.test(r.stdout), fails, r.stdout);
-      assert.strictEqual(read(h.run + "/hdmi-watch.exit"), (fails ? 20 : 0) + "\n");
+      assert.match(r.stdout, fails ? /ERROR=.*still loaded[\s\S]*status=1/ : /status=0/);
+      assert.strictEqual(fs.existsSync(h.module), fails);
       assert.strictEqual(fs.existsSync(h.run + "/hdmi.pid"), false);
-      child.kill();
-      assert.strictEqual(sh(h.stop + "\nw25_kmod_stop_soft").stdout, "", "a second stop is a no-op");
+      assert.strictEqual(/WARN_KMOD=.*still loaded/.test(sh(h.stop + "\nw25_kmod_stop_soft").stdout), fails);
     } finally {
       fs.rmSync(h.dir, {recursive: true, force: true});
     }
   });
 });
 
-test("the module is wanted only with DTS-HD on, and the holder unloads it once DTS-HD is off", function () {
+test("the module is wanted only with passthrough and DTS-HD on", function () {
   var h = holder(false);
   try {
-    var child = require("node:child_process").spawn("sh", [h.hold], {stdio: "ignore"});
-    assert.ok(waitFor(function () { return loaded(h); }, 5000));
+    assert.strictEqual(sh(h.stop + "\nw25_module_wanted").status, 0);
     fs.unlinkSync(h.hd);
-    assert.ok(waitFor(function () { return read(h.run + "/hdmi-watch.exit") === "0\n"; }, 5000));
-    assert.strictEqual(fs.existsSync(h.module), false);
-    child.kill();
+    assert.strictEqual(sh(h.stop + "\nw25_module_wanted").status, 1);
   } finally {
     fs.rmSync(h.dir, {recursive: true, force: true});
   }
@@ -139,9 +127,9 @@ test("a load the TV did not survive is not retried at boot; turning DTS-HD on cl
     var calls = path.join(dir, "calls");
     var r2 = sh(['uname() { echo 5.4.268-329.ptl4tv.5; }', "KMOD_DIR=" + kmod, "KMOD_PID=" + path.join(dir, "pid"),
       "PT_FLAG=" + path.join(dir, "pt"), "HD_FLAG=" + path.join(dir, "pt"), ': > "$PT_FLAG"',
-      "w25_log() { :; }", 'w25_alive() { return 1; }', 'systemctl() { :; }',
+      "w25_log() { :; }", 'w25_alive() { return 1; }', 'systemctl() { return 1; }',
       'toast() { echo "$1" > ' + calls + '; }', oneLine("w25_module_wanted"),
-      initFn("w25_kmod_refusal"), initFn("w25_wait_boot"), initFn("w25_kmod_start"), "w25_kmod_start; wait"].join("\n"));
+      initFn("w25_kmod_refusal"), "w25_wait_boot() { :; }", initFn("w25_kmod_start"), "w25_kmod_start; wait"].join("\n"));
     assert.strictEqual(r2.status, 0, r2.stderr);
     assert.match(read(calls) || "", /^DTS Enabler: DTS-HD is paused.*turn Full DTS-HD off and on/);
   } finally {
@@ -149,17 +137,14 @@ test("a load the TV did not survive is not retried at boot; turning DTS-HD on cl
   }
 });
 
-test("the holder marks only the load itself, so a normal power-off later does not count as a crash", function () {
+test("the oneshot marks only the load itself, not later power-off or a refused load", function () {
   var h = holder(false);
   try {
     var mark = path.join(h.dir, "hdmi", "loading");
-    var child = require("node:child_process").spawn("sh", [h.hold], {stdio: "ignore"});
-    assert.ok(waitFor(function () { return loaded(h) && fs.existsSync(h.run + "/hdmi.pid"); }, 5000));
+    ok(sh(fs.readFileSync(h.hold, "utf8")), "module load");
+    assert.ok(loaded(h));
     assert.ok(fs.existsSync(path.join(h.dir, "marked-during-load")), "marked while the loader runs");
-    assert.ok(waitFor(function () { return !fs.existsSync(mark); }, 1000), "cleared as soon as the load returns");
-    fs.unlinkSync(h.hd);
-    assert.ok(waitFor(function () { return read(h.run + "/hdmi-watch.exit") === "0\n"; }, 5000));
-    child.kill();
+    assert.strictEqual(fs.existsSync(mark), false, "cleared as soon as the load returns");
     var f = holder(false, true);
     spawnSync("sh", [f.hold], {encoding: "utf8", timeout: 10000});
     assert.ok(fs.existsSync(path.join(f.dir, "marked-during-load")));
@@ -170,16 +155,12 @@ test("the holder marks only the load itself, so a normal power-off later does no
   }
 });
 
-test("the holder ends when the module does not load, and a second one does not start beside it", function () {
+test("the oneshot fails when the loader refuses", function () {
   var h = holder(false, true);
   try {
     var r = spawnSync("sh", [h.hold], {encoding: "utf8", timeout: 10000});
-    assert.strictEqual(r.status, 0, r.stderr);
+    assert.strictEqual(r.status, 1, r.stderr);
     assert.strictEqual(read(h.run + "/hdmi-watch.exit"), "1\n");
-    write(h.run + "/hdmi.pid", process.pid + "\n");
-    fs.rmSync(h.run + "/hdmi-watch.out");
-    spawnSync("sh", [h.hold], {encoding: "utf8", timeout: 10000});
-    assert.strictEqual(fs.existsSync(h.run + "/hdmi-watch.out"), false, "no second load");
   } finally {
     fs.rmSync(h.dir, {recursive: true, force: true});
   }
@@ -192,8 +173,9 @@ test("passthrough starts and stops the module; boot, stand-down, self-heal, Disa
   assert.ok(body.includes("stop) w25_pt_stop || exit 1; w25_kmod_stop || exit 1 ;;"));
   assert.ok(body.includes("\nw25_pt_start\nw25_kmod_start\n"), "the boot apply starts it");
   assert.ok(body.indexOf("\nw25_kmod_start\n") > body.indexOf("# --- GATE 2a) loader resolution"), "only after the gates");
-  assert.ok(initFn("w25_kmod_start").includes("W25_PT= W25_APPDTS= W25_KMOD=run setsid"),
-    "the holder does not inherit the mode that launched it");
+  assert.ok(initFn("w25_kmod_start").includes("Environment=W25_PT= W25_APPDTS= W25_KMOD=run"));
+  assert.ok(initFn("w25_kmod_start").includes("RemainAfterExit=yes"));
+  assert.ok(initFn("w25_kmod_start").includes("ExecStop="));
   assert.ok(initFn("w25_stand_down").includes("w25_kmod_stop_soft"));
   assert.ok(initFn("w25_self_heal").includes("w25_kmod_stop_soft"));
   var disable = service.w25Disable();
@@ -263,6 +245,11 @@ test("turning DTS-HD on refuses where the module cannot run; status says whether
     }),
     call(mockedService({}, "WARN_KMOD=The DTS-HD kernel module could not undo all of its changes. Restart the TV.\nREG_REVERTED=1\nOK\n"), "disable").then(function (res) {
       assert.match(res.warning, /could not undo all of its changes/);
+    }),
+    call(mockedService({}, "WARN_KMOD=The DTS-HD kernel module is still loaded. Restart the TV.\nOK\n"), "setPassthrough", {enabled: false}).then(function (res) {
+      assert.strictEqual(res.enabled, false);
+      assert.match(res.warning, /still loaded/);
+      assert.strictEqual(res.summary, res.warning);
     })
   ]);
 });
