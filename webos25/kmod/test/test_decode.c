@@ -21,7 +21,7 @@
 static int failures;
 
 struct kernel {
-    const char *dir;
+    const char *dir, *sha256;
     unsigned char *image;
     size_t image_size;
     ed_u64 base;  /* link address of file offset 0: (_stext & ~0xfffff) + text_offset */
@@ -120,7 +120,7 @@ static int load_kernel(struct kernel *k, const char *dir) {
         ed_u64 address = 0, end = 0;
         for (j = 0; j < k->count; j++)
             if (!strcmp(k->symbols[j].name, names[i])) { found++; address = k->symbols[j].address; }
-        if (found != 1 || !address) { printf("FAIL %s: symbol %s found %zu times\n", dir, names[i], found); return -1; }
+        if (found != 1 || !address) { printf("REFUSE %s: symbol %s found %zu times\n", dir, names[i], found); return -2; }
         k->code[i].address = address;
         if (!analysed[i]) continue;
         for (j = 0; j < k->address_count; j++)
@@ -594,31 +594,11 @@ static void hook_decision_tests(void) {
     decide_case("walk leaves image -> incomplete", &m, 1, EHD_INCOMPLETE);
 }
 
-/* ---- DTS-core policy ---- */
-static void policy_case(const char *what, ed_u64 idx, ed_u32 mask, ed_u32 codec, ed_u8 open, ed_u8 started, int expect) {
-    int got = earc_policy_match(idx, mask, codec, open, started);
-    if (got == expect) printf("PASS policy (%s): %d\n", what, got);
-    else { printf("FAIL policy (%s): got %d expected %d\n", what, got, expect); failures++; }
-}
-static void policy_tests(void) {
-    policy_case("DTS core match", 1, 0x20, 48, 1, 1, 1);
-    policy_case("DTS core match on decoder 0", 0, 0x20, 48, 1, 1, 1);
-    policy_case("index 2: no ADEC slot", 2, 0x20, 48, 1, 1, 0);
-    policy_case("index 4: AMIXER 0, no ADEC slot", 4, 0x20, 48, 1, 1, 0);
-    policy_case("index 12: AMIXER 8, no ADEC slot", 12, 0x20, 48, 1, 1, 0);
-    policy_case("index 0xffffffff", 0xffffffffULL, 0x20, 48, 1, 1, 0);
-    policy_case("index 2^32+1", 0x100000001ULL, 0x20, 48, 1, 1, 0);
-    policy_case("not eARC mask", 1, 0x14, 48, 1, 1, 0);
-    policy_case("wrong codec", 1, 0x20, 4, 1, 1, 0);
-    policy_case("not open", 1, 0x20, 48, 0, 1, 0);
-    policy_case("not started", 1, 0x20, 48, 1, 0, 0);
-}
-
 /* ---- gate "restore only what we wrote" ---- */
 static void gate_tests(void) {
-    int ok = earc_gate_restore_word(EARC_GATE_OPEN_W0, EARC_GATE_OPEN_W0) == EARC_GATE_STOCK_W0 &&
-             earc_gate_restore_word(EARC_GATE_STOCK_W0, EARC_GATE_OPEN_W0) == 0 &&
-             earc_gate_restore_word(0xdeadbeefU, EARC_GATE_OPEN_W0) == 0;
+    int ok = earc_gate_restore_word(EARC_GATE_OPEN_W0) == EARC_GATE_STOCK_W0 &&
+             earc_gate_restore_word(EARC_GATE_STOCK_W0) == 0 &&
+             earc_gate_restore_word(0xdeadbeefU) == 0;
     if (ok) printf("PASS gate restore: restores only our word, leaves a stock or foreign word\n");
     else { printf("FAIL gate restore\n"); failures++; }
 }
@@ -638,55 +618,46 @@ static void good_hdmi_layout(struct earc_hdmi_layout *h) {
     h->cpus_read_unlock = 0xffffffc011000500ULL;
     h->set_output_first_brk = 0;
 }
-static void refusal_case(const char *what, const struct earc_hdmi_layout *h, int mode, int should_refuse) {
-    const char *r = earc_mode_refusal(h, mode);
-    if (!r == !should_refuse) printf("PASS mode refusal (%s, mode %d): %s\n", what, mode, r ? r : "accepted");
-    else { printf("FAIL mode refusal (%s, mode %d): got %s\n", what, mode, r ? r : "accepted"); failures++; }
+static void refusal_case(const char *what, const struct earc_hdmi_layout *h, int should_refuse) {
+    const char *r = earc_mode_refusal(h);
+    if (!r == !should_refuse) printf("PASS refusal (%s): %s\n", what, r ? r : "accepted");
+    else { printf("FAIL refusal (%s): got %s\n", what, r ? r : "accepted"); failures++; }
 }
 static void mode_refusal_tests(void) {
     struct earc_hdmi_layout h;
     good_hdmi_layout(&h);
-    refusal_case("all derived", &h, 2, 0);
-    refusal_case("all derived", &h, 3, 0);
-    refusal_case("all derived", &h, 4, 0);
-    refusal_case("all derived", &h, 5, 0);
+    refusal_case("all derived", &h, 0);
     good_hdmi_layout(&h); h.break_reason = "break not derived";
-    refusal_case("break not derived", &h, 2, 1);
-    refusal_case("break not derived (mode 3 does not depend)", &h, 3, 0);
+    refusal_case("break not derived", &h, 1);
     good_hdmi_layout(&h); h.break_fields_known = 0;
-    refusal_case("break fields unknown", &h, 2, 1);
+    refusal_case("break fields unknown", &h, 1);
     good_hdmi_layout(&h); h.break_register = 0;
-    refusal_case("register_kernel_break_hook missing", &h, 2, 1);
-    refusal_case("register_kernel_break_hook missing", &h, 4, 1);
-    refusal_case("register_kernel_break_hook missing (mode 3 does not depend)", &h, 3, 0);
+    refusal_case("register_kernel_break_hook missing", &h, 1);
     good_hdmi_layout(&h); h.break_unregister = 0;
-    refusal_case("unregister_kernel_break_hook missing", &h, 2, 1);
-    refusal_case("unregister_kernel_break_hook missing", &h, 5, 1);
-    good_hdmi_layout(&h); h.gate_state = GATE_SWITCHED;
-    refusal_case("gate already switched", &h, 3, 1);
-    refusal_case("gate switched (mode 2 does not depend)", &h, 2, 0);
+    refusal_case("unregister_kernel_break_hook missing", &h, 1);
     good_hdmi_layout(&h); h.gate_state = GATE_BREAKPOINT;
-    refusal_case("gate holds a breakpoint", &h, 4, 1);
+    refusal_case("gate holds a breakpoint", &h, 1);
     good_hdmi_layout(&h); h.patch_text = 0;
-    refusal_case("patch_text missing", &h, 3, 1);
+    refusal_case("patch_text missing", &h, 1);
     good_hdmi_layout(&h); h.set_output_reason = "set_output not derived";
-    refusal_case("set_output not derived", &h, 4, 1);
-    refusal_case("set_output not derived (mode 3 does not depend)", &h, 3, 0);
+    refusal_case("set_output not derived", &h, 1);
     good_hdmi_layout(&h); h.set_output_first_brk = 1;
-    refusal_case("set_output entry holds a breakpoint", &h, 5, 1);
+    refusal_case("set_output entry holds a breakpoint", &h, 1);
     good_hdmi_layout(&h); h.adec_reason = "adec not derived";
-    refusal_case("adec not derived", &h, 4, 1);
+    refusal_case("adec not derived", &h, 1);
 }
 
-/* ---- DTS-HD probes (modes 6 and 7) ---- */
+/* ---- DTS-HD probes ---- */
 static void hd_case(const char *label, const char *what, int ok) {
     if (ok) printf("PASS %s: %s\n", label, what);
     else { printf("FAIL %s: %s\n", label, what); failures++; }
 }
 
-/* On every kernel given: the two sites and their registers derive, modes 6 and
- * 7 accept the image, and each decision acts and does not act with that
- * kernel's own bound and table size. */
+/* On every kernel given: the two sites and their registers derive, the session
+ * accepts the image, and each decision acts and does not act with that
+ * kernel's own bound and table size. A kernel that already accepts and names
+ * codec 7 (C3/G3, G4) is accepted without probes; one whose stock gate already
+ * returns 1 (C3/G3, G4, 2026) without a gate patch. */
 static void hd_probe_test(const struct kernel *k, ed_u64 nonpcm) {
     struct earc_hdmi_layout h;
     unsigned int entries, codec, output, index, name, i;
@@ -696,16 +667,25 @@ static void hd_probe_test(const struct kernel *k, ed_u64 nonpcm) {
     earc_hdmi_decode(k->hdmi, nonpcm, k->stext & ~0xfffffULL, &h);
     entries = hdmi_entries(k, h.name_table);
     reason = earc_hd_refusal(&h, entries);
-    if (!reason) reason = earc_mode_refusal(&h, 6);
-    if (!reason) reason = earc_mode_refusal(&h, 7);
-    if (reason) { printf("FAIL %s: hd modes refuse a stock image: %s\n", k->dir, reason); failures++; return; }
+    if (!reason) reason = earc_mode_refusal(&h);
+    if (reason) { printf("FAIL %s: the session refuses a stock image: %s\n", k->dir, reason); failures++; return; }
+    if (h.gate_state == GATE_SWITCHED)
+        printf("  %s stock DTS gate already returns 1: accepted without a patch\n", k->dir);
+    if (earc_hd_native(&h, entries)) {
+        printf("  %s hd native: cmp w%u,#%llu, %u names; no probes placed\n", k->dir, earc_hd_codec_reg(&h),
+               h.hd_compare_bound, entries);
+        hd_case(k->dir, "stock compare already accepts codec 7 and LG's own name load stays inside the table",
+                h.hd_compare_word == (0x7100001fU | ((ed_u32)h.hd_compare_bound << 10) | (earc_hd_codec_reg(&h) << 5)) &&
+                EARC_HD_EVENT_CODEC <= h.hd_compare_bound && EARC_HD_EVENT_CODEC < entries);
+        return;
+    }
     codec = earc_hd_codec_reg(&h); output = h.hd_output_reg; index = earc_hd_index_reg(&h); name = earc_hd_name_reg(&h);
     bound = h.hd_compare_bound;
     printf("  %s hd sites: shape %d compare=%#llx (cmp w%u,#%llu) supported=%#llx output=x%u name-load=%#llx (x%u <- index x%u) entries=%u\n",
            k->dir, h.hd_shape, h.hd_compare, codec, bound, h.hd_supported_branch, output, h.hd_name_load, name, index, entries);
     /* The supported branch is `str wCODEC,[xOUTPUT,#off]` inside the function,
      * the compare is `cmp wCODEC,#bound`, the name load `ldr xNAME,[x,xINDEX,lsl #3]`. */
-    hd_case(k->dir, "hd sites derive, modes 6 and 7 accept the image, and the probed words name the registers",
+    hd_case(k->dir, "hd sites derive, the session accepts the image, and the probed words name the registers",
             h.hd_compare_word == (0x7100001fU | ((ed_u32)bound << 10) | (codec << 5)) &&
             (h.hd_supported_word & 0xffc003ffU) == (0xb9000000U | (output << 5) | codec) &&
             (h.hd_name_word & 0xffe0fc00U) == 0xf8607800U &&
@@ -713,9 +693,12 @@ static void hd_probe_test(const struct kernel *k, ed_u64 nonpcm) {
             h.hd_supported_branch - h.cb_output_status < 4ULL * k->hdmi[HF__cb_output_status].count);
     hd_case(k->dir, "hd accept acts: codec 7 on the eARC output while ADEC 1 is started on codec 51",
             earc_hd_accept(EARC_HD_EVENT_CODEC, EARC_OUTPUT_EARC, EARC_HD_ADEC_CODEC, 1) && EARC_HD_EVENT_CODEC > bound);
-    hd_case(k->dir, "hd accept does not act: the bound, codec 5 and 8, the optical output, ADEC on DTS core, ADEC stopped",
+    hd_case(k->dir, "hd accept acts for DTS core too: codec 5 on the eARC output while ADEC 1 is started on codec 48",
+            earc_hd_accept(5, 3, 48, 1));
+    hd_case(k->dir, "hd accept does not act: the bound, codec 8, mismatched codec pairs, the optical output, ADEC stopped",
             !earc_hd_accept((ed_u32)bound, 3, 51, 1) && !earc_hd_accept(5, 3, 51, 1) && !earc_hd_accept(8, 3, 51, 1) &&
-            !earc_hd_accept(7, 2, 51, 1) && !earc_hd_accept(7, 3, 48, 1) && !earc_hd_accept(7, 3, 51, 0));
+            !earc_hd_accept(7, 2, 51, 1) && !earc_hd_accept(7, 3, 48, 1) && !earc_hd_accept(5, 2, 48, 1) &&
+            !earc_hd_accept(7, 3, 51, 0) && !earc_hd_accept(5, 3, 48, 0));
     /* The registers every capture's disassembly shows: cmp w6; str w6,[x19];
      * ldr x7,[x2,x4,lsl #3]. */
     hd_case(k->dir, "hd probe registers: codec w6, output x19, name index x4, name destination x7",
@@ -753,8 +736,8 @@ static void hd_refusal_tests(void) {
     ed_u64 flags = earc_hd_accept_pstate(0x800003c5ULL);
     good_hd_layout(&h);
     hd_refusal_case("all derived, 6 entries", &h, 6, 0);
-    refusal_case("all derived", &h, 6, 0);
-    refusal_case("all derived", &h, 7, 0);
+    refusal_case("all derived", &h, 0);
+    refusal_case("all derived", &h, 0);
     good_hd_layout(&h); h.cb_reason = "holds a breakpoint (another tool is probing it)";
     hd_refusal_case("a breakpoint in _cb_output_status", &h, 6, "holds a breakpoint");
     good_hd_layout(&h); h.cb_reason = "no event-codec acceptance compare";
@@ -762,7 +745,18 @@ static void hd_refusal_tests(void) {
     good_hd_layout(&h); h.adec_reason = "adec not derived";
     hd_refusal_case("adec not derived", &h, 6, "adec not derived");
     good_hd_layout(&h); h.hd_compare_bound = 7;
-    hd_refusal_case("bound already covers codec 7", &h, 8, "already covers codec 7");
+    /* Native kernels (C3/G3, G4: cmp #9, 11 names): mode 7 needs no probe. */
+    good_hd_layout(&h); h.hd_compare_bound = 9; h.hd_compare_word = 0x710024dfU;  /* cmp w6, #9 */
+    hd_refusal_case("native bound 9, 11 names", &h, 11, 0);
+    hd_refusal_case("native bound 9, only 9 names", &h, 9, "smaller than the accepted codecs");
+    good_hd_layout(&h); h.hd_compare_bound = 9; h.hd_output_reg = 32; h.hd_name_word |= 31;
+    hd_refusal_case("native: probe-site registers are not needed", &h, 11, 0);
+    good_hd_layout(&h); h.hd_compare_bound = 9; h.cb_reason = "holds a breakpoint (another tool is probing it)";
+    hd_refusal_case("native, but a breakpoint in _cb_output_status", &h, 11, "holds a breakpoint");
+    good_hd_layout(&h);
+    hd_case("hd native", "only a bound of 7 or more with the codec named inside the table",
+            !earc_hd_native(&h, 6) && (h.hd_compare_bound = 9, earc_hd_native(&h, 11)) && !earc_hd_native(&h, 9) &&
+            (h.hd_compare_bound = 7, earc_hd_native(&h, 8)));
     good_hd_layout(&h); h.hd_output_reg = 32;
     hd_refusal_case("output register not derived", &h, 6, "output register");
     good_hd_layout(&h); h.hd_name_word |= 31;
@@ -775,14 +769,20 @@ static void hd_refusal_tests(void) {
     hd_refusal_case("name table has only 4 entries", &h, 4, "smaller than the accepted codecs");
     hd_refusal_case("name table not readable", &h, 0, "smaller than the accepted codecs");
     good_hd_layout(&h); h.gate_state = GATE_SWITCHED;
-    refusal_case("gate switched (mode 6 does not depend)", &h, 6, 0);
-    refusal_case("gate already switched", &h, 7, 1);
+    refusal_case("stock gate already returns 1 (C3/G3, G4, 2026)", &h, 0);
+    h.patch_text = 0; h.cpus_read_lock = 0;
+    refusal_case("gate already open: nothing to patch, so patch_text/cpus lock not needed", &h, 0);
+    good_hd_layout(&h); h.patch_text = 0;
+    refusal_case("stock gate and patch_text missing", &h, 1);
+    good_hd_layout(&h); h.gate_state = GATE_BREAKPOINT;
+    refusal_case("gate holds a breakpoint", &h, 1);
+    good_hd_layout(&h); h.gate_state = GATE_UNKNOWN;
+    refusal_case("gate in an unknown state", &h, 1);
     good_hd_layout(&h); h.break_reason = "break not derived";
-    refusal_case("break not derived", &h, 6, 1);
-    refusal_case("break not derived", &h, 7, 1);
+    refusal_case("break not derived", &h, 1);
+    refusal_case("break not derived", &h, 1);
     good_hd_layout(&h); h.set_output_reason = "set_output not derived";
-    refusal_case("set_output not derived (mode 6 does not depend)", &h, 6, 0);
-    refusal_case("set_output not derived", &h, 7, 1);
+    refusal_case("set_output not derived", &h, 1);
     /* The flags written with the redirect: N and V clear, Z and C set (b.ls
      * taken, b.ne not taken), everything else kept. */
     hd_case("hd accept flags", "Z and C set, N and V clear, the other PSTATE bits kept", flags == 0x600003c5ULL);
@@ -805,10 +805,12 @@ static void hd_refusal_tests(void) {
             !earc_session_policy_match(2, 0x20, 51, 1, 1) && !earc_session_policy_match(4, 0x20, 51, 1, 1) &&
             !earc_session_policy_match(12, 0x20, 48, 1, 1) && !earc_session_policy_match(0xffffffffULL, 0x20, 51, 1, 1) &&
             !earc_session_policy_match(0x100000001ULL, 0x20, 48, 1, 1));
-    hd_case("mode 5 policy", "still matches ADEC codec 48 only, not 51",
-            earc_policy_match(1, 0x20, 48, 1, 1) && !earc_policy_match(1, 0x20, 51, 1, 1) && !earc_policy_match(0, 0x20, 51, 1, 1));
-    hd_case("hd accept", "still refuses ADEC codec 48: a core stream's status event is never redirected",
-            !earc_hd_accept(7, 3, 48, 1) && earc_hd_accept(7, 3, 51, 1));
+    hd_case("app lease policy", "forces the leased renderer on eARC only, and nothing without a lease",
+            earc_app_policy_match(1, 0x20, 2) && earc_app_policy_match(0, 0x20, 1) &&
+            !earc_app_policy_match(1, 0x20, 0) && !earc_app_policy_match(0, 0x20, 2) &&
+            !earc_app_policy_match(1, 0x14, 2) && !earc_app_policy_match(1, 0x20, 1));
+    hd_case("hd accept", "each event codec needs its own ADEC codec: 7 with 51, 5 with 48",
+            !earc_hd_accept(7, 3, 48, 1) && earc_hd_accept(7, 3, 51, 1) && earc_hd_accept(5, 3, 48, 1) && !earc_hd_accept(5, 3, 51, 1));
 }
 
 /* earc_adec_slot gives slot 0 or 1 and nothing for any other index, so the
@@ -846,10 +848,12 @@ static void hd_decoder_tests(void) {
     hd_case("hd decoder", "any matched value above 1 is no match and reads only slots 0 and 1",
             earc_hd_accept_decoder(7, 3, 4, on1, up) == 1 && earc_hd_accept_decoder(7, 3, 0xffffffffU, on0, up) == 0 &&
             earc_hd_accept_decoder(7, 3, 12, none, up) == -1);
-    hd_case("hd decoder", "still refuses a stopped slot, ADEC on 48, codec 5, the optical output",
+    hd_case("hd decoder", "still refuses a stopped slot, a mismatched codec pair, the optical output",
             earc_hd_accept_decoder(7, 3, 1, on1, down) == -1 && earc_hd_accept_decoder(7, 3, 0, on0, down) == -1 &&
             earc_hd_accept_decoder(7, 3, EARC_NO_DECODER, core, up) == -1 && earc_hd_accept_decoder(5, 3, 1, on1, up) == -1 &&
             earc_hd_accept_decoder(7, 2, 0, on0, up) == -1);
+    hd_case("hd decoder", "DTS core: codec 5 accepts on the matched slot started on 48",
+            earc_hd_accept_decoder(5, 3, 1, core, up) == 1 && earc_hd_accept_decoder(5, 3, 0, core, up) == 0);
 }
 
 #define NOP 0xd503201fU
@@ -890,6 +894,9 @@ static const char *adec_reason(const struct earc_hdmi_layout *h) { return h->ade
 static const char *cb_reason(const struct earc_hdmi_layout *h) { return h->cb_reason; }
 static const char *break_reason(const struct earc_hdmi_layout *h) { return h->break_reason; }
 static const char *hd_reason(const struct earc_hdmi_layout *h) { return earc_hd_refusal(h, 6); }
+static const char *input_reason(const struct earc_hdmi_layout *h) { return h->input_reason; }
+static const char *property_reason(const struct earc_hdmi_layout *h) { return h->property_reason; }
+static const char *mute_reason(const struct earc_hdmi_layout *h) { return h->mute_reason; }
 
 #define HDMI_MUTATION(name) \
     static int name(ed_u32 *w, ed_u32 n, const struct earc_code *f, const struct earc_hdmi_layout *g)
@@ -899,6 +906,43 @@ static const char *hd_reason(const struct earc_hdmi_layout *h) { return earc_hd_
 HDMI_MUTATION(gate_third_value) { HDMI_UNUSED; w[0] = 0x52800040U; return 1; }
 /* The first instruction -> brk #4, what a kprobe plants. */
 HDMI_MUTATION(entry_kprobe) { HDMI_UNUSED; w[0] = HF_KPROBE_BRK; return 1; }
+HDMI_MUTATION(input_compare_changed) {
+    HDMI_UNUSED;
+    if (g->input_compare < f->address || g->input_compare >= f->address + 4ULL * n) return 0;
+    w[(g->input_compare - f->address) / 4] = NOP;
+    return 1;
+}
+HDMI_MUTATION(input_scale_changed) {
+    ed_u64 compare;
+    HDMI_UNUSED;
+    compare = (g->input_compare - f->address) / 4;
+    if (compare < 3 || compare >= n) return 0;
+    w[compare - 3] ^= 1u << 10;
+    return 1;
+}
+HDMI_MUTATION(input_load_destination_changed) {
+    ed_u64 compare;
+    HDMI_UNUSED;
+    compare = (g->input_compare - f->address) / 4;
+    if (compare < 2 || compare >= n) return 0;
+    w[compare - 2] = (w[compare - 2] & ~31u) | 1u;
+    return 1;
+}
+HDMI_MUTATION(input_table_offset_changed) {
+    ed_u64 compare;
+    HDMI_UNUSED;
+    compare = (g->input_compare - f->address) / 4;
+    if (compare < 2 || compare >= n) return 0;
+    w[compare - 2] ^= 1u << 10;
+    return 1;
+}
+HDMI_MUTATION(input_frame_changed) {
+    ed_u32 index;
+    HDMI_UNUSED;
+    for (index = 0; index < n && index < 16; index++)
+        if ((w[index] & 0xffc003ffu) == 0xd10003ffu) { w[index] = NOP; return 1; }
+    return 0;
+}
 /* ldr wT,[x1,#mask] -> the same load from x9, which is not an argument. */
 HDMI_MUTATION(mask_base_not_argument) {
     ed_u32 i;
@@ -1343,6 +1387,160 @@ static void generation_test(const char *family, const struct earc_layout *a, con
                family);
 }
 
+static void input_capture_tests(const struct kernel *kernel, const struct earc_hdmi_layout *layout) {
+    const struct earc_code *getter = &kernel->hdmi[HF_input_get_hdmi_codec];
+    unsigned int index, codec_formats = 0, mode_formats = 0;
+    ed_u64 codec_format = 0, mode_format = 0;
+    check_reason(kernel->dir, "HDMI input start", layout->input_reason);
+    check_reason(kernel->dir, "HDMI input properties", layout->property_reason);
+    for (index = 0; index < layout->input_format_count; index++) {
+        ed_u64 address = layout->input_formats[index];
+        const char *text;
+        if (address < kernel->base || address - kernel->base + 16 > kernel->image_size) continue;
+        text = (const char *)kernel->image + address - kernel->base;
+        if (!strcmp(text, "codec=%d")) { codec_format = address; codec_formats++; }
+        if (!strcmp(text, "mode=%d")) { mode_format = address; mode_formats++; }
+    }
+    check(kernel->dir, "one codec format", codec_formats, 1);
+    check(kernel->dir, "one mode format", mode_formats, 1);
+    if (!strcmp(kernel->sha256, "46f46c2574d72cf85ff8109f9829d481394a4c173e8fe18389439ec2867f346c")) {
+        check(kernel->dir, "input table oracle", layout->input_table, 0xffffffc012742880ULL);
+        check(kernel->dir, "start compare oracle", layout->input_compare, 0xffffffc010cfd9e0ULL);
+        check(kernel->dir, "decoder lock oracle", layout->decoder_lock, 0xffffffc012411aa8ULL);
+        check(kernel->dir, "index register oracle", layout->input_index_reg, 26);
+    } else if (!strcmp(kernel->sha256, "4fffc9484aa8c3744688eafd3359ed0edb75988204c94d6b8442dd8098443b6b")) {
+        check(kernel->dir, "input table oracle", layout->input_table, 0xffffffc01265a908ULL);
+        check(kernel->dir, "start compare oracle", layout->input_compare, 0xffffffc010d02170ULL);
+        check(kernel->dir, "decoder lock oracle", layout->decoder_lock, 0xffffffc01232a470ULL);
+        check(kernel->dir, "index register oracle", layout->input_index_reg, 26);
+    } else {
+        check(kernel->dir, "input table oracle", layout->input_table, layout->adec_base - 32);
+    }
+    check(kernel->dir, "input argument register oracle", layout->input_arg_reg, 19);
+    check(kernel->dir, "forced PCM register oracle", layout->input_forced_reg, 23);
+    check(kernel->dir, "input frame size oracle", layout->input_frame_size, 160);
+    check_reason(kernel->dir, "HDMI format helpers", layout->format_reason);
+    check(kernel->dir, "input uid offset oracle", layout->input_uid_offset, 0x44);
+    check(kernel->dir, "input codec offset oracle", layout->input_codec_offset, 0x5c);
+    check(kernel->dir, "decoder lock calls mutex_lock", layout->decoder_lock_call, kernel_symbol(kernel, "mutex_lock"));
+    printf("INFO %s: decoder lock=%llx\n", kernel->dir, layout->decoder_lock);
+    if (getter->address == 0xffffffc010ca3be0ULL) {
+        check(kernel->dir, "start compare oracle", layout->input_compare, 0xffffffc010cccfe8ULL);
+        check(kernel->dir, "codec format oracle", codec_format, 0xffffffc0118e1b18ULL);
+        check(kernel->dir, "mode format oracle", mode_format, 0xffffffc0118e8d18ULL);
+        check(kernel->dir, "type offset oracle", layout->input_type_offset, 0x7c);
+        check(kernel->dir, "index register oracle", layout->input_index_reg, 27);
+    } else if (getter->address == 0xffffffc010ca3ca0ULL) {
+        check(kernel->dir, "start compare oracle", layout->input_compare, 0xffffffc010cce534ULL);
+        check(kernel->dir, "codec format oracle", codec_format, 0xffffffc011841358ULL);
+        check(kernel->dir, "mode format oracle", mode_format, 0xffffffc011848940ULL);
+        check(kernel->dir, "type offset oracle", layout->input_type_offset, 0x7c);
+        check(kernel->dir, "index register oracle", layout->input_index_reg, 27);
+    } else if (getter->address == 0xffffffc080f2894cULL) {
+        /* C5 43.21.77 (also W25G 43.21.96) shares the code of 43.21.73; its rodata sits 0xa8 higher. */
+        ed_u64 rodata = kernel->sha256 && !strncmp(kernel->sha256, "53c3cb3d", 8) ? 0xa8 : 0;
+        check(kernel->dir, "start compare oracle", layout->input_compare, 0xffffffc080f55518ULL);
+        check(kernel->dir, "codec format oracle", codec_format, 0xffffffc081cc0c78ULL + rodata);
+        check(kernel->dir, "mode format oracle", mode_format, 0xffffffc081cc87d8ULL + rodata);
+        check(kernel->dir, "type offset oracle", layout->input_type_offset, 0x78);
+        check(kernel->dir, "index register oracle", layout->input_index_reg, 28);
+    }
+    hdmi_refuse(kernel, HF_alsa_decoder_start, "HDMI start compare changed", "not found",
+                input_compare_changed, input_reason, 0, layout);
+    hdmi_refuse(kernel, HF_alsa_decoder_start, "HDMI input lookup scale changed", "not found",
+                input_scale_changed, input_reason, 0, layout);
+    hdmi_refuse(kernel, HF_alsa_decoder_start, "HDMI input load destination changed", "not found",
+                input_load_destination_changed, input_reason, 0, layout);
+    if (getter->address == 0xffffffc010cd2bb0ULL || getter->address == 0xffffffc010cd7f60ULL)
+        hdmi_refuse(kernel, HF_alsa_decoder_start, "HDMI input table offset changed", "not found",
+                    input_table_offset_changed, input_reason, 0, layout);
+    hdmi_refuse(kernel, HF_input_get_hdmi_codec, "HDMI getter breakpoint", "not a word load",
+                entry_kprobe, input_reason, 0, layout);
+    hdmi_refuse(kernel, HF_input_set_hdmi, "HDMI stack frame changed", "ambiguous",
+                input_frame_changed, property_reason, 0, layout);
+    hdmi_refuse(kernel, HF_aimc_set_property, "HDMI property breakpoint", "not derived",
+                entry_kprobe, property_reason, 0, layout);
+    hdmi_refuse(kernel, HF_sndout_mute_input, "input mute entry breakpoint", "not derived",
+                entry_kprobe, mute_reason, 0, layout);
+}
+
+/* The lease device's write/open/release slots, derived from the kernel's write
+ * path, misc_open and __fput, on every kernel: 5.4 measured 0x18/0x70/0x80,
+ * 6.12 0x20/0x68/0x78 by hand. */
+static void fops_test(const struct kernel *k, const struct earc_hdmi_layout *h) {
+    int v612 = k->stext >= 0xffffffc080000000ULL;
+    unsigned int want = v612 ? 0x68 : 0x70;
+    check_reason(k->dir, "file_operations slots", h->fops_reason);
+    check(k->dir, "file_operations write slot", h->fops_write, v612 ? 0x20 : 0x18);
+    check(k->dir, "file_operations open slot", h->fops_open, want);
+    check(k->dir, "file_operations release slot", h->fops_release, want + 16);
+    {
+        struct earc_code changed[HF_COUNT];
+        struct earc_hdmi_layout m;
+        ed_u32 copy[4096];
+        unsigned int i;
+        memcpy(changed, k->hdmi, sizeof(changed));
+        for (i = 0; i < changed[HF___fput].count && i < 4096; i++) copy[i] = changed[HF___fput].words[i];
+        /* A second release call in __fput (f_op load, slot load, cbz, blr): ambiguous, refused. */
+        for (i = 1; i + 5 < changed[HF___fput].count; i++)
+            if ((copy[i] & 0xffc00000u) == 0xf9400000u && ((copy[i] >> 10) & 0xfff) * 8 == h->fops_release) {
+                unsigned int at = changed[HF___fput].count - 6, k;
+                for (k = 0; k < 6; k++) copy[at + k] = copy[i - 1 + k];
+                copy[at + 2] = (copy[at + 2] & 0xff00001fu) | (1u << 5);  /* cbz to the next word */
+                break;
+            }
+        changed[HF___fput].words = copy;
+        earc_hdmi_decode(changed, 0, k->stext & ~0xfffffULL, &m);
+        check(k->dir, "duplicated release call refuses", m.fops_reason != 0, 1);
+    }
+}
+
+static void input_policy_tests(void) {
+    check("input mute", "active DTS bypass", earc_input_unmute(1, 1, 1, 1, 48, 1, 1), 1);
+    check("input mute", "active HD bypass", earc_input_unmute(1, 0, 1, 0, 51, 1, 1), 1);
+    check("input mute", "stopped decoder", earc_input_unmute(1, 1, 1, 1, 48, 1, 0), 0);
+    check("input mute", "closed decoder", earc_input_unmute(1, 1, 1, 1, 48, 0, 1), 0);
+    check("input mute", "PCM decoder", earc_input_unmute(1, 1, 1, 1, 1, 1, 1), 0);
+    check("input mute", "other renderer", earc_input_unmute(1, 0, 1, 1, 48, 1, 1), 0);
+    check("input mute", "AMIXER input", earc_input_unmute(2, 1, 1, 1, 48, 1, 1), 0);
+    check("input mute", "unmute unchanged", earc_input_unmute(1, 1, 0, 1, 48, 1, 1), 0);
+    check("input policy", "DTS start", earc_input_start_match(1, 48, 1, 1), 1);
+    check("input policy", "HD start", earc_input_start_match(0, 51, 1, 1), 1);
+    check("input policy", "closed decoder", earc_input_start_match(1, 48, 0, 1), 0);
+    check("input policy", "PCM decoder", earc_input_start_match(1, 1, 1, 1), 0);
+    check("input policy", "invalid index", earc_input_start_match(2, 48, 1, 1), 0);
+    check("input policy", "native input", earc_input_start_match(1, 48, 1, 17), 0);
+    check("input policy", "core codec", earc_input_property(4, 48000, 0, 0), 5);
+    check("input policy", "HD codec", earc_input_property(202, 192000, 0, 0), 6);
+    check("input policy", "HD mode", earc_input_property(202, 192000, 1, 1), 4);
+    check("input policy", "unknown HD mode", earc_input_property(1202, 192000, 1, 1), 7);
+    check("input policy", "PCM mode", earc_input_property(202, 192000, 1, 0), 0);
+    check("input policy", "native codec", earc_input_property(4, 48000, 0, 5), 5);
+    check("input policy", "native HRA", earc_input_property(203, 192000, 1, 5), 5);
+    check("input policy", "HRA mode", earc_input_property(203, 48000, 1, 1), 5);
+    check("input policy", "unknown HRA mode", earc_input_property(1203, 48000, 1, 1), 8);
+    check("input policy", "HRA low rate", earc_input_property(203, 48000, 0, 0), 5);
+    check("input policy", "HRA high rate", earc_input_property(203, 192000, 0, 0), 6);
+    check("input policy", "AC3", earc_input_property(3, 48000, 0, 0), 0);
+}
+
+/* A kernel with no oracle: if passthrough_init's order of reasons refuses it,
+ * print the reason and skip the checks that assume an accepted image. */
+static int hdmi_session_refusal(const struct kernel *k, struct earc_layout *l) {
+    struct earc_hdmi_layout h;
+    const char *reason = decode(k->code, l);
+    if (!reason) {
+        earc_hdmi_decode(k->hdmi, l->nonpcm, k->stext & ~0xfffffULL, &h);
+        reason = earc_mode_refusal(&h);
+        if (!reason) reason = h.mute_reason;
+        if (!reason) reason = h.input_reason;
+        if (!reason) reason = h.property_reason;
+        if (!reason) reason = h.format_reason;
+    }
+    if (reason) printf("REFUSE %s: the module refuses this kernel: %s\n", k->dir, reason);
+    return reason != 0;
+}
+
 int main(int argc, char **argv) {
     struct kernel kernels[16];
     struct earc_layout layouts[16];
@@ -1357,13 +1555,25 @@ int main(int argc, char **argv) {
         size_t j;
         int loaded;
         if (strcmp(argv[i], "--kernel")) { printf("FAIL usage: test_decode [--kernel SHA256 DIR]...\n"); return 2; }
-        loaded = load_kernel(&kernels[n], dir);
-        if (loaded < 0) { failures++; continue; }
-        if (!loaded) continue;
         for (j = 0; j < sizeof(oracles) / sizeof(oracles[0]); j++)
             if (!strcmp(oracles[j].sha256, sha)) o = &oracles[j];
         for (j = 0; j < sizeof(hdmi_oracles) / sizeof(hdmi_oracles[0]); j++)
             if (!strcmp(hdmi_oracles[j].sha256, sha)) ho = &hdmi_oracles[j];
+        loaded = load_kernel(&kernels[n], dir);
+        /* A kernel without the module's symbols (another audio stack) is refused, as the loader refuses it. */
+        if (loaded == -2 && !o && !ho) continue;
+        if (loaded < 0) { failures++; continue; }
+        if (!loaded) continue;
+        kernels[n].sha256 = sha;
+        if (!o && !ho && hdmi_session_refusal(&kernels[n], &layouts[n])) {
+            if (!strcmp(sha, "46f46c2574d72cf85ff8109f9829d481394a4c173e8fe18389439ec2867f346c") ||
+                !strcmp(sha, "4fffc9484aa8c3744688eafd3359ed0edb75988204c94d6b8442dd8098443b6b")) {
+                printf("FAIL %s: supported C2/C4 image was refused\n", dir);
+                failures++;
+            }
+            n++;
+            continue;
+        }
         if (o) {
             if (run_oracle(o, &kernels[n], &layouts[n])) {
                 if (first[o->generation][o->family] < 0) first[o->generation][o->family] = n;
@@ -1379,6 +1589,18 @@ int main(int argc, char **argv) {
          * no earc one). layouts[n].nonpcm is set by run_oracle or the decode
          * above. */
         hdmi_validity_test(&kernels[n]);
+         earc_hdmi_decode(kernels[n].hdmi, layouts[n].nonpcm, kernels[n].stext & ~0xfffffULL, &hdmi_layout);
+        input_capture_tests(&kernels[n], &hdmi_layout);
+         printf("INFO %s: HDMI start compare=%llx index=x%u\n", dir,
+             hdmi_layout.input_compare, hdmi_layout.input_index_reg);
+         printf("INFO %s: HDMI property entry=%llx frame=%u type=sp+%u forced=x%u formats=%u\n", dir,
+             hdmi_layout.property_entry, hdmi_layout.input_frame_size, hdmi_layout.input_type_offset,
+             hdmi_layout.input_forced_reg, hdmi_layout.input_format_count);
+        fops_test(&kernels[n], &hdmi_layout);
+        check_reason(dir, "input mute layout", hdmi_layout.mute_reason);
+        check(dir, "input mute request offset", hdmi_layout.mute_offset, 0x48);
+        check_reason(dir, "eARC mix flag", hdmi_layout.mix_reason);
+        check(dir, "eARC mix flag offset", hdmi_layout.mix_offset, 0x68);
         hd_probe_test(&kernels[n], layouts[n].nonpcm);
         if (ho && run_hdmi_oracle(ho, &kernels[n], layouts[n].nonpcm, &hdmi_layout) && !hdmi_refused[ho->generation]) {
             hdmi_refusal_tests(&kernels[n], layouts[n].nonpcm, &hdmi_layout);
@@ -1395,12 +1617,12 @@ int main(int argc, char **argv) {
     hdmi_rule_test();
     hdmi_walk_tests();
     hook_decision_tests();
-    policy_tests();
     gate_tests();
     mode_refusal_tests();
     hd_refusal_tests();
     adec_slot_tests();
     hd_decoder_tests();
+    input_policy_tests();
     if (first[0][0] >= 0 && first[1][0] >= 0) generation_test("C5", &layouts[first[0][0]], &layouts[first[1][0]]);
     else printf("SKIP C5 5.4/6.12 difference test: needs both oracle kernels\n");
     if (first[0][1] >= 0 && first[1][1] >= 0) generation_test("G5", &layouts[first[0][1]], &layouts[first[1][1]]);

@@ -2,96 +2,50 @@
 # earc-route-load.sh -- load earc_route.ko on a rooted LG webOS 25 TV.
 #
 #   sh earc-route-load.sh                    audit: decode, print, unload (mode=0)
-#   sh earc-route-load.sh --route [renderer=0|1] [restore_pcm=0|1] [carrier_rate=48000|192000]
+#   sh earc-route-load.sh --dts-hd           the session (mode=7), until rmmod earc_route
 #
-# Runs as root, on the TV only (busybox sh + python3). Refuses unless the
-# kernel release is allowlisted, the stock module's vermagic and struct module
-# layout equal ours, and every symbol the module needs appears exactly once in
-# /proc/kallsyms with a non-zero address. The module then derives the rest from
-# LG's code and refuses itself on any mismatch. One insmod, never retried.
-# Prints one result line. earc_route-5.4.ko and earc_route-6.12.ko must sit
-# next to this script; the release picks the one to load.
+# Runs as root, on the TV only (busybox sh + python3). There is no release
+# allowlist: the running kernel is checked, not its name. The loader refuses
+# unless the TV's own stock modules agree on one vermagic and struct module
+# layout, exactly one earc_route-*.ko next to this script has that same
+# vermagic and layout, and every symbol the module needs appears exactly once
+# in /proc/kallsyms with a non-zero address. The module then derives the rest
+# from LG's code and refuses itself on any mismatch. One insmod, never retried.
+# Prints one result line.
 set -eu
 
 HERE=$(cd "$(dirname "$0")" && pwd)
+# Host tests only: a directory standing in for / (module trees, kallsyms, sysfs).
+ROOT=${EARC_LOADER_ROOT:-}
 
 refuse() { echo "earc-route: REFUSED: $*"; exit 1; }
 
 [ "$(id -u)" = 0 ] || refuse "must run as root"
-# Allowlist: release -> module, stock module, struct module size, init and exit
-# offsets (the same values build.py checks). Anything else is refused.
-# ptl4tv.2 (33.22.x) ships the same stock module, byte for byte, as ptl4tv.5.
 release=$(uname -r)
-case "$release" in
-  5.4.268-329.ptl4tv.5|5.4.268-329.ptl4tv.2)
-    KO="$HERE/earc_route-5.4.ko"
-    STOCK="/lib/modules/$release/kernel/aspectratiodrv.ko"
-    ABI="0x380 0x150 0x338" ;;
-  6.12.44-352)
-    KO="$HERE/earc_route-6.12.ko"
-    STOCK="/usr/lib/modules/$release/kernel/aspectratiodrv.ko"
-    ABI="0x4c0 0x138 0x480" ;;
-  *) refuse "kernel $release is not in the allowlist (5.4.268-329.ptl4tv.5, 5.4.268-329.ptl4tv.2, 6.12.44-352)" ;;
-esac
-[ -f "$KO" ] || refuse "$KO missing"
-[ ! -e /sys/module/earc_route ] || refuse "earc_route is already loaded"
-[ -f "$STOCK" ] || refuse "stock module $STOCK missing"
-INSMOD=$(command -v insmod || true)
-if [ -z "$INSMOD" ] && [ -x /sbin/insmod ]; then INSMOD=/sbin/insmod; fi
-[ -n "$INSMOD" ] || refuse "insmod not found"
-
+[ ! -e "$ROOT/sys/module/earc_route" ] || refuse "earc_route is already loaded"
 options="mode=0"
 want_mode=0
-if [ $# -gt 0 ]; then
-  case "$1" in
-    --route)
-      shift; options="mode=1"; want_mode=1
-      for option in "$@"; do
-        case "$option" in
-          renderer=0|renderer=1|restore_pcm=0|restore_pcm=1|carrier_rate=48000|carrier_rate=192000)
-            options="$options $option" ;;
-          *) refuse "unknown --route option: $option" ;;
-        esac
-      done ;;
-    --selftest)  shift; options="mode=2"; want_mode=2; [ $# -eq 0 ] || refuse "--selftest takes no options" ;;
-    --open-gate) shift; options="mode=3"; want_mode=3; [ $# -eq 0 ] || refuse "--open-gate takes no options" ;;
-    --observe)   shift; options="mode=4"; want_mode=4; [ $# -eq 0 ] || refuse "--observe takes no options" ;;
-    --dts-core)
-      shift; options="mode=5"; want_mode=5
-      for option in "$@"; do
-        case "$option" in
-          window_seconds=*) [ "${option#window_seconds=}" -ge 0 ] 2>/dev/null || refuse "bad $option"; options="$options $option" ;;
-          supervised=0|supervised=1) options="$options $option" ;;
-          *) refuse "unknown --dts-core option: $option" ;;
-        esac
-      done ;;
-    --observe-hd) shift; options="mode=6"; want_mode=6; [ $# -eq 0 ] || refuse "--observe-hd takes no options" ;;
-    --dts-hd)
-      shift; options="mode=7"; want_mode=7
-      for option in "$@"; do
-        case "$option" in
-          window_seconds=*) [ "${option#window_seconds=}" -ge 0 ] 2>/dev/null || refuse "bad $option"; options="$options $option" ;;
-          supervised=0|supervised=1) options="$options $option" ;;
-          *) refuse "unknown --dts-hd option: $option" ;;
-        esac
-      done ;;
-    *) refuse "usage: $0 [--route ... | --selftest | --open-gate | --observe | --dts-core [window_seconds=N] [supervised=0|1] | --observe-hd | --dts-hd [window_seconds=N] [supervised=0|1]]" ;;
-  esac
-fi
+case "$*" in
+  '') ;;
+  --dts-hd) options="mode=7"; want_mode=7 ;;
+  *) refuse "usage: $0 [--dts-hd]" ;;
+esac
 
-# Active modes (>=1 that write; the HDMI passthrough modes 2-7) refuse to load
-# beside another DTS tool, whose kprobes or gate change would collide with ours.
+# The session refuses to load beside another DTS tool, whose kprobes or gate
+# change would collide with ours.
 # The audit (mode 0) only reports them (below).
-if [ "$want_mode" -ge 2 ]; then
+if [ "$want_mode" = 7 ]; then
   for mod in dts_gate dts_core_route gh_dts_native; do
-    [ -e "/sys/module/$mod" ] && refuse "another DTS tool is loaded: $mod (unload it first)"
+    [ -e "$ROOT/sys/module/$mod" ] && refuse "another DTS tool is loaded: $mod (unload it first)"
   done
-  [ -f /var/lib/lg-dts-core/enabled ] && refuse "lg-dts-core is enabled (/var/lib/lg-dts-core/enabled); disable it first"
+  [ -f "$ROOT/var/lib/lg-dts-core/enabled" ] && refuse "lg-dts-core is enabled (/var/lib/lg-dts-core/enabled); disable it first"
 fi
 
-# Checks both modules' ELF and reads /proc/kallsyms; prints the fn_/sz_
-# parameters, or the reason for refusing.
-parameters=$(python3 -I - "$STOCK" "$KO" $ABI <<'PY'
+# Picks the module from the running kernel's own stock modules, reads
+# /proc/kallsyms, and prints the module path then the fn_/sz_ parameters, or
+# the reason for refusing.
+parameters=$(python3 -I - "$ROOT" "$release" "$HERE" <<'PY'
+import os
 import struct
 import sys
 
@@ -111,10 +65,15 @@ FUNCTIONS = [
 HDMI_FUNCTIONS = [
     ('aud_hal_dts_supported', 1), ('_set_output', 1), ('_cb_output_status', 1),
     ('alsa_decoder_codec', 1), ('alsa_decoder_start', 1),
+    ('input_get_hdmi_codec', 1), ('input_set_hdmi', 1), ('aimc_set_property', 1),
+    ('KDRV_HDMI21_HAL_Rx_GetAudioInfo', 0), ('input_drop_data', 1),
+    ('aimc_register_named_event', 0), ('aimc_unregister_named_event', 0),
     ('register_kernel_break_hook', 1), ('call_break_hook', 1), ('unregister_kernel_break_hook', 0),
     ('kprobe_breakpoint_handler', 0), ('kprobe_breakpoint_ss_handler', 0), ('kretprobe_breakpoint_handler', 0),
     ('aarch64_insn_patch_text', 0), ('register_kprobe', 0), ('unregister_kprobe', 0),
-    ('cpus_read_lock', 0), ('cpus_read_unlock', 0)]
+    ('cpus_read_lock', 0), ('cpus_read_unlock', 0),
+    ('misc_open', 1), ('__fput', 1), ('__vfs_write', 1), ('vfs_write', 1), ('misc_register', 0), ('misc_deregister', 0),
+    ('sndout_earc_output_type', 1), ('sndout_mute_input', 1)]
 
 
 def fail(reason):
@@ -159,17 +118,40 @@ def module_abi(path):
     return magic[0], named['.gnu.linkonce.this_module'][0][5], targets['init_module'][0], targets['cleanup_module'][0]
 
 
-stock, ours = module_abi(sys.argv[1]), module_abi(sys.argv[2])
-abi = tuple(int(value, 16) for value in sys.argv[3:6])
-if stock[1:] != abi:
-    fail('stock module layout is not %#x bytes with init at %#x and exit at %#x: %r' % (abi + (stock,)))
-if ours != stock:
-    fail('module ABI ' + repr(ours) + ' differs from the stock module ' + repr(stock))
+root, release, here = sys.argv[1:4]
+
+# The running kernel's own modules: every one is built against the same struct
+# module, so their vermagic and this_module size, init and exit offsets must
+# agree. Up to eight are read (sorted, so the choice is repeatable); one that
+# disagrees refuses, as the layout would then be ambiguous.
+stock_paths = []
+for tree in ('/lib/modules/', '/usr/lib/modules/'):
+    top = root + tree + release
+    for directory, _, files in os.walk(top):
+        stock_paths += [os.path.join(directory, name) for name in files
+                        if name.endswith('.ko') and not name.startswith('earc_route')]
+stock_paths = sorted(set(stock_paths))[:8]
+if not stock_paths:
+    fail('no stock module under /lib/modules/%s or /usr/lib/modules/%s' % (release, release))
+stock = module_abi(stock_paths[0])
+for path in stock_paths[1:]:
+    if module_abi(path) != stock:
+        fail('stock modules disagree on vermagic/layout: %s %r, %s %r' % (stock_paths[0], stock, path, module_abi(path)))
+
+# Exactly one shipped build must equal the running kernel's ABI.
+candidates = sorted(os.path.join(here, name) for name in os.listdir(here)
+                    if name.startswith('earc_route-') and name.endswith('.ko'))
+if not candidates:
+    fail('no earc_route-*.ko in ' + here)
+matching = [path for path in candidates if module_abi(path) == stock]
+if len(matching) != 1:
+    fail('%d of %s match this kernel (vermagic %r, struct module %#x bytes, init %#x, exit %#x)' %
+         ((len(matching), ', '.join(os.path.basename(path) for path in candidates)) + stock))
 
 wanted = {name for name, _ in FUNCTIONS} | {name for name, _ in HDMI_FUNCTIONS} | {'_stext', '_etext'}
 found = {}
 core = set()
-with open('/proc/kallsyms') as kallsyms:
+with open(root + '/proc/kallsyms') as kallsyms:
     for line in kallsyms:
         fields = line.split()
         if len(fields) < 3:
@@ -223,20 +205,26 @@ for name, analysed in HDMI_FUNCTIONS:
         following = [value for value in core if value > address]
         if following:
             output.append('sz_%s=%d' % (name, following[0] - address))
-print(' '.join(output))
+print(matching[0] + ' ' + ' '.join(output))
 PY
 ) || refuse "$parameters"
+KO=${parameters%% *}
+parameters=${parameters#* }
+INSMOD=$(command -v insmod || true)
+if [ -z "$INSMOD" ] && [ -x /sbin/insmod ]; then INSMOD=/sbin/insmod; fi
+[ -n "$INSMOD" ] || refuse "insmod not found"
 
 # Report other DTS tools present (never a refusal): the audit reads live state,
 # and another tool's kprobes/gate change what is seen. A tester greps one line.
 report_tool() {  # report_tool TEXT
   echo "earc-route: other-tool: $1"
 }
-[ -d /var/lib/lg-dts-core ] && report_tool "lg-dts-core present at /var/lib/lg-dts-core (enabled=$([ -f /var/lib/lg-dts-core/enabled ] && echo yes || echo no))"
-[ -d /var/lib/lg-dts-native ] && report_tool "glasshouse gh_dts_native present at /var/lib/lg-dts-native"
+[ -d "$ROOT/var/lib/lg-dts-core" ] && report_tool "lg-dts-core present at /var/lib/lg-dts-core (enabled=$([ -f "$ROOT/var/lib/lg-dts-core/enabled" ] && echo yes || echo no))"
+[ -d "$ROOT/var/lib/lg-dts-native" ] && report_tool "glasshouse gh_dts_native present at /var/lib/lg-dts-native"
 for mod in dts_gate dts_core_route gh_dts_native; do
-  [ -e "/sys/module/$mod" ] && report_tool "module $mod is loaded"
+  [ -e "$ROOT/sys/module/$mod" ] && report_tool "module $mod is loaded"
 done
+echo "earc-route: kernel $release: loading $(basename "$KO")"
 
 # The kernel's own refusal reasons are in dmesg; keep only lines from this run.
 before=$(dmesg | grep -c 'earc_route:' || true)
@@ -246,40 +234,18 @@ last=$(dmesg | grep 'earc_route:' | tail -n 1 || true)
 after=$(dmesg | grep -c 'earc_route:' || true)
 [ "$after" != "$before" ] || last="(no earc_route kernel messages)"
 
-param() { cat "/sys/module/earc_route/parameters/$1" 2>/dev/null; }
+param() { cat "$ROOT/sys/module/earc_route/parameters/$1" 2>/dev/null; }
 case "$want_mode" in
-  0|2)
-    # The audit (0) and a PASSED self-test (2) return -ECANCELED and unload. A
-    # refused or failed self-test returns a different code and lands below.
+  0)
     case "$result" in
-      *"Operation canceled"*)
-        if [ "$want_mode" = 0 ]; then echo "earc-route: AUDIT OK: decoded and unloaded; dmesg | grep earc_route: has every value ($last)"
-        else echo "earc-route: SELF-TEST PASSED and unloaded; dmesg | grep earc_route: has the result ($last)"; fi ;;
-      *)
-        if [ "$want_mode" = 0 ]; then echo "earc-route: REFUSED by the module (insmod status $status: $result): $last"
-        else echo "earc-route: SELF-TEST did not pass (insmod status $status: $result): $last"; fi
-        exit 1 ;;
+      *"Operation canceled"*) echo "earc-route: AUDIT OK: decoded and unloaded; dmesg | grep earc_route: has every value ($last)" ;;
+      *) echo "earc-route: REFUSED by the module (insmod status $status: $result): $last"; exit 1 ;;
     esac ;;
-  1)
-    if [ "$status" = 0 ] && [ "$(param active)" = 1 ]; then echo "earc-route: ROUTED ($options): $last"
-    else echo "earc-route: ROUTE FAILED (insmod status $status: $result): $last"; exit 1; fi ;;
-  3)
-    if [ "$status" = 0 ] && [ "$(param gate_open)" = 1 ]; then echo "earc-route: DTS GATE OPEN (mode 3); unload earc_route to restore ($last)"
-    else echo "earc-route: GATE OPEN FAILED (insmod status $status: $result): $last"; exit 1; fi ;;
-  4)
-    if [ "$status" = 0 ] && [ "$(param probe_registered)" = 1 ]; then
-      echo "earc-route: PASSTHROUGH ACTIVE ($options) selftest=$(param selftest_passed) gate_open=$(param gate_open) ($last)"
-    else echo "earc-route: PASSTHROUGH FAILED (insmod status $status: $result): $last"; exit 1; fi ;;
-  5)
-    if [ "$status" = 0 ] && [ "$(param probe_registered)" = 1 ]; then
-      echo "earc-route: PASSTHROUGH ACTIVE ($options) selftest=$(param selftest_passed) gate_open=$(param gate_open); UNTESTED ON HARDWARE ($last)"
-    else echo "earc-route: PASSTHROUGH FAILED (insmod status $status: $result): $last"; exit 1; fi ;;
-  6)
-    if [ "$status" = 0 ] && [ "$(param hd_probes_registered)" = 2 ]; then
-      echo "earc-route: DTS-HD WATCH ACTIVE ($options) selftest=$(param selftest_passed) gate_open=$(param gate_open); nothing changed; EXPERIMENTAL ($last)"
-    else echo "earc-route: DTS-HD WATCH FAILED (insmod status $status: $result): $last"; exit 1; fi ;;
   7)
-    if [ "$status" = 0 ] && [ "$(param probe_registered)" = 1 ] && [ "$(param hd_probes_registered)" = 2 ]; then
+    # hd_probes_registered is 0 where the stock kernel already accepts and
+    # names codec 7 (no _cb_output_status probes are needed), else 2.
+    hd=$(param hd_probes_registered)
+    if [ "$status" = 0 ] && [ "$(param probe_registered)" = 1 ] && { [ "$hd" = 2 ] || [ "$hd" = 0 ]; }; then
       echo "earc-route: PASSTHROUGH ACTIVE ($options) selftest=$(param selftest_passed) gate_open=$(param gate_open); EXPERIMENTAL ($last)"
     else echo "earc-route: PASSTHROUGH FAILED (insmod status $status: $result): $last"; exit 1; fi ;;
 esac

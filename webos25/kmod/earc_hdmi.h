@@ -1,16 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Derives, from LG's own code, everything HDMI-input -> eARC passthrough would
- * need on the running TV, by symbol name and one exact instruction pattern each,
- * for the audit to print. It is the AUDIT half of the "DTS from HDMI inputs to
- * an eARC receiver" feature: it changes nothing, registers no probe or hook,
- * patches nothing, and calls no new kernel function. The active half is not
- * implemented here.
- *
- * Kept separate from struct earc_layout and the eARC route on purpose: the route
- * and its audit behave exactly as before, and a TV where an HDMI-set symbol is
- * missing or a pattern does not match still loads the route. Every failure here
- * is a "not available: <reason>" string on the item, never a refusal of the
- * module.
+/* Derives code facts for the audit and active session from LG's kernel.
  *
  * Two analyses. _cb_output_status goes through earc_decode.h's dataflow engine,
  * used as it is. _set_output (636 instructions on 5.4, above ED_MAX_INSNS), the
@@ -33,15 +22,21 @@
 
 #include "earc_decode.h"
 
-/* HDMI-set functions passed by the loader (fn_<name>, and sz_<name> for the
- * analysed ones). The others are resolved by name and printed only: never
- * called, never imported. kretprobe_breakpoint_handler exists on 6.12 only. */
+/* Loader symbols; analysed functions also need sz_<name>.
+ * kretprobe_breakpoint_handler exists on 6.12 only. */
 #define EARC_HDMI_FUNCTIONS(X) \
     X(aud_hal_dts_supported, 1) \
     X(_set_output, 1) \
     X(_cb_output_status, 1) \
     X(alsa_decoder_codec, 1) \
     X(alsa_decoder_start, 1) \
+    X(input_get_hdmi_codec, 1) \
+    X(input_set_hdmi, 1) \
+    X(aimc_set_property, 1) \
+    X(KDRV_HDMI21_HAL_Rx_GetAudioInfo, 0) \
+    X(input_drop_data, 1) \
+    X(aimc_register_named_event, 0) \
+    X(aimc_unregister_named_event, 0) \
     X(register_kernel_break_hook, 1) \
     X(call_break_hook, 1) \
     X(unregister_kernel_break_hook, 0) \
@@ -52,7 +47,15 @@
     X(register_kprobe, 0) \
     X(unregister_kprobe, 0) \
     X(cpus_read_lock, 0) \
-    X(cpus_read_unlock, 0)
+    X(cpus_read_unlock, 0) \
+    X(misc_open, 1) \
+    X(__fput, 1) \
+    X(__vfs_write, 1) \
+    X(vfs_write, 1) \
+    X(misc_register, 0) \
+    X(misc_deregister, 0) \
+    X(sndout_earc_output_type, 1) \
+    X(sndout_mute_input, 1)
 
 #define EARC_HDMI_ENUM(name, analysed) HF_##name,
 enum earc_hdmi_function { EARC_HDMI_FUNCTIONS(EARC_HDMI_ENUM) HF_COUNT };
@@ -116,6 +119,26 @@ struct earc_hdmi_layout {
     /* 7. cached eARC non-PCM word: virtual (= struct earc_layout.nonpcm) and
      * physical. */
     ed_u64 nonpcm_virtual, nonpcm_physical;
+    ed_u64 input_compare;
+    ed_u64 input_table, decoder_lock, decoder_lock_call;
+    unsigned int input_uid_offset, input_codec_offset;
+    const char *format_reason;
+    unsigned int input_index_reg;
+    const char *input_reason;
+    ed_u64 input_set_begin, input_set_end, property_entry;
+    ed_u64 input_formats[32];
+    unsigned int input_format_count, input_type_offset, input_frame_size, input_forced_reg, input_arg_reg;
+    const char *property_reason;
+    /* struct file_operations' write, open and release slots, from the kernel's own calls. */
+    unsigned int fops_write, fops_open, fops_release;
+    const char *fops_reason;
+    /* sndout_earc_output_type: the mix flag LG writes, at request + mix_offset. */
+    ed_u64 mix_entry;
+    unsigned int mix_offset;
+    const char *mix_reason;
+    ed_u64 mute_entry;
+    unsigned int mute_offset;
+    const char *mute_reason;
 };
 
 /* ---- block-sound register tracker over one function ---- */
@@ -625,6 +648,289 @@ static void hd_break(const struct earc_code *fns, struct earc_hdmi_layout *out) 
     out->break_reason = 0;
 }
 
+static void hd_input_start(const struct earc_code *fns, struct earc_hdmi_layout *out) {
+    const struct earc_code *start = &fns[HF_alsa_decoder_start];
+    const struct earc_code *get = &fns[HF_input_get_hdmi_codec];
+    unsigned int index, found = 0, table_reg = 31, tables = 0;
+    ed_u64 table_offset = 0;
+    out->input_reason = "HDMI start compare not found";
+    if (!get->words || get->count < 2 || (get->words[0] & 0xffc003ffu) != 0xb9400000u ||
+        get->words[1] != 0xd65f03c0u) {
+        out->input_reason = "HDMI codec getter is not a word load followed by ret";
+        return;
+    }
+    if (!start->words) return;
+    for (index = 2; index + 2 < start->count; index++) {
+        ed_u32 call = start->words[index], shift = start->words[index - 2];
+        ed_u32 load = start->words[index - 1], cset = start->words[index + 2];
+        ed_u64 target = start->address + 4ULL * index + ((ed_u64)ed_sext(call & 0x3ffffff, 26) << 2);
+        if ((call & 0xfc000000u) != 0x94000000u || target != get->address) continue;
+        if (start->words[index + 1] != 0x7100041fu || (cset & 0xffffffe0u) != 0x1a9f17e0u) continue;
+        if ((shift & 0xfffffc1fu) == 0xd37cec00u && (load & 0xffe0fc1fu) == 0xf8606800u &&
+            ((load >> 16) & 31) == 0 && ((load >> 5) & 31) != 31) {
+            out->input_index_reg = (shift >> 5) & 31;
+            table_reg = (load >> 5) & 31;
+            table_offset = 0;
+        } else if ((shift & 0xffe0fc1fu) == 0x8b001000u && load == 0xf9408800u &&
+                   ((shift >> 5) & 31) >= 19 && ((shift >> 5) & 31) <= 28) {
+            out->input_index_reg = (shift >> 16) & 31;
+            table_reg = (shift >> 5) & 31;
+            table_offset = 0x110;
+        } else continue;
+        if (out->input_index_reg < 19 || out->input_index_reg > 28) continue;
+        out->input_compare = start->address + 4ULL * (index + 1);
+        found++;
+    }
+    out->input_reason = found == 1 ? 0 : found ? "HDMI start compare is ambiguous" : "HDMI start compare not found";
+    if (out->input_reason) return;
+    out->input_codec_offset = ((get->words[0] >> 10) & 0xfff) * 4;
+    out->input_reason = hf_prepare(start);
+    if (out->input_reason) return;
+    {
+        /* The first BL with x0 = xB + imm, where xB = adrp + add earlier in the
+         * function: straight-line constants a branch target cannot clobber. */
+        ed_u64 page[32], constant[32];
+        for (index = 0; index < 32; index++) ((volatile ed_u64 *)page)[index] = ((volatile ed_u64 *)constant)[index] = 0;
+        for (index = 0; index + 1 < start->count && !out->decoder_lock; index++) {
+            ed_u32 op = start->words[index], next = start->words[index + 1];
+            unsigned int rd = op & 31, rn = (op >> 5) & 31;
+            if ((op & 0x9f000000u) == 0x90000000u)
+                page[rd] = (start->address + 4ULL * index) & ~0xfffULL,
+                page[rd] += (ed_u64)ed_sext(((op >> 5) & 0x7ffff) << 2 | ((op >> 29) & 3), 21) << 12;
+            else if ((op & 0xffc00000u) == 0x91000000u && rd != 31 && rn != 31 && page[rn] && rd != rn)
+                constant[rd] = page[rn] + ((op >> 10) & 0xfff);
+            else if ((op & 0xffc0001fu) == 0x91000000u && rn != 31 && constant[rn]) {
+                unsigned int at;
+                for (at = index + 1; at < start->count && at <= index + 4; at++) {
+                    next = start->words[at];
+                    if ((next & 0xfc000000u) == 0x94000000u) {
+                        out->decoder_lock = constant[rn] + ((op >> 10) & 0xfff);
+                        out->decoder_lock_call = start->address + 4ULL * at + ((ed_u64)ed_sext(next & 0x3ffffff, 26) << 2);
+                        break;
+                    }
+                    if ((next & 0x3a400000u) != 0x28000000u && (next & 0x3b400000u) != 0x39000000u &&
+                        ((next & 0x9f000000u) != 0x90000000u || (next & 31) == 0)) break;
+                }
+            }
+        }
+    }
+    hf_enter(start);
+    for (index = 0; index < start->count; index++) {
+        struct hval previous = hf_reg[table_reg];
+        hf_step(index);
+        if (hf_reg[table_reg].kind == HK_CONST && hf_reg[table_reg].c != previous.c &&
+            (table_offset ? hf_reg[table_reg].c == out->adec_base
+                          : hf_reg[table_reg].c <= out->adec_base && out->adec_base - hf_reg[table_reg].c <= 0x100) &&
+            hf_reg[table_reg].c + table_offset != out->input_table) {
+            out->input_table = hf_reg[table_reg].c + table_offset;
+            tables++;
+        }
+    }
+    out->input_reason = tables == 1 ? 0 : "HDMI input table is ambiguous";
+}
+
+static void hd_input_properties(const struct earc_code *fns, struct earc_hdmi_layout *out) {
+    const struct earc_code *input = &fns[HF_input_set_hdmi];
+    const struct earc_code *property = &fns[HF_aimc_set_property];
+    ed_u64 info = fns[HF_KDRV_HDMI21_HAL_Rx_GetAudioInfo].address;
+    unsigned int index, frames = 0, infos = 0, forced = 0, inputs = 0;
+    out->property_reason = "HDMI property layout not derived";
+    if (!input->words || !property->words || !property->count || !info) return;
+    if (hf_is_brk(property->words[0]) || !hf_kprobe_placeable(property->words[0])) return;
+    out->property_reason = hf_prepare(input);
+    if (out->property_reason) return;
+    hf_enter(input);
+    for (index = 0; index < input->count; index++) {
+        ed_u32 op = input->words[index];
+        if (index < 16 && (op & 0xffc003ffu) == 0xd10003ffu) {
+            out->input_frame_size = (op >> 10) & 0xfff;
+            frames++;
+        }
+        if (index < 20 && (op & 0xffffffe0u) == 0x12001c20u) {
+            out->input_forced_reg = op & 31;
+            forced++;
+        }
+        if (index < 20 && (op & 0xffffffe0u) == 0xaa0003e0u && (op & 31) >= 19 && (op & 31) <= 28) {
+            out->input_arg_reg = op & 31;
+            inputs++;
+        }
+        if ((op & 0xfc000000u) == 0x94000000u) {
+            ed_u64 target = input->address + 4ULL * index + ((ed_u64)ed_sext(op & 0x3ffffff, 26) << 2);
+            if (target == info && index >= 3 &&
+                (input->words[index - 3] & 0xffc003ffu) == 0x910003e1u) {
+                out->input_type_offset = ((input->words[index - 3] >> 10) & 0xfff) + 4;
+                infos++;
+            }
+            if (target == property->address && hf_reg[1].kind == HK_CONST) {
+                unsigned int existing;
+                for (existing = 0; existing < out->input_format_count; existing++)
+                    if (out->input_formats[existing] == hf_reg[1].c) break;
+                if (existing == out->input_format_count) {
+                    if (existing == 32) { out->property_reason = "too many HDMI property formats"; return; }
+                    out->input_formats[out->input_format_count++] = hf_reg[1].c;
+                }
+            }
+        }
+        hf_step(index);
+    }
+    if (frames != 1 || infos != 1 || forced != 1 || inputs != 1 || out->input_forced_reg < 19 || out->input_forced_reg > 28 ||
+        !out->input_frame_size || out->input_frame_size > 4096 ||
+        out->input_type_offset + 8 > out->input_frame_size || !out->input_format_count) {
+        out->property_reason = "HDMI stack frame, audio-info or forced-PCM flag is ambiguous";
+        return;
+    }
+    out->input_set_begin = input->address;
+    out->input_set_end = input->address + 4ULL * input->count;
+    out->property_entry = property->address;
+    out->property_reason = 0;
+}
+
+/* input_drop_data(input, bool) loads its uid with `ldr w0,[x0,#uid]`. */
+static void hd_input_format(const struct earc_code *fns, struct earc_hdmi_layout *out) {
+    const struct earc_code *drop = &fns[HF_input_drop_data];
+    unsigned int index, moves = 0, masks = 0, uids = 0;
+    out->format_reason = "HDMI format-change helpers not found";
+    if (!drop->words || !fns[HF_aimc_register_named_event].address || !fns[HF_aimc_unregister_named_event].address ||
+        !out->decoder_lock)
+        return;
+    for (index = 0; index < drop->count && index < 16; index++) {
+        ed_u32 op = drop->words[index];
+        if (op == 0xaa0003f3u) moves++;
+        if (op == 0x12001c34u) masks++;
+        if ((op & 0xffc003ffu) == 0xb9400000u) { out->input_uid_offset = ((op >> 10) & 0xfff) * 4; uids++; }
+    }
+    if (moves != 1 || masks != 1 || uids != 1 || !out->input_uid_offset || out->input_uid_offset >= out->input_codec_offset) {
+        out->format_reason = "input_drop_data does not have the expected shape";
+        return;
+    }
+    out->format_reason = 0;
+}
+
+/* The one call through a file_operations slot in fn, in the shape every measured
+ * kernel uses: `ldr xF,[xFile,#f_op]` (or a str of xF there), `ldr xS,[xF,#slot]`,
+ * `cbz xS`, then `blr xS` within 8 instructions. Returns slot and sets *fileops
+ * to the f_op offset, or 0 unless exactly one such call exists (or, with want
+ * set, exactly one at that slot). */
+static unsigned int fops_slot(const struct earc_code *fn, unsigned int *fileops, unsigned int want) {
+    unsigned int i, k, found = 0, slot = 0;
+    if (!fn->words) return 0;
+    for (i = 1; i + 1 < fn->count; i++) {
+        ed_u32 load = fn->words[i], reg, base, off = 0, call = 0, k2;
+        if ((load & 0xffc00000u) != 0xf9400000u) continue;  /* ldr xS,[xF,#imm] */
+        reg = load & 31;
+        if ((fn->words[i + 1] & 0xff00001fu) != (0xb4000000u | reg)) continue;  /* cbz xS */
+        for (k2 = i + 2; k2 < fn->count && k2 <= i + 8; k2++)
+            if (fn->words[k2] == (0xd63f0000u | (reg << 5))) { call = 1; break; }  /* blr xS */
+        if (!call) continue;
+        base = (load >> 5) & 31;
+        for (k = i; k-- > 0 && i - k <= 8;) {
+            ed_u32 w = fn->words[k];
+            /* ldr xF,[x,#imm] or str xF,[x,#imm]: the f_op field. */
+            if ((w & 0xffc0001fu) == (0xf9400000u | base) || (w & 0xffc0001fu) == (0xf9000000u | base)) {
+                off = ((w >> 10) & 0xfff) * 8;
+                break;
+            }
+        }
+        if (!off || (want && ((load >> 10) & 0xfff) * 8 != want)) continue;
+        found++;
+        *fileops = off;
+        slot = ((load >> 10) & 0xfff) * 8;
+    }
+    return found == 1 ? slot : 0;
+}
+
+static void hd_fops(const struct earc_code *fns, struct earc_hdmi_layout *out) {
+    unsigned int open_fileops = 0, release_fileops = 0, write_fileops = 0;
+    /* 5.4 calls ->write from __vfs_write; 6.12 has none and calls it from vfs_write. */
+    const struct earc_code *write = fns[HF___vfs_write].words ? &fns[HF___vfs_write] : &fns[HF_vfs_write];
+    out->fops_reason = "misc_open/__fput/vfs_write not given";
+    if (!fns[HF_misc_open].words || !fns[HF___fput].words || !write->words || !fns[HF_misc_register].address ||
+        !fns[HF_misc_deregister].address)
+        return;
+    out->fops_open = fops_slot(&fns[HF_misc_open], &open_fileops, 0);
+    /* __fput also calls fasync (two slots later); release follows open. */
+    out->fops_release = out->fops_open ? fops_slot(&fns[HF___fput], &release_fileops, out->fops_open + 16) : 0;
+    out->fops_write = fops_slot(write, &write_fileops, 0);
+    /* All three read f_op from the same struct file field; write precedes open,
+     * release follows it, and owner (+0) comes first. */
+    if (!out->fops_open || !out->fops_release || !out->fops_write || open_fileops != release_fileops ||
+        open_fileops != write_fileops || out->fops_release != out->fops_open + 16 ||
+        out->fops_write < 8 || out->fops_write >= out->fops_open || out->fops_open > 0x100) {
+        out->fops_reason = "file_operations write/open/release slots not derived";
+        out->fops_write = out->fops_open = out->fops_release = 0;
+        return;
+    }
+    out->fops_reason = 0;
+}
+
+/* LG's "Sndout EARC Outputtype" put: five words from the ALSA request (x1); the
+ * fifth, the mix flag, is the one checked with `ccmp wM,#1` (0 or 1 only) and
+ * stored once. Measured: `ldr x24,[x19,#0x68]` after `mov x19,x1` on 5.4 and 6.12. */
+static void hd_mix(const struct earc_code *fns, struct earc_hdmi_layout *out) {
+    const struct earc_code *f = &fns[HF_sndout_earc_output_type];
+    unsigned int i, j, request = 32, reg = 32, loads = 0, checks = 0;
+    out->mix_reason = "sndout_earc_output_type not given";
+    if (!f->words || f->count < 8) return;
+    out->mix_entry = f->address;
+    if (hf_is_brk(f->words[0]) || !hf_kprobe_placeable(f->words[0])) {
+        out->mix_reason = "sndout_earc_output_type entry is not kprobe-placeable";
+        return;
+    }
+    for (i = 0; i < f->count && i < 16; i++)
+        if ((f->words[i] & 0xffffffe0u) == 0xaa0103e0u) { request = f->words[i] & 31; break; }  /* mov xR, x1 */
+    for (i = 0; request < 31 && i < f->count; i++) {
+        ed_u32 op = f->words[i];
+        if ((op & 0xffc003e0u) != (0xf9400000u | (request << 5))) continue;  /* ldr xM,[xR,#off] */
+        for (j = i + 1; j < f->count && j <= i + 64; j++)
+            /* ccmp wM,#1,#nzcv,cond: opcode, imm5 = 1 and Rn; cond and nzcv vary. */
+            if ((f->words[j] & 0xffff0fe0u) == (0x7a410800u | ((op & 31) << 5))) {
+                reg = op & 31;
+                out->mix_offset = ((op >> 10) & 0xfff) * 8;
+                loads++;
+                break;
+            }
+    }
+    for (i = 0; reg < 31 && i < f->count; i++)
+        if ((f->words[i] & 0xffc0001fu) == (0xb9000000u | reg)) checks++;  /* str wM,[x,#imm] */
+    if (loads != 1 || !checks) {
+        out->mix_reason = "the mix flag's load and check were not found exactly once";
+        out->mix_offset = 0;
+        return;
+    }
+    out->mix_reason = 0;
+}
+
+static void hd_mute(const struct earc_code *fns, struct earc_hdmi_layout *out) {
+    const struct earc_code *f = &fns[HF_sndout_mute_input];
+    unsigned int index, request = 32, moves = 0, matches = 0;
+    out->mute_reason = "sndout_mute_input request not derived";
+    if (!f->words || !f->count || hf_is_brk(f->words[0]) || !hf_kprobe_placeable(f->words[0])) return;
+    if (hf_prepare(f)) return;
+    for (index = 0; index < f->count && index < 16; index++) {
+        ed_u32 op = f->words[index];
+        if ((op & 0xffffffe0u) == 0xaa0103e0u && (op & 31) >= 19 && (op & 31) <= 28) {
+            request = op & 31;
+            moves++;
+        }
+    }
+    for (index = 0; moves == 1 && index + 3 < f->count; index++) {
+        ed_u32 load = f->words[index], pair = f->words[index + 1];
+        unsigned int mute = load & 31, offset = ((load >> 10) & 0xfff) * 8;
+        int pair_offset = (int)ed_sext(pair >> 15, 7) * 8;
+        if ((load & 0xffc003e0u) != (0xf9400000u | (request << 5)) || mute == 31 ||
+            (pair & 0xffc003e0u) != (0xa9400000u | (request << 5)) ||
+            pair_offset < 8 || pair_offset > 232 || offset != (unsigned int)pair_offset + 16 ||
+            (pair & 31) == mute || ((pair >> 10) & 31) == mute ||
+            f->words[index + 2] != (0x7100041fu | (mute << 5)) ||
+            (f->words[index + 3] & 0xff00001fu) != 0x54000008u) continue;
+        out->mute_offset = (unsigned int)pair_offset;
+        matches++;
+    }
+    if (matches != 1) return;
+    out->mute_entry = f->address;
+    out->mute_reason = 0;
+}
+
 static void hd_symbols(const struct earc_code *fns, struct earc_hdmi_layout *out) {
     out->patch_text = fns[HF_aarch64_insn_patch_text].address;
     out->kprobe_register = fns[HF_register_kprobe].address;
@@ -650,6 +956,12 @@ static void earc_hdmi_decode(const struct earc_code *fns, ed_u64 nonpcm_virtual,
     hd_cb(fns, out);
     hd_break(fns, out);
     hd_symbols(fns, out);
+    hd_input_start(fns, out);
+    hd_input_properties(fns, out);
+    hd_input_format(fns, out);
+    hd_fops(fns, out);
+    hd_mix(fns, out);
+    hd_mute(fns, out);
     out->nonpcm_virtual = nonpcm_virtual;
     out->nonpcm_physical = (nonpcm_virtual && nonpcm_virtual >= stext_align) ? nonpcm_virtual - stext_align : 0;
 }

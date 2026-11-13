@@ -59,7 +59,7 @@ test("DTS-HD shares the passthrough lifecycle and Disable restores eARC first", 
     "boot apply must stop passthrough before restarting it after Disable");
   assert.ok(initFn("w25_stand_down").includes("w25_pt_stop_soft"), "stand-down must not stall on a failed stop");
   assert.ok(initFn("w25_self_heal").includes("w25_pt_stop_soft"), "self-heal must not stall on a failed stop");
-  assert.ok(body.includes("stop) w25_pt_stop || exit 1 ;;"), "the app toggle keeps failing hard");
+  assert.ok(body.includes("stop) w25_pt_stop || exit 1; w25_kmod_stop || exit 1 ;;"), "the app toggle keeps failing hard");
   assert.ok(!body.includes("--recover"), "HD never writes LG's mixer, so there is nothing to recover");
   assert.ok(!body.includes("hdroute.sh"));
   assert.ok(service.w25PassthroughSteps(true, true).includes("/lgroute-control ]"));
@@ -208,7 +208,10 @@ test("HD readiness distinguishes sink builds, helper and eARC failures", functio
     var bounded = 'timeout() { shift; "$@"; }\n' + script;
     assert.match(sh(bounded).stdout, /HD_REASON=earc-unavailable\nHD_READY=0/);
     exe(path.join(dir, "lgroute-control"), "exit 0");
-    assert.match(sh(bounded).stdout, /HD_REASON=ready\nHD_READY=1/);
+    assert.match(sh(bounded).stdout, /HD_REASON=no-module\nHD_READY=0/);
+    assert.match(service.w25HdReason("no-module", "external_arc passThrough"), /kernel module is not loaded/);
+    var loaded = bounded.split("/sys/module/earc_route").join(dir);
+    assert.match(sh(loaded).stdout, /HD_REASON=ready\nHD_READY=1/);
     assert.match(service.w25HdReason("untested-sink", "external_arc passThrough"), /tested list/);
     assert.equal(service.w25HdReason("ready", "external_arc passThrough"), "");
     assert.match(service.w25HdReason("ready", "tv_speaker pcm"), /Pass Through/);
@@ -258,6 +261,28 @@ test("the verified set covers the G2 on firmware 33.22.95", function () {
   ].join("\n");
   var r = sh(script);
   assert.strictEqual(r.stdout.trim(), "verified|LG G2 OLED55G26LA (webOS 10.2.2, GStreamer 1.24.0)", r.stderr);
+});
+
+test("native ES is selected only for the exact tested C2 build", function () {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dts-native-es-"));
+  try {
+    var release = path.join(dir, "release");
+    write(release, "Rockhopper release 10.3.1-3006 (ponytail-papikonda)\n");
+    var fn = initFn("w25_native_es").split("/etc/starfish-release").join(release);
+    var hash = "90dba3ef32704ce4096bf1e6045d2879d0c2192d507bc04d1e8e98437f420a43";
+    function select(model, kernel, sink) {
+      return sh(['w25_product_id() { echo "' + model + '"; }',
+        'uname() { echo "' + kernel + '"; }', fn, 'w25_native_es "' + sink + '"'].join("\n")).status;
+    }
+    assert.strictEqual(select("OLED42C27LA", "5.4.268-329.ptl4tv.5", hash), 0);
+    assert.notStrictEqual(select("OLED55G26LA", "5.4.268-329.ptl4tv.5", hash), 0);
+    assert.notStrictEqual(select("OLED42C27LA", "6.12.44-352", hash), 0);
+    assert.notStrictEqual(select("OLED42C27LA", "5.4.268-329.ptl4tv.5", "unknown"), 0);
+    write(release, "Rockhopper release 10.3.1-3007 (ponytail-papikonda)\n");
+    assert.notStrictEqual(select("OLED42C27LA", "5.4.268-329.ptl4tv.5", hash), 0);
+  } finally {
+    fs.rmSync(dir, {recursive: true, force: true});
+  }
 });
 
 test("HD sink allowlist accepts exact tested hashes only", function () {

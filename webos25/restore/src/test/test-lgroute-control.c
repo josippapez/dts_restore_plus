@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include <assert.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -10,7 +11,14 @@
 
 static long output[5] = {2,1,0,0,1}, earc = 1;
 static int unsupported;
+static int writes, write_fails, open_fails;
 static const char *missing;
+static int fake_open(const char *name, int flags)
+{
+  assert(!strcmp(name,"/dev/snd/controlC0"));
+  if(open_fails){errno=ENOENT;return -1;}
+  return open("/dev/null",flags);
+}
 static int fake_ioctl(int fd, unsigned long command, ...)
 {
   (void)fd;
@@ -23,7 +31,12 @@ static int fake_ioctl(int fd, unsigned long command, ...)
     info->access=SNDRV_CTL_ELEM_ACCESS_READWRITE;return 0;
   }
   struct snd_ctl_elem_value *value=argument;
-  /* LG owns the mixer word; the helper must never write it. */
+  if(command==SNDRV_CTL_IOCTL_ELEM_WRITE){
+    assert(!strcmp((char *)value->id.name,"Sndout EARC Outputtype"));
+    writes++;
+    if(write_fails){errno=EIO;return -1;}
+    memcpy(output,value->value.integer.value,sizeof output);return 0;
+  }
   assert(command==SNDRV_CTL_IOCTL_ELEM_READ);
   if(!strcmp((char *)value->id.name,"Sndout EARC OnOff"))value->value.integer.value[0]=earc;
   else memcpy(value->value.integer.value,output,sizeof output);
@@ -32,7 +45,9 @@ static int fake_ioctl(int fd, unsigned long command, ...)
 #define LGROUTE_PT LGROUTE_RUN "/passthrough"
 #define LGROUTE_HD LGROUTE_RUN "/passthrough-hd"
 #define ioctl fake_ioctl
+#define open fake_open
 #include "../lgroute-control.c"
+#undef open
 #undef ioctl
 
 static void sound_output_on(const char *out,const char *mode)
@@ -66,10 +81,23 @@ int main(void)
   assert(!strcmp(why,"Sndout EARC Outputtype could not be read: No such file or directory"));
   unsupported=1;assert(!ready(3,state,why));unsupported=0;
   assert(!strcmp(why,"Sndout EARC OnOff could not be read: Operation not supported"));
-  if(access("/dev/snd/controlC0",F_OK)){
-    assert(lgroute_control_unmixed_why(why)<0);
-    assert(!strcmp(why,"/dev/snd/controlC0 could not be opened: No such file or directory"));
-  }
+  assert(!writes);
+  open_fails=1;
+  assert(lgroute_control_unmixed_why(why)<0);
+  assert(!strcmp(why,"/dev/snd/controlC0 could not be opened: No such file or directory"));
+  assert(lgroute_control_unmix()<0&&!writes);open_fails=0;
+  long expected[5]={2,6,8,192000,0};
+  memcpy(output,expected,sizeof output);output[4]=1;
+  assert(!lgroute_control_unmix()&&writes==1);
+  assert(!memcmp(output,expected,sizeof output));
+  assert(lgroute_control_unmixed_why(why)==1&&writes==1);
+  output[4]=1;write_fails=1;
+  assert(lgroute_control_unmix()<0&&writes==2&&output[4]==1);write_fails=0;
+  missing="Sndout EARC Outputtype";
+  assert(lgroute_control_unmix()<0&&writes==2);missing=NULL;
+  unsupported=1;assert(lgroute_control_unmix()<0&&writes==2);unsupported=0;
+  output[2]=99;assert(lgroute_control_unmix()<0&&writes==2);
+  memcpy(output,expected,sizeof output);
   sound_output("auto");char mode[64];assert(lgroute_sound_output(mode)&&!strcmp(mode,"auto"));
   assert(lgroute_core_output(mode)&&!strcmp(mode,"auto"));
   /* Optical carries the DTS core, never the HD carrier. */
@@ -82,6 +110,6 @@ int main(void)
   sound_output("auto");
   unlink(LGROUTE_PT);assert(!lgroute_control_receiver());
   unlink(LGROUTE_HD);unlink(LGROUTE_OUTPUT);assert(!lgroute_sound_output(mode));assert(!lgroute_core_output(mode));
-  puts("LG mixer: ABI, Pass Through only, optical core-only, read-only mixer state and unavailable eARC with its reason pass");
+  puts("LG mixer: ABI, Pass Through only, optical core-only, mix-only writes and unavailable eARC with its reason pass");
   return 0;
 }

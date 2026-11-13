@@ -20,8 +20,7 @@ webos25/restore/edid-out/    libedidaudio.so                     (eim hook: no D
 webos25/restore/demux-out/   libgstisomp4.so, libgstmpegtsdemux.so (mp4/ts/m2ts DTS,
                               MP4 Dolby Vision profile 7), libgstmatroska.so (MKV DV profile 7)
 webos25/restore/ts114-out/   libgstmpegtsdemux.so                (1.14.4 build, C2 app profile)
-webos25/restore/kmod-out/    earc_route-5.4.ko (webos25/kmod, GPL-2.0-only; ships with the
-                              HDMI passthrough opt-in)
+webos25/restore/kmod-out/    earc_route-5.4.ko, earc_route-6.12.ko (webos25/kmod, GPL-2.0-only)
 ```
 
 The app's `webos25/app/payload/**` `.so` are **git-ignored** generated copies. At
@@ -46,12 +45,12 @@ Never edit a generated `payload/**` binary.
   `n4.4.4` tag, its configure flags and the pinned Debian snapshot)
 - the kernel module in `webos25/kmod/`: `earc_route.c`, `earc_decode.h`, `earc_hdmi.h`,
   `earc_probe.h`, `build.sh`, `build.py`. Rebuild with `webos25/kmod/build.sh` (see its
-  README), copy `out/earc_route-5.4.ko` into `webos25/restore/kmod-out/`, and run the
-  module on a TV of that kernel generation (audit, self-test, the mode `hdmi-watch.sh`
+  README), copy `out/earc_route-*.ko` into `webos25/restore/kmod-out/`, and run the
+  module on a TV of that kernel generation (audit, self-test, the mode the opt-in
   loads, unload) before committing it
 
-`earc-route-load.sh` and `hdmi-watch.sh` are not vendored: the release workflow copies
-them from `webos25/kmod/` into the CLI tarball's `kmod-out/` and the app's
+`earc-route-load.sh` is not vendored: the release workflow copies
+it from `webos25/kmod/` into the CLI tarball's `kmod-out/` and the app's
 `payload/webos25-hdmi/`. The 6.12 module is not vendored: it has never run on a TV, and
 the opt-in refuses that kernel.
 
@@ -195,7 +194,7 @@ cp -Pf ../restore/truehd-out/libgstlibav.so ../restore/truehd-out/libav*.so* \
        ../restore/truehd-out/libsw*.so*                                 payload/webos25-truehd/
 cp -f  ../restore/demux-out/libgstisomp4.so ../restore/demux-out/libgstmpegtsdemux.so \
        ../restore/demux-out/libgstmatroska.so ../restore/demux-out/libgstmpegpsdemux.so payload/webos25-demux/
-cp -f  ../restore/kmod-out/earc_route-5.4.ko ../kmod/earc-route-load.sh ../kmod/hdmi-watch.sh \
+cp -f  ../restore/kmod-out/earc_route-*.ko ../kmod/earc-route-load.sh \
        payload/webos25-hdmi/
 cp -f  ../../gst/libgstlibav.so ../../gst/libgstisomp4.so \
        ../../gst/libgstmatroska.so ../../gst/libgstisomp4_1_8.so          payload/cx/
