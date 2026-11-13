@@ -121,6 +121,50 @@ test("the module is wanted only with DTS-HD on, and the holder unloads it once D
   }
 });
 
+test("a load the TV did not survive is not retried at boot; turning DTS-HD on clears it", function () {
+  var dir = tmp("dts-kmod-crash-");
+  try {
+    var kmod = path.join(dir, "hdmi");
+    ["earc_route-5.4.ko", "earc-route-load.sh"].forEach(function (f) { write(path.join(kmod, f), "x"); });
+    write(path.join(kmod, "loading"), "");
+    var r = sh(['uname() { echo 5.4.268-329.ptl4tv.5; }', "KMOD_DIR=" + kmod, initFn("w25_kmod_refusal"), "w25_kmod_refusal"].join("\n"));
+    assert.strictEqual(r.stdout, "crashed\n");
+    assert.match(service.w25KmodReason("crashed"), /restarted while the DTS-HD kernel module was loading/);
+    var on = service.w25PassthroughSteps(true, true);
+    assert.ok(on.indexOf('rm -f "$KMOD_DIR/loading"') < on.indexOf("R=$(w25_kmod_refusal)"), "the user's retry clears the marker first");
+    assert.doesNotMatch(service.w25PassthroughSteps(true), /loading/, "only DTS-HD on retries");
+    var start = initFn("w25_kmod_start");
+    assert.ok(start.includes('[ "$WHY" != crashed ] || w25_kmod_crash_alert'), "boot tells the user once it refuses after a crash");
+    var alert = initFn("w25_kmod_crash_alert");
+    assert.match(alert, /createAlert/);
+    assert.match(alert, /"onclick":"luna:\/\/com\.webos\.applicationManager\/launch","params":\{"id":"io\.github\.josippapez\.dtsenabler"\}/);
+    assert.match(alert, /\) <\/dev\/null >\/dev\/null 2>&1 &$/m, "detached, so the boot hook does not wait for it");
+    JSON.parse(/'(\{"sourceId".*\})'/.exec(alert)[1]);
+  } finally {
+    fs.rmSync(dir, {recursive: true, force: true});
+  }
+});
+
+test("the holder marks the load until the module has run, and clears the mark on every way out", function () {
+  var h = holder(false);
+  try {
+    var mark = path.join(h.dir, "hdmi", "loading");
+    var child = require("node:child_process").spawn("sh", [h.hold], {stdio: "ignore"});
+    assert.ok(waitFor(function () { return loaded(h); }, 5000));
+    assert.ok(fs.existsSync(mark), "marked while the module is new");
+    assert.ok(waitFor(function () { return !fs.existsSync(mark); }, 5000), "cleared after six polls");
+    fs.unlinkSync(h.hd);
+    assert.ok(waitFor(function () { return read(h.run + "/hdmi-watch.exit") === "0\n"; }, 5000));
+    child.kill();
+    var f = holder(false, true);
+    spawnSync("sh", [f.hold], {encoding: "utf8", timeout: 10000});
+    assert.strictEqual(fs.existsSync(path.join(f.dir, "hdmi", "loading")), false, "a refused load is not a crash");
+    fs.rmSync(f.dir, {recursive: true, force: true});
+  } finally {
+    fs.rmSync(h.dir, {recursive: true, force: true});
+  }
+});
+
 test("the holder ends when the module does not load, and a second one does not start beside it", function () {
   var h = holder(false, true);
   try {

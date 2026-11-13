@@ -271,7 +271,8 @@ w25_kmod_refusal() {
     6.12.*) KO=earc_route-6.12.ko ;;
     *) echo kernel; return 0 ;;
   esac
-  if [ -f /var/lib/lg-dts-core/enabled ]; then echo lg-dts-core
+  if [ -f "$KMOD_DIR/loading" ]; then echo crashed
+  elif [ -f /var/lib/lg-dts-core/enabled ]; then echo lg-dts-core
   elif [ -f /var/lib/lg-dts-native/enabled ]; then echo glasshouse
   elif [ ! -f "$KMOD_DIR/$KO" ] || [ ! -f "$KMOD_DIR/earc-route-load.sh" ]; then echo payload
   fi
@@ -953,16 +954,35 @@ w25_kmod_hold() {
   ( set -C; echo "$$" > "$KMOD_PID" ) 2>/dev/null || return 0
   quit=
   trap 'quit=1' INT TERM HUP
+  # Survives a kernel crash: while it exists, w25_kmod_refusal says "crashed" and
+  # no boot loads the module again, so a bad load cannot become a reboot loop.
+  : > "$KMOD_DIR/loading" && sync
   if ! sh "$KMOD_DIR/earc-route-load.sh" --dts-hd </dev/null >"$KMOD_OUT" 2>&1; then
+    rm -f "$KMOD_DIR/loading"
     echo 1 > "$KMOD_EXIT"
     rm -f "$KMOD_PID"
     return 0
   fi
+  held=0
   while [ -z "$quit" ] && [ -d "$KMOD_MODULE" ] && w25_module_wanted; do
     sleep 10 & wait $!
+    held=$((held + 1))
+    [ "$held" = 6 ] && rm -f "$KMOD_DIR/loading" && sync
   done
+  rm -f "$KMOD_DIR/loading"
   if [ ! -d "$KMOD_MODULE" ] || rmmod earc_route 2>>"$KMOD_OUT"; then echo 0; else echo 20; fi > "$KMOD_EXIT"
   rm -f "$KMOD_PID"
+}
+# Detached: at boot the notification service starts after this hook.
+w25_kmod_crash_alert() {
+  ( i=0
+    while [ "$i" -lt 180 ]; do
+      systemctl is-active bootmode-normal-boot-done.service >/dev/null 2>&1 && break
+      i=$((i + 1)); sleep 1
+    done
+    luna-send -n 1 -a com.webos.service.secondscreen.gateway luna://com.webos.notification/createAlert '{"sourceId":"io.github.josippapez.dtsenabler","message":"<b>DTS Enabler</b><br/>The TV restarted while the DTS-HD kernel module was loading, so DTS-HD passthrough is paused and receivers get the DTS core.<br/><br/>To retry, open DTS Enabler and turn Full DTS-HD off and on.","buttons":[{"label":"Open DTS Enabler","onclick":"luna://com.webos.applicationManager/launch","params":{"id":"io.github.josippapez.dtsenabler"}},{"label":"Later"}]}' >/dev/null 2>&1 ||
+      toast "DTS Enabler: DTS-HD paused after a restart during its kernel module load. Turn Full DTS-HD off and on to retry."
+  ) </dev/null >/dev/null 2>&1 &
 }
 w25_kmod_start() {
   w25_module_wanted || return 0
@@ -970,6 +990,7 @@ w25_kmod_start() {
   WHY=$(w25_kmod_refusal)
   if [ -n "$WHY" ]; then
     w25_log "earc_route: not loaded ($WHY)"
+    [ "$WHY" != crashed ] || w25_kmod_crash_alert
     return 0
   fi
   mkdir -p /run/dts25
