@@ -45,19 +45,6 @@ test("the module runs on verified 5.4 kernels and refuses unverified 6.12", func
   }
 });
 
-test("a process counts as alive until it is a zombie", function () {
-  var dir = tmp("dts-kmod-alive-");
-  try {
-    write(path.join(dir, "proc/100/stat"), "100 (sh) S 1 100");
-    write(path.join(dir, "proc/101/stat"), "101 (sh) Z 1 101");
-    var fn = oneLine("w25_alive").split("/proc/").join(dir + "/proc/");
-    var r = sh([fn, "for p in 100 101 102 ''; do w25_alive \"$p\" && echo \"$p alive\" || echo \"$p gone\"; done"].join("\n"));
-    assert.strictEqual(r.stdout, "100 alive\n101 gone\n102 gone\n gone\n");
-  } finally {
-    fs.rmSync(dir, {recursive: true, force: true});
-  }
-});
-
 function holder(rmmodFails, loadFails) {
   var dir = tmp("dts-kmod-hold-");
   var kmod = path.join(dir, "hdmi"), run = path.join(dir, "run"), module = path.join(dir, "module");
@@ -69,13 +56,11 @@ function holder(rmmodFails, loadFails) {
   exe(path.join(kmod, "earc-route-load.sh"), during + (loadFails
     ? 'echo "earc-route: REFUSED: test"; exit 1'
     : 'mkdir -p "' + module + '"; echo "earc-route: PASSTHROUGH ACTIVE (mode=7) EXPERIMENTAL"'));
-  var vars = ["KMOD_DIR=" + kmod, "KMOD_PID=" + run + "/hdmi.pid", "KMOD_OUT=" + run + "/hdmi-watch.out",
-    "KMOD_EXIT=" + run + "/hdmi-watch.exit", "KMOD_MODULE=" + module, "PT_FLAG=" + pt, "HD_FLAG=" + hd,
+  var vars = ["KMOD_DIR=" + kmod, "KMOD_OUT=" + run + "/hdmi-watch.out",
+    "KMOD_MODULE=" + module, "PT_FLAG=" + pt, "HD_FLAG=" + hd,
     "KMOD_UNIT=dts25-test.service", 'systemctl() { :; }',
     oneLine("w25_module_wanted"), "w25_log() { :; }",
-    rmmodFails ? "rmmod() { echo 'rmmod: busy' >&2; return 1; }" : 'rmmod() { rm -rf "' + module + '"; }',
-    // macOS has no /proc: the same zombie rule, from ps.
-    'w25_alive() { [ -n "$1" ] || return 1; s=$(ps -o stat= -p "$1" 2>/dev/null) || return 1; case $s in Z*|"") return 1 ;; esac; }'];
+    rmmodFails ? "rmmod() { echo 'rmmod: busy' >&2; return 1; }" : 'rmmod() { rm -rf "' + module + '"; }'];
   var hold = path.join(dir, "hold.sh");
   write(hold, vars.concat([initFn("w25_kmod_hold"), "w25_kmod_hold"]).join("\n"));
   var stop = vars.concat([initFn("w25_kmod_stop"), initFn("w25_kmod_stop_soft")]).join("\n");
@@ -83,7 +68,7 @@ function holder(rmmodFails, loadFails) {
 }
 function loaded(h) { return /PASSTHROUGH ACTIVE/.test(read(h.run + "/hdmi-watch.out") || ""); }
 
-test("managed stop verifies the module is gone even without a holder PID", function () {
+test("stop verifies the module is gone, with or without its unit", function () {
   [false, true].forEach(function (fails) {
     var h = holder(fails);
     try {
@@ -92,7 +77,6 @@ test("managed stop verifies the module is gone even without a holder PID", funct
       var r = sh(h.stop + "\nw25_kmod_stop; echo \"status=$?\"");
       assert.match(r.stdout, fails ? /ERROR=.*still loaded[\s\S]*status=1/ : /status=0/);
       assert.strictEqual(fs.existsSync(h.module), fails);
-      assert.strictEqual(fs.existsSync(h.run + "/hdmi.pid"), false);
       assert.strictEqual(/WARN_KMOD=.*still loaded/.test(sh(h.stop + "\nw25_kmod_stop_soft").stdout), fails);
     } finally {
       fs.rmSync(h.dir, {recursive: true, force: true});
@@ -125,12 +109,14 @@ test("a load the TV did not survive is not retried at boot; turning DTS-HD on cl
     assert.doesNotMatch(service.w25PassthroughSteps(true), /loading/, "only DTS-HD on retries");
     // Boot refuses it with a TV toast once boot is done, detached from the hook.
     var calls = path.join(dir, "calls");
-    var r2 = sh(['uname() { echo 5.4.268-329.ptl4tv.5; }', "KMOD_DIR=" + kmod, "KMOD_PID=" + path.join(dir, "pid"),
+    exe(path.join(dir, "bin", "systemd-run"), ': > "' + path.join(dir, "started") + '"');
+    var r2 = sh(['uname() { echo 5.4.268-329.ptl4tv.5; }', "KMOD_DIR=" + kmod,
       "PT_FLAG=" + path.join(dir, "pt"), "HD_FLAG=" + path.join(dir, "pt"), ': > "$PT_FLAG"',
-      "w25_log() { :; }", 'w25_alive() { return 1; }', 'systemctl() { return 1; }',
+      "w25_log() { :; }", 'systemctl() { return 1; }', 'PATH="' + path.join(dir, "bin") + ':$PATH"',
       'toast() { echo "$1" > ' + calls + '; }', oneLine("w25_module_wanted"),
       initFn("w25_kmod_refusal"), "w25_wait_boot() { :; }", initFn("w25_kmod_start"), "w25_kmod_start; wait"].join("\n"));
     assert.strictEqual(r2.status, 0, r2.stderr);
+    assert.strictEqual(fs.existsSync(path.join(dir, "started")), false, "a crashed load is not started again");
     assert.match(read(calls) || "", /^DTS Enabler: DTS-HD is paused.*turn Full DTS-HD off and on/);
   } finally {
     fs.rmSync(dir, {recursive: true, force: true});
@@ -160,7 +146,6 @@ test("the oneshot fails when the loader refuses", function () {
   try {
     var r = spawnSync("sh", [h.hold], {encoding: "utf8", timeout: 10000});
     assert.strictEqual(r.status, 1, r.stderr);
-    assert.strictEqual(read(h.run + "/hdmi-watch.exit"), "1\n");
   } finally {
     fs.rmSync(h.dir, {recursive: true, force: true});
   }
@@ -171,11 +156,28 @@ test("passthrough starts and stops the module; boot, stand-down, self-heal, Disa
   assert.ok(mode !== -1 && mode < body.indexOf("# --- G) self-heal"), "the holder's mode exits before the apply path");
   assert.ok(body.includes("start) w25_pt_start; w25_kmod_start ;;"));
   assert.ok(body.includes("stop) w25_pt_stop || exit 1; w25_kmod_stop || exit 1 ;;"));
-  assert.ok(body.includes("\nw25_pt_start\nw25_kmod_start\n"), "the boot apply starts it");
-  assert.ok(body.indexOf("\nw25_kmod_start\n") > body.indexOf("# --- GATE 2a) loader resolution"), "only after the gates");
-  assert.ok(initFn("w25_kmod_start").includes("Environment=W25_PT= W25_APPDTS= W25_KMOD=run"));
-  assert.ok(initFn("w25_kmod_start").includes("RemainAfterExit=yes"));
-  assert.ok(initFn("w25_kmod_start").includes("ExecStop="));
+  assert.ok(body.includes("\nw25_pt_start\nw25_kmod_start --no-block\n"), "boot only enqueues the load");
+  assert.ok(body.indexOf("\nw25_kmod_start --no-block\n") > body.indexOf("# --- GATE 2a) loader resolution"), "only after the gates");
+  var start = initFn("w25_kmod_start");
+  ["systemd-run", "--collect", "Type=oneshot", "RemainAfterExit=yes", "ExecStop=", "W25_KMOD=run"].forEach(function (s) {
+    assert.ok(start.includes(s), s);
+  });
+  // The boot script runs under set -u; the toggle calls this with no argument.
+  var dir = tmp("dts-kmod-run-"), args = path.join(dir, "args");
+  try {
+    exe(path.join(dir, "bin", "systemd-run"), 'echo "$*" > "' + args + '"');
+    var kmod = path.join(dir, "hdmi");
+    ["earc_route-5.4.ko", "earc-route-load.sh"].forEach(function (f) { write(path.join(kmod, f), "x"); });
+    ok(sh(["set -u", 'PATH="' + path.join(dir, "bin") + ':$PATH"', 'uname() { echo 5.4.268-329.ptl4tv.5; }',
+      "KMOD_DIR=" + kmod, "KMOD_OUT=" + path.join(dir, "out"), "KMOD_UNIT=dts25-earc.service", "INIT_SELF=/x",
+      "PT_FLAG=" + args, "HD_FLAG=" + args, ': > "$PT_FLAG"', "w25_log() { :; }", "systemctl() { return 1; }",
+      oneLine("w25_module_wanted"), initFn("w25_kmod_refusal"), start.split("/run/dts25").join(dir), "w25_kmod_start"].join("\n")), "no-argument start");
+    assert.match(read(args), /--collect -u dts25-earc\.service/);
+    assert.doesNotMatch(read(args), /--no-block/);
+  } finally {
+    fs.rmSync(dir, {recursive: true, force: true});
+  }
+  assert.doesNotMatch(service.w25PassthroughSteps(true, true), /hdmi-watch\.exit|\/dev\/null 2>&1 &/, "the toggle waits for the start job");
   assert.ok(initFn("w25_stand_down").includes("w25_kmod_stop_soft"));
   assert.ok(initFn("w25_self_heal").includes("w25_kmod_stop_soft"));
   var disable = service.w25Disable();

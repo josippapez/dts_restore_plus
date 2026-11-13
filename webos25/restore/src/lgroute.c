@@ -489,10 +489,7 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
       if (!buffer)
         return GST_PAD_PROBE_DROP;
       GST_PAD_PROBE_INFO_DATA (info) = buffer;
-      if (route->native_es)
-        GST_BUFFER_FLAG_SET (buffer, ES_FLAG);
-      else
-        GST_BUFFER_FLAG_UNSET (buffer, ES_FLAG);
+      GST_BUFFER_FLAG_UNSET (buffer, ES_FLAG);
       return silence (info);
     }
     if (!restart_renderer (route)) {

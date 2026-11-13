@@ -57,9 +57,9 @@ libgstdtsdec.so
                 gst_plugin_dtsdec_get_desc, gst_truehd_mat_get_type and the
                 lgroute_* / lgroute_control_* helpers
   size        : 3463644 bytes
-  md5         : 39d34b3464b5ad1a844e83182ee2f252
-  sha1        : 58de293518293113cc988ad94a702ba739dcf8cc
-  sha256      : 1d8004c3be8b936e709fde78d85942e40b471f600cfc4ad35ef59d278d0536ca
+  md5         : abc5a72870e558278523702d61f146d7
+  sha1        : 78fe3e9c33b0698b8e0466c4da0216f1872a4a38
+  sha256      : d574cae1645b9ffcfa47e95047827f2cb3ed3f96b5b6712957836050483ba9ec
 
 lgroute-control
 ---------------
