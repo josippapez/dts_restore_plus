@@ -154,6 +154,20 @@ for release in 6.12.44-352 6.12.44-347; do
   loaded earc_route-6.12.ko
 done
 
+setup 6.12.44-352 /usr/lib/modules "$V612" 0x4c0 0x138 0x478
+insmod_stub "$CANCEL"
+expect "C6 ABI without a matching build refuses" 1 "0 of .* match this kernel"
+not_loaded
+fake_module "$WORK/app/earc_route-6.12-c6.ko" "$V612" 0x4c0 0x138 0x478
+expect "C6 ABI selects the C6 build, not the shared-release build" 0 "AUDIT OK"
+loaded earc_route-6.12-c6.ko
+
+setup 6.12.44-352 /usr/lib/modules "$V612" 0x4c0 0x138 0x480
+fake_module "$WORK/app/earc_route-6.12-c6.ko" "$V612" 0x4c0 0x138 0x478
+insmod_stub "$CANCEL"
+expect "original 6.12 ABI still selects the original build beside C6" 0 "AUDIT OK"
+loaded earc_route-6.12.ko
+
 setup 5.10.0-1 /lib/modules '5.10.0 SMP preempt mod_unload aarch64' 0x3c0 0x150 0x370
 insmod_stub "$CANCEL"
 expect "unknown kernel generation refuses" 1 "0 of earc_route-5.4.ko, earc_route-6.12.ko match this kernel"
@@ -175,7 +189,7 @@ expect "no stock module refuses" 1 "no stock module under"
 not_loaded
 
 setup 5.4.268-329.ptl4tv.5 /lib/modules "$V54" 0x380 0x150 0x338
-sed -i '/ _set_output$/d; / bm_connect_block$/d' "$WORK/root/proc/kallsyms"
+grep -v -e ' _set_output$' -e ' bm_connect_block$' "$WORK/root/proc/kallsyms" > "$WORK/kallsyms" && mv "$WORK/kallsyms" "$WORK/root/proc/kallsyms"
 insmod_stub "$CANCEL"
 expect "a required symbol missing from kallsyms refuses" 1 "bm_connect_block appears 0 times"
 not_loaded

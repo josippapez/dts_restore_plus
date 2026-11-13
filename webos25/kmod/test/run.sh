@@ -51,7 +51,7 @@ ${CC:-cc} -std=c99 -D_POSIX_C_SOURCE=200809L -O2 -Wall -Wextra -Werror \
 # The shipped loader on each capture: its own stock module and kallsyms, the
 # committed .ko files, insmod stubbed. A kernel the boot script accepts must
 # get its generation's build and every required symbol.
-KO=$HERE/../../restore/kmod-out
+KO=${EARC_KO_DIR:-$HERE/../../restore/kmod-out}
 mkdir -p "$BUILD/app" "$BUILD/bin"
 cp "$HERE/../earc-route-load.sh" "$KO"/earc_route-*.ko "$BUILD/app/"
 printf '#!/bin/sh\necho 0\n' > "$BUILD/bin/id"
@@ -64,8 +64,10 @@ while [ $# -ge 3 ]; do
   [ -f "$dir/stock-module.ko" ] || { echo "SKIP loader $dir: no stock-module.ko"; continue; }
   release=$(LC_ALL=C grep -a -o -m1 'Linux version [^ ]*' "$dir/kernel.bin" | cut -d' ' -f3)
   case $release in
-    5.4.268-329.ptl4tv.[25]) want=earc_route-5.4.ko ;;
-    6.12.*) want=earc_route-6.12.ko ;;
+    5.4.268-329.ptl4tv.[25]|5.4.268-320) want=earc_route-5.4 ;;
+    # Realtek audio stack: none of the module's symbols, so the loader must refuse.
+    6.12.*qilian*) want=refuse ;;
+    6.12.*) want=earc_route-6.12 ;;
     *) want= ;;
   esac
   root=$BUILD/root; rm -rf "$root"; mkdir -p "$root/proc" "$root/lib/modules/$release"
@@ -73,10 +75,16 @@ while [ $# -ge 3 ]; do
   cp "$dir/kallsyms.txt" "$root/proc/kallsyms"
   printf '#!/bin/sh\necho %s\n' "$release" > "$BUILD/bin/uname"; chmod +x "$BUILD/bin/uname"
   out=$(PATH="$BUILD/bin:$PATH" EARC_LOADER_ROOT="$root" sh "$BUILD/app/earc-route-load.sh" 2>&1) || true
-  if [ -z "$want" ]; then
+  if [ "$want" = refuse ]; then
+    if printf '%s\n' "$out" | grep -q 'REFUSED: kallsyms:' && ! printf '%s\n' "$out" | grep -q 'loading '; then
+      echo "PASS loader $dir ($release): refused before insmod: $(printf '%s\n' "$out" | tail -n1)"
+    else
+      echo "FAIL loader $dir ($release): not refused: $(printf '%s\n' "$out" | tail -n1)"; status=1
+    fi
+  elif [ -z "$want" ]; then
     echo "INFO loader $dir ($release, not offered by the boot script): $(printf '%s\n' "$out" | tail -n1)"
-  elif printf '%s\n' "$out" | grep -q "loading $want"; then
-    echo "PASS loader $dir ($release): picks $want, every symbol present"
+  elif printf '%s\n' "$out" | grep -qE "loading $want[.-]"; then
+    echo "PASS loader $dir ($release): picks $(printf '%s\n' "$out" | grep -oE 'earc_route-[0-9a-z.-]+\.ko' | head -n1), every symbol present"
   else
     echo "FAIL loader $dir ($release): $(printf '%s\n' "$out" | tail -n1)"; status=1
   fi

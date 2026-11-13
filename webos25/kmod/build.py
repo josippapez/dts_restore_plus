@@ -34,6 +34,9 @@ GENERATIONS = {
             'printk': 'printk', 'kprobe': (0x88, 0x80)},
     '6.12': {'vermagic': '6.12.44 SMP preempt mod_unload aarch64', 'abi': (0x4c0, 0x138, 0x480),
              'printk': '_printk', 'kprobe': (0x80, 0x78)},
+    # C6 (2026, 43.21.79/98): same release and vermagic, exit 8 bytes lower.
+    '6.12-c6': {'vermagic': '6.12.44 SMP preempt mod_unload aarch64', 'abi': (0x4c0, 0x138, 0x478),
+                'printk': '_printk', 'kprobe': (0x80, 0x78)},
 }
 # Direct imports, each proven exported by
 # every kernel of the generation (prel32_exports). register_kernel_break_hook,
@@ -113,13 +116,11 @@ def define(name, value):
 def generation_of(capture):
     stock = module_abi(capture / 'stock-module.ko')
     for name, generation in GENERATIONS.items():
-        if stock['vermagic'] == [generation['vermagic']]:
-            expected = {'size': generation['abi'][0], 'vermagic': [generation['vermagic']],
-                        'init_module': generation['abi'][1], 'cleanup_module': generation['abi'][2]}
-            if stock != expected:
-                raise SystemExit('Stock module ABI differs in ' + str(capture) + ': ' + repr(stock))
+        expected = {'size': generation['abi'][0], 'vermagic': [generation['vermagic']],
+                    'init_module': generation['abi'][1], 'cleanup_module': generation['abi'][2]}
+        if stock == expected:
             return name, expected
-    raise SystemExit('Stock module of ' + str(capture) + ' has an unknown vermagic: ' + repr(stock['vermagic']))
+    raise SystemExit('Stock module of ' + str(capture) + ' matches no generation: ' + repr(stock))
 
 
 by_generation = {}

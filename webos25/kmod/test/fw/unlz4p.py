@@ -8,6 +8,19 @@ import struct, sys
 import lz4.block
 
 src = open(sys.argv[1], 'rb').read()
+if src[:4] == b'\x02\x21\x4c\x18':
+    # Standard LZ4 legacy frame (qilian 6.12 kernels): u32 size + block, 8 MiB blocks.
+    out, pos = bytearray(), 4
+    # A trailing u32 (the kernel's uncompressed size, as the kernel's make appends) ends the frame.
+    while pos + 4 < len(src):
+        size = struct.unpack_from('<I', src, pos)[0]
+        if size == 0x184C2102:
+            pos += 4
+            continue
+        out += lz4.block.decompress(src[pos + 4:pos + 4 + size], uncompressed_size=8 << 20)
+        pos += 4 + size
+    open(sys.argv[2], 'wb').write(out)
+    sys.exit(print('ok', len(out), 'bytes (lz4 legacy)'))
 if src[:4] != b'LZ4P':
     sys.exit('not an LZ4P container')
 total, _, block, count = struct.unpack_from('<4I', src, 4)

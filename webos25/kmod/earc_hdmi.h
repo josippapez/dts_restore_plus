@@ -652,6 +652,7 @@ static void hd_input_start(const struct earc_code *fns, struct earc_hdmi_layout 
     const struct earc_code *start = &fns[HF_alsa_decoder_start];
     const struct earc_code *get = &fns[HF_input_get_hdmi_codec];
     unsigned int index, found = 0, table_reg = 31, tables = 0;
+    ed_u64 table_offset = 0;
     out->input_reason = "HDMI start compare not found";
     if (!get->words || get->count < 2 || (get->words[0] & 0xffc003ffu) != 0xb9400000u ||
         get->words[1] != 0xd65f03c0u) {
@@ -664,13 +665,20 @@ static void hd_input_start(const struct earc_code *fns, struct earc_hdmi_layout 
         ed_u32 load = start->words[index - 1], cset = start->words[index + 2];
         ed_u64 target = start->address + 4ULL * index + ((ed_u64)ed_sext(call & 0x3ffffff, 26) << 2);
         if ((call & 0xfc000000u) != 0x94000000u || target != get->address) continue;
-        if (start->words[index + 1] != 0x7100041fu || (cset & 0xffffffe0u) != 0x1a9f17e0u ||
-            (shift & 0xfffffc1fu) != 0xd37cec00u || (load & 0xffe0fc1fu) != 0xf8606800u ||
-            ((load >> 16) & 31) != 0 || ((load >> 5) & 31) == 31) continue;
-        out->input_index_reg = (shift >> 5) & 31;
+        if (start->words[index + 1] != 0x7100041fu || (cset & 0xffffffe0u) != 0x1a9f17e0u) continue;
+        if ((shift & 0xfffffc1fu) == 0xd37cec00u && (load & 0xffe0fc1fu) == 0xf8606800u &&
+            ((load >> 16) & 31) == 0 && ((load >> 5) & 31) != 31) {
+            out->input_index_reg = (shift >> 5) & 31;
+            table_reg = (load >> 5) & 31;
+            table_offset = 0;
+        } else if ((shift & 0xffe0fc1fu) == 0x8b001000u && load == 0xf9408800u &&
+                   ((shift >> 5) & 31) >= 19 && ((shift >> 5) & 31) <= 28) {
+            out->input_index_reg = (shift >> 16) & 31;
+            table_reg = (shift >> 5) & 31;
+            table_offset = 0x110;
+        } else continue;
         if (out->input_index_reg < 19 || out->input_index_reg > 28) continue;
         out->input_compare = start->address + 4ULL * (index + 1);
-        table_reg = (load >> 5) & 31;
         found++;
     }
     out->input_reason = found == 1 ? 0 : found ? "HDMI start compare is ambiguous" : "HDMI start compare not found";
@@ -693,15 +701,15 @@ static void hd_input_start(const struct earc_code *fns, struct earc_hdmi_layout 
                 constant[rd] = page[rn] + ((op >> 10) & 0xfff);
             else if ((op & 0xffc0001fu) == 0x91000000u && rn != 31 && constant[rn]) {
                 unsigned int at;
-                for (at = index + 1; at < start->count && at <= index + 3; at++) {
+                for (at = index + 1; at < start->count && at <= index + 4; at++) {
                     next = start->words[at];
                     if ((next & 0xfc000000u) == 0x94000000u) {
                         out->decoder_lock = constant[rn] + ((op >> 10) & 0xfff);
                         out->decoder_lock_call = start->address + 4ULL * at + ((ed_u64)ed_sext(next & 0x3ffffff, 26) << 2);
                         break;
                     }
-                    /* only stores and register pairs that cannot write x0 may sit in between */
-                    if ((next & 0x3a400000u) != 0x28000000u && (next & 0x3b400000u) != 0x39000000u) break;
+                    if ((next & 0x3a400000u) != 0x28000000u && (next & 0x3b400000u) != 0x39000000u &&
+                        ((next & 0x9f000000u) != 0x90000000u || (next & 31) == 0)) break;
                 }
             }
         }
@@ -711,9 +719,10 @@ static void hd_input_start(const struct earc_code *fns, struct earc_hdmi_layout 
         struct hval previous = hf_reg[table_reg];
         hf_step(index);
         if (hf_reg[table_reg].kind == HK_CONST && hf_reg[table_reg].c != previous.c &&
-            hf_reg[table_reg].c <= out->adec_base && out->adec_base - hf_reg[table_reg].c <= 0x100 &&
-            hf_reg[table_reg].c != out->input_table) {
-            out->input_table = hf_reg[table_reg].c;
+            (table_offset ? hf_reg[table_reg].c == out->adec_base
+                          : hf_reg[table_reg].c <= out->adec_base && out->adec_base - hf_reg[table_reg].c <= 0x100) &&
+            hf_reg[table_reg].c + table_offset != out->input_table) {
+            out->input_table = hf_reg[table_reg].c + table_offset;
             tables++;
         }
     }

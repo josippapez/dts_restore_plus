@@ -21,7 +21,7 @@
 static int failures;
 
 struct kernel {
-    const char *dir;
+    const char *dir, *sha256;
     unsigned char *image;
     size_t image_size;
     ed_u64 base;  /* link address of file offset 0: (_stext & ~0xfffff) + text_offset */
@@ -120,7 +120,7 @@ static int load_kernel(struct kernel *k, const char *dir) {
         ed_u64 address = 0, end = 0;
         for (j = 0; j < k->count; j++)
             if (!strcmp(k->symbols[j].name, names[i])) { found++; address = k->symbols[j].address; }
-        if (found != 1 || !address) { printf("FAIL %s: symbol %s found %zu times\n", dir, names[i], found); return -1; }
+        if (found != 1 || !address) { printf("REFUSE %s: symbol %s found %zu times\n", dir, names[i], found); return -2; }
         k->code[i].address = address;
         if (!analysed[i]) continue;
         for (j = 0; j < k->address_count; j++)
@@ -912,6 +912,30 @@ HDMI_MUTATION(input_compare_changed) {
     w[(g->input_compare - f->address) / 4] = NOP;
     return 1;
 }
+HDMI_MUTATION(input_scale_changed) {
+    ed_u64 compare;
+    HDMI_UNUSED;
+    compare = (g->input_compare - f->address) / 4;
+    if (compare < 3 || compare >= n) return 0;
+    w[compare - 3] ^= 1u << 10;
+    return 1;
+}
+HDMI_MUTATION(input_load_destination_changed) {
+    ed_u64 compare;
+    HDMI_UNUSED;
+    compare = (g->input_compare - f->address) / 4;
+    if (compare < 2 || compare >= n) return 0;
+    w[compare - 2] = (w[compare - 2] & ~31u) | 1u;
+    return 1;
+}
+HDMI_MUTATION(input_table_offset_changed) {
+    ed_u64 compare;
+    HDMI_UNUSED;
+    compare = (g->input_compare - f->address) / 4;
+    if (compare < 2 || compare >= n) return 0;
+    w[compare - 2] ^= 1u << 10;
+    return 1;
+}
 HDMI_MUTATION(input_frame_changed) {
     ed_u32 index;
     HDMI_UNUSED;
@@ -1379,7 +1403,19 @@ static void input_capture_tests(const struct kernel *kernel, const struct earc_h
     }
     check(kernel->dir, "one codec format", codec_formats, 1);
     check(kernel->dir, "one mode format", mode_formats, 1);
-    check(kernel->dir, "input table oracle", layout->input_table, layout->adec_base - 32);
+    if (!strcmp(kernel->sha256, "46f46c2574d72cf85ff8109f9829d481394a4c173e8fe18389439ec2867f346c")) {
+        check(kernel->dir, "input table oracle", layout->input_table, 0xffffffc012742880ULL);
+        check(kernel->dir, "start compare oracle", layout->input_compare, 0xffffffc010cfd9e0ULL);
+        check(kernel->dir, "decoder lock oracle", layout->decoder_lock, 0xffffffc012411aa8ULL);
+        check(kernel->dir, "index register oracle", layout->input_index_reg, 26);
+    } else if (!strcmp(kernel->sha256, "4fffc9484aa8c3744688eafd3359ed0edb75988204c94d6b8442dd8098443b6b")) {
+        check(kernel->dir, "input table oracle", layout->input_table, 0xffffffc01265a908ULL);
+        check(kernel->dir, "start compare oracle", layout->input_compare, 0xffffffc010d02170ULL);
+        check(kernel->dir, "decoder lock oracle", layout->decoder_lock, 0xffffffc01232a470ULL);
+        check(kernel->dir, "index register oracle", layout->input_index_reg, 26);
+    } else {
+        check(kernel->dir, "input table oracle", layout->input_table, layout->adec_base - 32);
+    }
     check(kernel->dir, "input argument register oracle", layout->input_arg_reg, 19);
     check(kernel->dir, "forced PCM register oracle", layout->input_forced_reg, 23);
     check(kernel->dir, "input frame size oracle", layout->input_frame_size, 160);
@@ -1401,14 +1437,23 @@ static void input_capture_tests(const struct kernel *kernel, const struct earc_h
         check(kernel->dir, "type offset oracle", layout->input_type_offset, 0x7c);
         check(kernel->dir, "index register oracle", layout->input_index_reg, 27);
     } else if (getter->address == 0xffffffc080f2894cULL) {
+        /* C5 43.21.77 (also W25G 43.21.96) shares the code of 43.21.73; its rodata sits 0xa8 higher. */
+        ed_u64 rodata = kernel->sha256 && !strncmp(kernel->sha256, "53c3cb3d", 8) ? 0xa8 : 0;
         check(kernel->dir, "start compare oracle", layout->input_compare, 0xffffffc080f55518ULL);
-        check(kernel->dir, "codec format oracle", codec_format, 0xffffffc081cc0c78ULL);
-        check(kernel->dir, "mode format oracle", mode_format, 0xffffffc081cc87d8ULL);
+        check(kernel->dir, "codec format oracle", codec_format, 0xffffffc081cc0c78ULL + rodata);
+        check(kernel->dir, "mode format oracle", mode_format, 0xffffffc081cc87d8ULL + rodata);
         check(kernel->dir, "type offset oracle", layout->input_type_offset, 0x78);
         check(kernel->dir, "index register oracle", layout->input_index_reg, 28);
     }
     hdmi_refuse(kernel, HF_alsa_decoder_start, "HDMI start compare changed", "not found",
                 input_compare_changed, input_reason, 0, layout);
+    hdmi_refuse(kernel, HF_alsa_decoder_start, "HDMI input lookup scale changed", "not found",
+                input_scale_changed, input_reason, 0, layout);
+    hdmi_refuse(kernel, HF_alsa_decoder_start, "HDMI input load destination changed", "not found",
+                input_load_destination_changed, input_reason, 0, layout);
+    if (getter->address == 0xffffffc010cd2bb0ULL || getter->address == 0xffffffc010cd7f60ULL)
+        hdmi_refuse(kernel, HF_alsa_decoder_start, "HDMI input table offset changed", "not found",
+                    input_table_offset_changed, input_reason, 0, layout);
     hdmi_refuse(kernel, HF_input_get_hdmi_codec, "HDMI getter breakpoint", "not a word load",
                 entry_kprobe, input_reason, 0, layout);
     hdmi_refuse(kernel, HF_input_set_hdmi, "HDMI stack frame changed", "ambiguous",
@@ -1479,6 +1524,23 @@ static void input_policy_tests(void) {
     check("input policy", "AC3", earc_input_property(3, 48000, 0, 0), 0);
 }
 
+/* A kernel with no oracle: if passthrough_init's order of reasons refuses it,
+ * print the reason and skip the checks that assume an accepted image. */
+static int hdmi_session_refusal(const struct kernel *k, struct earc_layout *l) {
+    struct earc_hdmi_layout h;
+    const char *reason = decode(k->code, l);
+    if (!reason) {
+        earc_hdmi_decode(k->hdmi, l->nonpcm, k->stext & ~0xfffffULL, &h);
+        reason = earc_mode_refusal(&h);
+        if (!reason) reason = h.mute_reason;
+        if (!reason) reason = h.input_reason;
+        if (!reason) reason = h.property_reason;
+        if (!reason) reason = h.format_reason;
+    }
+    if (reason) printf("REFUSE %s: the module refuses this kernel: %s\n", k->dir, reason);
+    return reason != 0;
+}
+
 int main(int argc, char **argv) {
     struct kernel kernels[16];
     struct earc_layout layouts[16];
@@ -1493,13 +1555,25 @@ int main(int argc, char **argv) {
         size_t j;
         int loaded;
         if (strcmp(argv[i], "--kernel")) { printf("FAIL usage: test_decode [--kernel SHA256 DIR]...\n"); return 2; }
-        loaded = load_kernel(&kernels[n], dir);
-        if (loaded < 0) { failures++; continue; }
-        if (!loaded) continue;
         for (j = 0; j < sizeof(oracles) / sizeof(oracles[0]); j++)
             if (!strcmp(oracles[j].sha256, sha)) o = &oracles[j];
         for (j = 0; j < sizeof(hdmi_oracles) / sizeof(hdmi_oracles[0]); j++)
             if (!strcmp(hdmi_oracles[j].sha256, sha)) ho = &hdmi_oracles[j];
+        loaded = load_kernel(&kernels[n], dir);
+        /* A kernel without the module's symbols (another audio stack) is refused, as the loader refuses it. */
+        if (loaded == -2 && !o && !ho) continue;
+        if (loaded < 0) { failures++; continue; }
+        if (!loaded) continue;
+        kernels[n].sha256 = sha;
+        if (!o && !ho && hdmi_session_refusal(&kernels[n], &layouts[n])) {
+            if (!strcmp(sha, "46f46c2574d72cf85ff8109f9829d481394a4c173e8fe18389439ec2867f346c") ||
+                !strcmp(sha, "4fffc9484aa8c3744688eafd3359ed0edb75988204c94d6b8442dd8098443b6b")) {
+                printf("FAIL %s: supported C2/C4 image was refused\n", dir);
+                failures++;
+            }
+            n++;
+            continue;
+        }
         if (o) {
             if (run_oracle(o, &kernels[n], &layouts[n])) {
                 if (first[o->generation][o->family] < 0) first[o->generation][o->family] = n;

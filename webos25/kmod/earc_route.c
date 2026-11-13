@@ -1158,6 +1158,7 @@ static int passthrough_init(void) {
     if (!reason) reason = hdmi.property_reason;
     if (!reason && !hdmi_addr_ok(hdmi.input_table, 8, 24)) reason = "HDMI input table outside kernel data";
     if (!reason) reason = hdmi.format_reason;
+    if (!reason && hdmi.decoder_lock_call != fn_mutex_lock) reason = "decoder lock call is not mutex_lock";
     if (!reason && !hdmi_addr_ok(hdmi.decoder_lock, 8, 32)) reason = "decoder lock outside kernel data";
     if (!reason) {
         for (index = 0; index < hdmi.input_format_count; index++) {
