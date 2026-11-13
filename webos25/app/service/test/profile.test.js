@@ -447,8 +447,7 @@ test("every generated webOS 25 script defines $APPBASE before using it", functio
     "w25InitScriptBody": service.w25InitScriptBody(),
     "w25PassthroughSteps(on)": service.w25PassthroughSteps(true),
     "w25PassthroughSteps(off)": service.w25PassthroughSteps(false),
-    "w25HdmiSteps(on)": service.w25HdmiSteps(true),
-    "w25HdmiSteps(off)": service.w25HdmiSteps(false)
+    "w25PassthroughSteps(hd)": service.w25PassthroughSteps(true, true)
   };
   Object.keys(scripts).forEach(function (name) {
     var lines = scripts[name].split("\n");

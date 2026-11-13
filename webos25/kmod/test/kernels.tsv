@@ -1,0 +1,6 @@
+# name	release	ota_id	firmware	zip_sha256	zip (relative to https://tv.slada.sk/)
+w25o-33.22.69	5.4.268-329.ptl4tv.2	HE_DTV_W25O_AFABATAA	33.22.69.01	c69f8294ee40176781a13e88b62be9851dc6507c4910470ccedaf8b5f6ce13b6	mirror2/UK/6h6UEnsBSYM4gPoQb9nFA---Software_File(Version_33.22.69).zip
+w25g-43.21.96	6.12.44-352	HE_DTV_W25G_AFABJAAA	43.21.96.01	3ff67079c3c701cc2867781d7be3749d22076336b48cdc624d8cb3e2c2ff7272	mirror2/JP/new/3nIwswggmL4seISCHiW3oA---Software_File(Version_43.21.96).zip
+w26o-43.11.81	6.12.44-347	HE_DTV_W26O_AFABATAA	43.11.81.01	b9afb6099b72d57bef309b7ad9bb08f994e233afc6cb3b1e46941aa8d7ff74de	mirror2/US/new/4Tjg8mh81XQAjlwpzWUhLw---Software_File(Version_43.11.81).zip
+w26h-43.21.88	6.12.44-67.18.qilian.5	HE_DTV_W26H_AFADJAAA	43.21.88.01	b4d349d3c8f84073345d4ec378b62defe4f294fce850dfb0f6e60001f9bfb8a1	mirror2/JP/new/WBBPvGa0LCq1mfjXqSWGrQ---Software_File(Version_43.21.88).zip
+w25h-43.22.72	6.12.44-67.18.qilian.6	HE_DTV_W25H_AFADATAA	43.22.72.01	c9b90ac00e3f7ccfe10fa56cb283e2384c6f22adddc1b24f6da93bfe7ac2a381	mirror2/KR/new/U5bP80eSuwOFj4RxIr1DTg---Re_NEW26_25_K24n_43.22.72.zip

@@ -23,7 +23,7 @@ function loadService(mocks) {
     "w25PtReceiver: w25PtReceiver, w25HdOutput: w25HdOutput, w25PassthroughSteps: w25PassthroughSteps, w25Enable: w25Enable," +
     "w25HdReadinessSteps: w25HdReadinessSteps, w25HdReason: w25HdReason, w25RouteLogSteps: w25RouteLogSteps," +
     "w25Disable: w25Disable, w25Uninstall: w25Uninstall," +
-    "w25HdmiSteps: w25HdmiSteps, w25HdmiLogSteps: w25HdmiLogSteps," +
+    "w25KmodReason: w25KmodReason," +
     "constants: {C2: PROFILE_C2," +
     "sets: C2_EXPECTED_SETS, matchSet: c2MatchSet," +
     "libav: C2_EXPECTED_SETS[0].libav, iso: C2_EXPECTED_SETS[0].iso, mkv: C2_EXPECTED_SETS[0].mkv}};";

@@ -101,7 +101,7 @@ jobs:
           # copy of the license and the source offer, and libgstdtsdec.so links ffmpeg
           # statically.
           cp -r app/licenses restore/licenses
-          # The HDMI passthrough opt-in's loader lives with its module's source in
+          # The DTS-HD kernel module's loader lives with its source in
           # kmod/; install.sh stages it from kmod-out/ next to the module.
           cp -f kmod/earc-route-load.sh restore/kmod-out/
           # Excludes are defensive: dts2lpcm/ is the archived Path-A investigation

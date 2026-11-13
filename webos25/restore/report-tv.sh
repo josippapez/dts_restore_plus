@@ -134,7 +134,7 @@ for v in WEBOS_RELEASE WEBOS_MANUFACTURING_VERSION PRODUCT_ID HARDWARE_ID BOARD_
   eval "cur=\$$v"; [ -n "${cur:-}" ] || eval "$v=unknown"
   eval "echo \"$v=\$$v\""
 done
-# The HDMI passthrough module is built per kernel release, not per firmware.
+# The DTS-HD kernel module is built per kernel release, not per firmware.
 echo "KERNEL_RELEASE=$(uname -r 2>/dev/null || echo unknown)"
 
 echo

@@ -28,7 +28,7 @@ handles either HDMI audio decoder, 0 or 1, and keeps an HDMI input on DTS by its
 
 Status: both builds host-tested against the kernels listed under Test.
 Experimental. The release ships both builds and `earc-route-load.sh` for the app
-(see [In the app](#in-the-app-hdmi-passthrough-opt-in)); everything else here is root over SSH.
+(see [In the app](#in-the-app)); everything else here is root over SSH.
 
 On 2026-11-11 a tester's LG CS (OLED55CS6LA, firmware 33.31.68, kernel
 5.4.268-329.ptl4tv.5) with a Samsung HW-Q930F over eARC and a set-top box on
@@ -405,11 +405,16 @@ refuses unless, per generation:
 ## Test
 
 ```sh
-EARC_C5_DIR=... EARC_G5_DIR=... [EARC_EXTRA_DIRS="..."] [EARC_612_DIRS="..."] sh webos25/kmod/test/run.sh
+sh webos25/kmod/test/fetch.sh        # once: firmwares in test/kernels.tsv -> test/kernels/ (git-ignored)
+sh webos25/kmod/test/run.sh          # every capture in test/kernels/, plus any EARC_*_DIR
 sh webos25/kmod/test/loader/run.sh   # the loader's kernel check; needs no captures
 ```
 
-Every directory is passed to the test with the sha256 of its `kernel.bin`
+`kernels.tsv` lists one firmware per kernel build the archive has for webOS 23
+to 26, with its zip's sha256. `run.sh` also runs the shipped loader on each
+capture's own stock module and kallsyms: a kernel the boot script accepts must
+get its generation's `.ko` and every symbol. Every directory is passed to the
+decode test with the sha256 of its `kernel.bin`
 (`--kernel SHA256 DIR`); the four variables are equivalent apart from naming.
 Without captures it prints `SKIP` and passes. With them, the test applies the
 oracle table keyed by that sha256, so an oracle never meets another image:
@@ -611,16 +616,11 @@ a C2 with an eARC receiver, writing those values by hand made a PS5's DTS core
 play as DTS on the soundbar; the module loads with both probes and unloads clean.
 **Not verified:** the probes acting on a live HDMI stream, and the format-change path.
 
-## In the app (HDMI passthrough opt-in)
+## In the app
 
-DTS Enabler loads the module on the two 5.4.268 kernels and on 6.12 while either
-the experimental HDMI passthrough opt-in or app DTS-HD passthrough is on. The
-app's DTS-HD route needs its `app_route` lease. The boot script
-(`webos25/restore/init_dts25.sh`) stages the module and `earc-route-load.sh` into
-`/var/lib/webosbrew/dts25/hdmi/` and holds it loaded under a supervisor, at boot
-and from the app's toggles. Turning both off, Disable and Uninstall
-unload it; a module that will not unload is reported as "restart the TV". Turn on refuses beside an enabled lg-dts-core or Glasshouse helper, and needs
-"Show DTS tracks in apps" on, because the HDMI EDIDs offer DTS only through that
-opt-in's edidType. The supervisor takes that opt-in's eim hook off, so HDMI devices are
-offered DTS, only while an eARC receiver is the sound output. The rules and the
-trade-offs are in [`../app/README.md`](../app/README.md).
+DTS Enabler loads the module while DTS-HD passthrough is on: its HD route needs the
+`app_route` lease. The boot script (`webos25/restore/init_dts25.sh`) stages it into
+`/var/lib/webosbrew/dts25/hdmi/` and holds it loaded; turning DTS-HD off, Disable and
+Uninstall unload it, and a module that will not unload is reported as "restart the TV".
+The module's HDMI-input probes are loaded with it but no app setting offers DTS to HDMI
+devices; see [`../app/README.md`](../app/README.md).

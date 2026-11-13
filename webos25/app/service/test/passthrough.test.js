@@ -59,7 +59,7 @@ test("DTS-HD shares the passthrough lifecycle and Disable restores eARC first", 
     "boot apply must stop passthrough before restarting it after Disable");
   assert.ok(initFn("w25_stand_down").includes("w25_pt_stop_soft"), "stand-down must not stall on a failed stop");
   assert.ok(initFn("w25_self_heal").includes("w25_pt_stop_soft"), "self-heal must not stall on a failed stop");
-  assert.ok(body.includes("stop) w25_pt_stop || exit 1 ;;"), "the app toggle keeps failing hard");
+  assert.ok(body.includes("stop) w25_pt_stop || exit 1; w25_kmod_stop || exit 1 ;;"), "the app toggle keeps failing hard");
   assert.ok(!body.includes("--recover"), "HD never writes LG's mixer, so there is nothing to recover");
   assert.ok(!body.includes("hdroute.sh"));
   assert.ok(service.w25PassthroughSteps(true, true).includes("/lgroute-control ]"));
@@ -208,7 +208,10 @@ test("HD readiness distinguishes sink builds, helper and eARC failures", functio
     var bounded = 'timeout() { shift; "$@"; }\n' + script;
     assert.match(sh(bounded).stdout, /HD_REASON=earc-unavailable\nHD_READY=0/);
     exe(path.join(dir, "lgroute-control"), "exit 0");
-    assert.match(sh(bounded).stdout, /HD_REASON=ready\nHD_READY=1/);
+    assert.match(sh(bounded).stdout, /HD_REASON=no-module\nHD_READY=0/);
+    assert.match(service.w25HdReason("no-module", "external_arc passThrough"), /kernel module is not loaded/);
+    var loaded = bounded.split("/sys/module/earc_route").join(dir);
+    assert.match(sh(loaded).stdout, /HD_REASON=ready\nHD_READY=1/);
     assert.match(service.w25HdReason("untested-sink", "external_arc passThrough"), /tested list/);
     assert.equal(service.w25HdReason("ready", "external_arc passThrough"), "");
     assert.match(service.w25HdReason("ready", "tv_speaker pcm"), /Pass Through/);
