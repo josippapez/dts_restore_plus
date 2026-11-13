@@ -954,22 +954,22 @@ w25_kmod_hold() {
   ( set -C; echo "$$" > "$KMOD_PID" ) 2>/dev/null || return 0
   quit=
   trap 'quit=1' INT TERM HUP
-  # Survives a kernel crash: while it exists, w25_kmod_refusal says "crashed" and
-  # no boot loads the module again, so a bad load cannot become a reboot loop.
+  # Spans only the load (self-tests, probes, gate patch), about a second: a marker
+  # found at boot means the TV went down during it, so w25_kmod_refusal says
+  # "crashed" and a bad load cannot become a reboot loop. A normal power-off
+  # lands outside it.
   : > "$KMOD_DIR/loading" && sync
-  if ! sh "$KMOD_DIR/earc-route-load.sh" --dts-hd </dev/null >"$KMOD_OUT" 2>&1; then
-    rm -f "$KMOD_DIR/loading"
+  sh "$KMOD_DIR/earc-route-load.sh" --dts-hd </dev/null >"$KMOD_OUT" 2>&1
+  loaded=$?
+  rm -f "$KMOD_DIR/loading" && sync
+  if [ "$loaded" != 0 ]; then
     echo 1 > "$KMOD_EXIT"
     rm -f "$KMOD_PID"
     return 0
   fi
-  held=0
   while [ -z "$quit" ] && [ -d "$KMOD_MODULE" ] && w25_module_wanted; do
     sleep 10 & wait $!
-    held=$((held + 1))
-    [ "$held" = 6 ] && rm -f "$KMOD_DIR/loading" && sync
   done
-  rm -f "$KMOD_DIR/loading"
   if [ ! -d "$KMOD_MODULE" ] || rmmod earc_route 2>>"$KMOD_OUT"; then echo 0; else echo 20; fi > "$KMOD_EXIT"
   rm -f "$KMOD_PID"
 }

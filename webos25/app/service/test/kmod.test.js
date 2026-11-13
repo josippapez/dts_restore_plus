@@ -66,9 +66,11 @@ function holder(rmmodFails, loadFails) {
   var pt = path.join(dir, "passthrough"), hd = path.join(dir, "passthrough-hd");
   fs.mkdirSync(run);
   write(pt, ""); write(hd, "");
-  exe(path.join(kmod, "earc-route-load.sh"), loadFails
+  // Records whether the crash marker covered the load.
+  var during = '[ -f "' + path.join(kmod, "loading") + '" ] && : > "' + path.join(dir, "marked-during-load") + '"; ';
+  exe(path.join(kmod, "earc-route-load.sh"), during + (loadFails
     ? 'echo "earc-route: REFUSED: test"; exit 1'
-    : 'mkdir -p "' + module + '"; echo "earc-route: PASSTHROUGH ACTIVE (mode=7) EXPERIMENTAL"');
+    : 'mkdir -p "' + module + '"; echo "earc-route: PASSTHROUGH ACTIVE (mode=7) EXPERIMENTAL"'));
   var vars = ["KMOD_DIR=" + kmod, "KMOD_PID=" + run + "/hdmi.pid", "KMOD_OUT=" + run + "/hdmi-watch.out",
     "KMOD_EXIT=" + run + "/hdmi-watch.exit", "KMOD_MODULE=" + module, "PT_FLAG=" + pt, "HD_FLAG=" + hd,
     oneLine("w25_module_wanted"), "w25_log() { :; }",
@@ -145,19 +147,20 @@ test("a load the TV did not survive is not retried at boot; turning DTS-HD on cl
   }
 });
 
-test("the holder marks the load until the module has run, and clears the mark on every way out", function () {
+test("the holder marks only the load itself, so a normal power-off later does not count as a crash", function () {
   var h = holder(false);
   try {
     var mark = path.join(h.dir, "hdmi", "loading");
     var child = require("node:child_process").spawn("sh", [h.hold], {stdio: "ignore"});
-    assert.ok(waitFor(function () { return loaded(h); }, 5000));
-    assert.ok(fs.existsSync(mark), "marked while the module is new");
-    assert.ok(waitFor(function () { return !fs.existsSync(mark); }, 5000), "cleared after six polls");
+    assert.ok(waitFor(function () { return loaded(h) && fs.existsSync(h.run + "/hdmi.pid"); }, 5000));
+    assert.ok(fs.existsSync(path.join(h.dir, "marked-during-load")), "marked while the loader runs");
+    assert.ok(waitFor(function () { return !fs.existsSync(mark); }, 1000), "cleared as soon as the load returns");
     fs.unlinkSync(h.hd);
     assert.ok(waitFor(function () { return read(h.run + "/hdmi-watch.exit") === "0\n"; }, 5000));
     child.kill();
     var f = holder(false, true);
     spawnSync("sh", [f.hold], {encoding: "utf8", timeout: 10000});
+    assert.ok(fs.existsSync(path.join(f.dir, "marked-during-load")));
     assert.strictEqual(fs.existsSync(path.join(f.dir, "hdmi", "loading")), false, "a refused load is not a crash");
     fs.rmSync(f.dir, {recursive: true, force: true});
   } finally {
