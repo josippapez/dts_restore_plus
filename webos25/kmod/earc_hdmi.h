@@ -54,7 +54,8 @@
     X(vfs_write, 1) \
     X(misc_register, 0) \
     X(misc_deregister, 0) \
-    X(sndout_earc_output_type, 1)
+    X(sndout_earc_output_type, 1) \
+    X(sndout_mute_input, 1)
 
 #define EARC_HDMI_ENUM(name, analysed) HF_##name,
 enum earc_hdmi_function { EARC_HDMI_FUNCTIONS(EARC_HDMI_ENUM) HF_COUNT };
@@ -135,6 +136,9 @@ struct earc_hdmi_layout {
     ed_u64 mix_entry;
     unsigned int mix_offset;
     const char *mix_reason;
+    ed_u64 mute_entry;
+    unsigned int mute_offset;
+    const char *mute_reason;
 };
 
 /* ---- block-sound register tracker over one function ---- */
@@ -887,6 +891,37 @@ static void hd_mix(const struct earc_code *fns, struct earc_hdmi_layout *out) {
     out->mix_reason = 0;
 }
 
+static void hd_mute(const struct earc_code *fns, struct earc_hdmi_layout *out) {
+    const struct earc_code *f = &fns[HF_sndout_mute_input];
+    unsigned int index, request = 32, moves = 0, matches = 0;
+    out->mute_reason = "sndout_mute_input request not derived";
+    if (!f->words || !f->count || hf_is_brk(f->words[0]) || !hf_kprobe_placeable(f->words[0])) return;
+    if (hf_prepare(f)) return;
+    for (index = 0; index < f->count && index < 16; index++) {
+        ed_u32 op = f->words[index];
+        if ((op & 0xffffffe0u) == 0xaa0103e0u && (op & 31) >= 19 && (op & 31) <= 28) {
+            request = op & 31;
+            moves++;
+        }
+    }
+    for (index = 0; moves == 1 && index + 3 < f->count; index++) {
+        ed_u32 load = f->words[index], pair = f->words[index + 1];
+        unsigned int mute = load & 31, offset = ((load >> 10) & 0xfff) * 8;
+        int pair_offset = (int)ed_sext(pair >> 15, 7) * 8;
+        if ((load & 0xffc003e0u) != (0xf9400000u | (request << 5)) || mute == 31 ||
+            (pair & 0xffc003e0u) != (0xa9400000u | (request << 5)) ||
+            pair_offset < 8 || pair_offset > 232 || offset != (unsigned int)pair_offset + 16 ||
+            (pair & 31) == mute || ((pair >> 10) & 31) == mute ||
+            f->words[index + 2] != (0x7100041fu | (mute << 5)) ||
+            (f->words[index + 3] & 0xff00001fu) != 0x54000008u) continue;
+        out->mute_offset = (unsigned int)pair_offset;
+        matches++;
+    }
+    if (matches != 1) return;
+    out->mute_entry = f->address;
+    out->mute_reason = 0;
+}
+
 static void hd_symbols(const struct earc_code *fns, struct earc_hdmi_layout *out) {
     out->patch_text = fns[HF_aarch64_insn_patch_text].address;
     out->kprobe_register = fns[HF_register_kprobe].address;
@@ -917,6 +952,7 @@ static void earc_hdmi_decode(const struct earc_code *fns, ed_u64 nonpcm_virtual,
     hd_input_format(fns, out);
     hd_fops(fns, out);
     hd_mix(fns, out);
+    hd_mute(fns, out);
     out->nonpcm_virtual = nonpcm_virtual;
     out->nonpcm_physical = (nonpcm_virtual && nonpcm_virtual >= stext_align) ? nonpcm_virtual - stext_align : 0;
 }

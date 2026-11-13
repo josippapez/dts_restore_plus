@@ -134,6 +134,8 @@ static u32 app_route, app_overrides, app_prints, lease_registered;
 static u32 matched_decoder = EARC_NO_DECODER;  /* the last _set_output match's decoder (0 or 1) */
 static struct target_kprobe input_start_probe, input_property_probe, mix_probe;
 static u32 mix_registered, mix_clears;
+static struct target_kprobe mute_probe;
+static u32 mute_registered, mute_fixes, mute_pending;
 static u32 input_probes_registered, input_starts, input_properties;
 static u64 input_codec_format, input_mode_format;
 /* hdmi_dts_format_changed: the DSP raises it on a DTS sub-type change and sets
@@ -556,6 +558,7 @@ static int route_prehandler(struct target_kprobe *p, struct target_pt_regs *regs
     regs->regs[2] = 0;  /* codec -> 0 */
     regs->regs[3] = 1;  /* bypass -> 1 */
     __atomic_add_fetch(&overrides, 1, __ATOMIC_RELAXED);
+    __atomic_or_fetch(&mute_pending, 1u << index, __ATOMIC_RELEASE);
     return 0;
 }
 
@@ -875,7 +878,32 @@ static void gate_restore(void) {
            result, *(volatile u32 *)hdmi.gate, *(volatile u32 *)(hdmi.gate + 4));
 }
 
-/* 100 ms tick (no new import for a clock): format subscriptions. */
+static void input_unmute(unsigned int decoder) {
+    volatile unsigned long request[32];
+    struct earc_adec_slot slot;
+    u32 matched;
+    unsigned int index;
+    int eligible;
+    for (index = 0; index < 32; index++) request[index] = 0;
+    mutex_lock(DECODER_LOCK);
+    matched = __atomic_load_n(&matched_decoder, __ATOMIC_RELAXED);
+    earc_adec_slot(&hdmi, decoder, &slot);
+    eligible = !__atomic_load_n(&app_route, __ATOMIC_ACQUIRE) && INPUT_AT(decoder) &&
+        earc_input_unmute(1, decoder, 1, matched, *(volatile u32 *)slot.codec,
+            *(volatile u8 *)slot.open, *(volatile u8 *)slot.started);
+    mutex_unlock(DECODER_LOCK);
+    if (eligible) {
+        unsigned long *values = (unsigned long *)((u8 *)request + hdmi.mute_offset);
+        values[0] = 1;
+        values[1] = decoder;
+        if (((int (*)(void *, void *))fn_sndout_mute_input)((void *)0, (void *)request) == 0) {
+            if (__atomic_add_fetch(&mute_fixes, 1, __ATOMIC_RELAXED) <= 8)
+                printk("\0016earc_route: HDMI DTS bypass mute reapplied for decoder %u\n", decoder);
+        }
+    }
+}
+
+/* 100 ms tick (no new import for a clock): format subscriptions and deferred mute recovery. */
 static int window_thread(void *unused) {
     (void)unused;
     while (!kthread_should_stop()) {
@@ -884,6 +912,9 @@ static int window_thread(void *unused) {
         pending = __atomic_exchange_n(&format_pending, 0, __ATOMIC_ACQUIRE);
         if (pending & 1) format_subscribe(0);
         if (pending & 2) format_subscribe(1);
+        pending = __atomic_exchange_n(&mute_pending, 0, __ATOMIC_ACQUIRE);
+        if (pending & 1) input_unmute(0);
+        if (pending & 2) input_unmute(1);
     }
     return 0;
 }
@@ -933,6 +964,23 @@ static int mix_prehandler(struct target_kprobe *p, struct target_pt_regs *regs) 
     return 0;
 }
 
+static int mute_prehandler(struct target_kprobe *probe, struct target_pt_regs *regs) {
+    u64 request = regs->regs[1];
+    long *values;
+    struct earc_adec_slot slot;
+    u32 matched = __atomic_load_n(&matched_decoder, __ATOMIC_RELAXED);
+    (void)probe;
+    if (!request || !earc_adec_slot(&hdmi, matched, &slot)) return 0;
+    values = (long *)(request + hdmi.mute_offset);
+    if (earc_input_unmute(values[0], values[1], values[2], matched,
+        *(volatile u32 *)slot.codec, *(volatile u8 *)slot.open, *(volatile u8 *)slot.started)) {
+        values[2] = 0;
+        if (__atomic_add_fetch(&mute_fixes, 1, __ATOMIC_RELAXED) <= 8)
+            printk("\0016earc_route: HDMI DTS bypass unmuted for decoder %u\n", matched);
+    }
+    return 0;
+}
+
 static int lease_register(void) {
     if (hdmi.fops_reason) {
         printk("\0013earc_route: refused; no lease device: %s\n", hdmi.fops_reason);
@@ -975,6 +1023,7 @@ static int adec_slots_ok(int need_open) {
 /* Tears down whatever the session set up, in reverse order. Safe to call when
  * nothing was set. */
 static void passthrough_cleanup(void) {
+    if (mute_registered) { unregister_kprobe(&mute_probe); mute_registered = 0; }
     if (input_probes_registered == 2) { unregister_kprobe(&input_start_probe); input_probes_registered = 1; }
     if (window_task) { kthread_stop(window_task); window_task = (void *)0; }
     if (lease_registered) { MISC_DEREGISTER(&lease_device); lease_registered = 0; }
@@ -1072,6 +1121,13 @@ static int session(void) {
         goto undo;
     }
     mix_registered = 1;
+    mute_probe.addr = (void *)hdmi.mute_entry;
+    mute_probe.pre_handler = mute_prehandler;
+    if (register_kprobe(&mute_probe) < 0) {
+        printk("\0013earc_route: register_kprobe on sndout_mute_input failed\n");
+        goto undo;
+    }
+    mute_registered = 1;
     printk("\0016earc_route: DTS passthrough active on _cb_output_status compare=%llx (codec w%u, output x%u) name-load=%llx (x%u from index x%u, %u entries, substitute %llx); gate open; _set_output override running\n",
            hdmi.hd_compare, earc_hd_codec_reg(&hdmi), hdmi.hd_output_reg, hdmi.hd_name_load, earc_hd_name_reg(&hdmi),
            earc_hd_index_reg(&hdmi), hd_name_entries, (unsigned long long)hd_name_last);
@@ -1097,6 +1153,7 @@ static int passthrough_init(void) {
     unsigned int index;
     hdmi_derive(0);
     reason = earc_mode_refusal(&hdmi);
+    if (!reason) reason = hdmi.mute_reason;
     if (!reason) reason = hdmi.input_reason;
     if (!reason) reason = hdmi.property_reason;
     if (!reason && !hdmi_addr_ok(hdmi.input_table, 8, 24)) reason = "HDMI input table outside kernel data";
@@ -1238,6 +1295,8 @@ static const struct target_parameter parameters[] __attribute__((section("__para
     {"fn__stext", &__this_module, &ulong_operations, 0, -1, 0, &fn__stext},
     {"fn__etext", &__this_module, &ulong_operations, 0, -1, 0, &fn__etext},
     {"mode", &__this_module, &uint_operations, 0400, -1, 0, &mode},
+    {"mute_registered", &__this_module, &uint_operations, 0400, -1, 0, &mute_registered},
+    {"mute_fixes", &__this_module, &uint_operations, 0400, -1, 0, &mute_fixes},
     /* Session read-only state. */
     {"gate_open", &__this_module, &uint_operations, 0400, -1, 0, &gate_open},
     {"gate_opened_by_us", &__this_module, &uint_operations, 0400, -1, 0, &gate_opened_by_us},

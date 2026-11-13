@@ -73,7 +73,7 @@ HDMI_FUNCTIONS = [
     ('aarch64_insn_patch_text', 0), ('register_kprobe', 0), ('unregister_kprobe', 0),
     ('cpus_read_lock', 0), ('cpus_read_unlock', 0),
     ('misc_open', 1), ('__fput', 1), ('__vfs_write', 1), ('vfs_write', 1), ('misc_register', 0), ('misc_deregister', 0),
-    ('sndout_earc_output_type', 1)]
+    ('sndout_earc_output_type', 1), ('sndout_mute_input', 1)]
 
 
 def fail(reason):

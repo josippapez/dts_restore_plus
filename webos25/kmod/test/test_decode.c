@@ -896,6 +896,7 @@ static const char *break_reason(const struct earc_hdmi_layout *h) { return h->br
 static const char *hd_reason(const struct earc_hdmi_layout *h) { return earc_hd_refusal(h, 6); }
 static const char *input_reason(const struct earc_hdmi_layout *h) { return h->input_reason; }
 static const char *property_reason(const struct earc_hdmi_layout *h) { return h->property_reason; }
+static const char *mute_reason(const struct earc_hdmi_layout *h) { return h->mute_reason; }
 
 #define HDMI_MUTATION(name) \
     static int name(ed_u32 *w, ed_u32 n, const struct earc_code *f, const struct earc_hdmi_layout *g)
@@ -1414,6 +1415,8 @@ static void input_capture_tests(const struct kernel *kernel, const struct earc_h
                 input_frame_changed, property_reason, 0, layout);
     hdmi_refuse(kernel, HF_aimc_set_property, "HDMI property breakpoint", "not derived",
                 entry_kprobe, property_reason, 0, layout);
+    hdmi_refuse(kernel, HF_sndout_mute_input, "input mute entry breakpoint", "not derived",
+                entry_kprobe, mute_reason, 0, layout);
 }
 
 /* The lease device's write/open/release slots, derived from the kernel's write
@@ -1448,6 +1451,14 @@ static void fops_test(const struct kernel *k, const struct earc_hdmi_layout *h) 
 }
 
 static void input_policy_tests(void) {
+    check("input mute", "active DTS bypass", earc_input_unmute(1, 1, 1, 1, 48, 1, 1), 1);
+    check("input mute", "active HD bypass", earc_input_unmute(1, 0, 1, 0, 51, 1, 1), 1);
+    check("input mute", "stopped decoder", earc_input_unmute(1, 1, 1, 1, 48, 1, 0), 0);
+    check("input mute", "closed decoder", earc_input_unmute(1, 1, 1, 1, 48, 0, 1), 0);
+    check("input mute", "PCM decoder", earc_input_unmute(1, 1, 1, 1, 1, 1, 1), 0);
+    check("input mute", "other renderer", earc_input_unmute(1, 0, 1, 1, 48, 1, 1), 0);
+    check("input mute", "AMIXER input", earc_input_unmute(2, 1, 1, 1, 48, 1, 1), 0);
+    check("input mute", "unmute unchanged", earc_input_unmute(1, 1, 0, 1, 48, 1, 1), 0);
     check("input policy", "DTS start", earc_input_start_match(1, 48, 1, 1), 1);
     check("input policy", "HD start", earc_input_start_match(0, 51, 1, 1), 1);
     check("input policy", "closed decoder", earc_input_start_match(1, 48, 0, 1), 0);
@@ -1512,6 +1523,8 @@ int main(int argc, char **argv) {
              hdmi_layout.property_entry, hdmi_layout.input_frame_size, hdmi_layout.input_type_offset,
              hdmi_layout.input_forced_reg, hdmi_layout.input_format_count);
         fops_test(&kernels[n], &hdmi_layout);
+        check_reason(dir, "input mute layout", hdmi_layout.mute_reason);
+        check(dir, "input mute request offset", hdmi_layout.mute_offset, 0x48);
         check_reason(dir, "eARC mix flag", hdmi_layout.mix_reason);
         check(dir, "eARC mix flag offset", hdmi_layout.mix_offset, 0x68);
         hd_probe_test(&kernels[n], layouts[n].nonpcm);

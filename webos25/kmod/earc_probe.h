@@ -102,6 +102,12 @@ static int earc_app_policy_match(ed_u64 index, ed_u32 mask_word, ed_u32 app_rout
     return app_route && index == app_route - 1 && mask_word == 0x20;
 }
 
+static int earc_input_unmute(ed_u64 input, ed_u64 port, ed_u64 mute, ed_u32 matched,
+                              ed_u32 codec, ed_u8 open, ed_u8 started) {
+    return input == 1 && port <= 1 && port == matched && mute == 1 && open == 1 && started == 1 &&
+        (codec == EARC_CORE_ADEC_CODEC || codec == EARC_HD_ADEC_CODEC);
+}
+
 static int earc_input_start_match(ed_u64 index, ed_u32 codec, ed_u8 open, ed_u64 input_codec) {
     return index <= 1 && open == 1 && input_codec == 1 &&
         (codec == EARC_CORE_ADEC_CODEC || codec == EARC_HD_ADEC_CODEC);

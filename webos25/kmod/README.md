@@ -21,7 +21,7 @@ available", never a refusal, so the eARC route still loads.
 `mode=7` (`--dts-hd`) is the session load, a port of
 [lg-g5-dts](https://github.com/dakenf/lg-g5-dts)'s `tools/dts-hd-route`
 (GPL-2.0-only) onto our derived addresses. It writes to kernel memory
-(break-hook list, up to three kprobes, one patched instruction); every write is
+(break-hook list, kprobes, one patched instruction); every write is
 listed with its undo under [The session load](#the-session-load-mode7). It
 handles either HDMI audio decoder, 0 or 1, and keeps an HDMI input on DTS by itself
 (see [HDMI input](#hdmi-input-mode7)).
@@ -251,9 +251,8 @@ and calls `decoder_set_output_mode(index, 1, 1)`. That function takes only 0 or
 the decoder are one number. The kernel builds the compressed path the same way
 for both decoders: `input_set_type`, `decoder_preconnect`,
 `renderer_preconnect` and `renderer_create_bypass_pipeline` check no index. The
-bypass gain block the scripts unmute belongs to mixer 0 and serves both
-decoders. All of this comes from the C5 33.31.68 disassembly and has not been
-seen on a TV.
+bypass gain belongs to mixer 0 and serves both decoders. Decoder 1 is verified
+with PS5 DTS on the C2; decoder 0 remains host-tested only.
 
 - *Policy*: index 0 or 1, read through that decoder's slot.
   `earc_adec_slot` gives the slot of index 0 or 1 and nothing for any other
@@ -610,12 +609,14 @@ Derived from LG's code: the start compare and its index register, the input
 table and the decoder lock (`alsa_decoder_start`), `input_set_hdmi`'s frame, its
 audio-info offset (`add x1,sp,#K` before `GetAudioInfo`), its input and forced-PCM
 registers and format strings (read back at load), and the input's uid offset
-(`input_drop_data`). Counters: `input_starts`, `input_properties`, `format_changes`.
+(`input_drop_data`). LG's input-mute request layout is also derived: mode 7
+clears stale mute for the matched DTS decoder and reapplies LG's native mute
+setter after bypass routing, without changing output mute. Counter: `mute_fixes`.
 
 **Verified:** host-tested on C5 5.4, G3 5.4 and C5 6.12, with mutation refusals. On
-a C2 with an eARC receiver, writing those values by hand made a PS5's DTS core
-play as DTS on the soundbar; the module loads with both probes and unloads clean.
-**Not verified:** the probes acting on a live HDMI stream, and the format-change path.
+a C2 (33.31.68), PS5 DTS surround survives PCM-to-DTS transitions and TV
+mute/unmute. The removed userspace bypass unmute had left this path muted.
+**Not verified:** the format-change path and live HDMI DTS on other profiles.
 
 ## In the app
 
