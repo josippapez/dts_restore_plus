@@ -135,6 +135,15 @@ test("a load the TV did not survive is not retried at boot; turning DTS-HD on cl
     var on = service.w25PassthroughSteps(true, true);
     assert.ok(on.indexOf('rm -f "$KMOD_DIR/loading"') < on.indexOf("R=$(w25_kmod_refusal)"), "the user's retry clears the marker first");
     assert.doesNotMatch(service.w25PassthroughSteps(true), /loading/, "only DTS-HD on retries");
+    // Boot refuses it with a TV toast once boot is done, detached from the hook.
+    var calls = path.join(dir, "calls");
+    var r2 = sh(['uname() { echo 5.4.268-329.ptl4tv.5; }', "KMOD_DIR=" + kmod, "KMOD_PID=" + path.join(dir, "pid"),
+      "PT_FLAG=" + path.join(dir, "pt"), "HD_FLAG=" + path.join(dir, "pt"), ': > "$PT_FLAG"',
+      "w25_log() { :; }", 'w25_alive() { return 1; }', 'systemctl() { :; }',
+      'toast() { echo "$1" > ' + calls + '; }', oneLine("w25_module_wanted"),
+      initFn("w25_kmod_refusal"), initFn("w25_wait_boot"), initFn("w25_kmod_start"), "w25_kmod_start; wait"].join("\n"));
+    assert.strictEqual(r2.status, 0, r2.stderr);
+    assert.match(read(calls) || "", /^DTS Enabler: DTS-HD is paused.*turn Full DTS-HD off and on/);
   } finally {
     fs.rmSync(dir, {recursive: true, force: true});
   }

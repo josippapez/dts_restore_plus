@@ -58,6 +58,9 @@ extern void unregister_kprobe(void *kp);
 extern void cpus_read_lock(void);
 extern void cpus_read_unlock(void);
 extern void synchronize_rcu(void);
+/* Exported on both generations; copy_from_user is inlined there. Returns bytes not copied. */
+extern unsigned long __arch_copy_from_user(void *to, const void *from, unsigned long n);
+#define copy_from_user __arch_copy_from_user
 
 /* Kernel structs declared by hand, per generation, like struct target_module.
  * struct pt_regs and struct break_hook are identical across both generations;
@@ -128,9 +131,8 @@ static int hd_native, gate_native;
 static u64 hd_name_last;           /* the name table's last entry: a string in the kernel image */
 static u32 hd_status_seen, hd_status_accepts, hd_name_seen, hd_name_fixes;
 static u32 hd_status_prints, hd_accept_prints, hd_name_prints, hd_fix_prints;
-/* Mode 7's app lease: renderer index + 1, cleared unless renewed within EARC_APP_LEASE_TICKS. */
-#define EARC_APP_LEASE_TICKS 20
-static u32 app_route, app_ticks, app_overrides, app_prints;
+/* Mode 7's app lease: renderer index + 1 while a /dev/earc_route holder has it open. */
+static u32 app_route, app_overrides, app_prints, lease_registered;
 static u32 matched_decoder = EARC_NO_DECODER;  /* the last _set_output match's decoder (0 or 1) */
 static struct target_kprobe input_start_probe, input_property_probe;
 static u32 input_probes_registered, input_starts, input_properties;
@@ -884,9 +886,8 @@ static void gate_restore(void) {
            result, *(volatile u32 *)hdmi.gate, *(volatile u32 *)(hdmi.gate + 4));
 }
 
-/* 100 ms tick (no new import for a clock): format subscriptions and the app lease. */
+/* 100 ms tick (no new import for a clock): format subscriptions. */
 static int window_thread(void *unused) {
-    u32 t;
     (void)unused;
     while (!kthread_should_stop()) {
         u32 pending;
@@ -894,13 +895,61 @@ static int window_thread(void *unused) {
         pending = __atomic_exchange_n(&format_pending, 0, __ATOMIC_ACQUIRE);
         if (pending & 1) format_subscribe(0);
         if (pending & 2) format_subscribe(1);
-        t = __atomic_load_n(&app_ticks, __ATOMIC_ACQUIRE);
-        while (t && !__atomic_compare_exchange_n(&app_ticks, &t, t - 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {}
-        if (t == 1 && !__atomic_load_n(&app_ticks, __ATOMIC_ACQUIRE)) {
-            __atomic_store_n(&app_route, 0, __ATOMIC_RELEASE);
-            printk("\0016earc_route: app lease expired\n");
-        }
     }
+    return 0;
+}
+
+/* /dev/earc_route: the app lease lives as long as the open file. Writing "1" or
+ * "2" (renderer index + 1) takes it; the kernel's release on the last close,
+ * a crash or kill included, drops it. One holder at a time. struct
+ * file_operations is laid out from the slots misc_open and __fput use (hdmi.fops_*);
+ * struct miscdevice is minor, name, fops (+0, +8, +16) on both generations. */
+struct target_file;
+extern struct target_module __this_module;  /* the fops owner: pins the module while the file is open */
+static u32 lease_holders;
+static int lease_open(void *inode, struct target_file *file) {
+    (void)inode; (void)file;
+    return __atomic_exchange_n(&lease_holders, 1, __ATOMIC_ACQ_REL) ? -16 : 0;
+}
+static int lease_release(void *inode, struct target_file *file) {
+    (void)inode; (void)file;
+    if (__atomic_exchange_n(&app_route, 0, __ATOMIC_ACQ_REL)) printk("\0016earc_route: app lease released\n");
+    __atomic_store_n(&lease_holders, 0, __ATOMIC_RELEASE);
+    return 0;
+}
+static long lease_write(struct target_file *file, const char *user, unsigned long length, long long *position) {
+    char value = 0;
+    (void)file; (void)position;
+    if (length < 1 || length > 2 || copy_from_user(&value, user, 1)) return -22;
+    if (value < '0' || value > '2') return -22;
+    __atomic_store_n(&app_route, (u32)(value - '0'), __ATOMIC_RELEASE);
+    return (long)length;
+}
+/* The write slot (+16 on both generations: owner, llseek, read, write). */
+static void *lease_fops[0x100 / 8];
+struct target_miscdevice { int minor; u8 pad[4]; const char *name; void *fops; u8 tail[0x60]; };
+static struct target_miscdevice lease_device;
+#define MISC_REGISTER ((int (*)(struct target_miscdevice *))fn_misc_register)
+#define MISC_DEREGISTER ((void (*)(struct target_miscdevice *))fn_misc_deregister)
+
+static int lease_register(void) {
+    if (hdmi.fops_reason) {
+        printk("\0013earc_route: refused; no lease device: %s\n", hdmi.fops_reason);
+        return -22;
+    }
+    lease_fops[0] = &__this_module;
+    lease_fops[3] = (void *)lease_write;
+    lease_fops[hdmi.fops_open / 8] = (void *)lease_open;
+    lease_fops[hdmi.fops_release / 8] = (void *)lease_release;
+    lease_device.minor = 255;  /* MISC_DYNAMIC_MINOR */
+    lease_device.name = "earc_route";
+    lease_device.fops = lease_fops;
+    if (MISC_REGISTER(&lease_device) < 0) {
+        printk("\0013earc_route: misc_register for /dev/earc_route failed\n");
+        return -16;
+    }
+    lease_registered = 1;
+    printk("\0016earc_route: /dev/earc_route ready (open +%#x, release +%#x)\n", hdmi.fops_open, hdmi.fops_release);
     return 0;
 }
 
@@ -927,6 +976,8 @@ static void passthrough_cleanup(void) {
     int touched = input_probes_registered || probe_registered || hd_probes_registered || hooks_registered || gate_opened_by_us;
     if (input_probes_registered == 2) { unregister_kprobe(&input_start_probe); input_probes_registered = 1; }
     if (window_task) { kthread_stop(window_task); window_task = (void *)0; }
+    if (lease_registered) { MISC_DEREGISTER(&lease_device); lease_registered = 0; }
+    __atomic_store_n(&app_route, 0, __ATOMIC_RELEASE);
     format_unsubscribe(0);
     format_unsubscribe(1);
     if (input_probes_registered) { unregister_kprobe(&input_property_probe); input_probes_registered = 0; }
@@ -1008,6 +1059,7 @@ static int session(void) {
     window_task = kthread_create_on_node(window_thread, (void *)0, -1, "earc-dts-window");
     if ((u64)window_task >= (u64)-4095) { window_task = (void *)0; result = -12; goto undo; }
     wake_up_process(window_task);
+    if (lease_register() < 0) goto undo;
     printk("\0016earc_route: DTS passthrough active on _cb_output_status compare=%llx (codec w%u, output x%u) name-load=%llx (x%u from index x%u, %u entries, substitute %llx); gate open; _set_output override running\n",
            hdmi.hd_compare, earc_hd_codec_reg(&hdmi), hdmi.hd_output_reg, hdmi.hd_name_load, earc_hd_name_reg(&hdmi),
            earc_hd_index_reg(&hdmi), hd_name_entries, (unsigned long long)hd_name_last);
@@ -1148,17 +1200,6 @@ static const struct target_parameter_operations uint_operations = {0, param_set_
 static const struct target_parameter_operations ulong_operations = {0, param_set_ulong, param_get_ulong, (void *)0};
 _Static_assert(sizeof(struct target_parameter_operations) == 32, "parameter operations size");
 _Static_assert(__builtin_offsetof(struct target_parameter_operations, get) == 16, "parameter operations get");
-/* Writing the renderer index + 1 takes or renews the app lease; 0 releases it. */
-static int app_route_set(const char *value, const void *parameter) {
-    u32 route;
-    (void)parameter;
-    if ((value[0] != '0' && value[0] != '1' && value[0] != '2') || (value[1] && value[1] != '\n')) return -22;
-    route = (u32)(value[0] - '0');
-    __atomic_store_n(&app_route, route, __ATOMIC_RELEASE);
-    __atomic_store_n(&app_ticks, route ? EARC_APP_LEASE_TICKS : 0, __ATOMIC_RELEASE);
-    return 0;
-}
-static const struct target_parameter_operations app_route_operations = {0, app_route_set, param_get_uint, (void *)0};
 struct target_parameter {
     const char *name;
     struct target_module *module;
@@ -1199,7 +1240,8 @@ static const struct target_parameter parameters[] __attribute__((section("__para
     {"hd_status_accepts", &__this_module, &uint_operations, 0400, -1, 0, &hd_status_accepts},
     {"hd_name_seen", &__this_module, &uint_operations, 0400, -1, 0, &hd_name_seen},
     {"hd_name_fixes", &__this_module, &uint_operations, 0400, -1, 0, &hd_name_fixes},
-    {"app_route", &__this_module, &app_route_operations, 0600, -1, 0, &app_route},
+    {"app_route", &__this_module, &uint_operations, 0400, -1, 0, &app_route},
+    {"lease_registered", &__this_module, &uint_operations, 0400, -1, 0, &lease_registered},
     {"app_overrides", &__this_module, &uint_operations, 0400, -1, 0, &app_overrides},
     {"input_probes_registered", &__this_module, &uint_operations, 0400, -1, 0, &input_probes_registered},
     {"input_starts", &__this_module, &uint_operations, 0400, -1, 0, &input_starts},

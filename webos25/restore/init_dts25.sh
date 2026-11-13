@@ -970,12 +970,23 @@ w25_kmod_hold() {
   if [ ! -d "$KMOD_MODULE" ] || rmmod earc_route 2>>"$KMOD_OUT"; then echo 0; else echo 20; fi > "$KMOD_EXIT"
   rm -f "$KMOD_PID"
 }
+# This hook runs before boot finishes (~30 s vs ~45 s on a C5); bounded at 180 s.
+w25_wait_boot() {
+  i=0
+  while [ "$i" -lt 180 ]; do
+    systemctl is-active bootmode-normal-boot-done.service >/dev/null 2>&1 && return 0
+    i=$((i + 1)); sleep 1
+  done
+}
 w25_kmod_start() {
   w25_module_wanted || return 0
   w25_alive "$(cat "$KMOD_PID" 2>/dev/null)" && return 0
   WHY=$(w25_kmod_refusal)
   if [ -n "$WHY" ]; then
     w25_log "earc_route: not loaded ($WHY)"
+    [ "$WHY" != crashed ] || ( w25_wait_boot
+      toast "DTS Enabler: DTS-HD is paused, the TV restarted while its kernel module was loading. Receivers get the DTS core. To retry, turn Full DTS-HD off and on in the app."
+    ) </dev/null >/dev/null 2>&1 &
     return 0
   fi
   mkdir -p /run/dts25
@@ -1186,12 +1197,7 @@ esac
 w25_appdts_start() {
   [ -n "${W25_NO_APPDTS:-}" ] && return 0
   [ -f "$APPDTS_FLAG" ] || return 0
-  ( i=0
-    while [ "$i" -lt 180 ]; do
-      systemctl is-active bootmode-normal-boot-done.service >/dev/null 2>&1 && break
-      i=$((i + 1)); sleep 1
-    done
-    w25_appdts_apply ) </dev/null >/dev/null 2>&1 &
+  ( w25_wait_boot; w25_appdts_apply ) </dev/null >/dev/null 2>&1 &
 }
 w25_appdts_start
 w25_pt_stop_soft

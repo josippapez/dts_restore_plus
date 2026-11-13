@@ -42,7 +42,8 @@ GENERATIONS = {
 IMPORTS = {'mutex_lock', 'mutex_unlock', 'msleep', 'kthread_create_on_node', 'wake_up_process',
            'kthread_stop', 'kthread_should_stop', 'param_set_uint', 'param_get_uint',
            'param_set_ulong', 'param_get_ulong',
-           'register_kprobe', 'unregister_kprobe', 'cpus_read_lock', 'cpus_read_unlock', 'synchronize_rcu'}
+           'register_kprobe', 'unregister_kprobe', 'cpus_read_lock', 'cpus_read_unlock', 'synchronize_rcu',
+           '__arch_copy_from_user'}
 
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument('--output', type=Path, required=True)

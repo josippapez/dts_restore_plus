@@ -61,7 +61,11 @@
     X(register_kprobe, 0) \
     X(unregister_kprobe, 0) \
     X(cpus_read_lock, 0) \
-    X(cpus_read_unlock, 0)
+    X(cpus_read_unlock, 0) \
+    X(misc_open, 1) \
+    X(__fput, 1) \
+    X(misc_register, 0) \
+    X(misc_deregister, 0)
 
 #define EARC_HDMI_ENUM(name, analysed) HF_##name,
 enum earc_hdmi_function { EARC_HDMI_FUNCTIONS(EARC_HDMI_ENUM) HF_COUNT };
@@ -135,6 +139,9 @@ struct earc_hdmi_layout {
     ed_u64 input_formats[32];
     unsigned int input_format_count, input_type_offset, input_frame_size, input_forced_reg, input_arg_reg;
     const char *property_reason;
+    /* struct file_operations' open and release slots, from the kernel's own calls. */
+    unsigned int fops_open, fops_release;
+    const char *fops_reason;
 };
 
 /* ---- block-sound register tracker over one function ---- */
@@ -795,6 +802,55 @@ static void hd_input_format(const struct earc_code *fns, struct earc_hdmi_layout
     out->format_reason = 0;
 }
 
+/* The one call through a file_operations slot in fn: `ldr xS,[xF,#slot]; cbz xS;
+ * ...; blr xS`, where xF holds struct file's f_op, and f_op is the word xF was
+ * last loaded from or stored to ([xFile,#fileops], within 8 instructions). Returns
+ * slot and sets *fileops, or 0 unless exactly one such call exists. */
+static unsigned int fops_slot(const struct earc_code *fn, unsigned int *fileops) {
+    unsigned int i, j, k, found = 0, slot = 0;
+    if (!fn->words) return 0;
+    for (i = 0; i < fn->count; i++) {
+        ed_u32 op = fn->words[i], reg, base, off = 0;
+        if ((op & 0xfffffc1fu) != 0xd63f0000u) continue;  /* blr xS */
+        reg = (op >> 5) & 31;
+        for (j = i; j-- > 0 && i - j <= 4;)
+            if ((fn->words[j] & 0xffc0001fu) == (0xf9400000u | reg)) break;  /* ldr xS,[xF,#imm] */
+        if (j >= i || i - j > 4) continue;
+        base = (fn->words[j] >> 5) & 31;
+        for (k = j; k-- > 0 && j - k <= 8;) {
+            ed_u32 w = fn->words[k];
+            /* ldr xF,[x,#imm] or str xF,[x,#imm]: the f_op field. */
+            if ((w & 0xffc0001fu) == (0xf9400000u | base) || (w & 0xffc0001fu) == (0xf9000000u | base)) {
+                off = ((w >> 10) & 0xfff) * 8;
+                break;
+            }
+        }
+        if (!off) continue;
+        found++;
+        *fileops = off;
+        slot = ((fn->words[j] >> 10) & 0xfff) * 8;
+    }
+    return found == 1 ? slot : 0;
+}
+
+static void hd_fops(const struct earc_code *fns, struct earc_hdmi_layout *out) {
+    unsigned int open_fileops = 0, release_fileops = 0;
+    out->fops_reason = "misc_open/__fput not given";
+    if (!fns[HF_misc_open].words || !fns[HF___fput].words || !fns[HF_misc_register].address ||
+        !fns[HF_misc_deregister].address)
+        return;
+    out->fops_open = fops_slot(&fns[HF_misc_open], &open_fileops);
+    out->fops_release = fops_slot(&fns[HF___fput], &release_fileops);
+    /* Both read f_op from the same struct file field; release follows open in the table. */
+    if (!out->fops_open || !out->fops_release || open_fileops != release_fileops ||
+        out->fops_release != out->fops_open + 16 || out->fops_open < 0x40 || out->fops_open > 0x100) {
+        out->fops_reason = "file_operations open/release slots not derived";
+        out->fops_open = out->fops_release = 0;
+        return;
+    }
+    out->fops_reason = 0;
+}
+
 static void hd_symbols(const struct earc_code *fns, struct earc_hdmi_layout *out) {
     out->patch_text = fns[HF_aarch64_insn_patch_text].address;
     out->kprobe_register = fns[HF_register_kprobe].address;
@@ -823,6 +879,7 @@ static void earc_hdmi_decode(const struct earc_code *fns, ed_u64 nonpcm_virtual,
     hd_input_start(fns, out);
     hd_input_properties(fns, out);
     hd_input_format(fns, out);
+    hd_fops(fns, out);
     out->nonpcm_virtual = nonpcm_virtual;
     out->nonpcm_physical = (nonpcm_virtual && nonpcm_virtual >= stext_align) ? nonpcm_virtual - stext_align : 0;
 }

@@ -1416,6 +1416,34 @@ static void input_capture_tests(const struct kernel *kernel, const struct earc_h
                 entry_kprobe, property_reason, 0, layout);
 }
 
+/* The lease device's open/release slots, derived from misc_open and __fput, on
+ * every kernel: 5.4 measured 0x70/0x80, 6.12 0x68/0x78 by hand. */
+static void fops_test(const struct kernel *k, const struct earc_hdmi_layout *h) {
+    unsigned int want = k->stext >= 0xffffffc080000000ULL ? 0x68 : 0x70;
+    check_reason(k->dir, "file_operations slots", h->fops_reason);
+    check(k->dir, "file_operations open slot", h->fops_open, want);
+    check(k->dir, "file_operations release slot", h->fops_release, want + 16);
+    {
+        struct earc_code changed[HF_COUNT];
+        struct earc_hdmi_layout m;
+        ed_u32 copy[4096];
+        unsigned int i;
+        memcpy(changed, k->hdmi, sizeof(changed));
+        for (i = 0; i < changed[HF___fput].count && i < 4096; i++) copy[i] = changed[HF___fput].words[i];
+        /* A second f_op load, slot load and call in __fput: ambiguous, refused. */
+        for (i = 0; i + 8 < changed[HF___fput].count; i++)
+            if ((copy[i] & 0xfffffc1fu) == 0xd63f0000u && i >= 5) {
+                unsigned int at = changed[HF___fput].count - 4, from;
+                for (from = i - 4; from < i && (copy[from] & 0xffc00000u) != 0xf9400000u; from++) {}
+                copy[at] = copy[from - 1]; copy[at + 1] = copy[from]; copy[at + 2] = copy[i];
+                break;
+            }
+        changed[HF___fput].words = copy;
+        earc_hdmi_decode(changed, 0, k->stext & ~0xfffffULL, &m);
+        check(k->dir, "duplicated release call refuses", m.fops_reason != 0, 1);
+    }
+}
+
 static void input_policy_tests(void) {
     check("input policy", "DTS start", earc_input_start_match(1, 48, 1, 1), 1);
     check("input policy", "HD start", earc_input_start_match(0, 51, 1, 1), 1);
@@ -1481,6 +1509,7 @@ int main(int argc, char **argv) {
          printf("INFO %s: HDMI property entry=%llx frame=%u type=sp+%u forced=x%u formats=%u\n", dir,
              hdmi_layout.property_entry, hdmi_layout.input_frame_size, hdmi_layout.input_type_offset,
              hdmi_layout.input_forced_reg, hdmi_layout.input_format_count);
+        fops_test(&kernels[n], &hdmi_layout);
         hd_probe_test(&kernels[n], layouts[n].nonpcm);
         if (ho && run_hdmi_oracle(ho, &kernels[n], layouts[n].nonpcm, &hdmi_layout) && !hdmi_refused[ho->generation]) {
             hdmi_refusal_tests(&kernels[n], layouts[n].nonpcm, &hdmi_layout);

@@ -71,7 +71,8 @@ HDMI_FUNCTIONS = [
     ('register_kernel_break_hook', 1), ('call_break_hook', 1), ('unregister_kernel_break_hook', 0),
     ('kprobe_breakpoint_handler', 0), ('kprobe_breakpoint_ss_handler', 0), ('kretprobe_breakpoint_handler', 0),
     ('aarch64_insn_patch_text', 0), ('register_kprobe', 0), ('unregister_kprobe', 0),
-    ('cpus_read_lock', 0), ('cpus_read_unlock', 0)]
+    ('cpus_read_lock', 0), ('cpus_read_unlock', 0),
+    ('misc_open', 1), ('__fput', 1), ('misc_register', 0), ('misc_deregister', 0)]
 
 
 def fail(reason):
