@@ -45,24 +45,22 @@ GST_DEBUG_CATEGORY_STATIC (lgroute_debug);
 #endif
 /* This TV's kernel has reported its bypass route in LGROUTE_SNDOUT since boot. */
 #define BYPASS_SEEN LGROUTE_RUN "/bypass-seen"
-#ifndef LGROUTE_APP_ROUTE
-#define LGROUTE_APP_ROUTE "/sys/module/earc_route/parameters/app_route"
+#ifndef LGROUTE_LEASE
+#define LGROUTE_LEASE "/dev/earc_route"
 #endif
 
 /* earc_route forces LG's eARC bypass for the leased renderer, so LG never mixes
- * the carrier as a codec the receiver lacks. TRUE when the module took the value. */
-static gboolean app_lease (gint value)
+ * the carrier as a codec the receiver lacks. The lease lasts as long as this
+ * descriptor: the kernel drops it on close, a crash or kill included. -1 if not taken. */
+static int app_lease (gint value)
 {
-  gchar text[4];
-  int fd = open (LGROUTE_APP_ROUTE, O_WRONLY | O_CLOEXEC);
-  if (fd < 0)
-    return FALSE;
-  gint length = g_snprintf (text, sizeof text, "%d\n", value);
-  gboolean ok = write (fd, text, length) == length;
-  if (!ok)
-    GST_DEBUG ("lgroute: app_route write failed");
-  close (fd);
-  return ok;
+  gchar text = '0' + value;
+  int fd = open (LGROUTE_LEASE, O_WRONLY | O_CLOEXEC);
+  if (fd >= 0 && write (fd, &text, 1) != 1) {
+    close (fd);
+    fd = -1;
+  }
+  return fd;
 }
 
 static void vnote (const gchar *format, va_list args)
@@ -536,8 +534,9 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
       if (restart_wanted (route, "track switch"))
         route->restart_after = route->configured_at + RESTART_SETTLE;
     }
-    route->leased = app_lease (route->lease);
-    if (!route->leased) {
+    if (route->lease_fd < 0)
+      route->lease_fd = app_lease (route->lease);
+    if (route->lease_fd < 0) {
       route_fail (route, "earc_route did not take the lease");
       return GST_PAD_PROBE_DROP;
     }
@@ -608,14 +607,8 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
     route_fail (route, "LG plays the carrier too slowly");
     return GST_PAD_PROBE_DROP;
   }
-  if (due) {
+  if (due)
     route->next_check = now + 250 * G_TIME_SPAN_MILLISECOND;
-    if (!app_lease (route->lease)) {
-      route->leased = FALSE;
-      route_fail (route, "earc_route lease lost");
-      return GST_PAD_PROBE_DROP;
-    }
-  }
   /* Mixed eARC would play the carrier as noise, and so does a carrier LG plays
    * at the wrong speed (a tester heard seconds of it before the third slow
    * window): send silence until LG unmixes and the pace is back. */
@@ -656,6 +649,7 @@ void lgroute_init (LgRoute *route, GstElement *element)
   }
   memset (route, 0, sizeof *route);
   route->element = element;
+  route->lease_fd = -1;
 }
 
 /* The first verified LG sink under top; count the verified ones, total every audiosink. */
@@ -761,7 +755,7 @@ gboolean lgroute_arm (LgRoute *route)
     note ("not armed: sound output is not a receiver");
     return FALSE;
   }
-  if (access (LGROUTE_APP_ROUTE, W_OK)) {
+  if (access (LGROUTE_LEASE, W_OK)) {
     note ("not armed: earc_route is not loaded");
     return FALSE;
   }
@@ -868,15 +862,16 @@ void lgroute_disarm (LgRoute *route)
   route->first = route->feeding = route->configured = route->unmixed = FALSE;
   route->restart_pending = route->waiting = route->draining = route->in_mixer = FALSE;
   route->restarts = 0;
-  if (route->leased)
-    app_lease (0);
+  int lease_fd = route->lease_fd;
+  route->lease_fd = -1;
   route->lease = 0;
-  route->leased = FALSE;
   route->restart_after = 0;
   route->stream_id[0] = 0;
   route->resource[0] = 0;
   restart_pace (route);
   g_mutex_unlock (&route_lock);
+  if (lease_fd >= 0)
+    close (lease_fd);
   if (sink)
     note ("disarmed");
   if (pad) {

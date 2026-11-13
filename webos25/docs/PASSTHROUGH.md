@@ -20,7 +20,7 @@ transport keeps FFmpeg's IEC 61937 packing on a 192 kHz carrier. HD needs Digita
 Sound Output on Pass Through: Auto re-encodes and mixes TV sounds in.
 
 LG mixes any input codec missing from the receiver's short eARC list, which omits
-DTS on many soundbars. The decoder holds `earc_route`'s `app_route` lease, which
+DTS on many soundbars. The decoder holds `earc_route`'s `/dev/earc_route` lease, which
 forces the bypass; without the module loaded HD is not offered. The carrier stays
 silent until eARC is unmixed. Nothing writes LG's mixer; if LG keeps mixing on for a
 second, the stream falls back to the core.

@@ -1416,11 +1416,14 @@ static void input_capture_tests(const struct kernel *kernel, const struct earc_h
                 entry_kprobe, property_reason, 0, layout);
 }
 
-/* The lease device's open/release slots, derived from misc_open and __fput, on
- * every kernel: 5.4 measured 0x70/0x80, 6.12 0x68/0x78 by hand. */
+/* The lease device's write/open/release slots, derived from the kernel's write
+ * path, misc_open and __fput, on every kernel: 5.4 measured 0x18/0x70/0x80,
+ * 6.12 0x20/0x68/0x78 by hand. */
 static void fops_test(const struct kernel *k, const struct earc_hdmi_layout *h) {
-    unsigned int want = k->stext >= 0xffffffc080000000ULL ? 0x68 : 0x70;
+    int v612 = k->stext >= 0xffffffc080000000ULL;
+    unsigned int want = v612 ? 0x68 : 0x70;
     check_reason(k->dir, "file_operations slots", h->fops_reason);
+    check(k->dir, "file_operations write slot", h->fops_write, v612 ? 0x20 : 0x18);
     check(k->dir, "file_operations open slot", h->fops_open, want);
     check(k->dir, "file_operations release slot", h->fops_release, want + 16);
     {
@@ -1430,12 +1433,12 @@ static void fops_test(const struct kernel *k, const struct earc_hdmi_layout *h) 
         unsigned int i;
         memcpy(changed, k->hdmi, sizeof(changed));
         for (i = 0; i < changed[HF___fput].count && i < 4096; i++) copy[i] = changed[HF___fput].words[i];
-        /* A second f_op load, slot load and call in __fput: ambiguous, refused. */
-        for (i = 0; i + 8 < changed[HF___fput].count; i++)
-            if ((copy[i] & 0xfffffc1fu) == 0xd63f0000u && i >= 5) {
-                unsigned int at = changed[HF___fput].count - 4, from;
-                for (from = i - 4; from < i && (copy[from] & 0xffc00000u) != 0xf9400000u; from++) {}
-                copy[at] = copy[from - 1]; copy[at + 1] = copy[from]; copy[at + 2] = copy[i];
+        /* A second release call in __fput (f_op load, slot load, cbz, blr): ambiguous, refused. */
+        for (i = 1; i + 5 < changed[HF___fput].count; i++)
+            if ((copy[i] & 0xffc00000u) == 0xf9400000u && ((copy[i] >> 10) & 0xfff) * 8 == h->fops_release) {
+                unsigned int at = changed[HF___fput].count - 6, k;
+                for (k = 0; k < 6; k++) copy[at + k] = copy[i - 1 + k];
+                copy[at + 2] = (copy[at + 2] & 0xff00001fu) | (1u << 5);  /* cbz to the next word */
                 break;
             }
         changed[HF___fput].words = copy;

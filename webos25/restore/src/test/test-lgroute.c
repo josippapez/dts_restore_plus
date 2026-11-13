@@ -16,7 +16,7 @@
 #define LGROUTE_AREN "/tmp/lgroute-test-run/aren0"
 #define LGROUTE_SINK_WAIT (600 * G_TIME_SPAN_MILLISECOND)
 #define LGROUTE_SNDOUT "/tmp/lgroute-test-run/sndout"
-#define LGROUTE_APP_ROUTE "/tmp/lgroute-test-run/app_route"
+#define LGROUTE_LEASE "/tmp/lgroute-test-run/earc_route"
 #include "../lgroute.h"
 #include "../lgroute-graph.h"
 
@@ -24,7 +24,7 @@ static const char *graph;
 static gboolean graph_ok = TRUE, receiver = TRUE, writes_ok = TRUE, short_write;
 static int unmixed_result = 1, checks, formats, graph_reads;
 static char destination[128];
-static int last_lease = -1, lease_writes;
+static int last_lease = -1, lease_writes, lease_open;
 /* earc_route loaded: its app_route parameter can be opened. */
 static gboolean module_loaded = TRUE;
 
@@ -44,7 +44,11 @@ static int
 open_property (const char *filename, int flags, ...)
 {
   g_assert_true ((flags & O_ACCMODE) == O_WRONLY);
-  if (!strcmp (filename, LGROUTE_APP_ROUTE) && !module_loaded) { errno = ENOENT; return -1; }
+  if (!strcmp (filename, LGROUTE_LEASE)) {
+    if (!module_loaded || lease_open) { errno = module_loaded ? EBUSY : ENOENT; return -1; }
+    lease_open = 1;
+    return 124;
+  }
   g_strlcpy (destination, filename, sizeof destination);
   return 123;
 }
@@ -52,12 +56,13 @@ open_property (const char *filename, int flags, ...)
 static ssize_t
 write_property (int fd, const void *buffer, size_t size)
 {
-  g_assert_cmpint (fd, ==, 123);
-  if (!strcmp (destination, LGROUTE_APP_ROUTE)) {
-    last_lease = atoi (buffer);
+  if (fd == 124) {
+    g_assert_cmpuint (size, ==, 1);
+    last_lease = *(const char *) buffer - '0';
     lease_writes++;
     return size;
   }
+  g_assert_cmpint (fd, ==, 123);
   if (!writes_ok) return -1;
   g_assert_cmpstr (destination, ==, LGROUTE_INSTANCES "/04260026/cmd");
   static const char expected[] = "0x50020020 192000 8 16 0 0 192000 8 16\n";
@@ -67,7 +72,12 @@ write_property (int fd, const void *buffer, size_t size)
   return size;
 }
 
-static int close_property (int fd) { g_assert_cmpint (fd, ==, 123); return 0; }
+static int close_property (int fd)
+{
+  if (fd == 124) { g_assert_true (lease_open); lease_open = 0; return 0; }
+  g_assert_cmpint (fd, ==, 123);
+  return 0;
+}
 int lgroute_control_receiver (void) { return receiver; }
 /* -1 for this many reads, then unmixed_result. */
 static int unavailable_reads;
@@ -899,34 +909,37 @@ static gpointer disarm_thread (gpointer data)
   return NULL;
 }
 
-/* The route takes its app lease, renews it on every due check, decodes if the
- * module goes away and releases the lease on disarm. */
+/* The route takes its lease once, as an open /dev/earc_route, holds it while it
+ * plays and closes it on disarm; no renewal. */
 static void lease_tests (void)
 {
   LgRoute route;
   reset (&route); lease_writes = 0;
   caps_event (&route); graph = after;
   g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
-  g_assert_true (route.leased);
+  g_assert_cmpint (route.lease_fd, ==, 124);
   g_assert_cmpint (last_lease, ==, 2);
-  int taken = lease_writes;
-  route.next_check = 0;
-  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
-  g_assert_cmpint (lease_writes, ==, taken + 1);
+  for (int i = 0; i < 3; i++) {
+    route.next_check = 0;
+    g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  }
+  g_assert_cmpint (lease_writes, ==, 1);
+  g_assert_true (lease_open);
   lgroute_disarm (&route);
-  g_assert_cmpint (last_lease, ==, 0);
-  g_assert_false (route.leased);
+  g_assert_false (lease_open);
+  g_assert_cmpint (route.lease_fd, ==, -1);
 
-  reset (&route); caps_event (&route); graph = after;
-  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
-  module_loaded = FALSE; route.next_check = 0;
-  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_DROP);
-  g_assert_cmpstr (route.reason, ==, "earc_route lease lost");
-  lgroute_disarm (&route);
-
+  /* Another pipeline holds it (EBUSY), or the module is gone: decode. */
+  lease_open = 1;
   reset (&route); caps_event (&route); graph = after;
   g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_DROP);
   g_assert_cmpstr (route.reason, ==, "earc_route did not take the lease");
+  lgroute_disarm (&route);
+  g_assert_true (lease_open);
+  lease_open = 0;
+  module_loaded = FALSE;
+  reset (&route); caps_event (&route); graph = after;
+  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_DROP);
   lgroute_disarm (&route);
   module_loaded = TRUE;
 }
@@ -954,7 +967,7 @@ int main (int argc, char **argv)
 {
   gst_init (&argc, &argv);
   g_assert_cmpint (g_mkdir_with_parents (LGROUTE_INSTANCES "/04260026", 0700), ==, 0);
-  g_assert_true (g_file_set_contents (LGROUTE_APP_ROUTE, "0\n", -1, NULL));
+  g_assert_true (g_file_set_contents (LGROUTE_LEASE, "", -1, NULL));
   g_unlink (ROUTE_LOG);
   graph_tests ();
   LgRoute route;

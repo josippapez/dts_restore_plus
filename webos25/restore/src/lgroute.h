@@ -20,8 +20,8 @@ typedef struct {
   const gchar *reason;
   gchar unavailable[LGROUTE_WHY + 32];   /* reason, when eARC became unavailable */
   gchar resource[16], stream_id[128], converter[9];
-  gint lease;   /* earc_route's app_route value for this renderer: index + 1 */
-  gboolean leased;
+  gint lease;      /* the renderer index + 1 written to /dev/earc_route */
+  int lease_fd;    /* the open /dev/earc_route holding it, or -1 */
 } LgRoute;
 
 void lgroute_init (LgRoute *route, GstElement *element);

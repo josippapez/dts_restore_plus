@@ -172,10 +172,12 @@ line numbers passed to gst_debug_log differed), so this one is built from the
 source as committed. Verified on the C5 (decode identical to the previous build,
 installer and TV report clean). Not verified on a receiver.
 The 2026-11-13 build drops the luna PCM relabel: the HD route arms only with
-earc_route loaded, holds its app_route lease while it plays, and decodes the
-core when the lease is refused or lost. Verified on a C2 (33.31.68) with an
-eARC receiver: DTS-HD MA played as Pass-Through with no luna call, and with the
-module unloaded the route refused to arm and played the core.
+earc_route loaded, holds its lease as an open /dev/earc_route (written once,
+closed on disarm; the kernel drops it on a crash or kill), and decodes the core
+when the lease is refused. Verified on a C2 (33.31.68) with an eARC receiver:
+DTS-HD MA played as Pass-Through with no luna call, the lease ended with the
+clip and with kill -9 of the media pipeline, and with the module unloaded the
+route refused to arm and played the core.
 
 This report is maintained by hand: update it whenever out/libgstdtsdec.so is
 rebuilt (build.sh prints the ABI values above).

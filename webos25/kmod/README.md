@@ -3,7 +3,7 @@
 `earc_route-<generation>.ko` lets a DTS bitstream from an HDMI input or an app
 reach an eARC receiver: one load opens LG's DTS check, accepts DTS-HD in
 `_cb_output_status`, and overrides `_set_output` to LG's bypass for an HDMI DTS
-stream or an app holding the `app_route` lease. It is built once per kernel generation,
+stream or an app holding the `/dev/earc_route` lease. It is built once per kernel generation,
 from one source: `earc_route-5.4.ko` (webOS 25 firmware 33.31.x, kernel
 5.4.268-329.ptl4tv.5, and 33.22.x, kernel 5.4.268-329.ptl4tv.2) and
 `earc_route-6.12.ko` (firmware 43.21.x, kernel 6.12.44-352), the generation-specific values passed as `-D` macros by `build.py`.
@@ -234,7 +234,7 @@ Both are needed because accepting codec 7 is what sends it to the name load on
 the supported path. The open gate is what lets a codec-7 event reach the name
 load at all, so the name probe is registered before the gate is
 opened and removed after it is restored. Every override lasts until
-`rmmod earc_route`; the app lease is bounded by its own renewal (2 s).
+`rmmod earc_route`; the app lease lasts while its `/dev/earc_route` is open.
 
 **Decoder 0 and decoder 1.** These TVs have two HDMI audio decoders: `adec.p0`,
 with the DSP instance `dsp0/hdmi0`, and `adec.p1`, with `dsp0/hdmi1`. On a C5 an
@@ -547,10 +547,14 @@ run on decoder 0.** Read-only parameters report the state: `gate_open`,
 `hd_probes_registered` (2 when both are in), `hd_status_seen`,
 `hd_status_accepts`, `hd_name_seen`, `hd_name_fixes`.
 
-`app_route` (root-writable) is the app lease: an app writes its renderer index
-plus 1 (`1` or `2`) at least every 2 s while it sends a DTS carrier, and `0` to
-release it. While it is held, `_set_output` for that renderer on eARC is forced
-to LG's bypass.
+`/dev/earc_route` is the app lease: an app opens it and writes its renderer
+index plus 1 (`1` or `2`) once. While that file is open, `_set_output` for that
+renderer on eARC is forced to LG's bypass; the kernel drops the lease when the
+file is closed, by the app or by its crash or kill. One holder at a time
+(`EBUSY`), and the module cannot be unloaded while it is held. Its handler table
+is laid out from the kernel's own calls (`misc_open`, `__fput`, and
+`__vfs_write` on 5.4 or `vfs_write` on 6.12), and the module refuses to load
+when they do not match. `app_route` (read-only) shows the current holder.
 
 In dmesg, the session prints `earc_route: pass nomatch ...` for the first 8 `_set_output` calls that miss the policy, with every input of the decision: `index`, `desc` (0 = null descriptor, `mask` then shown as 0), `mask`, that decoder's `adec<index>-codec`/`open`/`started` (`no-adec-slot` for an index above 1, which has no ADEC slot), and the call's `codec-arg`/`bypass-arg`.
 
@@ -619,7 +623,7 @@ play as DTS on the soundbar; the module loads with both probes and unloads clean
 ## In the app
 
 DTS Enabler loads the module while DTS-HD passthrough is on: its HD route needs the
-`app_route` lease. The boot script (`webos25/restore/init_dts25.sh`) stages it into
+`/dev/earc_route` lease. The boot script (`webos25/restore/init_dts25.sh`) stages it into
 `/var/lib/webosbrew/dts25/hdmi/` and holds it loaded; turning DTS-HD off, Disable and
 Uninstall unload it, and a module that will not unload is reported as "restart the TV".
 The module's HDMI-input probes are loaded with it but no app setting offers DTS to HDMI

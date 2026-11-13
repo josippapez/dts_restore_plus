@@ -925,7 +925,6 @@ static long lease_write(struct target_file *file, const char *user, unsigned lon
     __atomic_store_n(&app_route, (u32)(value - '0'), __ATOMIC_RELEASE);
     return (long)length;
 }
-/* The write slot (+16 on both generations: owner, llseek, read, write). */
 static void *lease_fops[0x100 / 8];
 struct target_miscdevice { int minor; u8 pad[4]; const char *name; void *fops; u8 tail[0x60]; };
 static struct target_miscdevice lease_device;
@@ -938,7 +937,7 @@ static int lease_register(void) {
         return -22;
     }
     lease_fops[0] = &__this_module;
-    lease_fops[3] = (void *)lease_write;
+    lease_fops[hdmi.fops_write / 8] = (void *)lease_write;
     lease_fops[hdmi.fops_open / 8] = (void *)lease_open;
     lease_fops[hdmi.fops_release / 8] = (void *)lease_release;
     lease_device.minor = 255;  /* MISC_DYNAMIC_MINOR */
@@ -949,7 +948,8 @@ static int lease_register(void) {
         return -16;
     }
     lease_registered = 1;
-    printk("\0016earc_route: /dev/earc_route ready (open +%#x, release +%#x)\n", hdmi.fops_open, hdmi.fops_release);
+    printk("\0016earc_route: /dev/earc_route ready (write +%#x, open +%#x, release +%#x)\n", hdmi.fops_write,
+           hdmi.fops_open, hdmi.fops_release);
     return 0;
 }
 
