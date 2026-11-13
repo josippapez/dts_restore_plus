@@ -26,7 +26,7 @@ static int unmixed_result = 1, checks, formats, graph_reads;
 static char destination[128];
 static int last_lease = -1, lease_writes;
 /* earc_route loaded: its app_route parameter can be opened. */
-static gboolean module_loaded;
+static gboolean module_loaded = TRUE;
 
 static gboolean
 read_graph (const gchar *filename, gchar **contents, gsize *length, GError **error)
@@ -78,40 +78,6 @@ int lgroute_control_unmixed_why (char why[LGROUTE_WHY])
   if (result < 0) g_strlcpy (why, "Sndout EARC OnOff is 0, not on", LGROUTE_WHY);
   return result;
 }
-static gchar luna_dir[] = "/tmp/lgroute-luna-XXXXXX", luna_send[64];
-#define LUNA_SEND luna_send
-
-/* Every luna-send call, with the thread that made it. */
-static GMutex calls_lock;
-static GPtrArray *calls;
-static GThread *call_thread[64];
-static int call_count;
-
-static gboolean
-record_spawn (const gchar *dir, gchar **argv, gchar **envp, GSpawnFlags flags,
-    GSpawnChildSetupFunc setup, gpointer data, gchar **out, gchar **err, gint *status, GError **error)
-{
-  g_mutex_lock (&calls_lock);
-  if (!calls) calls = g_ptr_array_new_with_free_func (g_free);
-  g_assert_cmpint (call_count, <, 64);
-  call_thread[call_count++] = g_thread_self ();
-  g_ptr_array_add (calls, g_strdup_printf ("%s %s", argv[5], argv[6]));
-  g_mutex_unlock (&calls_lock);
-  return g_spawn_sync (dir, argv, envp, flags, setup, data, out, err, status, error);
-}
-#define g_spawn_sync record_spawn
-
-/* Count LG input reports from the fake luna-send's log. */
-static int luna_count (const gchar *needle)
-{
-  gchar *path = g_build_filename (luna_dir, "log", NULL), *log = NULL;
-  int n = 0;
-  if (g_file_get_contents (path, &log, NULL, NULL))
-    for (const gchar *p = log; (p = strstr (p, needle)); p++) n++;
-  g_free (path); g_free (log);
-  return n;
-}
-
 static gboolean
 read_or_graph (const gchar *filename, gchar **contents, gsize *length, GError **error)
 {
@@ -152,32 +118,6 @@ aren_ioctl (int fd, unsigned long request, ...)
 #undef open
 #undef write
 #undef close
-
-/* Wait for the luna worker to finish everything queued. */
-static void drain (void)
-{
-  for (int i = 0; i < 2000 && g_atomic_int_get (&outstanding); i++) g_usleep (10000);
-  g_assert_cmpint (g_atomic_int_get (&outstanding), ==, 0);
-}
-
-static int calls_matching (const gchar *needle)
-{
-  int n = 0;
-  g_mutex_lock (&calls_lock);
-  for (guint i = 0; calls && i < calls->len; i++)
-    if (strstr (g_ptr_array_index (calls, i), needle)) n++;
-  g_mutex_unlock (&calls_lock);
-  return n;
-}
-
-static void forget_calls (void)
-{
-  drain ();
-  g_mutex_lock (&calls_lock);
-  if (calls) g_ptr_array_set_size (calls, 0);
-  call_count = 0;
-  g_mutex_unlock (&calls_lock);
-}
 
 typedef struct { GstElement parent; gboolean pcm; } TestSink;
 typedef struct { GstElementClass parent; } TestSinkClass;
@@ -247,18 +187,10 @@ carrier (LgRoute *route, gboolean expect_es)
   return result;
 }
 
-static void set_lg_codec (const gchar *codec)
-{
-  gchar *path = g_build_filename (luna_dir, "state", NULL);
-  g_file_set_contents (path, codec, -1, NULL);
-  g_free (path);
-}
-
 static void reset (LgRoute *route)
 {
-  drain ();
-  set_lg_codec ("dts");
   lgroute_init (route, NULL);
+  route->lease = 2;
   route->sink = g_object_new (test_sink_get_type (), NULL);
   g_strlcpy (route->resource, "ADEC1", sizeof route->resource);
   graph = before; graph_ok = receiver = writes_ok = TRUE; graph_reads = 0; unmixed_result = 1; unavailable_reads = 0;
@@ -332,12 +264,6 @@ static void resume_tests (void)
   g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
   g_assert_false (last_silent);
 
-  /* No module: nothing was leased, so nothing is renewed. */
-  g_assert_false (route.leased);
-  route.next_check = 0;
-  lease_writes = 0;
-  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
-  g_assert_cmpint (lease_writes, ==, 0);
 
   /* 3. A new id: the renderer restarts, so setup is redone with the new caps. */
   int formats_before = formats;
@@ -560,7 +486,6 @@ static void resume_tests (void)
   /* 10. A resume seeks right after setup (every logged resume: 17-26 ms): the
    * renderer restart waits for playback, and a restart that cannot happen decodes. */
   reset (&route);
-  forget_calls ();
   caps_event (&route); graph = after;
   g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
   send_event (&route, gst_event_new_flush_stop (TRUE));
@@ -647,7 +572,7 @@ static void restart_tests (void)
 
   /* 12. Resume: silence while paused, then a new stream id makes LG restart its
    * renderer and the setup is redone with a fresh start event. */
-  reset (&route); forget_calls ();
+  reset (&route);
   graph = after;
   wire (&route, &pad, &source);
   gst_pad_add_probe (pad, GST_PAD_PROBE_TYPE_BUFFER, after_route, NULL, NULL);
@@ -676,7 +601,7 @@ static void restart_tests (void)
   unwire (&route, pad, source);
 
   /* 13. A rebuild mid-play restarts too, and only twice: the third gives up. */
-  reset (&route); forget_calls ();
+  reset (&route);
   graph = after;
   wire (&route, &pad, &source);
   gst_element_set_state (route.sink, GST_STATE_PLAYING);
@@ -697,7 +622,7 @@ static void restart_tests (void)
 
   /* 14. A failed route leaves LG's sink alone until its disarm: a tester's TV
    * logged one turning LG's bypass on for the next track as its audio locked up. */
-  reset (&route); forget_calls ();
+  reset (&route);
   graph = after;
   wire (&route, &pad, &source);
   push_carrier (source);
@@ -721,7 +646,7 @@ static void stale_buffer_tests (void)
    * pad would refuse the second caps (gst_pad_query_caps_default uses the current ones). */
   static GstStaticPadTemplate any_sink =
       GST_STATIC_PAD_TEMPLATE ("sink", GST_PAD_SINK, GST_PAD_ALWAYS, GST_STATIC_CAPS_ANY);
-  reset (&route); forget_calls (); graph = after;
+  reset (&route); graph = after;
   GstPad *pad = gst_pad_new_from_static_template (&any_sink, "stale"), *source = gst_pad_new ("src", GST_PAD_SRC);
   gst_pad_set_event_function (pad, accept_event);
   gst_pad_set_chain_function (pad, accept_buffer);
@@ -974,14 +899,12 @@ static gpointer disarm_thread (gpointer data)
   return NULL;
 }
 
-/* With earc_route loaded the route takes its app lease instead of relabelling
- * the stream at LG, renews it on every due check and releases it on disarm.
- * If the module goes away mid-stream the relabel comes back. */
+/* The route takes its app lease, renews it on every due check, decodes if the
+ * module goes away and releases the lease on disarm. */
 static void lease_tests (void)
 {
   LgRoute route;
-  reset (&route); forget_calls ();
-  module_loaded = TRUE; route.lease = 2; lease_writes = 0;
+  reset (&route); lease_writes = 0;
   caps_event (&route); graph = after;
   g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
   g_assert_true (route.leased);
@@ -990,111 +913,37 @@ static void lease_tests (void)
   route.next_check = 0;
   g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
   g_assert_cmpint (lease_writes, ==, taken + 1);
-  g_assert_cmpint (last_lease, ==, 2);
-  /* LG mixing is reported again only by a relabel, which a lease makes unnecessary. */
-  unmixed_result = 0; route.next_check = 0;
-  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
-  drain ();
-  g_assert_cmpint (calls_matching ("setQualityAttribute"), ==, 0);
-  unmixed_result = 1;
-  /* The module is unloaded: the next due check describes the carrier to LG. */
-  module_loaded = FALSE; route.next_check = 0;
-  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
-  g_assert_false (route.leased);
-  drain ();
-  g_assert_cmpint (calls_matching ("\"codec\":\"pcm\""), ==, 1);
   lgroute_disarm (&route);
-  drain ();
-
-  /* Leased to the end: disarm releases it and restores nothing at LG. */
-  reset (&route); forget_calls ();
-  module_loaded = TRUE; route.lease = 1;
-  caps_event (&route); graph = after;
-  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
-  lgroute_disarm (&route);
-  drain ();
   g_assert_cmpint (last_lease, ==, 0);
   g_assert_false (route.leased);
-  g_assert_cmpint (calls_matching ("setQualityAttribute"), ==, 0);
-  module_loaded = FALSE;
+
+  reset (&route); caps_event (&route); graph = after;
+  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
+  module_loaded = FALSE; route.next_check = 0;
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_DROP);
+  g_assert_cmpstr (route.reason, ==, "earc_route lease lost");
+  lgroute_disarm (&route);
+
+  reset (&route); caps_event (&route); graph = after;
+  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_DROP);
+  g_assert_cmpstr (route.reason, ==, "earc_route did not take the lease");
+  lgroute_disarm (&route);
+  module_loaded = TRUE;
 }
 
-static void async_tests (void)
+/* Two threads disarming one route clean up once. */
+static void race_tests (void)
 {
   LgRoute route;
-  /* Luna calls leave the calling thread, in order: query, report, then the restore. */
-  reset (&route);
-  forget_calls ();
-  report_pcm (&route);
-  lgroute_disarm (&route);
-  drain ();
-  g_assert_cmpint (call_count, ==, 4);
-  for (int i = 0; i < call_count; i++) g_assert_true (call_thread[i] != g_thread_self ());
-  g_assert_nonnull (strstr (g_ptr_array_index (calls, 0), "getAudioInputProperty"));
-  g_assert_nonnull (strstr (g_ptr_array_index (calls, 1), "\"codec\":\"pcm\",\"channel\":\"8\""));
-  g_assert_nonnull (strstr (g_ptr_array_index (calls, 2), "getAudioInputProperty"));
-  g_assert_nonnull (strstr (g_ptr_array_index (calls, 3), "\"codec\":\"dts\",\"immersive\":\"none\""));
-
-  /* LG already described the next stream: the late restore must not overwrite it. */
-  reset (&route);
-  forget_calls ();
-  report_pcm (&route);
-  drain ();
-  set_lg_codec ("ac3");
-  g_unlink (ROUTE_LOG);
-  lgroute_disarm (&route);
-  drain ();
-  g_assert_cmpint (calls_matching ("setQualityAttribute"), ==, 1);
-  g_assert_cmpint (calls_matching ("\"codec\":\"dts\""), ==, 0);
-  gchar *text = NULL;
-  g_assert_true (g_file_get_contents (ROUTE_LOG, &text, NULL, NULL));
-  g_assert_null (strstr (text, "restored"));
-  g_free (text);
-  /* Still our relabel: restored once, and the route log says so (testers'
-   * failures sat at track switches, where the restore lands). */
-  reset (&route);
-  forget_calls ();
-  report_pcm (&route);
-  drain ();
-  lgroute_disarm (&route);
-  drain ();
-  g_assert_cmpint (calls_matching ("\"codec\":\"dts\""), ==, 1);
-  g_assert_true (g_file_get_contents (ROUTE_LOG, &text, NULL, NULL));
-  g_assert_nonnull (strstr (text, "restored ADEC1's label at LG to codec \"dts\", immersive \"none\": accepted\n"));
-  g_free (text);
-
-  /* No second report while one is in flight; once it ends the next is sent without a new query. */
-  reset (&route);
-  forget_calls ();
-  gint64 start = g_get_monotonic_time ();
-  report_pcm (&route); report_pcm (&route); report_pcm (&route);
-  g_assert_cmpint (g_get_monotonic_time () - start, <, 100 * G_TIME_SPAN_MILLISECOND);
-  drain ();
-  g_assert_cmpint (calls_matching ("getAudioInputProperty"), ==, 1);
-  g_assert_cmpint (calls_matching ("\"codec\":\"pcm\""), ==, 1);
-  report_pcm (&route);
-  drain ();
-  g_assert_cmpint (calls_matching ("getAudioInputProperty"), ==, 1);
-  g_assert_cmpint (calls_matching ("\"codec\":\"pcm\""), ==, 2);
-  lgroute_disarm (&route);
-  drain ();
-
-  /* Two threads disarming one route clean up once. */
   for (int round = 0; round < 20; round++) {
     reset (&route);
     TestSink *sink = (TestSink *) g_object_ref (route.sink);
     route.sinkpad = gst_pad_new ("racer", GST_PAD_SINK);
-    forget_calls ();
-    report_pcm (&route);
-    drain ();
-    g_assert_cmpint (calls_matching ("\"codec\":\"dts\""), ==, 0);
     gint go = 0;
     Disarmer d = { &route, &go };
     GThread *a = g_thread_new ("disarm-a", disarm_thread, &d), *b = g_thread_new ("disarm-b", disarm_thread, &d);
     g_atomic_int_set (&go, 1);
     g_thread_join (a); g_thread_join (b);
-    drain ();
-    g_assert_cmpint (calls_matching ("\"codec\":\"dts\""), ==, 1);
     g_assert_null (route.sink); g_assert_null (route.sinkpad);
     g_assert_false (sink->pcm);
     gst_object_unref (sink);
@@ -1105,20 +954,8 @@ int main (int argc, char **argv)
 {
   gst_init (&argc, &argv);
   g_assert_cmpint (g_mkdir_with_parents (LGROUTE_INSTANCES "/04260026", 0700), ==, 0);
+  g_assert_true (g_file_set_contents (LGROUTE_APP_ROUTE, "0\n", -1, NULL));
   g_unlink (ROUTE_LOG);
-  g_assert_nonnull (g_mkdtemp (luna_dir));
-  g_snprintf (luna_send, sizeof luna_send, "%s/luna-send", luna_dir);
-  /* The fake LG remembers the codec it was last given for _p1 (default dts). */
-  gchar *script = g_strdup_printf ("#!/bin/sh\necho \"$5 $6\" >> %s/log\n"
-      "case $5 in *getAudioInputProperty) sleep 0.3; c=$(cat %s/state 2>/dev/null || echo dts);"
-      " echo '{\"returnValue\":true,\"audioInputProperty\":["
-      "{\"codec\":\"ac3\",\"pipelineId\":\"_other\",\"immersive\":\"none\"},"
-      "{\"codec\":\"'$c'\",\"pipelineId\":\"_p1\",\"immersive\":\"none\"}]}' ;;"
-      " *) echo \"$6\" | sed 's/.*\"codec\":\"\\([a-z0-9]*\\)\".*/\\1/' > %s/state;"
-      " echo '{\"returnValue\":true}' ;; esac\n", luna_dir, luna_dir, luna_dir);
-  g_assert_true (g_file_set_contents (luna_send, script, -1, NULL));
-  g_free (script);
-  g_assert_cmpint (g_chmod (luna_send, 0700), ==, 0);
   graph_tests ();
   LgRoute route;
   reset (&route);
@@ -1218,56 +1055,30 @@ int main (int argc, char **argv)
 
   /* The preroll wait is not LG mixing for a second: a G2 configured its DTS-HD
    * route at 00:11:51.245, got its next buffer at 00:11:52.975 and gave up on
-   * it. That buffer starts the second, and describes the carrier again. */
-  reset (&route); forget_calls (); caps_event (&route); graph = after; unmixed_result = 0;
+   * it. That buffer starts the second. */
+  reset (&route); caps_event (&route); graph = after; unmixed_result = 0;
   g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
-  drain ();
   route.mixed_since -= 1730 * G_TIME_SPAN_MILLISECOND; route.last_push -= 1730 * G_TIME_SPAN_MILLISECOND;
   route.next_check = 0;
   g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
   g_assert_false (route.failed); g_assert_true (last_silent);
-  drain (); g_assert_cmpint (calls_matching ("\"codec\":\"pcm\""), ==, 2);
   route.mixed_since -= G_TIME_SPAN_SECOND; route.next_check = 0;
   g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_DROP);
   g_assert_cmpstr (route.reason, ==, "LG keeps eARC mixing on");
   lgroute_disarm (&route);
 
-  /* Carrier is silence until LG unmixes; a mix re-reports PCM; disarm restores LG's codec. */
-  static const char pcm[] = "tv/setQualityAttribute {\"categoryType\":\"audioInputInfo\","
-      "\"requestType\":\"setAudioInputInfo\",\"pipelineInfo\":{\"pipelineId\":\"_p1\","
-      "\"resource\":\"ADEC1\",\"sourceType\":\"MEDIA\"},\"categoryInfo\":{\"codec\":\"pcm\","
-      "\"channel\":\"8\",\"immersive\":\"none\"}}";
-  static const char restore[] = "\"categoryInfo\":{\"codec\":\"dts\",\"immersive\":\"none\"}}";
-  drain ();
-  gchar *log = g_build_filename (luna_dir, "log", NULL);
-  g_unlink (log); g_free (log);
+  /* Carrier is silence until LG unmixes. */
   reset (&route);
   caps_event (&route); graph = after;
-  g_assert_cmpint (luna_count (pcm), ==, 0);
   unmixed_result = 0;
-  /* Reported once the bypass exists; the re-report for LG still mixing finds that one in flight. */
   g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
-  g_assert_true (last_silent); drain (); g_assert_cmpint (luna_count (pcm), ==, 1);
-  gchar *reply = NULL;
-  g_assert_true (g_file_get_contents (ROUTE_LOG, &reply, NULL, NULL));
-  g_assert_nonnull (strstr (reply, "described ADEC1 to LG as 8-channel PCM: accepted"));
-  g_free (reply);
-  route.next_check = g_get_monotonic_time () + 60 * G_TIME_SPAN_SECOND;
+  g_assert_true (last_silent);
   g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
-  g_assert_true (last_silent); drain (); g_assert_cmpint (luna_count (pcm), ==, 1);
-  /* Still mixing at the next check: described again. */
-  route.next_check = 0;
-  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
-  g_assert_true (last_silent); drain (); g_assert_cmpint (luna_count (pcm), ==, 2);
+  g_assert_true (last_silent);
   unmixed_result = 1;
   g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
   g_assert_false (last_silent);
   lgroute_disarm (&route);
-  drain ();
-  g_assert_cmpint (luna_count (restore), ==, 1);
-  g_assert_null (route.session);
-  /* Values reach a JSON payload; quotes are refused. */
-  g_assert_false (token ("_p1\",\"x")); g_assert_false (token ("")); g_assert_true (token ("ADEC1"));
 
   reset (&route); caps_event (&route); graph = after; receiver = FALSE;
   g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
@@ -1423,7 +1234,7 @@ int main (int argc, char **argv)
   }
   handoff_tests ();
   lease_tests ();
-  async_tests ();
+  race_tests ();
   g_print ("LG route: bypass converter, carrier flags, CAPS changes and failure refusal pass\n");
   return 0;
 }

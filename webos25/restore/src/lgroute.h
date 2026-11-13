@@ -4,8 +4,6 @@
 #include <gst/gst.h>
 #include "lgroute-control.h"
 
-typedef struct LgSession LgSession;
-
 typedef struct {
   GstElement *element;
   GstElement *sink;
@@ -22,9 +20,8 @@ typedef struct {
   const gchar *reason;
   gchar unavailable[LGROUTE_WHY + 32];   /* reason, when eARC became unavailable */
   gchar resource[16], stream_id[128], converter[9];
-  gint lease;
-  gboolean leased;   /* earc_route holds LG's bypass for this renderer; no PCM relabel */
-  LgSession *session;
+  gint lease;   /* earc_route's app_route value for this renderer: index + 1 */
+  gboolean leased;
 } LgRoute;
 
 void lgroute_init (LgRoute *route, GstElement *element);

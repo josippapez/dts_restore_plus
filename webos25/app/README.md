@@ -298,7 +298,7 @@ Full mechanism, measurements and dead ends: `../README.md` § "Show DTS tracks i
 
 The card keeps the `earc_route` kernel module loaded, which passes DTS core and DTS-HD
 from an HDMI input to an eARC receiver (see `../kmod/README.md`). DTS-HD passthrough
-also keeps it loaded, so the app's DTS-HD route needs no PCM relabel.
+also keeps it loaded: the app's DTS-HD route needs it.
 
 - **Where it runs.** Kernels `5.4.268-329.ptl4tv.5` and `.2` (`earc_route-5.4.ko`) and
   6.12 (`earc_route-6.12.ko`, not yet run on a 6.12 TV). Turn on also refuses while `/var/lib/lg-dts-core/enabled` or

@@ -33,9 +33,6 @@
 
 GST_DEBUG_CATEGORY_STATIC (lgroute_debug);
 #define GST_CAT_DEFAULT (lgroute_debug)
-#ifndef LUNA_SEND
-#define LUNA_SEND "/usr/bin/luna-send"
-#endif
 /* LG's debug config never routes our category to legacy-log, so testers only see this file. */
 #define ROUTE_LOG LGROUTE_RUN "/lgroute.log"
 /* The carrier's bytes per second: 192 kHz, 8 channels, 16 bit. */
@@ -52,7 +49,8 @@ GST_DEBUG_CATEGORY_STATIC (lgroute_debug);
 #define LGROUTE_APP_ROUTE "/sys/module/earc_route/parameters/app_route"
 #endif
 
-/* TRUE when earc_route took the lease (it is loaded and accepted the value). */
+/* earc_route forces LG's eARC bypass for the leased renderer, so LG never mixes
+ * the carrier as a codec the receiver lacks. TRUE when the module took the value. */
 static gboolean app_lease (gint value)
 {
   gchar text[4];
@@ -101,109 +99,9 @@ void lgroute_log (const gchar *format, ...)
   va_end (args);
 }
 
-/* luna-send blocks for up to 2 s, so it never runs on a streaming thread: one
- * ordered worker sends every request. A request owns copies of what it needs
- * and shares only the session, so it never touches an LgRoute. */
-struct LgSession {
-  gint refs, reporting;
-  gchar pipeline[64], codec[32], immersive[16];   /* LG's own report, written by the worker only */
-};
-
-typedef struct {
-  LgSession *session;
-  gboolean restore;
-  gchar resource[16];
-} Request;
-
 /* Guards the LgRoute fields that name what is armed (sink, sinkpad, probe ids,
- * session, resource), and the lazy worker. Never held across a GStreamer or luna call. */
+ * resource). Never held across a GStreamer call. */
 static GMutex route_lock;
-static GThreadPool *worker_pool;
-static gint outstanding;
-
-static void session_unref (LgSession *session)
-{
-  if (g_atomic_int_dec_and_test (&session->refs))
-    g_free (session);
-}
-
-/* One luna-send call; TRUE when LG replies returnValue:true. */
-static gboolean luna (const gchar *uri, const gchar *payload, gchar **reply)
-{
-  const gchar *argv[] = { LUNA_SEND, "-n", "1", "-w", "2000", uri, payload, NULL };
-  /* LG's LD_PRELOAD in the media pipeline breaks luna-send. */
-  gchar **env = g_environ_unsetenv (g_get_environ (), "LD_PRELOAD"), *out = NULL;
-  gboolean ok = g_spawn_sync (NULL, (gchar **) argv, env, G_SPAWN_STDERR_TO_DEV_NULL,
-      NULL, NULL, &out, NULL, NULL, NULL) && out && strstr (out, "\"returnValue\":true");
-  g_strfreev (env);
-  if (reply) *reply = out; else g_free (out);
-  return ok;
-}
-
-/* Values reach a JSON payload; anything beyond [A-Za-z0-9_.-] is refused. */
-static gboolean token (const gchar *value)
-{
-  return value && *value && !value[strspn (value,
-      "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")];
-}
-
-/* audiod forwards this to UMI, which reapplies the digital output policy. */
-static gboolean input_set (const gchar *pipeline, const gchar *resource, const gchar *codec,
-    const gchar *channel, const gchar *immersive)
-{
-  if (!token (pipeline) || !token (resource) || !token (codec)
-      || !token (immersive) || (channel && !token (channel)))
-    return FALSE;
-  gchar *payload = g_strdup_printf ("{\"categoryType\":\"audioInputInfo\","
-      "\"requestType\":\"setAudioInputInfo\",\"pipelineInfo\":{\"pipelineId\":\"%s\","
-      "\"resource\":\"%s\",\"sourceType\":\"MEDIA\"},\"categoryInfo\":{\"codec\":\"%s\"%s%s%s,"
-      "\"immersive\":\"%s\"}}", pipeline, resource, codec,
-      channel ? ",\"channel\":\"" : "", channel ? channel : "", channel ? "\"" : "", immersive);
-  gboolean ok = luna ("luna://com.webos.service.audio/tv/setQualityAttribute", payload, NULL);
-  g_free (payload);
-  return ok;
-}
-
-static gboolean field (const gchar *object, const gchar *key, gchar *value, gsize size)
-{
-  gchar *pattern = g_strdup_printf ("\"%s\":\"", key);
-  const gchar *start = strstr (object, pattern), *stop;
-  gsize length = strlen (pattern);
-  g_free (pattern);
-  if (!start || !(stop = strchr (start + length, '"')) || (gsize) (stop - start - length) >= size)
-    return FALSE;
-  g_strlcpy (value, start + length, stop - start - length + 1);
-  return TRUE;
-}
-
-/* This pipeline's id (from -scom.webos.pipeline.<id>) and LG's own report for it. */
-static gboolean input_query (LgSession *session)
-{
-  static const gchar prefix[] = "-scom.webos.pipeline.";
-  gchar *args = NULL, *reply = NULL;
-  gsize length = 0;
-  if (!g_file_get_contents ("/proc/self/cmdline", &args, &length, NULL))
-    return FALSE;
-  for (gchar *arg = args; arg < args + length; arg += strlen (arg) + 1)
-    if (g_str_has_prefix (arg, prefix))
-      g_strlcpy (session->pipeline, arg + sizeof prefix - 1, sizeof session->pipeline);
-  g_free (args);
-  gchar *key = g_strdup_printf ("\"pipelineId\":\"%s\"", session->pipeline);
-  gboolean ok = token (session->pipeline)
-      && luna ("luna://com.webos.service.audio/tv/getAudioInputProperty", "{}", &reply);
-  gchar *match = ok ? strstr (reply, key) : NULL, *object = match, *end;
-  g_free (key);
-  while (object && object > reply && *object != '{')
-    object--;
-  if ((end = match ? strchr (match, '}') : NULL))
-    *end = 0;
-  ok = end && field (object, "codec", session->codec, sizeof session->codec);
-  if (ok && !field (object, "immersive", session->immersive, sizeof session->immersive))
-    g_strlcpy (session->immersive, "none", sizeof session->immersive);
-  g_free (reply);
-  if (!ok) session->pipeline[0] = 0;
-  return ok;
-}
 
 /* The boot script hashes SINK_PLUGIN once and writes LGROUTE_SINK_OK on a match. */
 static gboolean verified_sink (GstElement *sink)
@@ -298,91 +196,6 @@ static gboolean configure_converter (LgRoute *route)
   ok = fd >= 0 && write (fd, cmd, sizeof cmd - 1) == (ssize_t) (sizeof cmd - 1);
   if (fd >= 0) close (fd);
   return ok;
-}
-
-static void run_request (gpointer data, gpointer unused)
-{
-  Request *request = data;
-  LgSession *session = request->session;
-  (void) unused;
-  if (request->restore) {
-    /* The restore now lands after the caller moved on: if LG already reports
-     * something other than our relabel, it has described the next stream and
-     * the saved codec would overwrite it. */
-    LgSession now = { 0 };
-    if (!session->pipeline[0])
-      ;
-    else if (input_query (&now) && g_strcmp0 (now.codec, "pcm"))
-      g_debug ("lgroute: LG reports \"%s\", not restoring \"%s\"", now.codec, session->codec);
-    else
-      /* It lands at track switches, where testers' DTS went silent or the TV hung. */
-      note ("restored %s's label at LG to codec \"%s\", immersive \"%s\": %s", request->resource,
-          session->codec, session->immersive,
-          input_set (session->pipeline, request->resource, session->codec, NULL, session->immersive)
-          ? "accepted" : "refused");
-  } else {
-    /* A G2 stream was still mixed 1.7 s after this report, where every other
-     * one unmixed: the reply says whether LG took it. */
-    if (!session->pipeline[0] && !input_query (session))
-      note ("LG does not report this pipeline, 8-channel PCM not described");
-    else
-      note ("described %s to LG as 8-channel PCM: %s", request->resource,
-          input_set (session->pipeline, request->resource, "pcm", "8", "none")
-          ? "accepted" : "refused");
-    g_atomic_int_set (&session->reporting, 0);
-  }
-  session_unref (session);
-  g_free (request);
-  g_atomic_int_dec_and_test (&outstanding);
-}
-
-/* Takes the caller's session reference. */
-static void queue_request (LgSession *session, const gchar *resource, gboolean restore)
-{
-  Request *request = g_new0 (Request, 1);
-  request->session = session;
-  request->restore = restore;
-  g_strlcpy (request->resource, resource, sizeof request->resource);
-  g_mutex_lock (&route_lock);
-  if (!worker_pool)
-    worker_pool = g_thread_pool_new (run_request, NULL, 1, FALSE, NULL);
-  g_atomic_int_inc (&outstanding);
-  gboolean ok = g_thread_pool_push (worker_pool, request, NULL);
-  g_mutex_unlock (&route_lock);
-  if (!ok) {
-    if (!restore) g_atomic_int_set (&session->reporting, 0);
-    g_atomic_int_dec_and_test (&outstanding);
-    session_unref (session);
-    g_free (request);
-  }
-}
-
-/* LG mixes any codec missing from the receiver's short eARC list (DTS on most
- * soundbars); 8-channel PCM matches, so LG itself writes the unmixed output.
- * Asynchronous; while one report is in flight the next one is dropped. */
-static void report_pcm (LgRoute *route)
-{
-  /* earc_route forces LG's bypass for a leased renderer, so no relabel is needed. */
-  if (route->leased)
-    return;
-  gchar resource[sizeof route->resource];
-  g_mutex_lock (&route_lock);
-  LgSession *session = route->session;
-  if (!route->resource[0]) {
-    g_mutex_unlock (&route_lock);
-    return;
-  }
-  if (!session) {
-    session = route->session = g_new0 (LgSession, 1);
-    session->refs = 1;
-  }
-  g_atomic_int_inc (&session->refs);
-  g_strlcpy (resource, route->resource, sizeof resource);
-  g_mutex_unlock (&route_lock);
-  if (g_atomic_int_compare_and_exchange (&session->reporting, 0, 1))
-    queue_request (session, resource, FALSE);
-  else
-    session_unref (session);
 }
 
 /* The sink is read under the lock but driven outside it, so a disarm on another
@@ -723,11 +536,12 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
       if (restart_wanted (route, "track switch"))
         route->restart_after = route->configured_at + RESTART_SETTLE;
     }
-    route->leased = route->lease && app_lease (route->lease);
-    note (route->leased ? "earc_route holds LG's bypass for %s" : "no earc_route lease for %s, describing it to LG as PCM",
-        route->resource);
-    /* The kernel routes the bypass to eARC only if it exists when LG writes the unmixed output. */
-    report_pcm (route);
+    route->leased = app_lease (route->lease);
+    if (!route->leased) {
+      route_fail (route, "earc_route did not take the lease");
+      return GST_PAD_PROBE_DROP;
+    }
+    note ("earc_route holds LG's bypass for %s", route->resource);
   } else {
     GstBuffer *buffer = gst_buffer_make_writable (GST_PAD_PROBE_INFO_BUFFER (info));
     if (!buffer)
@@ -770,9 +584,6 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
     route->mixed_since = 0;
   else if (!route->mixed_since)
     route->mixed_since = now;
-  /* LG's pipeline can re-report the real codec; describe the carrier again. */
-  if (unmixed == 0 && due)
-    report_pcm (route);
   route->unmixed = unmixed > 0;
   if (route->unmixed != was_unmixed) {
     GST_INFO_OBJECT (route->element, "lgroute: eARC now %s (reading %d)",
@@ -799,11 +610,10 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
   }
   if (due) {
     route->next_check = now + 250 * G_TIME_SPAN_MILLISECOND;
-    if (route->leased && !app_lease (route->lease)) {
-      /* The module went away mid-stream: LG needs the relabel again. */
+    if (!app_lease (route->lease)) {
       route->leased = FALSE;
-      note ("earc_route lease lost, describing %s to LG as PCM", route->resource);
-      report_pcm (route);
+      route_fail (route, "earc_route lease lost");
+      return GST_PAD_PROBE_DROP;
     }
   }
   /* Mixed eARC would play the carrier as noise, and so does a carrier LG plays
@@ -951,6 +761,10 @@ gboolean lgroute_arm (LgRoute *route)
     note ("not armed: sound output is not a receiver");
     return FALSE;
   }
+  if (access (LGROUTE_APP_ROUTE, W_OK)) {
+    note ("not armed: earc_route is not loaded");
+    return FALSE;
+  }
   if (lgroute_control_unmixed_why (why) < 0 && earc_after_switch (route, why) < 0) {
     note ("not armed: eARC Pass Through unavailable (%s)", why);
     return FALSE;
@@ -1003,6 +817,12 @@ gboolean lgroute_arm (LgRoute *route)
     g_snprintf (resource, sizeof resource, "%s%u", mixer ? "AMIXER" : "ADEC", index);
     route->lease = !mixer && index <= 1 ? (gint) index + 1 : 0;
   }
+  if (!route->lease) {
+    note ("not armed: %s has no earc_route lease", resource[0] ? resource : "LG's sink");
+    gst_object_unref (pad);
+    gst_object_unref (sink);
+    return FALSE;
+  }
   /* The probes run at once on sticky events, so the route is published first.
    * Until our caps reach the sink, what arrives there is the earlier stream's. */
   route->waiting = TRUE;
@@ -1034,19 +854,15 @@ gboolean lgroute_arm (LgRoute *route)
 
 /* Callable from several threads at once (the sink's and the decoder's streaming
  * threads, an old decoder's teardown): the first caller takes everything, so
- * the probes are removed and LG's codec restored exactly once. */
+ * the probes are removed and the lease released exactly once. */
 void lgroute_disarm (LgRoute *route)
 {
-  gchar resource[sizeof route->resource];
   g_mutex_lock (&route_lock);
   GstElement *sink = route->sink;
   GstPad *pad = route->sinkpad;
-  LgSession *session = route->session;
   gulong events = route->events, buffers = route->buffers;
-  g_strlcpy (resource, route->resource, sizeof resource);
   route->sink = NULL;
   route->sinkpad = NULL;
-  route->session = NULL;
   route->events = route->buffers = 0;
   route->mixed_since = 0;
   route->first = route->feeding = route->configured = route->unmixed = FALSE;
@@ -1069,9 +885,6 @@ void lgroute_disarm (LgRoute *route)
   }
   if (sink)
     g_object_set (sink, "pcm-multi-ch", FALSE, NULL);
-  /* Queued behind any report for this pipeline; it reads LG's codec from the session. */
-  if (session)
-    queue_request (session, resource, TRUE);
   gst_clear_object (&pad);
   gst_clear_object (&sink);
 }

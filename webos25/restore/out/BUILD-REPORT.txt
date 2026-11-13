@@ -171,6 +171,11 @@ committed adecswitch did not rebuild byte-identically from its source (only the
 line numbers passed to gst_debug_log differed), so this one is built from the
 source as committed. Verified on the C5 (decode identical to the previous build,
 installer and TV report clean). Not verified on a receiver.
+The 2026-11-13 build drops the luna PCM relabel: the HD route arms only with
+earc_route loaded, holds its app_route lease while it plays, and decodes the
+core when the lease is refused or lost. Verified on a C2 (33.31.68) with an
+eARC receiver: DTS-HD MA played as Pass-Through with no luna call, and with the
+module unloaded the route refused to arm and played the core.
 
 This report is maintained by hand: update it whenever out/libgstdtsdec.so is
 rebuilt (build.sh prints the ABI values above).

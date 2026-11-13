@@ -614,9 +614,8 @@ play as DTS on the soundbar; the module loads with both probes and unloads clean
 ## In the app (HDMI passthrough opt-in)
 
 DTS Enabler loads the module on the two 5.4.268 kernels and on 6.12 while either
-the experimental HDMI passthrough opt-in or app DTS-HD passthrough is on. With
-the module loaded, the app's DTS-HD route takes the `app_route` lease instead of
-relabelling its output as PCM over luna. The boot script
+the experimental HDMI passthrough opt-in or app DTS-HD passthrough is on. The
+app's DTS-HD route needs its `app_route` lease. The boot script
 (`webos25/restore/init_dts25.sh`) stages the module and `earc-route-load.sh` into
 `/var/lib/webosbrew/dts25/hdmi/` and holds it loaded under a supervisor, at boot
 and from the app's toggles. Turning both off, Disable and Uninstall
