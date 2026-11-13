@@ -25,6 +25,8 @@ static gboolean graph_ok = TRUE, receiver = TRUE, writes_ok = TRUE, short_write;
 static int unmixed_result = 1, checks, formats, graph_reads;
 static char destination[128];
 static int last_lease = -1, lease_writes;
+/* earc_route loaded: its app_route parameter can be opened. */
+static gboolean module_loaded;
 
 static gboolean
 read_graph (const gchar *filename, gchar **contents, gsize *length, GError **error)
@@ -42,6 +44,7 @@ static int
 open_property (const char *filename, int flags, ...)
 {
   g_assert_true ((flags & O_ACCMODE) == O_WRONLY);
+  if (!strcmp (filename, LGROUTE_APP_ROUTE) && !module_loaded) { errno = ENOENT; return -1; }
   g_strlcpy (destination, filename, sizeof destination);
   return 123;
 }
@@ -329,12 +332,12 @@ static void resume_tests (void)
   g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
   g_assert_false (last_silent);
 
-  route.lease = 2;
+  /* No module: nothing was leased, so nothing is renewed. */
+  g_assert_false (route.leased);
   route.next_check = 0;
   lease_writes = 0;
   g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
-  g_assert_cmpint (lease_writes, ==, 1);
-  g_assert_cmpint (last_lease, ==, 2);
+  g_assert_cmpint (lease_writes, ==, 0);
 
   /* 3. A new id: the renderer restarts, so setup is redone with the new caps. */
   int formats_before = formats;
@@ -346,7 +349,6 @@ static void resume_tests (void)
   g_assert_true (route.configured); g_assert_cmpint (formats, ==, formats_before + 1);
   g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
   lgroute_disarm (&route);
-  g_assert_cmpint (last_lease, ==, 0);
   g_assert_cmpint (route.lease, ==, 0);
 
   /* 4. A new id whose caps never arrive fails cleanly instead of passing carrier. */
@@ -972,6 +974,51 @@ static gpointer disarm_thread (gpointer data)
   return NULL;
 }
 
+/* With earc_route loaded the route takes its app lease instead of relabelling
+ * the stream at LG, renews it on every due check and releases it on disarm.
+ * If the module goes away mid-stream the relabel comes back. */
+static void lease_tests (void)
+{
+  LgRoute route;
+  reset (&route); forget_calls ();
+  module_loaded = TRUE; route.lease = 2; lease_writes = 0;
+  caps_event (&route); graph = after;
+  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
+  g_assert_true (route.leased);
+  g_assert_cmpint (last_lease, ==, 2);
+  int taken = lease_writes;
+  route.next_check = 0;
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  g_assert_cmpint (lease_writes, ==, taken + 1);
+  g_assert_cmpint (last_lease, ==, 2);
+  /* LG mixing is reported again only by a relabel, which a lease makes unnecessary. */
+  unmixed_result = 0; route.next_check = 0;
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  drain ();
+  g_assert_cmpint (calls_matching ("setQualityAttribute"), ==, 0);
+  unmixed_result = 1;
+  /* The module is unloaded: the next due check describes the carrier to LG. */
+  module_loaded = FALSE; route.next_check = 0;
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  g_assert_false (route.leased);
+  drain ();
+  g_assert_cmpint (calls_matching ("\"codec\":\"pcm\""), ==, 1);
+  lgroute_disarm (&route);
+  drain ();
+
+  /* Leased to the end: disarm releases it and restores nothing at LG. */
+  reset (&route); forget_calls ();
+  module_loaded = TRUE; route.lease = 1;
+  caps_event (&route); graph = after;
+  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
+  lgroute_disarm (&route);
+  drain ();
+  g_assert_cmpint (last_lease, ==, 0);
+  g_assert_false (route.leased);
+  g_assert_cmpint (calls_matching ("setQualityAttribute"), ==, 0);
+  module_loaded = FALSE;
+}
+
 static void async_tests (void)
 {
   LgRoute route;
@@ -1375,6 +1422,7 @@ int main (int argc, char **argv)
     gst_object_unref (pipeline);
   }
   handoff_tests ();
+  lease_tests ();
   async_tests ();
   g_print ("LG route: bypass converter, carrier flags, CAPS changes and failure refusal pass\n");
   return 0;

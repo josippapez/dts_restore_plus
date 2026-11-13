@@ -2,7 +2,7 @@
 # earc-route-load.sh -- load earc_route.ko on a rooted LG webOS 25 TV.
 #
 #   sh earc-route-load.sh                    audit: decode, print, unload (mode=0)
-#   sh earc-route-load.sh --dts-hd [window_seconds=N] [supervised=0|1]   the session (mode=7)
+#   sh earc-route-load.sh --dts-hd           the session (mode=7), until rmmod earc_route
 #
 # Runs as root, on the TV only (busybox sh + python3). There is no release
 # allowlist: the running kernel is checked, not its name. The loader refuses
@@ -25,23 +25,14 @@ release=$(uname -r)
 [ ! -e "$ROOT/sys/module/earc_route" ] || refuse "earc_route is already loaded"
 options="mode=0"
 want_mode=0
-if [ $# -gt 0 ]; then
-  case "$1" in
-    --dts-hd)
-      shift; options="mode=7"; want_mode=7
-      for option in "$@"; do
-        case "$option" in
-          window_seconds=*) [ "${option#window_seconds=}" -ge 0 ] 2>/dev/null || refuse "bad $option"; options="$options $option" ;;
-          supervised=0|supervised=1) options="$options $option" ;;
-          *) refuse "unknown --dts-hd option: $option" ;;
-        esac
-      done ;;
-    *) refuse "usage: $0 [--dts-hd [window_seconds=N] [supervised=0|1]]" ;;
-  esac
-fi
+case "$*" in
+  '') ;;
+  --dts-hd) options="mode=7"; want_mode=7 ;;
+  *) refuse "usage: $0 [--dts-hd]" ;;
+esac
 
-# Active modes (>=1 that write; the HDMI passthrough modes 2-7) refuse to load
-# beside another DTS tool, whose kprobes or gate change would collide with ours.
+# The session refuses to load beside another DTS tool, whose kprobes or gate
+# change would collide with ours.
 # The audit (mode 0) only reports them (below).
 if [ "$want_mode" = 7 ]; then
   for mod in dts_gate dts_core_route gh_dts_native; do

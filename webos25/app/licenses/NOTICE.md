@@ -15,7 +15,7 @@ here relicenses anything. The full texts are alongside this file: [`LGPL-2.1.txt
 | `payload/webos25/libgstdtsdec.so` | LGPL-2.1-or-later | gst-plugins-bad `ext/dts` plugin with ffmpeg n4.4.4's `dca` decoder linked in statically (ffmpeg configured **without** `--enable-gpl`, `--enable-version3` or `--enable-nonfree`); built by `restore/build.sh` |
 | `payload/cx/libgstmatroska.so`, `libgstisomp4.so`, `libgstisomp4_1_8.so` | LGPL-2.1-or-later | legacy LG GStreamer 1.14.4 gst-plugins-good payload tracked in root `gst/`; DTS demux restored, with the inherited Matroska Dolby Vision changes |
 | `payload/cx/libgstlibav.so` | LGPL-2.1-or-later | legacy LG GStreamer 1.14.4 gst-libav payload tracked in root `gst/`; dca decode with the inherited forced stereo-integer downmix |
-| `payload/webos25-hdmi/earc_route-5.4.ko`, `earc-route-load.sh` (CLI: `kmod-out/`) | GPL-2.0-only | `webos25/kmod/`: kernel module derived from Glasshouse's `native/dts-forwarding`, HDMI session scripts derived from lg-g5-dts (see `webos25/kmod/NOTICE`); module built by `webos25/kmod/build.sh` |
+| `payload/webos25-hdmi/earc_route-*.ko`, `earc-route-load.sh` (CLI: `kmod-out/`) | GPL-2.0-only | `webos25/kmod/`: kernel module derived from Glasshouse's `native/dts-forwarding`, HDMI session scripts derived from lg-g5-dts (see `webos25/kmod/NOTICE`); module built by `webos25/kmod/build.sh` |
 
 `libgstdtsdec.so` contains a statically linked copy of ffmpeg (LGPL-2.1-or-later). As LGPL-2.1
 section 6 requires, the complete source of the plugin and of ffmpeg, and the script that builds and

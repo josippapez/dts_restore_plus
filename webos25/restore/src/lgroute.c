@@ -52,16 +52,19 @@ GST_DEBUG_CATEGORY_STATIC (lgroute_debug);
 #define LGROUTE_APP_ROUTE "/sys/module/earc_route/parameters/app_route"
 #endif
 
-static void app_lease (gint value)
+/* TRUE when earc_route took the lease (it is loaded and accepted the value). */
+static gboolean app_lease (gint value)
 {
   gchar text[4];
   int fd = open (LGROUTE_APP_ROUTE, O_WRONLY | O_CLOEXEC);
   if (fd < 0)
-    return;
+    return FALSE;
   gint length = g_snprintf (text, sizeof text, "%d\n", value);
-  if (write (fd, text, length) != length)
+  gboolean ok = write (fd, text, length) == length;
+  if (!ok)
     GST_DEBUG ("lgroute: app_route write failed");
   close (fd);
+  return ok;
 }
 
 static void vnote (const gchar *format, va_list args)
@@ -359,6 +362,9 @@ static void queue_request (LgSession *session, const gchar *resource, gboolean r
  * Asynchronous; while one report is in flight the next one is dropped. */
 static void report_pcm (LgRoute *route)
 {
+  /* earc_route forces LG's bypass for a leased renderer, so no relabel is needed. */
+  if (route->leased)
+    return;
   gchar resource[sizeof route->resource];
   g_mutex_lock (&route_lock);
   LgSession *session = route->session;
@@ -717,6 +723,9 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
       if (restart_wanted (route, "track switch"))
         route->restart_after = route->configured_at + RESTART_SETTLE;
     }
+    route->leased = route->lease && app_lease (route->lease);
+    note (route->leased ? "earc_route holds LG's bypass for %s" : "no earc_route lease for %s, describing it to LG as PCM",
+        route->resource);
     /* The kernel routes the bypass to eARC only if it exists when LG writes the unmixed output. */
     report_pcm (route);
   } else {
@@ -790,8 +799,12 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
   }
   if (due) {
     route->next_check = now + 250 * G_TIME_SPAN_MILLISECOND;
-    if (route->lease)
-      app_lease (route->lease);
+    if (route->leased && !app_lease (route->lease)) {
+      /* The module went away mid-stream: LG needs the relabel again. */
+      route->leased = FALSE;
+      note ("earc_route lease lost, describing %s to LG as PCM", route->resource);
+      report_pcm (route);
+    }
   }
   /* Mixed eARC would play the carrier as noise, and so does a carrier LG plays
    * at the wrong speed (a tester heard seconds of it before the third slow
@@ -1039,9 +1052,10 @@ void lgroute_disarm (LgRoute *route)
   route->first = route->feeding = route->configured = route->unmixed = FALSE;
   route->restart_pending = route->waiting = route->draining = route->in_mixer = FALSE;
   route->restarts = 0;
-  if (route->lease)
+  if (route->leased)
     app_lease (0);
   route->lease = 0;
+  route->leased = FALSE;
   route->restart_after = 0;
   route->stream_id[0] = 0;
   route->resource[0] = 0;

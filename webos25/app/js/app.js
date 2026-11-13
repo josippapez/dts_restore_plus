@@ -303,7 +303,7 @@
       : "on — " + (s.hdmiRefusalText || exit + (s.hdmiLoader ? ": " + s.hdmiLoader : "")),
       s.hdmiRequested ? (s.hdmiRunning ? "ok" : "warn") : null);
     setVal("sHdmiKernel", (s.hdmiKernel || "unknown") + (/^kernel/.test(s.hdmiRefusal || "")
-      ? (s.hdmiRefusal === "kernel-6.12" ? " — not supported yet" : " — not supported") : " — supported"),
+      ? " — not supported" : " — supported"),
       /^kernel/.test(s.hdmiRefusal || "") ? "warn" : null);
     setVal("sHdmiEdid", s.hdmiDtsOffered ? "yes"
       : !s.hdmiRequested ? "no"

@@ -23,6 +23,7 @@ typedef struct {
   gchar unavailable[LGROUTE_WHY + 32];   /* reason, when eARC became unavailable */
   gchar resource[16], stream_id[128], converter[9];
   gint lease;
+  gboolean leased;   /* earc_route holds LG's bypass for this renderer; no PCM relabel */
   LgSession *session;
 } LgRoute;
 

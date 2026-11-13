@@ -19,11 +19,11 @@ function oneLine(name) {
 function tmp(prefix) { return fs.mkdtempSync(path.join(os.tmpdir(), prefix)); }
 function read(file) { return fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null; }
 
-test("the opt-in runs only on the two 5.4.268 kernels, beside no enabled DTS tool, with its payload", function () {
+test("the module runs on the 5.4.268 and 6.12.44 kernels, beside no enabled DTS tool, with its payload", function () {
   var dir = tmp("dts-hdmi-refusal-");
   try {
     var hdmi = path.join(dir, "hdmi"), core = path.join(dir, "lg-dts-core"), gh = path.join(dir, "lg-dts-native");
-    ["earc_route-5.4.ko", "earc-route-load.sh"].forEach(function (f) { write(path.join(hdmi, f), "x"); });
+    ["earc_route-5.4.ko", "earc_route-6.12.ko", "earc-route-load.sh"].forEach(function (f) { write(path.join(hdmi, f), "x"); });
     var fn = initFn("w25_hdmi_refusal").split("/var/lib/lg-dts-core").join(core).split("/var/lib/lg-dts-native").join(gh);
     function refusal(kernel) {
       var r = sh(['uname() { echo "' + kernel + '"; }', "HDMI_DIR=" + hdmi, fn, 'printf "[%s]" "$(w25_hdmi_refusal)"'].join("\n"));
@@ -32,8 +32,13 @@ test("the opt-in runs only on the two 5.4.268 kernels, beside no enabled DTS too
     }
     assert.strictEqual(refusal("5.4.268-329.ptl4tv.5"), "[]");
     assert.strictEqual(refusal("5.4.268-329.ptl4tv.2"), "[]");
-    assert.strictEqual(refusal("6.12.44-352"), "[kernel-6.12]", "the 6.12 module has never run on a TV");
+    assert.strictEqual(refusal("6.12.44-352"), "[]");
+    assert.strictEqual(refusal("6.12.58-360"), "[]");
+    assert.strictEqual(refusal("6.6.1"), "[kernel]");
     assert.strictEqual(refusal("5.4.268-329.ptl4tv.9"), "[kernel]");
+    fs.unlinkSync(path.join(hdmi, "earc_route-6.12.ko"));
+    assert.strictEqual(refusal("6.12.44-352"), "[payload]", "each kernel needs its own build");
+    assert.strictEqual(refusal("5.4.268-329.ptl4tv.5"), "[]");
     // Installed but not enabled: allowed (the app warns).
     fs.mkdirSync(core);
     fs.mkdirSync(gh);
@@ -71,8 +76,10 @@ function edidShell(opts) {
   var f = {
     dir: dir, calls: path.join(dir, "calls"), eimEnv: path.join(dir, "eim.env"), hooked: path.join(dir, "hooked"),
     sndout: path.join(dir, "sndout"), output: path.join(dir, "output"), clock: path.join(dir, "clock"),
-    appdts: path.join(dir, "appdts.enabled"), lls: path.join(dir, "factorydb.json"), myEdid: path.join(dir, "libedidaudio.so")
+    appdts: path.join(dir, "appdts.enabled"), lls: path.join(dir, "factorydb.json"), myEdid: path.join(dir, "libedidaudio.so"),
+    hdmiFlag: path.join(dir, "hdmi-passthrough")
   };
+  write(f.hdmiFlag, "");
   write(f.lls, '{"tv.model":{"edidType":"' + (opts && opts.stock || "TrueHD") + '"}}');
   write(f.myEdid, "");
   write(path.join(dir, "eim.service"), "[Service]\nEnvironment=LD_PRELOAD=$LD_PRELOAD:/usr/lib/libsystrim.so.3\n");
@@ -90,7 +97,7 @@ function edidShell(opts) {
     "set -u", "LOG=/dev/null",
     "EIM_ENV=" + f.eimEnv, "EIM_UNIT=" + path.join(dir, "eim.service"), "MYEDID=" + f.myEdid,
     "EDID_STATE=" + path.join(dir, "edid-state"), "APPDTS_FLAG=" + f.appdts, "LLS=" + f.lls,
-    "HDMI_SETTLE=3", "HDMI_COOLDOWN=300",
+    "HDMI_SETTLE=3", "HDMI_COOLDOWN=300", "HDMI_FLAG=" + f.hdmiFlag,
     "w25_log() { :; }", "sleep() { :; }",
     "date() { cat " + f.clock + "; }",
     "w25_eim_hooked() { [ -f " + f.hooked + " ]; }",
@@ -213,6 +220,8 @@ function supervisorRun(exitCode, loadFails) {
   f.set(true);
   var vars = ["HDMI_DIR=" + hdmi, "HDMI_PID=" + run + "/hdmi.pid", "HDMI_OUT=" + run + "/hdmi-watch.out",
     "HDMI_EXIT=" + run + "/hdmi-watch.exit", "HDMI_POLL=0.1", "HDMI_MODULE=" + module,
+    "PT_FLAG=" + path.join(f.dir, "passthrough"), "HD_FLAG=" + path.join(f.dir, "passthrough-hd"),
+    oneLine("w25_module_wanted"),
     exitCode ? "rmmod() { echo 'rmmod: busy' >&2; return 1; }" : 'rmmod() { rm -rf "' + module + '"; }',
     // macOS has no /proc: the same zombie rule, from ps.
     'w25_alive() { [ -n "$1" ] || return 1; s=$(ps -o stat= -p "$1" 2>/dev/null) || return 1; case $s in Z*|"") return 1 ;; esac; }'];
@@ -249,6 +258,33 @@ test("stopping the supervisor unloads the module, records its exit and puts the 
       fs.rmSync(s.f.dir, {recursive: true, force: true});
     }
   });
+});
+
+test("the module is wanted for the HDMI opt-in or for app DTS-HD passthrough, and the supervisor unloads it when neither is on", function () {
+  var s = supervisorRun(0);
+  try {
+    var hdmiFlag = s.f.hdmiFlag, pt = path.join(s.f.dir, "passthrough"), hd = path.join(s.f.dir, "passthrough-hd");
+    var wanted = function () {
+      return sh(["HDMI_FLAG=" + hdmiFlag, "PT_FLAG=" + pt, "HD_FLAG=" + hd, oneLine("w25_module_wanted"),
+        "w25_module_wanted && echo yes || echo no"].join("\n")).stdout.trim();
+    };
+    assert.strictEqual(wanted(), "yes", "HDMI opt-in");
+    fs.unlinkSync(hdmiFlag);
+    assert.strictEqual(wanted(), "no");
+    write(pt, "");
+    assert.strictEqual(wanted(), "no", "DTS core passthrough alone does not need the module");
+    write(hd, "");
+    assert.strictEqual(wanted(), "yes", "app DTS-HD passthrough");
+    var child = require("node:child_process").spawn("sh", [s.sup], {stdio: "ignore"});
+    assert.ok(waitFor(function () { return /PASSTHROUGH ACTIVE/.test(read(s.run + "/hdmi-watch.out") || ""); }, 5000));
+    fs.unlinkSync(hd);
+    assert.ok(waitFor(function () { return read(s.run + "/hdmi-watch.exit") === "0\n"; }, 5000),
+      "turning DTS-HD off unloads the module");
+    assert.strictEqual(fs.existsSync(path.join(s.f.dir, "module")), false);
+    child.kill();
+  } finally {
+    fs.rmSync(s.f.dir, {recursive: true, force: true});
+  }
 });
 
 test("the supervisor ends when the module does not load and a second one does not start beside it", function () {
@@ -306,7 +342,11 @@ test("boot starts the opt-in after the gates; every way out stops it", function 
   assert.ok(body.indexOf("\nw25_hdmi_start\n") > body.indexOf("# --- GATE 2a) loader resolution"), "only after the gates");
   assert.ok(initFn("w25_stand_down").includes("w25_hdmi_stop_soft"), "stand-down stops it");
   assert.ok(initFn("w25_self_heal").includes("w25_hdmi_stop_soft"), "self-heal stops it before deleting dts25");
-  assert.ok(body.includes("off) w25_hdmi_stop || exit 1; rm -f \"$HDMI_FLAG\" ;;"), "the toggle keeps the marker when it cannot stop");
+  assert.ok(body.includes('w25_module_wanted || w25_hdmi_stop || { : > "$HDMI_FLAG"; exit 1; } ;;'),
+    "the toggle keeps the marker when it cannot stop, and leaves the module to app HD passthrough");
+  assert.ok(body.includes("start) w25_pt_start; w25_hdmi_start ;;"), "turning passthrough on starts the module");
+  assert.ok(initFn("w25_hdmi_start").includes("W25_PT= W25_APPDTS= W25_HDMI=run setsid"),
+    "the supervisor does not inherit the mode that launched it");
   var disable = service.w25Disable();
   var stop = disable.indexOf("\nw25_hdmi_stop_soft\n");
   assert.ok(stop >= 0 && stop < disable.indexOf('rm -f "/var/lib/webosbrew/init.d/restore_dts25"'), "Disable stops it");
@@ -432,9 +472,9 @@ function call(m, method, payload) {
 test("the HDMI toggle reports refusals, a watcher that did not start, and a stop that needs a restart", function () {
   var k = {HDMI_KERNEL: "6.12.44-352", HDMI_TOOLS: "glasshouse"};
   return Promise.all([
-    call(mockedService(k, "HDMI_REFUSED=kernel-6.12\nOK\n"), "setHdmiPassthrough", {enabled: true}).then(function (res) {
+    call(mockedService(k, "HDMI_REFUSED=kernel\nOK\n"), "setHdmiPassthrough", {enabled: true}).then(function (res) {
       assert.strictEqual(res.returnValue, false);
-      assert.match(res.errorText, /Not supported yet on this kernel \(6\.12\.44-352\)/);
+      assert.match(res.errorText, /Not supported on this kernel \(6\.12\.44-352\)/);
     }),
     call(mockedService(k, "HDMI_REFUSED=appdts\nOK\n"), "setHdmiPassthrough", {enabled: true}).then(function (res) {
       assert.match(res.errorText, /Turn on Show DTS tracks in apps first/);
@@ -475,9 +515,9 @@ test("status reports the HDMI opt-in, its kernel, the watcher and what HDMI devi
       assert.strictEqual(s.hdmiDtsOffered, true);
       assert.match(s.hdmiToolsNote, /^lg-dts-core is installed on this TV/);
     }),
-    call(mockedService(Object.assign({}, probes, {HDMI_REFUSAL: "kernel-6.12", HDMI_KERNEL: "6.12.44-352", HDMI_TOOLS: ""}),
+    call(mockedService(Object.assign({}, probes, {HDMI_REFUSAL: "kernel", HDMI_KERNEL: "6.6.1", HDMI_TOOLS: ""}),
       "EDIDTYPE=TrueHD+dts\nEIM_HOOKED=1\n"), "status").then(function (s) {
-      assert.match(s.hdmiRefusalText, /Not supported yet/);
+      assert.match(s.hdmiRefusalText, /Not supported on this kernel/);
       assert.strictEqual(s.hdmiDtsOffered, false, "the hook keeps DTS off the HDMI inputs");
       assert.strictEqual(s.hdmiToolsNote, "");
     })

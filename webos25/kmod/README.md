@@ -27,9 +27,8 @@ handles either HDMI audio decoder, 0 or 1, and keeps an HDMI input on DTS by its
 (see [HDMI input](#hdmi-input-mode7)).
 
 Status: both builds host-tested against the kernels listed under Test.
-Experimental. The release ships `earc_route-5.4.ko` and `earc-route-load.sh`
-for the app's HDMI passthrough opt-in on the 5.4.268 kernels (see
-[In the app](#in-the-app-hdmi-passthrough-opt-in)); everything else here is root over SSH.
+Experimental. The release ships both builds and `earc-route-load.sh` for the app
+(see [In the app](#in-the-app-hdmi-passthrough-opt-in)); everything else here is root over SSH.
 
 On 2026-11-11 a tester's LG CS (OLED55CS6LA, firmware 33.31.68, kernel
 5.4.268-329.ptl4tv.5) with a Samsung HW-Q930F over eARC and a set-top box on
@@ -47,16 +46,16 @@ the `app_route` lease on renderer 0 while the app played DTS-HD MA: the
 the gate stock. The same TV ran this build with the app again (rebuilt lease
 plugin) and with the boot script's supervisor, which loaded and unloaded it.
 
-Not run on any TV: kernel 5.4.268-329.ptl4tv.2 (33.22.x), which is host-tested
-only; the 6.12 build and kernel.
+Not run on any TV: kernel 5.4.268-329.ptl4tv.2 (33.22.x), host-tested only, and
+the 6.12 build, which passed the audit and a session load in QEMU on a C5 43.21.x
+kernel with LG's audio hardware init stubbed.
 
 Decoder 0 is host-tested only for HDMI inputs. Only a TV with an eARC
 receiver can confirm the decoder-0 override: on the C5's speakers `_set_output`
 never matches (`mask=0x2`). Every `pass match`, `pass nomatch` and `hd` line
 prints the decoder, so the next receiver run shows which one played.
-`out/` is ignored. The release ships `webos25/restore/kmod-out/earc_route-5.4.ko`
-(sha256 `7a6a950e75990f066b2b0b07630aad54ca0dd51d1a47eb21bc09b70a1342c3ea`). After a
-rebuild, copy the new `.ko` there (RELEASING.md). Neither generation uses
+`out/` is ignored. The release ships the `.ko` files in `webos25/restore/kmod-out/`.
+After a rebuild, copy them there (RELEASING.md). Neither generation uses
 MODVERSIONS (no `__versions`, no CRCs) or BTI, so no `-mbranch-protection` flag is
 needed; both kernels have PAC on.
 
@@ -234,14 +233,8 @@ stock code once the gate lets a DTS-HD stream start. The two probes:
 Both are needed because accepting codec 7 is what sends it to the name load on
 the supported path. The open gate is what lets a codec-7 event reach the name
 load at all, so the name probe is registered before the gate is
-opened and removed after it is restored. In
-lg-g5-dts the name fix is unconditional and the acceptance is not bounded by the
-window (only the `_set_output` override is); the session keeps that: the acceptance
-has to last as long as the DSP instance the session configured, since a later
-status event that is not accepted puts the eARC output back to PCM signalling
-under a compressed stream. `window_seconds` (default 30, max 120; 0 only with
-`supervised=1`) bounds the HDMI `_set_output` override, driven by a 100 ms-tick
-kthread; the app lease is bounded by its own renewal (2 s).
+opened and removed after it is restored. Every override lasts until
+`rmmod earc_route`; the app lease is bounded by its own renewal (2 s).
 
 **Decoder 0 and decoder 1.** These TVs have two HDMI audio decoders: `adec.p0`,
 with the DSP instance `dsp0/hdmi0`, and `adec.p1`, with `dsp0/hdmi1`. On a C5 an
@@ -537,15 +530,15 @@ has loaded the module on that kernel.
 
 ```sh
 sh earc-route-load.sh                 # audit: decode, print to dmesg, unload
-sh earc-route-load.sh --dts-hd [window_seconds=30] [supervised=0|1]    # the session
+sh earc-route-load.sh --dts-hd        # the session, until rmmod earc_route
 ```
 
 `--dts-hd` refuses, before `insmod`, if another DTS tool is loaded
 (`dts_gate`, `dts_core_route`, `gh_dts_native`) or `/var/lib/lg-dts-core/enabled`
-exists; the audit only reports those. **Nothing has run on 6.12; no session has
+exists; the audit only reports those. **No 6.12 TV has run it; no session has
 run on decoder 0.** Read-only parameters report the state: `gate_open`,
 `gate_opened_by_us`, `hooks_registered`, `probe_registered`, `selftest_passed`,
-`window_open`, `calls_seen`, `calls_matched`, `overrides`, `app_overrides`,
+`calls_seen`, `calls_matched`, `overrides`, `app_overrides`,
 `hd_probes_registered` (2 when both are in), `hd_status_seen`,
 `hd_status_accepts`, `hd_name_seen`, `hd_name_fixes`.
 
@@ -554,17 +547,6 @@ plus 1 (`1` or `2`) at least every 2 s while it sends a DTS carrier, and `0` to
 release it. While it is held, `_set_output` for that renderer on eARC is forced
 to LG's bypass.
 
-`earc_nonpcm` is the live eARC non-PCM word (the cached argument 0 of
-`audio_hal_earc_set_output_format`, `struct earc_layout.nonpcm`): 0 for PCM, 1
-for a compressed stream. Its getter reads the derived address at every access,
-in every mode that stays loaded, so a script waits for
-`cat /sys/module/earc_route/parameters/earc_nonpcm` to print `1` where
-lg-g5-dts runs `devmem` on a fixed physical address. `struct kernel_param_ops`
-is hand-declared as `{flags, set, get, free}` (`get` at +16, static-asserted):
-`param_attr_show` of every capture calls `attribute->param(+56)->ops(+16)->get(+16)`
-with the buffer and the parameter and returns its count unchanged, and
-`param_get_uint`'s own format is `"%u\n"`, so the getter writes the number and
-the newline itself.
 In dmesg, the session prints `earc_route: pass nomatch ...` for the first 8 `_set_output` calls that miss the policy, with every input of the decision: `index`, `desc` (0 = null descriptor, `mask` then shown as 0), `mask`, that decoder's `adec<index>-codec`/`open`/`started` (`no-adec-slot` for an index above 1, which has no ADEC slot), and the call's `codec-arg`/`bypass-arg`.
 
 `earc_route-5.4.ko` and `earc_route-6.12.ko` sit next to the script. There is
@@ -631,12 +613,13 @@ play as DTS on the soundbar; the module loads with both probes and unloads clean
 
 ## In the app (HDMI passthrough opt-in)
 
-DTS Enabler offers this as a separate, experimental opt-in on the two 5.4.268
-kernels; its card says "not supported yet" on 6.12. The boot script
-(`webos25/restore/init_dts25.sh`, "HDMI-input DTS passthrough opt-in") stages
-`earc_route-5.4.ko` and `earc-route-load.sh` into `/var/lib/webosbrew/dts25/hdmi/`
-and holds the module loaded under a supervisor, at boot and from the app's toggle
-(`W25_HDMI=on|off sh init_dts25.sh` over SSH). Turning it off, Disable and Uninstall
+DTS Enabler loads the module on the two 5.4.268 kernels and on 6.12 while either
+the experimental HDMI passthrough opt-in or app DTS-HD passthrough is on. With
+the module loaded, the app's DTS-HD route takes the `app_route` lease instead of
+relabelling its output as PCM over luna. The boot script
+(`webos25/restore/init_dts25.sh`) stages the module and `earc-route-load.sh` into
+`/var/lib/webosbrew/dts25/hdmi/` and holds it loaded under a supervisor, at boot
+and from the app's toggles. Turning both off, Disable and Uninstall
 unload it; a module that will not unload is reported as "restart the TV". Turn on refuses beside an enabled lg-dts-core or Glasshouse helper, and needs
 "Show DTS tracks in apps" on, because the HDMI EDIDs offer DTS only through that
 opt-in's edidType. The supervisor takes that opt-in's eim hook off, so HDMI devices are

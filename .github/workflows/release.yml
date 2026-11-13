@@ -127,9 +127,10 @@ jobs:
           cp -f  ../restore/demux-out/libgstisomp4.so ../restore/demux-out/libgstmpegtsdemux.so \
                  ../restore/demux-out/libgstmatroska.so ../restore/demux-out/libgstmpegpsdemux.so \
                  payload/webos25-demux/
-          # HDMI passthrough opt-in: the 5.4 module only, since 6.12 is refused.
+          # earc_route for both kernel generations, used by HDMI and app DTS-HD passthrough.
           mkdir -p payload/webos25-hdmi
-          cp -f ../restore/kmod-out/earc_route-5.4.ko ../kmod/earc-route-load.sh payload/webos25-hdmi/
+          cp -f ../restore/kmod-out/earc_route-5.4.ko ../restore/kmod-out/earc_route-6.12.ko ../kmod/earc-route-load.sh \
+                payload/webos25-hdmi/
           # C2/G2 deliberately reuses the existing legacy payload directory. Do
           # not duplicate these identical binaries under a model-specific path.
           mkdir -p payload/cx
