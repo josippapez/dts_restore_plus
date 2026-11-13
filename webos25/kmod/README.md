@@ -1,9 +1,9 @@
 # eARC route kernel module (webOS 25, kernels 5.4.268 and 6.12.44)
 
-`earc_route-<generation>.ko` lets a bitstream reach an eARC receiver through
-LG's bypass. The tested C2 app path uses `mode=8` (`--app`): only the lease,
-output override and mix protection, without a DTS gate patch or HDMI hooks.
-`mode=7` retains HDMI DTS forwarding. It is built once per kernel generation,
+`earc_route-<generation>.ko` lets a DTS bitstream from an HDMI input or an app
+reach an eARC receiver: one load opens LG's DTS check, accepts DTS-HD in
+`_cb_output_status`, and overrides `_set_output` to LG's bypass for an HDMI DTS
+stream or an app holding the `/dev/earc_route` lease. It is built once per kernel generation,
 from one source: `earc_route-5.4.ko` (webOS 25 firmware 33.31.x, kernel
 5.4.268-329.ptl4tv.5, and 33.22.x, kernel 5.4.268-329.ptl4tv.2) and
 `earc_route-6.12.ko` (firmware 43.21.x, kernel 6.12.44-352), the generation-specific values passed as `-D` macros by `build.py`.
@@ -621,5 +621,4 @@ play as DTS on the soundbar; the module loads with both probes and unloads clean
 
 DTS Enabler uses a systemd oneshot to load the module while DTS-HD is on.
 Turning DTS-HD off, Disable and Uninstall unload it; busy unloads are reported.
-The exact tested C2 build uses app-only mode; other supported profiles retain
-mode 7. No app setting offers DTS to HDMI devices; see [`../app/README.md`](../app/README.md).
+No app setting offers DTS to HDMI devices; see [`../app/README.md`](../app/README.md).

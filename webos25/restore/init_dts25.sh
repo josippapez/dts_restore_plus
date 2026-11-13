@@ -960,9 +960,7 @@ w25_appdts_off() {
 w25_kmod_hold() {
   : > "$KMOD_DIR/loading" || return 1
   sync
-  KMOD_MODE=--dts-hd
-  [ ! -f /run/dts25/native-es ] || KMOD_MODE=--app
-  sh "$KMOD_DIR/earc-route-load.sh" "$KMOD_MODE" </dev/null >"$KMOD_OUT" 2>&1
+  sh "$KMOD_DIR/earc-route-load.sh" --dts-hd </dev/null >"$KMOD_OUT" 2>&1
   loaded=$?
   rm -f "$KMOD_DIR/loading" && sync
   echo "$loaded" > "$KMOD_EXIT"

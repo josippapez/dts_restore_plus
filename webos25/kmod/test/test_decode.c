@@ -645,15 +645,6 @@ static void mode_refusal_tests(void) {
     refusal_case("set_output entry holds a breakpoint", &h, 1);
     good_hdmi_layout(&h); h.adec_reason = "adec not derived";
     refusal_case("adec not derived", &h, 1);
-    h.gate_state = GATE_UNKNOWN;
-    h.patch_text = 0;
-    h.input_reason = h.property_reason = h.format_reason = h.cb_reason = "not needed by apps";
-    check("app refusal", "independent of HDMI input, gate, ADEC and status", earc_app_refusal(&h) == 0, 1);
-    h.fops_reason = "lease not derived";
-    check("app refusal", "lease required", earc_app_refusal(&h) != 0, 1);
-    h.fops_reason = 0;
-    h.mix_reason = "mix not derived";
-    check("app refusal", "mix protection required", earc_app_refusal(&h) != 0, 1);
 }
 
 /* ---- DTS-HD probes ---- */

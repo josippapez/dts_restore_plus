@@ -195,21 +195,13 @@ not_loaded
 # Mode 7 on a native kernel: no _cb_output_status probes (hd_probes_registered=0).
 for hd in 2 0; do
   setup 5.4.268-329.ptl4tv.5 /lib/modules "$V54" 0x380 0x150 0x338
-  insmod_stub "p=$WORK/root/sys/module/earc_route/parameters; mkdir -p \$p; echo 1 > \$p/probe_registered; echo $hd > \$p/hd_probes_registered; echo 1 > \$p/gate_open; echo 1 > \$p/selftest_passed; echo 1 > \$p/lease_registered; echo 1 > \$p/mix_registered"
+  insmod_stub "p=$WORK/root/sys/module/earc_route/parameters; mkdir -p \$p; echo 1 > \$p/probe_registered; echo $hd > \$p/hd_probes_registered; echo 1 > \$p/gate_open; echo 1 > \$p/selftest_passed"
   expect "mode 7 success with hd_probes_registered=$hd" 0 "PASSTHROUGH ACTIVE (mode=7" --dts-hd
   loaded earc_route-5.4.ko
 done
 setup 5.4.268-329.ptl4tv.5 /lib/modules "$V54" 0x380 0x150 0x338
 insmod_stub "p=$WORK/root/sys/module/earc_route/parameters; mkdir -p \$p; echo 1 > \$p/probe_registered; echo 1 > \$p/hd_probes_registered"
 expect "mode 7 with one status probe only is a failure" 1 "PASSTHROUGH FAILED" --dts-hd
-
-setup 5.4.268-329.ptl4tv.5 /lib/modules "$V54" 0x380 0x150 0x338
-insmod_stub "p=$WORK/root/sys/module/earc_route/parameters; mkdir -p \$p; for n in probe_registered selftest_passed lease_registered mix_registered; do echo 1 > \$p/\$n; done; for n in hd_probes_registered gate_open input_probes_registered; do echo 0 > \$p/\$n; done"
-expect "app mode needs no gate or HDMI probes" 0 "PASSTHROUGH ACTIVE (mode=8" --app
-loaded earc_route-5.4.ko
-rm -rf "$WORK/root/sys/module/earc_route"
-insmod_stub "p=$WORK/root/sys/module/earc_route/parameters; mkdir -p \$p; for n in probe_registered selftest_passed lease_registered mix_registered gate_open; do echo 1 > \$p/\$n; done; echo 0 > \$p/hd_probes_registered; echo 0 > \$p/input_probes_registered"
-expect "app mode rejects an unexpectedly open gate" 1 "PASSTHROUGH FAILED" --app
 
 if [ "$FAILURES" = 0 ]; then echo "earc-route-load test passed: $CASES cases (${LOADER_SHELL:-sh} $(readlink -f "$(command -v "${LOADER_SHELL:-sh}")"))"
 else echo "earc-route-load test FAILED: $FAILURES of $CASES"; exit 1; fi

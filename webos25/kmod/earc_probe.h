@@ -212,23 +212,13 @@ static ed_u32 earc_gate_restore_word(ed_u32 current) {
  * (stock, or already returning 1 as on C3/G3, G4 and 2026 kernels, which is
  * neither patched nor restored) with its patch service, and the _set_output
  * probe site, mask offset and ADEC state. Returns the reason or 0. */
-static const char *earc_app_refusal(const struct earc_hdmi_layout *h) {
+static const char *earc_mode_refusal(const struct earc_hdmi_layout *h) {
     if (h->break_reason) return h->break_reason;
     if (!h->break_fn || !h->step_fn) return "kprobe break handlers not derived";
     /* Both are called through these addresses; a symbol the loader could not pass is 0 here. */
     if (!h->break_register) return "register_kernel_break_hook not found";
     if (!h->break_unregister) return "unregister_kernel_break_hook not found";
     if (!h->break_fields_known) return "break-hook immediate and mask not derived (cannot check for a conflict)";
-    if (h->set_output_reason) return h->set_output_reason;
-    if (h->set_output_first_brk) return "_set_output entry holds a breakpoint";
-    if (h->fops_reason) return h->fops_reason;
-    if (h->mix_reason) return h->mix_reason;
-    return 0;
-}
-
-static const char *earc_mode_refusal(const struct earc_hdmi_layout *h) {
-    const char *reason = earc_app_refusal(h);
-    if (reason) return reason;
     if (h->gate_state == GATE_BREAKPOINT) return "DTS gate holds a breakpoint (another tool is probing it)";
     if (h->gate_state != GATE_STOCK && h->gate_state != GATE_SWITCHED) return "DTS gate is not in its stock state";
     if (h->gate_state == GATE_STOCK) {

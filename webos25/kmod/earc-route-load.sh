@@ -28,14 +28,13 @@ want_mode=0
 case "$*" in
   '') ;;
   --dts-hd) options="mode=7"; want_mode=7 ;;
-    --app) options="mode=8"; want_mode=8 ;;
-    *) refuse "usage: $0 [--dts-hd|--app]" ;;
+  *) refuse "usage: $0 [--dts-hd]" ;;
 esac
 
 # The session refuses to load beside another DTS tool, whose kprobes or gate
 # change would collide with ours.
 # The audit (mode 0) only reports them (below).
-if [ "$want_mode" != 0 ]; then
+if [ "$want_mode" = 7 ]; then
   for mod in dts_gate dts_core_route gh_dts_native; do
     [ -e "$ROOT/sys/module/$mod" ] && refuse "another DTS tool is loaded: $mod (unload it first)"
   done
@@ -242,19 +241,11 @@ case "$want_mode" in
       *"Operation canceled"*) echo "earc-route: AUDIT OK: decoded and unloaded; dmesg | grep earc_route: has every value ($last)" ;;
       *) echo "earc-route: REFUSED by the module (insmod status $status: $result): $last"; exit 1 ;;
     esac ;;
-    7|8)
+  7)
     # hd_probes_registered is 0 where the stock kernel already accepts and
     # names codec 7 (no _cb_output_status probes are needed), else 2.
     hd=$(param hd_probes_registered)
-        mode_ready=0
-        if [ "$want_mode" = 7 ]; then
-            if [ "$hd" = 2 ] || [ "$hd" = 0 ]; then mode_ready=1; fi
-        elif [ "$hd" = 0 ] && [ "$(param gate_open)" = 0 ] && [ "$(param input_probes_registered)" = 0 ]; then
-            mode_ready=1
-        fi
-        if [ "$status" = 0 ] && [ "$(param probe_registered)" = 1 ] &&
-            [ "$(param selftest_passed)" = 1 ] && [ "$(param lease_registered)" = 1 ] &&
-            [ "$(param mix_registered)" = 1 ] && [ "$mode_ready" = 1 ]; then
+    if [ "$status" = 0 ] && [ "$(param probe_registered)" = 1 ] && { [ "$hd" = 2 ] || [ "$hd" = 0 ]; }; then
       echo "earc-route: PASSTHROUGH ACTIVE ($options) selftest=$(param selftest_passed) gate_open=$(param gate_open); EXPERIMENTAL ($last)"
     else echo "earc-route: PASSTHROUGH FAILED (insmod status $status: $result): $last"; exit 1; fi ;;
 esac

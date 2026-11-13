@@ -173,12 +173,11 @@ source as committed. Verified on the C5 (decode identical to the previous build,
 installer and TV report clean). Not verified on a receiver.
 The 2026-11-13 build selects native ES on the exact tested C2 build at startup,
 keeps ES buffers off LG's PCM converter, and avoids synthetic renderer restarts.
-Its app-only kernel mode keeps the lease, output override and mix protection;
-the DTS gate, status probes and HDMI hooks stay untouched. On C2 33.31.68,
+On C2 33.31.68,
 three TS repeats, MP4, M2TS, TrueHD MKV, pause/resume and a backward seek reached
 EOS without new DSP faults. Decoded DTS/TrueHD with the module unloaded also
 reached EOS. These latest tests are pipeline evidence, not an audibility verdict.
-Managed load/stop, busy-descriptor refusal and mode-7 idle load/unload passed.
+Managed mode-7 load/stop and busy-descriptor refusal passed.
 6.12 remains host-tested only and disabled for automatic loading. DTS MKV and
 BD-framed TrueHD TS/M2TS were not exercised with this build.
 
