@@ -977,7 +977,6 @@ static void passthrough_cleanup(void) {
     if (input_probes_registered == 2) { unregister_kprobe(&input_start_probe); input_probes_registered = 1; }
     if (window_task) { kthread_stop(window_task); window_task = (void *)0; }
     if (lease_registered) { MISC_DEREGISTER(&lease_device); lease_registered = 0; }
-    __atomic_store_n(&app_route, 0, __ATOMIC_RELEASE);
     format_unsubscribe(0);
     format_unsubscribe(1);
     if (input_probes_registered) { unregister_kprobe(&input_property_probe); input_probes_registered = 0; }
@@ -1241,7 +1240,6 @@ static const struct target_parameter parameters[] __attribute__((section("__para
     {"hd_name_seen", &__this_module, &uint_operations, 0400, -1, 0, &hd_name_seen},
     {"hd_name_fixes", &__this_module, &uint_operations, 0400, -1, 0, &hd_name_fixes},
     {"app_route", &__this_module, &uint_operations, 0400, -1, 0, &app_route},
-    {"lease_registered", &__this_module, &uint_operations, 0400, -1, 0, &lease_registered},
     {"app_overrides", &__this_module, &uint_operations, 0400, -1, 0, &app_overrides},
     {"input_probes_registered", &__this_module, &uint_operations, 0400, -1, 0, &input_probes_registered},
     {"input_starts", &__this_module, &uint_operations, 0400, -1, 0, &input_starts},
