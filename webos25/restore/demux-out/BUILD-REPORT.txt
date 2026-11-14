@@ -219,13 +219,17 @@ The parser opens the same absolute native library path the gate fingerprints
 and preserves Annex B zero padding outside the RPU. The boot script requires
 a successful scan and a nonempty cache before it inspects registry factories.
 
-ARM/QEMU buffer tests on this build covered Annex B padding, length-prefixed
-RPU replacement, shared memory, metadata and stream reset after a failure.
-On the preceding review binary (SHA-256 a094da0bd29473aca8281cb8e81820d9c2f623e3a117f6891a19ae10e8ad08a0),
-ARM/QEMU loaded all eleven factories. H.264 SDR, HEVC HDR10, Dolby Vision P5,
-VP9 and AV1 reached end of stream. Synthetic P8 caps kept the P5 parser output.
-With P7 caps and the native RPU library absent, the parser gave one warning
-and produced the original output bytes.
+A clean rebuild reproduced all five plugins byte for byte. ARM/QEMU loaded
+all eleven factories from the exact committed parser above. H.264 SDR, HEVC
+HDR10, Dolby Vision P5 and P8.1, VP9 and AV1 parser pipelines reached end
+of stream. The P8.1 pipeline used a real P8.1 HEVC fixture.
+
+With the fingerprint-matched native library, the parser rewrote 50 P7 FEL
+RPUs in both Annex B and length-prefixed output. The other NAL units stayed
+byte-identical. With the native library absent, the P7 pipeline gave one
+warning and its output matched the reference byte for byte. ARM/QEMU buffer
+tests also cover Annex B padding, shared memory, metadata and stream reset
+after a failure.
 
 On-device validation (LG G3, firmware 33.31.68, local test IPK 2.7.80)
 -----------------------------------------------------------------

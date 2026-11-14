@@ -427,10 +427,10 @@ test("registry proof loads every factory from the bound video parser and only re
     initFn("w25_reg_has_all").replaceAll("/usr/bin/gst-inspect-1.0", "inspect"),
     initFn("w25_scan_registry"),
     initFn("w25_prove_registry"),
-    'w25_prove_registry; printf "%s:%s\\n" "$?" "$REG_MISS"'
+    'w25_prove_registry; printf "%s:%s:%s\\n" "$?" "$REG_MISS" "$P7_FELL_BACK"'
   ].join("\n");
 
-  function check(overrides, result, expected) {
+  function check(overrides, result, expected, fellBack) {
     write(events, "");
     var env = {
       EVENTS: events, LOG: path.join(dir, "log"), REG_TMP: path.join(dir, "registry"),
@@ -440,7 +440,7 @@ test("registry proof loads every factory from the bound video parser and only re
     write(env.REG_TMP, "stale registry cache");
     var run = sh(script, Object.assign(env, overrides));
     assert.strictEqual(run.status, 0, run.stderr);
-    assert.strictEqual(run.stdout.trim(), result, JSON.stringify(overrides));
+    assert.strictEqual(run.stdout.trim(), result + (fellBack ? ":1" : ":0"), JSON.stringify(overrides));
     assert.deepStrictEqual(fs.readFileSync(events, "utf8").trim().split("\n").filter(Boolean), expected);
   }
 
@@ -457,14 +457,48 @@ test("registry proof loads every factory from the bound video parser and only re
     check({ PARSER_BOUND: "0" }, "0:", ["scan 0"].concat(core));
     check({ MISSING: "qtdemux" }, "1:qtdemux", ["scan 1"].concat(core.slice(0, 4)));
     check({ PS_BOUND: "1", MISSING: "mpegpsdemux" }, "1:mpegpsdemux", ["scan 1"].concat(core, "mpegpsdemux"));
-    check({ MISSING: "av1parse" }, "0:", fallback("av1parse", parsers));
-    check({ FOREIGN: "vp9parse" }, "0:", fallback("vp9parse", parsers.slice(0, -1)));
+    check({ MISSING: "av1parse" }, "0:", fallback("av1parse", parsers), true);
+    check({ FOREIGN: "vp9parse" }, "0:", fallback("vp9parse", parsers.slice(0, -1)), true);
     check({ MISSING: "av1parse", DETACH_OK: "0" }, "1:av1parse", ["scan 1"].concat(core, parsers, "detach"));
     check({ CLEAR_CACHE: "0" }, "1:could not clear the temporary registry cache", []);
     check({ BOUND_SCAN: "timeout" }, "1:fresh registry scan failed", ["scan 1"]);
     check({ BOUND_SCAN: "empty" }, "1:fresh registry scan produced no cache", ["scan 1"]);
     check({ MISSING: "av1parse", STOCK_SCAN: "timeout" }, "1:fresh registry scan failed", fallback("av1parse", parsers).slice(0, -core.length));
     check({ MISSING: "av1parse", STOCK_SCAN: "empty" }, "1:fresh registry scan produced no cache", fallback("av1parse", parsers).slice(0, -core.length));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("TV report distinguishes a mounted P7 parser, a completed fallback and a skip", function () {
+  var report = fs.readFileSync(path.resolve(__dirname, "../../../restore/report-tv.sh"), "utf8");
+  var status = /^p7_parser_status\(\) [\s\S]*?^\}/m.exec(report);
+  assert.ok(status, "P7 parser status function is missing");
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dts-p7-report-"));
+  var files = {
+    MOUNTS: path.join(dir, "mounts"), LIVE: path.join(dir, "live.so"),
+    STAGED: path.join(dir, "payload.so"), FALLBACK: path.join(dir, "fallback")
+  };
+
+  function check(expected) {
+    var script = 'set -u\n' + status[0] + '\np7_parser_status "$MOUNTS" "$LIVE" "$STAGED" "$FALLBACK"';
+    var result = sh(script, files);
+    assert.strictEqual(result.status, 0, result.stderr);
+    assert.strictEqual(result.stdout.trim(), expected);
+  }
+
+  try {
+    write(files.MOUNTS, "/dev/root " + files.LIVE + ".other ext4 ro 0 0\n");
+    write(files.STAGED, "replacement");
+    fs.linkSync(files.STAGED, files.LIVE);
+    check("skipped"); // Same file is insufficient without an exact mount target.
+    write(files.FALLBACK, "");
+    check("fallback");
+    write(files.MOUNTS, "/dev/root " + files.LIVE + " ext4 ro 0 0\n");
+    check("active"); // A live replacement takes precedence over a stale marker.
+    fs.unlinkSync(files.LIVE);
+    write(files.LIVE, "a different mounted parser");
+    check("skipped"); // A foreign bind rules out stock fallback.
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
