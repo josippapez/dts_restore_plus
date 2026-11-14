@@ -21,12 +21,18 @@ typedef struct {
   void (*destroy) (gpointer);
   void (*writer_cleanup) (gpointer, gpointer);
   guint8 *dm;
+  guint8 *native;
+  gsize native_capacity;
   guint16 active_area[4];
   GByteArray *output;
   gboolean failed;
   gboolean parser_initialized;
   guint frames;
 } DoviNormalize;
+
+/* The failure marker shares the stream state's lifetime without keeping the
+ * native parser allocation alive after a failure. */
+static guint8 dovi_disabled_state;
 
 static GQuark
 dovi_state_key (void)
@@ -57,7 +63,7 @@ dovi_native_callback (gpointer opaque, gint event, gpointer sequence,
   gboolean has_area = FALSE;
 
   if (event != 0 || !header || !payload || !dm || dm_size != 67396) {
-    GST_WARNING ("P7 native RPU event=%d error=%d dm_size=%d", event, error, dm_size);
+    GST_DEBUG ("P7 native RPU event=%d error=%d dm_size=%d", event, error, dm_size);
     s->failed = TRUE;
     return;
   }
@@ -74,7 +80,7 @@ dovi_native_callback (gpointer opaque, gint event, gpointer sequence,
     guint8 *block = s->dm + 76 + 264 * i;
     if (block[4] == 5) {
       if (block[5]) { /* raw/unknown L5 is not the expected native ABI */
-        GST_WARNING ("P7 native L5 is stored as a raw block");
+        GST_DEBUG ("P7 native L5 is stored as a raw block");
         s->failed = TRUE;
         return;
       }
@@ -105,7 +111,7 @@ dovi_native_callback (gpointer opaque, gint event, gpointer sequence,
    * that same RPU payload behind 7c 01 (UNSPEC62). */
   if (result < 0 || length < 6 || length > 65536 || !bytes ||
       memcmp (bytes, "\0\0\0\1\x19", 5)) {
-    GST_WARNING ("P7 native writer result=%d length=%d", result, length);
+    GST_DEBUG ("P7 native writer result=%d length=%d", result, length);
     s->failed = TRUE;
     return;
   }
@@ -124,6 +130,7 @@ dovi_normalize_free (gpointer opaque)
     s->writer_cleanup (s->writer, s->writer_sample);
   g_free (s->parser);
   g_free (s->dm);
+  g_free (s->native);
   if (s->output) g_byte_array_unref (s->output);
   if (s->library) dlclose (s->library);
   g_free (s);
@@ -138,7 +145,8 @@ dovi_normalize_create (void)
   gint (*writer_init) (gpointer *, gpointer *, gpointer);
   gint size;
   G_STATIC_ASSERT (sizeof (DoviNativeConf) == 40);
-  s->library = dlopen ("librpu_m.so", RTLD_NOW | RTLD_LOCAL);
+  /* The compatibility gate fingerprints this exact library on the TV. */
+  s->library = dlopen ("/usr/lib/librpu_m.so", RTLD_NOW | RTLD_LOCAL);
   if (!s->library) goto fail;
 #define DOVI_API(member, symbol) \
   do { *(gpointer *) &(member) = dlsym (s->library, symbol); \
@@ -171,96 +179,207 @@ fail:
   return NULL;
 }
 
+/* Find the next Annex B start code without mapping (and possibly merging)
+ * the whole buffer. A start code can span two separate GstMemory blocks. */
+static gboolean
+dovi_annex_b_end (GstBuffer *input, gsize offset, gsize size, gsize *end)
+{
+  guint first, count, i;
+  gsize skip, pos = offset;
+
+  *end = size;
+  if (size - offset < 3)
+    return TRUE;
+  if (!gst_buffer_find_memory (input, offset, size - offset, &first, &count,
+          &skip))
+    return FALSE;
+  for (i = first; i < first + count; i++) {
+    GstMapInfo map;
+    const guint8 *candidate, *scan;
+    gsize left;
+
+    if (!gst_memory_map (gst_buffer_peek_memory (input, i), &map, GST_MAP_READ))
+      return FALSE;
+    scan = map.data + skip;
+    left = map.size - skip;
+    while (left && (candidate = memchr (scan, 1, left))) {
+      gsize at = pos + (candidate - map.data) - skip;
+      gsize back = MIN (at - offset, 3);
+
+      if (back >= 2) {
+        guint8 split[3];
+        const guint8 *preceding;
+
+        if ((gsize) (candidate - map.data) >= back) {
+          preceding = candidate - back;
+        } else {
+          if (gst_buffer_extract (input, at - back, split, back) != back) {
+            gst_memory_unmap (map.memory, &map);
+            return FALSE;
+          }
+          preceding = split;
+        }
+        if (preceding[back - 2] == 0 && preceding[back - 1] == 0) {
+          *end = at - ((back == 3 && preceding[0] == 0) ? 3 : 2);
+          gst_memory_unmap (map.memory, &map);
+          return TRUE;
+        }
+      }
+      left -= candidate - scan + 1;
+      scan = candidate + 1;
+    }
+    pos += map.size - skip;
+    skip = 0;
+    gst_memory_unmap (map.memory, &map);
+  }
+  return TRUE;
+}
+
+static gboolean
+dovi_rewrite_nal (DoviNormalize *s, GstBuffer *input, gsize nal,
+    gboolean byte_stream, gsize *payload_end)
+{
+  gsize size = *payload_end - nal;
+  gsize native_size = size + 2;
+  gint status;
+
+  if (s->native_capacity < native_size) {
+    guint8 *native = g_try_realloc (s->native, native_size);
+    if (!native)
+      return FALSE;
+    s->native = native;
+    s->native_capacity = native_size;
+  }
+  memcpy (s->native, "\0\0\0\1", 4);
+  if (gst_buffer_extract (input, nal + 2, s->native + 4, size - 2) != size - 2)
+    return FALSE;
+  /* Annex B allows trailing_zero_8bits before a new start code or EOF.
+   * They are outside the RPU and remain in the original buffer span. */
+  if (byte_stream) {
+    while (native_size > 4 && s->native[native_size - 1] == 0)
+      native_size--;
+    if (native_size == 4)
+      return FALSE;
+    *payload_end = nal + native_size - 2;
+  }
+  g_byte_array_set_size (s->output, 0);
+  s->failed = FALSE;
+  status = s->process (s->parser, 0, NULL, s->native, native_size, 1);
+  if (status != 0 || s->failed || !s->output->len) {
+    GST_DEBUG ("P7 RPU status=%d callback_failure=%d output=%u",
+        status, s->failed, s->output->len);
+    return FALSE;
+  }
+  return TRUE;
+}
+
 /* Process the output access unit before encoded layer assembly, if any.
- * Preserve non-RPU NAL bytes as well as the input timing, flags and metadata. */
+ * Share untouched memory and preserve timing, flags and metadata. The original
+ * AU remains available if any RPU in it fails. */
 static GstBuffer *
 dovi_normalize_buffer (GstElement *element, GstBuffer *input,
     gboolean byte_stream, guint length_size)
 {
-  DoviNormalize *s = g_object_get_qdata (G_OBJECT (element), dovi_state_key ());
-  GstMapInfo map;
-  GByteArray *au = NULL;
+  gpointer state = g_object_get_qdata (G_OBJECT (element), dovi_state_key ());
+  DoviNormalize *s = state;
   GstBuffer *result = NULL;
-  gsize offset = 0;
-  gboolean changed = FALSE;
-  if (!gst_buffer_map (input, &map, GST_MAP_READ)) return NULL;
-  au = g_byte_array_sized_new (map.size);
-  while (offset < map.size) {
-    gsize start = offset, nal, end;
+  gsize offset = 0, last = 0, size;
+  const gchar *failure = "invalid NAL framing";
+
+  if (state == &dovi_disabled_state)
+    return gst_buffer_ref (input);
+  size = gst_buffer_get_size (input);
+  while (offset < size) {
+    guint8 header[6];
+    gsize nal, end, available = MIN (size - offset, sizeof header);
     guint prefix = length_size;
+
+    if (gst_buffer_extract (input, offset, header, available) != available)
+      goto fail;
     if (byte_stream) {
-      if (map.size - offset >= 4 && !memcmp (map.data + offset, "\0\0\0\1", 4))
+      if (available >= 4 && !memcmp (header, "\0\0\0\1", 4))
         prefix = 4;
-      else if (map.size - offset >= 3 && !memcmp (map.data + offset, "\0\0\1", 3))
+      else if (available >= 3 && !memcmp (header, "\0\0\1", 3))
         prefix = 3;
-      else goto fail;
+      else
+        goto fail;
       nal = offset + prefix;
-      for (end = nal; end + 3 <= map.size; end++)
-        if (!memcmp (map.data + end, "\0\0\1", 3) ||
-            (end + 4 <= map.size && !memcmp (map.data + end, "\0\0\0\1", 4))) break;
-      if (end + 3 > map.size) end = map.size;
+      if (!dovi_annex_b_end (input, nal, size, &end))
+        goto fail;
     } else {
-      guint size = 0, i;
-      if (prefix < 1 || prefix > 4 || map.size - offset < prefix) goto fail;
-      for (i = 0; i < prefix; i++) size = (size << 8) | map.data[offset + i];
+      guint nal_size = 0, i;
+
+      if (prefix < 1 || prefix > 4 || available < prefix)
+        goto fail;
+      for (i = 0; i < prefix; i++)
+        nal_size = (nal_size << 8) | header[i];
       nal = offset + prefix;
-      if (size > map.size - nal) goto fail;
-      end = nal + size;
+      if (nal_size > size - nal)
+        goto fail;
+      end = nal + nal_size;
     }
-    if (end - nal < 2) goto fail;
-    if (((map.data[nal] >> 1) & 63) == 62 && map.data[nal] == 0x7c &&
-        map.data[nal + 1] == 1) {
-      GByteArray *native;
+    if (end - nal < 2 || available < prefix + 2)
+      goto fail;
+    if (header[prefix] == 0x7c && header[prefix + 1] == 1) {
+      guint8 *replacement;
+      gsize replacement_size, payload_end = end;
       guint i;
-      gint status;
-      if (end - nal > 65536) goto fail;
+
+      if (end - nal < 3 || end - nal > 65536)
+        goto fail;
+      failure = "native RPU initialization or rewrite failed";
       if (!s) {
         s = dovi_normalize_create ();
-        if (!s) goto fail;
+        if (!s)
+          goto fail;
         g_object_set_qdata_full (G_OBJECT (element), dovi_state_key (), s,
             dovi_normalize_free);
         GST_INFO_OBJECT (element, "P7 BL-only RPU normalization initialized");
       }
-      g_byte_array_set_size (s->output, 0);
-      s->failed = FALSE;
-      native = g_byte_array_new ();
-      g_byte_array_append (native, (const guint8 *) "\0\0\0\1", 4);
-      g_byte_array_append (native, map.data + nal + 2, end - nal - 2);
-      status = s->process (s->parser, 0, NULL, native->data, native->len, 1);
-      g_byte_array_unref (native);
-      if (status != 0 || s->failed || !s->output->len) {
-        GST_WARNING_OBJECT (element, "P7 RPU failed after %u frames: status=%d callback_failure=%d output=%u",
-            s->frames, status, s->failed, s->output->len);
+      if (!dovi_rewrite_nal (s, input, nal, byte_stream, &payload_end))
         goto fail;
-      }
-      if (byte_stream) g_byte_array_append (au, map.data + start, prefix);
-      else {
-        guint8 sizes[4];
-        if (prefix < 4 && s->output->len >= (1u << (8 * prefix))) goto fail;
+
+      failure = "could not assemble the rewritten AU";
+      if (!byte_stream && prefix < 4 && s->output->len >= (1u << (8 * prefix)))
+        goto fail;
+      if (!result)
+        result = gst_buffer_new ();
+      if (offset > last && !gst_buffer_copy_into (result, input,
+              GST_BUFFER_COPY_MEMORY, last, offset - last))
+        goto fail;
+      replacement_size = prefix + s->output->len;
+      replacement = g_try_malloc (replacement_size);
+      if (!replacement)
+        goto fail;
+      if (byte_stream) {
+        memcpy (replacement, header, prefix);
+      } else {
         for (i = 0; i < prefix; i++)
-          sizes[prefix - 1 - i] = s->output->len >> (8 * i);
-        g_byte_array_append (au, sizes, prefix);
+          replacement[prefix - 1 - i] = s->output->len >> (8 * i);
       }
-      g_byte_array_append (au, s->output->data, s->output->len);
-      changed = TRUE;
-    } else g_byte_array_append (au, map.data + start, end - start);
+      memcpy (replacement + prefix, s->output->data, s->output->len);
+      gst_buffer_append_memory (result, gst_memory_new_wrapped (0, replacement,
+              replacement_size, 0, replacement_size, replacement, g_free));
+      last = payload_end;
+      failure = "invalid NAL framing";
+    }
     offset = end;
   }
-  if (changed) {
-    result = gst_buffer_new_allocate (NULL, au->len, NULL);
-    gst_buffer_fill (result, 0, au->data, au->len);
-    gst_buffer_copy_into (result, input, GST_BUFFER_COPY_METADATA, 0, -1);
-  } else result = gst_buffer_ref (input);
-  g_byte_array_unref (au);
-  gst_buffer_unmap (input, &map);
+  if (!result)
+    return gst_buffer_ref (input);
+  failure = "could not restore AU data or metadata";
+  if ((size > last && !gst_buffer_copy_into (result, input,
+              GST_BUFFER_COPY_MEMORY, last, size - last)) ||
+      !gst_buffer_copy_into (result, input, GST_BUFFER_COPY_METADATA, 0, -1))
+    goto fail;
   return result;
+
 fail:
-  GST_WARNING_OBJECT (element, "P7 AU framing failed: byte_stream=%d length_size=%u offset=%" G_GSIZE_FORMAT " size=%" G_GSIZE_FORMAT,
-      byte_stream, length_size, offset, map.size);
-  if (au) g_byte_array_unref (au);
-  gst_buffer_unmap (input, &map);
-  GST_ELEMENT_ERROR (element, STREAM, DECODE,
-      ("Cannot initialize P7 base-layer Dolby metadata"),
-      ("Native RPU parse/write or ABI validation failed; refusing stale Dolby state"));
-  return NULL;
+  GST_WARNING_OBJECT (element, "P7 RPU normalization disabled for this stream: "
+      "%s at byte %" G_GSIZE_FORMAT " after %u rewritten RPUs; passing original AU",
+      failure, offset, s ? s->frames : 0);
+  gst_clear_buffer (&result);
+  g_object_set_qdata_full (G_OBJECT (element), dovi_state_key (),
+      &dovi_disabled_state, NULL);
+  return gst_buffer_ref (input);
 }

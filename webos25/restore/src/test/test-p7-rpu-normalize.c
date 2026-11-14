@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: LGPL-2.1-or-later
  * Run on the TV with one supplied P7 FEL HEVC RPU NAL (7c 01 19 ...).
  * Exercises the production implementation against LG's native CRC parser.
+ * Use --buffer-only for profile selection, buffer sharing and fallback tests
+ * that do not need the native library or a Dolby Vision fixture.
  */
 #include <gst/gst.h>
 #include <stdio.h>
@@ -143,6 +145,172 @@ check (DoviNormalize *api, Parsed *original, GstElement *element,
   gst_buffer_unref (output); gst_buffer_unref (input);
 }
 
+typedef struct {
+  DoviNormalize *state;
+  guint *calls;
+} MockRpu;
+
+static gint
+mock_process (gpointer opaque, gint type, gpointer context, gpointer data,
+    gint size, gint flush)
+{
+  MockRpu *mock = opaque;
+  const guint8 *native = data;
+  const guint8 rewritten[] = { 0x7c, 0x01, 0x19, 0x44, 0x55 };
+
+  (*mock->calls)++;
+  g_assert_cmpint (size, ==, 6);
+  g_assert_cmpmem (native, 5, "\0\0\0\1\x19", 5);
+  if (native[5] == 0xff)
+    return -1;
+  g_byte_array_append (mock->state->output, rewritten, sizeof rewritten);
+  return 0;
+}
+
+static void
+install_mock (GstElement *element, guint *calls)
+{
+  DoviNormalize *state = g_new0 (DoviNormalize, 1);
+  MockRpu *mock = g_new (MockRpu, 1);
+
+  mock->state = state;
+  mock->calls = calls;
+  state->parser = mock;
+  state->process = mock_process;
+  state->output = g_byte_array_new ();
+  g_object_set_qdata_full (G_OBJECT (element), dovi_state_key (), state,
+      dovi_normalize_free);
+}
+
+static void
+add_bytes (GstBuffer *buffer, const guint8 *data, gsize size)
+{
+  gst_buffer_append_memory (buffer, gst_memory_new_wrapped (
+          GST_MEMORY_FLAG_READONLY, (gpointer) data, size, 0, size, NULL, NULL));
+}
+
+static void
+assert_bytes (GstBuffer *buffer, const guint8 *expected, gsize size)
+{
+  guint8 *actual = g_malloc (size);
+
+  g_assert_cmpuint (gst_buffer_get_size (buffer), ==, size);
+  g_assert_cmpuint (gst_buffer_extract (buffer, 0, actual, size), ==, size);
+  g_assert_cmpmem (actual, size, expected, size);
+  g_free (actual);
+}
+
+static void
+check_splice (gboolean annex_b)
+{
+  const guint8 annex_head[] = { 0, 0, 0, 1, 0x26, 1, 0x80 };
+  const guint8 packet_head[] = { 0, 3, 0x26, 1, 0x80 };
+  const guint8 annex_rpu[] = { 0, 0, 1, 0x7c, 1, 0x19, 0x10, 0, 0 };
+  const guint8 packet_rpu[] = { 0, 4, 0x7c, 1, 0x19, 0x10 };
+  const guint8 annex_tail[] = { 0, 0, 0, 1, 0x48, 1 };
+  const guint8 packet_tail[] = { 0, 2, 0x48, 1 };
+  const guint8 annex_expected[] = {
+    0, 0, 0, 1, 0x26, 1, 0x80, 0, 0, 1, 0x7c, 1, 0x19, 0x44, 0x55,
+    0, 0, 0, 0, 0, 1, 0x48, 1
+  };
+  const guint8 packet_expected[] = {
+    0, 3, 0x26, 1, 0x80, 0, 5, 0x7c, 1, 0x19, 0x44, 0x55,
+    0, 2, 0x48, 1
+  };
+  const guint8 *head = annex_b ? annex_head : packet_head;
+  const guint8 *rpu = annex_b ? annex_rpu : packet_rpu;
+  const guint8 *tail = annex_b ? annex_tail : packet_tail;
+  gsize head_size = annex_b ? sizeof annex_head : sizeof packet_head;
+  gsize rpu_size = annex_b ? sizeof annex_rpu : sizeof packet_rpu;
+  gsize tail_size = annex_b ? sizeof annex_tail : sizeof packet_tail;
+  GstElement *element = gst_bin_new (NULL);
+  GstCaps *reference = gst_caps_new_empty_simple ("timestamp/x-test");
+  GstBuffer *input = gst_buffer_new (), *output;
+  GstReferenceTimestampMeta *meta;
+  guint calls = 0;
+
+  add_bytes (input, head, head_size);
+  output = dovi_normalize_buffer (element, input, annex_b, 2);
+  g_assert_true (output == input);
+  g_assert_null (g_object_get_qdata (G_OBJECT (element), dovi_state_key ()));
+  gst_buffer_unref (output);
+
+  install_mock (element, &calls);
+  /* Split both prefixes across memory boundaries and preserve Annex B padding. */
+  add_bytes (input, rpu, 1);
+  add_bytes (input, rpu + 1, rpu_size - 1);
+  add_bytes (input, tail, 1);
+  add_bytes (input, tail + 1, tail_size - 1);
+  GST_BUFFER_PTS (input) = 123;
+  GST_BUFFER_DTS (input) = 45;
+  GST_BUFFER_DURATION (input) = 67;
+  GST_BUFFER_OFFSET (input) = 89;
+  GST_BUFFER_OFFSET_END (input) = 99;
+  GST_BUFFER_FLAG_SET (input, GST_BUFFER_FLAG_DISCONT);
+  gst_buffer_add_reference_timestamp_meta (input, reference, 456, 789);
+
+  output = dovi_normalize_buffer (element, input, annex_b, 2);
+  g_assert_true (output != input);
+  g_assert_cmpuint (calls, ==, 1);
+  g_assert_true (gst_buffer_peek_memory (output, 0) ==
+      gst_buffer_peek_memory (input, 0));
+  assert_bytes (output, annex_b ? annex_expected : packet_expected,
+      annex_b ? sizeof annex_expected : sizeof packet_expected);
+  g_assert_cmpuint (GST_BUFFER_PTS (output), ==, 123);
+  g_assert_cmpuint (GST_BUFFER_DTS (output), ==, 45);
+  g_assert_cmpuint (GST_BUFFER_DURATION (output), ==, 67);
+  g_assert_cmpuint (GST_BUFFER_OFFSET (output), ==, 89);
+  g_assert_cmpuint (GST_BUFFER_OFFSET_END (output), ==, 99);
+  g_assert_true (GST_BUFFER_FLAG_IS_SET (output, GST_BUFFER_FLAG_DISCONT));
+  meta = gst_buffer_get_reference_timestamp_meta (output, reference);
+  g_assert_nonnull (meta);
+  g_assert_cmpuint (meta->timestamp, ==, 456);
+  g_assert_cmpuint (meta->duration, ==, 789);
+
+  gst_buffer_unref (output);
+  gst_buffer_unref (input);
+  gst_caps_unref (reference);
+  gst_object_unref (element);
+}
+
+static void
+check_fail_open (void)
+{
+  const guint8 good[] = { 4, 0x7c, 1, 0x19, 0x10 };
+  const guint8 bad[] = { 4, 0x7c, 1, 0x19, 0xff };
+  GstElement *element = gst_bin_new (NULL);
+  GstBuffer *input = gst_buffer_new (), *next = gst_buffer_new (), *output;
+  guint calls = 0;
+
+  install_mock (element, &calls);
+  add_bytes (input, good, sizeof good);
+  add_bytes (input, bad, sizeof bad);
+  add_bytes (next, good, sizeof good);
+
+  /* A successful rewrite preceding a failure must be discarded as well. */
+  output = dovi_normalize_buffer (element, input, FALSE, 1);
+  g_assert_true (output == input);
+  g_assert_cmpuint (calls, ==, 2);
+  gst_buffer_unref (output);
+  output = dovi_normalize_buffer (element, next, FALSE, 1);
+  g_assert_true (output == next);
+  g_assert_cmpuint (calls, ==, 2);
+  gst_buffer_unref (output);
+  g_assert_true (g_object_get_qdata (G_OBJECT (element), dovi_state_key ()) ==
+      &dovi_disabled_state);
+
+  /* A new stream resets the failure latch and attempts normalization again. */
+  g_object_set_qdata_full (G_OBJECT (element), dovi_state_key (), NULL, NULL);
+  install_mock (element, &calls);
+  output = dovi_normalize_buffer (element, next, FALSE, 1);
+  g_assert_true (output != next);
+  g_assert_cmpuint (calls, ==, 3);
+  gst_buffer_unref (output);
+  gst_buffer_unref (next);
+  gst_buffer_unref (input);
+  gst_object_unref (element);
+}
+
 int main (int argc, char **argv)
 {
   DoviNormalize *api;
@@ -154,6 +322,9 @@ int main (int argc, char **argv)
   GstElement *element;
   gst_init (&argc, &argv);
   GST_DEBUG_CATEGORY_INIT (test_debug, "p7-rpu-test", 0, "P7 RPU test");
+  check_splice (TRUE);
+  check_splice (FALSE);
+  check_fail_open ();
   /* The assembly marker does not change which profile needs normalization. */
   {
     gint profile, compositor;
@@ -170,8 +341,12 @@ int main (int argc, char **argv)
       }
     }
   }
+  if (argc == 2 && g_str_equal (argv[1], "--buffer-only")) {
+    puts ("PASS: P7 Annex B and packetized splicing, memory sharing, metadata and stream fallback");
+    return 0;
+  }
   if (argc != 2) {
-    g_printerr ("Usage: %s FEL_HEVC_RPU_NAL\n", argv[0]);
+    g_printerr ("Usage: %s FEL_HEVC_RPU_NAL | --buffer-only\n", argv[0]);
     return 2;
   }
   g_assert_true (g_file_get_contents (argv[1], &data, &size, NULL));

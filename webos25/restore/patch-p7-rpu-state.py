@@ -52,9 +52,8 @@ replace('''  gst_video_push_user_data_unregistered ((GstElement *) h265parse,
     GstBuffer *normalized = dovi_normalize_buffer (GST_ELEMENT (h265parse),
         parse_buffer, h265parse->format == GST_H265_PARSE_FORMAT_BYTE,
         h265parse->nal_length_size);
-    if (!normalized)
-      return GST_FLOW_ERROR;
-    gst_buffer_replace (&frame->out_buffer, normalized);
+    if (normalized != parse_buffer)
+      gst_buffer_replace (&frame->out_buffer, normalized);
     gst_buffer_unref (normalized);
   }
   gst_h265_parse_reset_frame (h265parse);''')

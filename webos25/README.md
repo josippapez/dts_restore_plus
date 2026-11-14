@@ -558,10 +558,17 @@ and DTS in MKV are unaffected.
   `libgstisomp4.so`. It reads the DOVI config only from the `dvcC`/`dvvC` box, so the MKV
   `hvcE` fix has no MP4 counterpart. Verified with P7 MEL/FEL MP4s (DV badge, sound), a P8.1
   MP4 (still DV) and DTS in MP4 (still decodes).
-- Each P7 stream starts with a full-frame active area and applies its own RPU offsets.
-  This lets a new title initialize its own Dolby state on the first play after boot and
-  after playback of a different title. Firmware outside the RPU compatibility check
-  continues to use the stock HEVC parser.
+- With normalization active, each P7 stream starts with a full-frame active area and
+  applies its own RPU offsets. On an LG G3 (firmware 33.31.68), P7 FEL played after
+  a cold boot and after P5, P8 and P7 MEL titles. Tests covered single-layer MKV
+  and dual-layer MP4, along with Dolby Vision, HDR10 and SDR in the USB player and
+  web apps. Audio decoding and passthrough worked. The earlier parser also cleared
+  inherited letterbox offsets when switching to a full-frame P7 title. See the
+  [demux build report](restore/demux-out/BUILD-REPORT.txt) for the tested artifact.
+- **Known issue:** with the stock HEVC parser, a P7 **FEL** MKV or MP4 on a C5 could
+  start with a green/blue tint after hours of uptime. Replay or a reboot cleared it.
+  This can still happen when the optional parser is skipped or falls back to the stock
+  plugin, or when normalization fails and the parser passes through the original RPU.
 
 ## Build
 
