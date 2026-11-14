@@ -108,7 +108,7 @@ done
 if [ "${STOP_VERSION:-0}" -ge 47 ] 2>/dev/null; then
   W25_APPDTS=off sh "$STOP_SCRIPT" >/dev/null 2>&1 && log "app-dts: factory edidType restored"
 fi
-rm -f "$REG_TMP" /run/dts25/p7-parser-fallback 2>/dev/null
+rm -f "$REG_TMP" 2>/dev/null
 
 # --- 2b. Regenerate a clean STOCK GStreamer registry -----------------------
 # The registry is written by init_dts25.sh with `cp -f` (a PERSISTENT overwrite),

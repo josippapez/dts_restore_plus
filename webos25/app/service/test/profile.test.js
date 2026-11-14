@@ -427,10 +427,10 @@ test("registry proof loads every factory from the bound video parser and only re
     initFn("w25_reg_has_all").replaceAll("/usr/bin/gst-inspect-1.0", "inspect"),
     initFn("w25_scan_registry"),
     initFn("w25_prove_registry"),
-    'w25_prove_registry; printf "%s:%s:%s\\n" "$?" "$REG_MISS" "$P7_FELL_BACK"'
+    'w25_prove_registry; printf "%s:%s\\n" "$?" "$REG_MISS"'
   ].join("\n");
 
-  function check(overrides, result, expected, fellBack) {
+  function check(overrides, result, expected) {
     write(events, "");
     var env = {
       EVENTS: events, LOG: path.join(dir, "log"), REG_TMP: path.join(dir, "registry"),
@@ -440,7 +440,7 @@ test("registry proof loads every factory from the bound video parser and only re
     write(env.REG_TMP, "stale registry cache");
     var run = sh(script, Object.assign(env, overrides));
     assert.strictEqual(run.status, 0, run.stderr);
-    assert.strictEqual(run.stdout.trim(), result + (fellBack ? ":1" : ":0"), JSON.stringify(overrides));
+    assert.strictEqual(run.stdout.trim(), result, JSON.stringify(overrides));
     assert.deepStrictEqual(fs.readFileSync(events, "utf8").trim().split("\n").filter(Boolean), expected);
   }
 
@@ -457,8 +457,8 @@ test("registry proof loads every factory from the bound video parser and only re
     check({ PARSER_BOUND: "0" }, "0:", ["scan 0"].concat(core));
     check({ MISSING: "qtdemux" }, "1:qtdemux", ["scan 1"].concat(core.slice(0, 4)));
     check({ PS_BOUND: "1", MISSING: "mpegpsdemux" }, "1:mpegpsdemux", ["scan 1"].concat(core, "mpegpsdemux"));
-    check({ MISSING: "av1parse" }, "0:", fallback("av1parse", parsers), true);
-    check({ FOREIGN: "vp9parse" }, "0:", fallback("vp9parse", parsers.slice(0, -1)), true);
+    check({ MISSING: "av1parse" }, "0:", fallback("av1parse", parsers));
+    check({ FOREIGN: "vp9parse" }, "0:", fallback("vp9parse", parsers.slice(0, -1)));
     check({ MISSING: "av1parse", DETACH_OK: "0" }, "1:av1parse", ["scan 1"].concat(core, parsers, "detach"));
     check({ CLEAR_CACHE: "0" }, "1:could not clear the temporary registry cache", []);
     check({ BOUND_SCAN: "timeout" }, "1:fresh registry scan failed", ["scan 1"]);
@@ -470,35 +470,51 @@ test("registry proof loads every factory from the bound video parser and only re
   }
 });
 
-test("TV report distinguishes a mounted P7 parser, a completed fallback and a skip", function () {
-  var report = fs.readFileSync(path.resolve(__dirname, "../../../restore/report-tv.sh"), "utf8");
-  var status = /^p7_parser_status\(\) [\s\S]*?^\}/m.exec(report);
-  assert.ok(status, "P7 parser status function is missing");
-  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dts-p7-report-"));
-  var files = {
-    MOUNTS: path.join(dir, "mounts"), LIVE: path.join(dir, "live.so"),
-    STAGED: path.join(dir, "payload.so"), FALLBACK: path.join(dir, "fallback")
+test("registry publication must succeed before the boot hook reports APPLIED", function () {
+  var boot = service.w25InitScriptBody();
+  var publish = /^REG_RESTORE=\n[\s\S]+$/m.exec(boot);
+  assert.ok(publish, "registry publication block not found");
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dts-registry-commit-"));
+  var env = {
+    REG: path.join(dir, "live"), REG_TMP: path.join(dir, "candidate"),
+    LOG: path.join(dir, "log"), EVENTS: path.join(dir, "events"), VERDICT: "verified"
   };
+  var script = [
+    "set -u",
+    'event() { printf "%s\\n" "$*" >> "$EVENTS"; }',
+    'w25_prove_registry() { REG_MISS=qtdemux; [ "$PROOF_OK" = 1 ]; }',
+    'w25_log() { :; }',
+    'toast() { :; }',
+    'w25_pt_stop_soft() { event stop-passthrough; }',
+    'w25_hdmi_stop_soft() { event stop-hdmi; }',
+    'w25_drop_binds() { event unmount; }',
+    'w25_reg_is_ours() { grep -q /var/lib/webosbrew "$REG"; }',
+    'w25_stock_registry() { event restore; [ "$RESTORE_OK" = 1 ] && printf stock > "$REG"; }',
+    // Simulate a write that truncates the old cache before failing.
+    'cp() { event copy; : > "$REG"; [ "$COPY_OK" = 1 ] && command cp "$@"; }',
+    initFn("w25_stand_down"),
+    publish[0]
+  ].join("\n");
 
-  function check(expected) {
-    var script = 'set -u\n' + status[0] + '\np7_parser_status "$MOUNTS" "$LIVE" "$STAGED" "$FALLBACK"';
-    var result = sh(script, files);
+  function check(proof, copy, restore, stdout, events, registry) {
+    write(env.REG, "original");
+    write(env.REG_TMP, "replacement");
+    write(env.EVENTS, "");
+    var result = sh(script, Object.assign({}, env, { PROOF_OK: proof, COPY_OK: copy, RESTORE_OK: restore }));
     assert.strictEqual(result.status, 0, result.stderr);
-    assert.strictEqual(result.stdout.trim(), expected);
+    assert.strictEqual(result.stdout.trim(), stdout);
+    assert.deepStrictEqual(fs.readFileSync(env.EVENTS, "utf8").trim().split("\n"), events);
+    assert.strictEqual(fs.readFileSync(env.REG, "utf8"), registry);
   }
 
+  var stop = ["stop-passthrough", "stop-hdmi", "unmount"];
+  var refusal = "REFUSED=pipeline\nREASON=";
+  var copyError = refusal + "could not install the regenerated plugin registry";
   try {
-    write(files.MOUNTS, "/dev/root " + files.LIVE + ".other ext4 ro 0 0\n");
-    write(files.STAGED, "replacement");
-    fs.linkSync(files.STAGED, files.LIVE);
-    check("skipped"); // Same file is insufficient without an exact mount target.
-    write(files.FALLBACK, "");
-    check("fallback");
-    write(files.MOUNTS, "/dev/root " + files.LIVE + " ext4 ro 0 0\n");
-    check("active"); // A live replacement takes precedence over a stale marker.
-    fs.unlinkSync(files.LIVE);
-    write(files.LIVE, "a different mounted parser");
-    check("skipped"); // A foreign bind rules out stock fallback.
+    check("1", "1", "1", "APPLIED=verified", ["copy"], "replacement");
+    check("0", "1", "1", refusal + "the regenerated plugin registry failed validation (qtdemux)", stop, "original");
+    check("1", "0", "1", copyError, ["copy"].concat(stop, "restore"), "stock");
+    check("1", "0", "0", copyError + " and stock registry restoration failed", ["copy"].concat(stop, "restore"), "");
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

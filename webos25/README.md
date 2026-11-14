@@ -569,10 +569,6 @@ and DTS in MKV are unaffected.
   start with a green/blue tint after hours of uptime. Replay or a reboot cleared it.
   This can still happen when the optional parser is skipped or falls back to the stock
   plugin, or when normalization fails and the parser passes through the original RPU.
-- The standalone `report-tv.sh` reports `P7_PARSER=active` when the staged parser is
-  mounted, `fallback` after a successful retry with the stock parser, and `skipped`
-  otherwise. This reports installation status. A per-stream RPU failure is logged
-  by GStreamer while the replacement remains mounted.
 
 ## Build
 

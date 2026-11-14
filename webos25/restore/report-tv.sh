@@ -52,7 +52,7 @@ bounded() { # $@=command or function; prints its output, or what it printed plus
 }
 
 echo "=== dts_restore_plus TV report ==="
-echo "report_version=6"
+echo "report_version=5"
 
 echo
 echo "--- loader / ABI ---"
@@ -205,17 +205,6 @@ A=/media/developer/apps/usr/palm/applications/io.github.josippapez.dtsenabler/ap
 echo "app_version=$(sed -n 's/.*"version"[^"]*"\([^"]*\)".*/\1/p' "$A" 2>/dev/null | head -n1)"
 D=/var/lib/webosbrew/dts25
 echo "hook_gate_version=$(sed -n 's/^W25_GATE_VERSION=//p' "$D/init_dts25.sh" 2>/dev/null | head -n1)"
-p7_parser_status() { # $1=mount table, $2=live plugin, $3=staged plugin, $4=fallback marker
-  if awk -v target="$2" '$2 == target {found=1} END {exit !found}' "$1" 2>/dev/null; then
-    if [ "$2" -ef "$3" ]; then echo active; else echo skipped; fi
-  elif [ -f "$4" ]; then
-    echo fallback
-  else
-    echo skipped
-  fi
-}
-echo "P7_PARSER=$(p7_parser_status /proc/mounts "$G/libgstvideoparsersbad.so" \
-  /var/lib/webosbrew/demux25/libgstvideoparsersbad.so /run/dts25/p7-parser-fallback)"
 for f in init_dts25.sh libgstadecswitch.so; do
   [ -f "$D/$f" ] && echo "$f.md5=$(md5sum < "$D/$f" | cut -d' ' -f1)"
 done

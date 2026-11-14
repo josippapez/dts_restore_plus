@@ -153,7 +153,6 @@ MYTSD=/var/lib/webosbrew/demux25/libgstmpegtsdemux.so
 MYMKV=/var/lib/webosbrew/demux25/libgstmatroska.so
 MYPSD=/var/lib/webosbrew/demux25/libgstmpegpsdemux.so
 MYPARSE=/var/lib/webosbrew/demux25/libgstvideoparsersbad.so
-P7_FALLBACK=/run/dts25/p7-parser-fallback
 MYCFG=/var/lib/webosbrew/truehd/codec_capability.json
 MYGC=/var/lib/webosbrew/truehd/gstcool.conf
 MYLIBS=/var/lib/webosbrew/truehd/libs:/var/lib/webosbrew/dts25/libs
@@ -198,7 +197,6 @@ w25_umount() {
 # WARN_UNMOUNT=<targets> so every caller -- boot script and app alike -- carries
 # the warning up.
 w25_drop_binds() {
-  rm -f "$P7_FALLBACK" 2>/dev/null
   UNMOUNT_FAILED=
   for t in "$CFG" "$GC" "$LGLIBAV" "$LGISO" "$LGTSD" "$LGMKV" "$LGPSD" "$LGPARSE" "$REG" "$LLS"; do
     w25_umount "$t" || UNMOUNT_FAILED="${UNMOUNT_FAILED:+$UNMOUNT_FAILED }$t"
@@ -303,6 +301,11 @@ w25_stand_down() {
   w25_pt_stop_soft
   w25_hdmi_stop_soft
   w25_drop_binds
+  # A failed write can leave a truncated registry without our ownership string.
+  if [ "${1:-}" = restore-registry ]; then
+    w25_stock_registry
+    return $?
+  fi
   if w25_reg_is_ours; then
     w25_log "a registry of ours is still live; regenerating the stock registry so nothing of ours stays registered"
     w25_stock_registry
@@ -1105,10 +1108,6 @@ if [ "${W25_STAND_DOWN:-0}" = 1 ]; then
   echo "STOOD_DOWN=$WAS_OURS"
   exit 0
 fi
-# Each apply starts a new attempt. Control modes and the preflight leave the
-# last apply's diagnostic alone, except when they tear down the overrides.
-rm -f "$P7_FALLBACK" 2>/dev/null
-
 # --- G) self-heal / self-unlink, evaluated FIRST -----------------------------
 # TWO DIFFERENT FAULTS, TWO DIFFERENT ANSWERS. Deleting is only ever right when
 # nobody owns this install any more; a merely incomplete install is recoverable,
@@ -1328,30 +1327,28 @@ w25_scan_registry() {
 #         elements intact. Otherwise drop our own binds -- that is what turns "the
 #         override did not match" from a broken media pipeline into a no-op.
 w25_prove_registry() {
-  P7_FELL_BACK=0
   w25_scan_registry || return 1
   w25_reg_has_all "$REG_TMP" && return 0
   # Only a failed factory from the optional parser can trigger a stock rescan.
   [ "$REG_P7_MISS" = 1 ] && w25_umount "$LGPARSE" && [ "$(w25_bound "$LGPARSE")" = 0 ] || return 1
   w25_log "P7 parser removed after registry proof failed ($REG_MISS); rescanning with the stock parser"
-  w25_scan_registry && w25_reg_has_all "$REG_TMP" || return 1
-  P7_FELL_BACK=1
+  w25_scan_registry && w25_reg_has_all "$REG_TMP"
 }
+REG_RESTORE=
 if w25_prove_registry; then
   if cp -f "$REG_TMP" "$REG" 2>>"$LOG"; then
     echo "registry updated (dtsdec+avdec_truehd+adecswitch+qtdemux+tsdemux+matroskademux)" >>"$LOG"
-    if [ "$P7_FELL_BACK" = 1 ]; then
-      # Report fallback only after the stock-parser registry is in use.
-      (mkdir -p "${P7_FALLBACK%/*}" && touch "$P7_FALLBACK") 2>>"$LOG" ||
-        w25_log "WARN could not record P7 parser fallback"
-    fi
+    echo "APPLIED=$VERDICT"
+    exit 0
   fi
-  echo "APPLIED=$VERDICT"
+  REG_FAILURE="could not install the regenerated plugin registry"
+  REG_RESTORE=restore-registry
 else
-  w25_log "REFUSED: registry proof failed ($REG_MISS); not committing it, and standing down"
-  w25_stand_down
-  toast "DTS Enabler: the plugin registry did not survive the override ($REG_MISS), so nothing was changed."
-  echo "REFUSED=pipeline"
-  echo "REASON=the regenerated plugin registry failed validation ($REG_MISS)"
+  REG_FAILURE="the regenerated plugin registry failed validation ($REG_MISS)"
 fi
+w25_log "REFUSED: $REG_FAILURE. Standing down."
+w25_stand_down "$REG_RESTORE" || REG_FAILURE="$REG_FAILURE and stock registry restoration failed"
+toast "DTS Enabler could not apply the overrides ($REG_FAILURE)."
+echo "REFUSED=pipeline"
+echo "REASON=$REG_FAILURE"
 exit 0
