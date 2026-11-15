@@ -260,6 +260,18 @@ test("the verified set covers the G2 on firmware 33.22.95", function () {
   assert.strictEqual(r.stdout.trim(), "verified|LG G2 OLED55G26LA (webOS 10.2.2, GStreamer 1.24.0)", r.stderr);
 });
 
+test("the verified set covers the G3 on firmware 33.31.68", function () {
+  var script = [
+    initFn("w25_fp_differs"), initFn("w25_verdict"),
+    "w25_fp_get() { :; }", "w25_product_id() { echo OLED77G36LA; }",
+    "GST_MM_NOW=1.24 M_LIBAV=0fd6d65ac9e3a78b393a615eaff8ac0b",
+    "M_ISOMP4=cf4d9bb9e3c3ad83f1a75a399d2f0b93 M_MPEGTS=772fb3b29e224423035eec9e93615b23",
+    "w25_verdict", 'echo "$VERDICT|$LABEL"'
+  ].join("\n");
+  var r = sh(script);
+  assert.strictEqual(r.stdout.trim(), "verified|LG G3 OLED77G36LA (webOS 10.3.1, GStreamer 1.24.0)", r.stderr);
+});
+
 test("HD sink allowlist accepts exact tested hashes only", function () {
   var fn = initFn("w25_pt_sink_verified");
   var known = "90dba3ef32704ce4096bf1e6045d2879d0c2192d507bc04d1e8e98437f420a43";
