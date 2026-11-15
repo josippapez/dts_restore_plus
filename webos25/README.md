@@ -1,16 +1,11 @@
-# DTS + TrueHD/MLP audio restore for webOS 25 (LG C5)
+# DTS + TrueHD/MLP audio restore for webOS 25
 
-Restores **DTS** *and* **Dolby TrueHD / MLP** audio playback on a rooted LG C5 /
-webOS 25 TV. Both codecs are **verified working on a real LG C5**, persistent
-across reboot (a boot hook re-applies everything). Reversibility: most changes
-are **bind-mounts** over a stock file, undone by Disable/Uninstall — a reboot drops
-the mounts but the boot hook re-applies them, so only Disable/Uninstall turns it off —
-the one exception is the GStreamer plugin registry, a persistent `cp -f`
-reverted by regenerating a clean stock registry — and it only applies to a TV
-whose stock plugins match a **verified set**, refusing (with an explicit
-experimental opt-in) otherwise. See
-[Compatibility gate, reversibility, and self-heal](#compatibility-gate-reversibility-and-self-heal)
-below.
+Restores **DTS** and **Dolby TrueHD / MLP** audio playback on rooted LG TVs
+that match a verified webOS 25 configuration. The boot hook reapplies the changes
+after reboot. Disable or Uninstall removes the bind mounts and regenerates a clean
+stock GStreamer plugin registry if it was replaced. Unverified configurations
+require an explicit experimental opt-in. See the verified TV sets under
+[Compatibility gate, reversibility, and self-heal](#compatibility-gate-reversibility-and-self-heal).
 
 ## Quick install (prebuilt — no build needed)
 
@@ -56,6 +51,23 @@ verification **NO**. It restores only the legacy MKV/MP4 DTS path (no TS/M2TS,
 TrueHD, gain controls, or A/B compare). The webOS-25 CLI does not install this
 profile. See [`app/README.md`](app/README.md#webos22-o22-gst118--exact-firmware-legacy-override-experimental-not-hardware-verified)
 and [`docs/FIRMWARE-COMPATIBILITY.md`](docs/FIRMWARE-COMPATIBILITY.md#implemented-c2-app-policy-version-260).
+
+## Reporting a TV
+
+To report an unsupported or refused TV, run this on the TV as root and paste the whole
+output into a GitHub issue:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/josippapez/dts_restore_plus/main/webos25/restore/report-tv.sh | sh
+```
+
+`report-tv.sh` is read-only: it writes nothing but a scratch file in `/tmp` that it
+removes, and it gives up on any read of LG's audio driver after 5 seconds. It prints the
+loader/ABI, GStreamer and identity values, the stock plugin hashes, any existing
+install, the profile the app would pick, the app, boot and eARC route logs, LG audio
+sink and DSP crash lines, and the eARC state. It also prints `KERNEL_RELEASE` (`uname -r`,
+report version 5), which decides whether the HDMI kernel module in
+[`kmod/`](kmod/README.md) can support the TV.
 
 ## Folder layout
 
@@ -207,7 +219,10 @@ defaults to off.
 **HDMI inputs keep their stock audio list (gate 48).** LG's `eim` builds the EDID for
 every HDMI input from the same value, so on its own the opt-in adds DTS and DTS-HD to
 all of them. The TV cannot decode DTS that arrives over HDMI: measured on a C5, a Google
-TV Streamer then sent a DTS 5.1 track as DTS and the TV stayed silent. So while the
+TV Streamer then sent a DTS 5.1 track as DTS and the TV stayed silent. (The app's
+experimental HDMI passthrough opt-in sends HDMI-input DTS on to an eARC receiver, and takes
+this hook off only while that receiver is the sound output; see
+[`app/README.md`](app/README.md) and [`kmod/README.md`](kmod/README.md).) So while the
 opt-in is on, and the factory edidType has no `dts` (gate 49: a TV that ships with it
 keeps it on its inputs), `eim` preloads `libedidaudio.so` (`src/edidaudio.c`, built by
 `build-edid.sh`), which makes LG's EDID builder use the edidType without `+dts`. The
@@ -264,8 +279,19 @@ Media Player, through seeking, pausing and volume changes. Also tested over opti
 - **Optical carries the core only.** S/PDIF has the bandwidth for the DTS 5.1 core and
   nothing more: DTS-HD MA, DTS:X and TrueHD need eARC.
 - **Core by default.** The experimental **Full DTS-HD / TrueHD** eARC opt-in uses
-  LG-managed routing on an exact sink-build allowlist, verified on a C2 with a Samsung
-  Q995GF; DTS:X, Atmos and other TV/receiver combinations are unverified.
+  LG-managed routing on an exact allowlist of LG audio sink builds
+  (`w25_pt_sink_verified` in `restore/init_dts25.sh`: three builds). Reported working:
+  a C2 with a Samsung Q995GF (DTS-HD and TrueHD; the code does not say which listed build that is); a G2
+  (OLED55G26LA, 33.22.95) with a Denon AVR-S770H (DTS-HD and TrueHD 7.1 bitstream); a G3
+  (OLED77G36LA, 33.31.68) with a Marantz receiver (TrueHD Atmos reported by the tester).
+  Separately, a CS (33.31.68) with a Samsung HW-Q930F played DTS, DTS-HD and DTS:X
+  demos with app 2.7.71 or later (discussion #17).
+  On any other sink build the boot script does not write `/run/dts25/sink-ok`, the app
+  reports "This TV's LG audio sink build is not on the tested list", and HD is refused
+  (core and decode still work). The only things that read `/run/dts25/sink-ok` are the app's readiness check and the
+  plugin, and they test only that the file exists, so creating it by hand lifts the
+  refusal until the boot script or the app's passthrough toggle runs again (both delete
+  it first). That is untested. Other TV/receiver combinations are unverified.
 - **Videos only.** LG applies −3 dB / +3 dB to audio-only files (music), which breaks
   the bitstream, so an audio-only DTS file can come out as loud noise.
 - **48 kHz, 16-bit DTS core** (every DTS track in MKV, MP4 and TS). Anything else is
@@ -292,6 +318,7 @@ GStreamer major.minor version:
 |---|---|---|---|---|
 | LG C5 OLED77C51LA (webOS 10.3.1) | 1.24.0 | `0fd6d65ac9e3a78b393a615eaff8ac0b` | `57fe57060774f248c05af5a411fc9a8f` | `9b84a95cf29bc025553c7dee829b7cc1` |
 | LG G5 OLED77G55LW (webOS 10.3.1) | 1.24.0 | `0fd6d65ac9e3a78b393a615eaff8ac0b` | `57fe57060774f248c05af5a411fc9a8f` | `9b84a95cf29bc025553c7dee829b7cc1` |
+| LG G3 OLED77G36LA (webOS 10.3.1, firmware 33.31.68) | 1.24.0 | `0fd6d65ac9e3a78b393a615eaff8ac0b` | `cf4d9bb9e3c3ad83f1a75a399d2f0b93` | `772fb3b29e224423035eec9e93615b23` |
 | LG G2 OLED77G26LA/OLED77G29LA (webOS 10.3.1) | 1.24.0 | `0fd6d65ac9e3a78b393a615eaff8ac0b` | `cf4d9bb9e3c3ad83f1a75a399d2f0b93` | `772fb3b29e224423035eec9e93615b23` |
 | LG C2 OLED55C21LA (webOS 10.3.1) | 1.24.0 | `0fd6d65ac9e3a78b393a615eaff8ac0b` | `cf4d9bb9e3c3ad83f1a75a399d2f0b93` | `772fb3b29e224423035eec9e93615b23` |
 | LG CS OLED55CS6LA (webOS 10.3.1) | 1.24.0 | `0fd6d65ac9e3a78b393a615eaff8ac0b` | `cf4d9bb9e3c3ad83f1a75a399d2f0b93` | `772fb3b29e224423035eec9e93615b23` |
@@ -520,17 +547,24 @@ Verified on a C5 in LG's Media Player: P7 MEL and P7 FEL MKVs show the **Dolby V
 badge with correct colours; P8.1 and P5 MKVs still play as Dolby Vision with Atmos; TrueHD
 and DTS in MKV are unaffected.
 
-- DV comes from the **base layer + RPU metadata**. A FEL's residual (enhancement) layer is
-  **not decoded** — the TV has one video decoder — which is the same result as converting
-  P7 to P8.1.
+- DV comes from the **base layer + RPU metadata**. On firmware with a supported native
+  RPU library, the HEVC parser disables the FEL residual request for this playback path
+  and keeps the profile 7 signalling.
 - **MP4 too (since webos25-2.44):** `qtdemux.c` has the same gate, folded the same way in
   `libgstisomp4.so`. It reads the DOVI config only from the `dvcC`/`dvvC` box, so the MKV
   `hvcE` fix has no MP4 counterpart. Verified with P7 MEL/FEL MP4s (DV badge, sound), a P8.1
   MP4 (still DV) and DTS in MP4 (still decodes).
-- **Known issue:** on a TV that has been up for hours, a P7 **FEL** title can start with a
-  green/blue tint that clears on replay or after a reboot. Seen with both containers and
-  with a byte-patched stock demuxer too; not reproduced on a freshly booted TV. MEL titles
-  have not shown it.
+- With normalization active, each P7 stream starts with a full-frame active area and
+  applies its own RPU offsets. On an LG G3 (firmware 33.31.68), P7 FEL played after
+  a cold boot and after P5, P8 and P7 MEL titles. Tests covered single-layer MKV
+  and dual-layer MP4, along with Dolby Vision, HDR10 and SDR in the USB player and
+  web apps. Audio decoding and passthrough worked. The earlier parser also cleared
+  inherited letterbox offsets when switching to a full-frame P7 title. See the
+  [demux build report](restore/demux-out/BUILD-REPORT.txt) for the tested artifact.
+- **Known issue:** with the stock HEVC parser, a P7 **FEL** MKV or MP4 on a C5 could
+  start with a green/blue tint after hours of uptime. Replay or a reboot cleared it.
+  This can still happen when the optional parser is skipped or falls back to the stock
+  plugin, or when normalization fails and the parser passes through the original RPU.
 
 ## Build
 

@@ -701,6 +701,20 @@ worked unchanged for the LX G5 image. It currently hardcodes logical partitions 
 `/dev/mmcblk0p28`; the Realtek B5 image uses `/dev/mmcblk0p29`. General automation
 must parse the device path from `dpmeta.pak` instead of fixing it to `p28`.
 
+### Kernel for the HDMI module (`webos25/kmod`)
+
+The kernel module is built per kernel release, not per firmware. Steps, in full, in
+[`kmod/README.md`](../kmod/README.md#adding-a-kernel):
+
+1. Get the user's release from `uname -r` or `KERNEL_RELEASE=` in `report-tv.sh`.
+2. In the archive index, each EPK entry has a `kernelVersion`; list the firmwares on
+   that release and match the board by `firmwareotaID`.
+3. Download from `https://tv.slada.sk/<relativePath>` and check `zipFileSha256`.
+4. Extract with epk2extract. The kernel is `/boot/Image.lz4-<release>` in the rootfs
+   (on 33.22.x the EPK has no `kernel.pak`). LG's LZ4P container needs unpacking first.
+5. The stock module is `/lib/modules/<release>/kernel/aspectratiodrv.ko` in the same
+   rootfs; the symbol table comes from `kallsyms-finder` (vmlinux-to-elf).
+
 ## Tool assessment
 
 ### `epk2extract`

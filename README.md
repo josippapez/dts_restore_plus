@@ -131,7 +131,7 @@ can still install (the installer just warns first), using the same binaries.
 | OLED C1 / G1 | 6.x | 1.14-class | Community-confirmed |
 | OLED C2 / G2 | "22" | stock **1.18.2**; legacy payload 1.14.4 | The root CX installer still only warns and applies its one legacy recipe. DTS Enabler 2.6.0 instead offers a fail-closed, exact-firmware **experimental opt-in** for global `W22O` `04.40.93`/`04.40.93.01`; firmware/QEMU evidence only, **not hardware-verified** ([firmware evidence](webos25/docs/FIRMWARE-COMPATIBILITY.md)) |
 | NanoCell / LCD (UN7xxx, NANO7xx, 2020–2021) | 5.x / 6.x | 1.14-class | Community-confirmed |
-| webOS 22 / 23 / 24 (C3/C4, G3/G4, Realtek B2/B3) | 22 / 23 / 24 | stock **1.18.2 / 1.18.5**; webOS 24 unextracted | B2/C3/B3 receive diagnostic refusal profiles; C4/G4 remains unknown. No forceable restore mechanism ([firmware evidence](webos25/docs/FIRMWARE-COMPATIBILITY.md)) |
+| webOS 22 / 23 / 24 (C3/C4, G3/G4, Realtek B2/B3) | 22 / 23 / 24 | stock **1.18.2 / 1.18.5**; webOS 24 unextracted | C4/G4 already have DTS from LG (decode and passthrough) and need nothing from this project. C3/G3 have LG's DTS decoder too, but local MKV playback is gated. B2/B3 receive diagnostic refusal profiles. No forceable restore mechanism ([firmware evidence](webos25/docs/FIRMWARE-COMPATIBILITY.md)) |
 | webOS 25 (C5/G5) | "10" | **1.24** | Not these binaries — needs a separate soft-float armel 1.24 build ([webos25/README.md](webos25/README.md)) |
 
 ## Persistence — what survives a reboot
@@ -208,7 +208,8 @@ The flag is checked at each playback start (no reboot needed) but **resets on re
   not reach LG's multichannel sink. (This does **not** apply to the webOS 25 build, which emits
   discrete channels up to 7.1 — since webos25-2.43 bit-exact against desktop ffmpeg on a C5,
   DTS-HD MA lossless included.)
-  Bitstream passthrough to an AVR is out of scope on either platform (decode-to-PCM only).
+  The CX tool decodes to PCM only; it does not pass a bitstream to a receiver. For webOS 25,
+  see the [receiver section](webos25/README.md#send-dts-to-a-receiver-passthrough-opt-in).
 - **Root required.**
 - **4K content cannot 2× fast-forward** — a stock LG limitation that also applies to AC3/AAC.
 
@@ -240,19 +241,23 @@ provenance:
 
 ## Experimental & extras
 
-This fork adds two work-in-progress components alongside the core tool:
+This fork adds a few work-in-progress components alongside the core tool:
 
 - **`gst-dtstolpcm/`** — an experimental GStreamer plugin that converts DTS to BluRay LPCM so it
   rides LG's proprietary **multichannel** sink (real 5.1/7.1 instead of stereo downmix). See its
   own README for the design, build, and the on-TV test that gates the approach. **Not yet
   validated on hardware.**
+- **`webos25/kmod/`**: an experimental kernel module that sends DTS from an HDMI input to an
+  eARC receiver on webOS 25. The app offers it as an experimental opt-in on the 5.4.268
+  kernels. See its [README](webos25/kmod/README.md).
 - **`webos25/app/`** — the shipping "DTS Enabler" Homebrew app: a GUI for the verified
   webOS-25 mechanism plus the exact-firmware experimental C2/G2 profile described above.
 
 ## License
 
 This project's own code (installer scripts, the app, the service) is **GNU LGPL v2.1 or later**,
-same as GStreamer and its plugins. So is every shipped binary below; each keeps its own license:
+same as GStreamer and its plugins. So is every shipped binary below except the HDMI
+passthrough module and its scripts, which are GPL-2.0-only; each keeps its own license:
 
 | Shipped artifact | License | Why |
 |---|---|---|
@@ -261,6 +266,7 @@ same as GStreamer and its plugins. So is every shipped binary below; each keeps 
 | `webos25/restore/demux-out/libgst{isomp4,mpegtsdemux,matroska,mpegpsdemux}.so` | LGPL-2.1-or-later | built from gst-plugins-good / -bad |
 | `webos25/restore/truehd-out/libgstlibav.so`, `libav*.so*`, `libsw*.so*` | LGPL-2.1-or-later | ffmpeg 4.4 configured **without** `--enable-gpl` / `--enable-version3` (see `webos25/restore/build-truehd.sh`) |
 | `webos25/restore/out/libgstdtsdec.so` | LGPL-2.1-or-later | gst-plugins-bad `ext/dts` (LGPL) with ffmpeg n4.4.4's `dca` decoder linked in **statically**, configured **without** `--enable-gpl` / `--enable-version3` / `--enable-nonfree` (see `webos25/restore/build.sh`). Before webos25-2.43 it linked libdca and was GPL-2.0-or-later |
+| `webos25/restore/kmod-out/earc_route-5.4.ko`, `webos25/kmod/earc-route-load.sh`, `hdmi-watch.sh` | GPL-2.0-only | `webos25/kmod/`, derived from Glasshouse and lg-g5-dts (see `webos25/kmod/NOTICE`); nothing else links it |
 
 Because `libgstdtsdec.so` links ffmpeg statically, LGPL-2.1 section 6 applies: the published
 plugin source and `webos25/restore/build.sh` let anyone rebuild ffmpeg, modify it and relink the

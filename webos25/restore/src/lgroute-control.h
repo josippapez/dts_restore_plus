@@ -15,6 +15,9 @@
 #define LGROUTE_SINK_OK LGROUTE_RUN "/sink-ok"
 
 int lgroute_control_unmixed (void);
+/* The same; on -1 why names the control and what was read from it. */
+#define LGROUTE_WHY 128
+int lgroute_control_unmixed_why (char why[LGROUTE_WHY]);
 int lgroute_control_receiver (void);
 int lgroute_sound_output (char mode[64]);
 int lgroute_core_output (char mode[64]);

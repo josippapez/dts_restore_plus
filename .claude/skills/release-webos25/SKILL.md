@@ -24,6 +24,8 @@ that affects them:
 - `webos25/restore/src/gstdtsdec.c` (DTS patch)
 - the `dts_support` patch or pinned sources/flags in `webos25/restore/build-demux.sh`
 - `webos25/restore/build.sh` / `build-truehd.sh` / `build-demux.sh` (toolchain/ABI)
+- the kernel module sources or build scripts in `webos25/kmod/` (rebuild with its
+  `build.sh`, run it on a TV, then copy the `.ko` into `webos25/restore/kmod-out/`)
 
 Edits to `install.sh` / `init_dts25.sh` / the app (JS/HTML/CSS) do **not** need a
 rebuild — but still cut a release so the assets carry the change.

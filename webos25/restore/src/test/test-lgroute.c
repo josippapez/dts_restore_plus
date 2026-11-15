@@ -59,7 +59,15 @@ write_property (int fd, const void *buffer, size_t size)
 
 static int close_property (int fd) { g_assert_cmpint (fd, ==, 123); return 0; }
 int lgroute_control_receiver (void) { return receiver; }
-int lgroute_control_unmixed (void) { checks++; return unmixed_result; }
+/* -1 for this many reads, then unmixed_result. */
+static int unavailable_reads;
+int lgroute_control_unmixed_why (char why[LGROUTE_WHY])
+{
+  checks++;
+  int result = unavailable_reads > 0 ? (unavailable_reads--, -1) : unmixed_result;
+  if (result < 0) g_strlcpy (why, "Sndout EARC OnOff is 0, not on", LGROUTE_WHY);
+  return result;
+}
 static gchar luna_dir[] = "/tmp/lgroute-luna-XXXXXX", luna_send[64];
 #define LUNA_SEND luna_send
 
@@ -243,7 +251,7 @@ static void reset (LgRoute *route)
   lgroute_init (route, NULL);
   route->sink = g_object_new (test_sink_get_type (), NULL);
   g_strlcpy (route->resource, "ADEC1", sizeof route->resource);
-  graph = before; graph_ok = receiver = writes_ok = TRUE; graph_reads = 0; unmixed_result = 1;
+  graph = before; graph_ok = receiver = writes_ok = TRUE; graph_reads = 0; unmixed_result = 1; unavailable_reads = 0;
   short_write = FALSE; aren_tail = 0;
 }
 
@@ -668,6 +676,20 @@ static void restart_tests (void)
     }
   }
   unwire (&route, pad, source);
+
+  /* 14. A failed route leaves LG's sink alone until its disarm: a tester's TV
+   * logged one turning LG's bypass on for the next track as its audio locked up. */
+  reset (&route); forget_calls ();
+  graph = after;
+  wire (&route, &pad, &source);
+  push_carrier (source);
+  push_carrier (source);
+  g_assert_true (((TestSink *) route.sink)->pcm);
+  route_fail (&route, "eARC Pass Through unavailable");
+  g_object_set (route.sink, "pcm-multi-ch", FALSE, NULL);
+  gst_pad_push_event (source, gst_event_new_stream_start ("next"));
+  g_assert_false (((TestSink *) route.sink)->pcm);
+  unwire (&route, pad, source);
 }
 
 /* A track switch: the route arms on the new track's first frame while the
@@ -956,11 +978,17 @@ static void async_tests (void)
   report_pcm (&route);
   drain ();
   set_lg_codec ("ac3");
+  g_unlink (ROUTE_LOG);
   lgroute_disarm (&route);
   drain ();
   g_assert_cmpint (calls_matching ("setQualityAttribute"), ==, 1);
   g_assert_cmpint (calls_matching ("\"codec\":\"dts\""), ==, 0);
-  /* Still our relabel: restored once. */
+  gchar *text = NULL;
+  g_assert_true (g_file_get_contents (ROUTE_LOG, &text, NULL, NULL));
+  g_assert_null (strstr (text, "restored"));
+  g_free (text);
+  /* Still our relabel: restored once, and the route log says so (testers'
+   * failures sat at track switches, where the restore lands). */
   reset (&route);
   forget_calls ();
   report_pcm (&route);
@@ -968,6 +996,9 @@ static void async_tests (void)
   lgroute_disarm (&route);
   drain ();
   g_assert_cmpint (calls_matching ("\"codec\":\"dts\""), ==, 1);
+  g_assert_true (g_file_get_contents (ROUTE_LOG, &text, NULL, NULL));
+  g_assert_nonnull (strstr (text, "restored ADEC1's label at LG to codec \"dts\", immersive \"none\": accepted\n"));
+  g_free (text);
 
   /* No second report while one is in flight; once it ends the next is sent without a new query. */
   reset (&route);
@@ -1081,9 +1112,32 @@ int main (int argc, char **argv)
   g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_DROP);
   g_assert_true (route.failed); lgroute_disarm (&route);
 
-  reset (&route); caps_event (&route); graph = after; unmixed_result = -1;
-  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_DROP);
-  g_assert_true (route.failed); lgroute_disarm (&route);
+  /* eARC unavailable gets the second a mix gets: a tester's TrueHD route failed
+   * on one such reading as LG switched tracks. The log names what was read. */
+  reset (&route); caps_event (&route); graph = after;
+  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
+  g_unlink (ROUTE_LOG);
+  unmixed_result = -1;
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  g_assert_true (last_silent); g_assert_false (route.failed);
+  unmixed_result = 1;
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  g_assert_false (last_silent); g_assert_cmpint (route.mixed_since, ==, 0);
+  unmixed_result = -1;
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_OK);
+  g_assert_true (last_silent);
+  route.mixed_since -= G_TIME_SPAN_SECOND;
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_DROP);
+  g_assert_true (route.failed);
+  g_assert_cmpstr (route.reason, ==, "eARC Pass Through unavailable (Sndout EARC OnOff is 0, not on)");
+  {
+    gchar *text = NULL;
+    g_assert_true (g_file_get_contents (ROUTE_LOG, &text, NULL, NULL));
+    g_assert_nonnull (strstr (text, "eARC Pass Through unavailable (Sndout EARC OnOff is 0, not on), sending silence"));
+    g_assert_nonnull (strstr (text, "failed, decoding instead: eARC Pass Through unavailable (Sndout EARC OnOff is 0, not on)\n"));
+    g_free (text);
+  }
+  lgroute_disarm (&route);
 
   /* A brief LG policy rewrite is tolerated; a lasting mix falls back. */
   reset (&route); caps_event (&route); graph = after; unmixed_result = 0;
@@ -1153,8 +1207,12 @@ int main (int argc, char **argv)
   g_assert_false (token ("_p1\",\"x")); g_assert_false (token ("")); g_assert_true (token ("ADEC1"));
 
   reset (&route); caps_event (&route); graph = after; receiver = FALSE;
-  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_DROP);
-  g_assert_true (route.failed); lgroute_disarm (&route);
+  g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
+  g_assert_true (last_silent); g_assert_false (route.failed);
+  route.mixed_since -= G_TIME_SPAN_SECOND;
+  g_assert_cmpint (carrier (&route, FALSE), ==, GST_PAD_PROBE_DROP);
+  g_assert_cmpstr (route.reason, ==, "eARC Pass Through unavailable (sound output is not a receiver)");
+  lgroute_disarm (&route);
 
   reset (&route); graph_ok = FALSE;
   g_assert_cmpint (caps_event (&route), ==, GST_PAD_PROBE_OK);
@@ -1221,6 +1279,82 @@ int main (int argc, char **argv)
     g_assert_true (g_file_get_contents (ROUTE_LOG, &refusal, NULL, NULL));
     g_assert_nonnull (strstr (refusal, "(1 audiosink elements; player is"));
     g_free (refusal);
+    gst_element_set_state (pipeline, GST_STATE_NULL);
+    gst_object_unref (pipeline);
+  }
+  /* A tester's TrueHD to DTS switch read eARC unavailable once and the DTS track
+   * stayed core only and silent. At a track switch (LG's sink already has caps)
+   * eARC is read again for up to 500 ms; a first play does not wait. */
+  {
+    static GstStaticPadTemplate any =
+        GST_STATIC_PAD_TEMPLATE ("sink", GST_PAD_SINK, GST_PAD_ALWAYS, GST_STATIC_CAPS_ANY);
+    GstElement *pipeline = gst_pipeline_new ("player"), *decoder = gst_bin_new ("decoder");
+    GstElement *sink = gst_element_factory_make ("audiosink", NULL);
+    GstPad *input = gst_pad_new_from_static_template (&any, "sink"), *feed = gst_pad_new ("feed", GST_PAD_SRC);
+    gst_pad_set_event_function (input, accept_event);
+    gst_element_add_pad (sink, input);
+    gst_bin_add_many (GST_BIN (pipeline), decoder, sink, NULL);
+    g_assert_cmpint (gst_element_set_state (pipeline, GST_STATE_PAUSED), !=, GST_STATE_CHANGE_FAILURE);
+    g_assert_true (gst_pad_set_active (feed, TRUE));
+    g_assert_cmpint (gst_pad_link (feed, input), ==, GST_PAD_LINK_OK);
+    LgRoute fresh;
+    lgroute_init (&fresh, decoder);
+    gchar *text = NULL;
+
+    /* First play: no caps on LG's sink, refused at once, with the reason. */
+    g_unlink (ROUTE_LOG);
+    unmixed_result = -1;
+    gint64 start = g_get_monotonic_time ();
+    g_assert_false (lgroute_arm (&fresh));
+    g_assert_cmpint (g_get_monotonic_time () - start, <, 100 * G_TIME_SPAN_MILLISECOND);
+    g_assert_true (g_file_get_contents (ROUTE_LOG, &text, NULL, NULL));
+    g_assert_nonnull (strstr (text, "not armed: eARC Pass Through unavailable (Sndout EARC OnOff is 0, not on)\n"));
+    g_assert_null (strstr (text, "track switch"));
+    g_free (text);
+
+    /* The earlier track played: a passing reading is waited out. */
+    GstCaps *pcm = gst_caps_from_string ("audio/x-raw,format=S16LE,rate=48000,channels=2,layout=interleaved");
+    gst_pad_push_event (feed, gst_event_new_stream_start ("old"));
+    gst_pad_push_event (feed, gst_event_new_caps (pcm));
+    gst_caps_unref (pcm);
+    g_unlink (ROUTE_LOG);
+    unmixed_result = 1; unavailable_reads = 3;
+    start = g_get_monotonic_time ();
+    lgroute_arm (&fresh);   /* goes on to the sink, which is not LG's verified build */
+    gint64 waited = g_get_monotonic_time () - start;
+    g_assert_cmpint (waited, >=, 100 * G_TIME_SPAN_MILLISECOND);
+    g_assert_cmpint (waited, <, 400 * G_TIME_SPAN_MILLISECOND);
+    g_assert_true (g_file_get_contents (ROUTE_LOG, &text, NULL, NULL));
+    g_assert_nonnull (strstr (text, "track switch: eARC Pass Through unavailable (Sndout EARC OnOff is 0, not on), "
+        "read again for "));
+    g_assert_nonnull (strstr (text, " ms: unmixed\n"));
+    g_assert_null (strstr (text, "not armed: eARC"));
+    g_assert_nonnull (strstr (text, "not armed: 0 verified LG sinks"));
+    g_free (text);
+
+    /* One that lasts gives up after 500 ms. */
+    g_unlink (ROUTE_LOG);
+    unmixed_result = -1;
+    start = g_get_monotonic_time ();
+    g_assert_false (lgroute_arm (&fresh));
+    waited = g_get_monotonic_time () - start;
+    g_assert_cmpint (waited, >=, 500 * G_TIME_SPAN_MILLISECOND);
+    g_assert_cmpint (waited, <, 700 * G_TIME_SPAN_MILLISECOND);
+    g_assert_true (g_file_get_contents (ROUTE_LOG, &text, NULL, NULL));
+    g_assert_nonnull (strstr (text, " ms: unavailable (Sndout EARC OnOff is 0, not on)\n"));
+    g_assert_nonnull (strstr (text, "not armed: eARC Pass Through unavailable (Sndout EARC OnOff is 0, not on)\n"));
+    g_free (text);
+
+    /* Not while the pipeline closes. */
+    GST_STATE_TARGET (pipeline) = GST_STATE_READY;
+    start = g_get_monotonic_time ();
+    g_assert_false (lgroute_arm (&fresh));
+    g_assert_cmpint (g_get_monotonic_time () - start, <, 100 * G_TIME_SPAN_MILLISECOND);
+    GST_STATE_TARGET (pipeline) = GST_STATE_PAUSED;
+
+    unmixed_result = 1;
+    gst_pad_unlink (feed, input);
+    gst_object_unref (feed);
     gst_element_set_state (pipeline, GST_STATE_NULL);
     gst_object_unref (pipeline);
   }

@@ -12,6 +12,9 @@ npm-debug.log*
 # Payload binaries (LGPL release artifacts -- vendored at packaging time, not committed)
 *.so
 *.so.*
+# HDMI passthrough payload (GPL-2.0-only), copied in at packaging time like the .so
+/payload/webos25-hdmi/*
+!/payload/webos25-hdmi/README
 
 # Generated icon (regenerate from icon.svg during packaging)
 # icon.png

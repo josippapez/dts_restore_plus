@@ -28,6 +28,9 @@
 #   W25_APPDTS=on|off
 #                 only set or restore tv.model.edidType live (the app's "Show
 #                 DTS tracks in apps" toggle), print EDIDTYPE=<value> and exit.
+#   W25_HDMI=on|off
+#                 only turn the HDMI-input DTS passthrough opt-in on or off (the
+#                 app's toggle), then exit. W25_HDMI=run is its supervisor.
 #   FORCE=1       explicit opt-in on a TV that is not in the verified table.
 #
 # Always exits 0: a non-zero webosbrew init script trips the failsafe that
@@ -113,7 +116,11 @@ EXPECT_GST=1.24
 #      EDIDs keep LG's stock audio list (no DTS).
 #   49 ...but not on a TV whose factory edidType already lists dts.
 #   50 DTS-HD/TrueHD over eARC allowed on the G3's LG sink build (33.31.68).
-W25_GATE_VERSION=50
+#   51 opt-in DTS passthrough from HDMI inputs (webos25/kmod hdmi-watch.sh) on the
+#      5.4.268 kernels, W25_HDMI=on|off|run; stand-down, self-heal and Disable stop it.
+#   52 verified stock plugin set for the G3 on firmware 33.31.68.
+#   53 adds an optional HEVC parser for Profile 7 BL+RPU playback.
+W25_GATE_VERSION=53
 FP=/var/lib/webosbrew/dts25/stock.fp
 # Where the installed copy of THIS script lives, and the boot hook that symlinks
 # to it. Named here, in the shared block, so the read-only probe can fingerprint
@@ -128,6 +135,7 @@ LGISO=/usr/lib/gstreamer-1.0/libgstisomp4.so
 LGTSD=/usr/lib/gstreamer-1.0/libgstmpegtsdemux.so
 LGMKV=/usr/lib/gstreamer-1.0/libgstmatroska.so
 LGPSD=/usr/lib/gstreamer-1.0/libgstmpegpsdemux.so
+LGPARSE=/usr/lib/gstreamer-1.0/libgstvideoparsersbad.so
 # CORE payload -- without any of these there is no DTS, no TrueHD, and no
 # switching bin, so a missing one means "do not bind anything".
 MYDTS=/var/lib/webosbrew/dts25/libgstdtsdec.so
@@ -138,13 +146,13 @@ MYLIBAV=/var/lib/webosbrew/truehd/libgstlibav.so
 # decproxy (rank 300) for the actual decode. Staged alongside dtsdec -- the
 # plugin path at APPLY 3 below already includes /var/lib/webosbrew/dts25.
 MYSWITCH=/var/lib/webosbrew/dts25/libgstadecswitch.so
-# OPTIONAL payload: the patched container demuxers. Absent, DTS still works in
-# MKV -- which is exactly how this shipped before the gate existed -- so each is
-# bound only when staged and is never a reason to refuse or to delete anything.
+# OPTIONAL payload: the patched container demuxers and HEVC parser. DTS still
+# works in MKV without these overrides.
 MYISO=/var/lib/webosbrew/demux25/libgstisomp4.so
 MYTSD=/var/lib/webosbrew/demux25/libgstmpegtsdemux.so
 MYMKV=/var/lib/webosbrew/demux25/libgstmatroska.so
 MYPSD=/var/lib/webosbrew/demux25/libgstmpegpsdemux.so
+MYPARSE=/var/lib/webosbrew/demux25/libgstvideoparsersbad.so
 MYCFG=/var/lib/webosbrew/truehd/codec_capability.json
 MYGC=/var/lib/webosbrew/truehd/gstcool.conf
 MYLIBS=/var/lib/webosbrew/truehd/libs:/var/lib/webosbrew/dts25/libs
@@ -190,7 +198,7 @@ w25_umount() {
 # the warning up.
 w25_drop_binds() {
   UNMOUNT_FAILED=
-  for t in "$CFG" "$GC" "$LGLIBAV" "$LGISO" "$LGTSD" "$LGMKV" "$LGPSD" "$REG" "$LLS"; do
+  for t in "$CFG" "$GC" "$LGLIBAV" "$LGISO" "$LGTSD" "$LGMKV" "$LGPSD" "$LGPARSE" "$REG" "$LLS"; do
     w25_umount "$t" || UNMOUNT_FAILED="${UNMOUNT_FAILED:+$UNMOUNT_FAILED }$t"
   done
   [ -z "$UNMOUNT_FAILED" ] && return 0
@@ -244,9 +252,60 @@ w25_pt_stop_soft() {
   w25_log "WARN passthrough stop failed; continuing: $PT_STOP_OUT"
   echo "WARN_PT_STOP=${PT_STOP_OUT:-passthrough did not stop cleanly}"
 }
+# HDMI-input DTS passthrough opt-in: a supervisor (w25_hdmi_supervise) runs
+# webos25/kmod's hdmi-watch.sh from $HDMI_DIR. Here because stand-down, self-heal,
+# Disable and the app's probe stop it or report on it.
+HDMI_FLAG=/var/lib/webosbrew/dts25/hdmi-passthrough
+HDMI_DIR=/var/lib/webosbrew/dts25/hdmi
+HDMI_PID=/run/dts25/hdmi.pid
+HDMI_OUT=/run/dts25/hdmi-watch.out
+HDMI_EXIT=/run/dts25/hdmi-watch.exit
+w25_alive() { [ -n "$1" ] && [ -r "/proc/$1/stat" ] && [ "$(cut -d' ' -f3 "/proc/$1/stat" 2>/dev/null)" != Z ]; }
+# Why the opt-in cannot run on this TV, or nothing. The module and the scripts
+# have run only on 5.4.268 kernels; earc_route-6.12.ko has never run on a TV.
+w25_hdmi_refusal() {
+  case $(uname -r) in
+    5.4.268-329.ptl4tv.5|5.4.268-329.ptl4tv.2) ;;
+    6.12.*) echo kernel-6.12; return 0 ;;
+    *) echo kernel; return 0 ;;
+  esac
+  if [ -f /var/lib/lg-dts-core/enabled ]; then echo lg-dts-core
+  elif [ -f /var/lib/lg-dts-native/enabled ]; then echo glasshouse
+  elif [ ! -f "$HDMI_DIR/earc_route-5.4.ko" ] || [ ! -f "$HDMI_DIR/earc-route-load.sh" ] || [ ! -f "$HDMI_DIR/hdmi-watch.sh" ]; then echo payload
+  fi
+  return 0
+}
+# On TERM the supervisor stops hdmi-watch.sh, which reverts its writes, unloads
+# earc_route and exits 0, or 20 when the rollback is incomplete.
+w25_hdmi_stop() {
+  P=$(cat "$HDMI_PID" 2>/dev/null)
+  w25_alive "$P" || { rm -f "$HDMI_PID"; return 0; }
+  kill "$P" 2>/dev/null
+  i=0
+  while w25_alive "$P" && [ "$i" -lt 40 ]; do sleep 1; i=$((i + 1)); done
+  if w25_alive "$P"; then
+    echo 'ERROR=HDMI passthrough did not stop; it is still on.'
+    return 1
+  fi
+  [ "$(cat "$HDMI_EXIT" 2>/dev/null)" != 20 ] ||
+    echo 'WARN_HDMI=HDMI passthrough could not undo all of its changes. Restart the TV.'
+  return 0
+}
+w25_hdmi_stop_soft() {
+  HDMI_STOP_MSG=$(w25_hdmi_stop | sed -n 's/^ERROR=//p; s/^WARN_HDMI=//p' | head -n1)
+  [ -n "$HDMI_STOP_MSG" ] || return 0
+  w25_log "WARN HDMI passthrough stop: $HDMI_STOP_MSG"
+  echo "WARN_HDMI=$HDMI_STOP_MSG"
+}
 w25_stand_down() {
   w25_pt_stop_soft
+  w25_hdmi_stop_soft
   w25_drop_binds
+  # A failed write can leave a truncated registry without our ownership string.
+  if [ "${1:-}" = restore-registry ]; then
+    w25_stock_registry
+    return $?
+  fi
   if w25_reg_is_ours; then
     w25_log "a registry of ours is still live; regenerating the stock registry so nothing of ours stays registered"
     w25_stock_registry
@@ -454,6 +513,10 @@ w25_verdict() {
 # CS: the same o22 binary set as the C2/G2 rows (firmware 33.31.68). An OLED55CS6LA
 # passed all four self-tests and played the DTS and TrueHD test files with sound.
 1.24|0fd6d65ac9e3a78b393a615eaff8ac0b|cf4d9bb9e3c3ad83f1a75a399d2f0b93|772fb3b29e224423035eec9e93615b23|OLED*CS*|LG CS OLED55CS6LA (webOS 10.3.1, GStreamer 1.24.0)
+# G3 on firmware 33.31.68: the same stock plugin hashes as the C2/G2 rows above.
+# The owner of an OLED77G36LA passed all four self-tests and confirmed audio
+# playback with the bundled DTS and TrueHD test files.
+1.24|0fd6d65ac9e3a78b393a615eaff8ac0b|cf4d9bb9e3c3ad83f1a75a399d2f0b93|772fb3b29e224423035eec9e93615b23|OLED*G3*|LG G3 OLED77G36LA (webOS 10.3.1, GStreamer 1.24.0)
 # G2 on webOS 10.2.2 (firmware 33.22.95): its own builds of all three plugins
 # (owner report). An OLED55G26LA played DTS-HD MA 5.1 and TrueHD 7.1 decoded and
 # as bitstream to a Denon AVR-S770H after opting in.
@@ -559,6 +622,24 @@ w25_loader_ok() {
   done
   return 0
 }
+# The optional parser uses a private native RPU ABI. A GStreamer version match
+# alone does not establish that ABI, so only bind on a verified library build.
+# This check and the optional loader trace leave the stock parser in use when
+# the native library or the parser's dependencies differ.
+w25_p7_parser_ready() {
+  [ -s "$MYPARSE" ] && [ -f "$LGPARSE" ] || return 1
+  p7_hash=$(sha256sum /usr/lib/librpu_m.so 2>/dev/null)
+  case "${p7_hash%% *}" in
+    a7434cf3b77c46be2d806e17bf38bfaeacfa51decec6fc64ee75089707827c83) ;;
+    *) w25_log "P7 parser skipped: unrecognized native RPU library"; return 1 ;;
+  esac
+  if ! p7_deps=$(LD_LIBRARY_PATH="$MYLIBS" LD_TRACE_LOADED_OBJECTS=1 "$LD_SO" "$MYPARSE" 2>&1) ||
+      printf '%s\n' "$p7_deps" | grep -q 'not found'; then
+    w25_log "P7 parser skipped: loader could not resolve the parser dependencies"
+    return 1
+  fi
+  return 0
+}
 # Is the live media registry one WE wrote? It is committed with `cp -f`, not
 # bind-mounted, so there is no mount to look for -- but a registry we generated
 # names our plugin directories, and a stock one never does. This is the signal
@@ -574,12 +655,26 @@ w25_reg_is_ours() { [ -f "$REG" ] && grep -q "/var/lib/webosbrew" "$REG" 2>/dev/
 # drops the binds, which turns "the override didn't match" into a plain no-op.
 w25_reg_has_all() {
   REG_MISS=
+  REG_P7_MISS=0
   for e in dtsdec avdec_truehd adecswitch qtdemux tsdemux matroskademux; do
     GST_REGISTRY_1_0="$1" GST_REGISTRY_UPDATE=no GST_REGISTRY_FORK=no /usr/bin/gst-inspect-1.0 "$e" >/dev/null 2>&1 || { REG_MISS=$e; return 1; }
   done
   # The .vob demuxer is optional: held to the same proof only while our bind is live.
   if grep -q " $LGPSD " /proc/mounts 2>/dev/null; then
     GST_REGISTRY_1_0="$1" GST_REGISTRY_UPDATE=no GST_REGISTRY_FORK=no /usr/bin/gst-inspect-1.0 mpegpsdemux >/dev/null 2>&1 || { REG_MISS=mpegpsdemux; return 1; }
+  fi
+  if [ "$(w25_bound "$LGPARSE")" = 1 ]; then
+    # The replacement carries all eleven factories from LG's videoparsersbad
+    # plugin, including VC-1. Check they load from the mounted plugin.
+    for e in h263parse h264parse diracparse mpegvideoparse mpeg4videoparse pngparse jpeg2000parse h265parse vc1parse vp9parse av1parse; do
+      if ! parser_info=$(GST_REGISTRY_1_0="$1" GST_REGISTRY_UPDATE=no GST_REGISTRY_FORK=no \
+          timeout 5 /usr/bin/gst-inspect-1.0 --no-colors "$e" 2>/dev/null) ||
+          ! printf '%s\n' "$parser_info" | awk -v filename="$LGPARSE" '$1 == "Filename" && $2 == filename { found=1 } END { exit !found }'; then
+        REG_MISS=$e
+        REG_P7_MISS=1
+        return 1
+      fi
+    done
   fi
   return 0
 }
@@ -611,6 +706,7 @@ w25_plugin_binds_present() {
   grep -q " $LGTSD " /proc/mounts 2>/dev/null && return 0
   grep -q " $LGMKV " /proc/mounts 2>/dev/null && return 0
   grep -q " $LGPSD " /proc/mounts 2>/dev/null && return 0
+  grep -q " $LGPARSE " /proc/mounts 2>/dev/null && return 0
   return 1
 }
 w25_stock_registry() {
@@ -887,6 +983,92 @@ w25_appdts_off() {
     rm -f "$CFG_USER"
   return 0
 }
+# --- HDMI-input DTS passthrough opt-in (experimental, 5.4.268 kernels) ------------
+# hdmi-watch.sh loads earc_route and passes DTS from an HDMI input to an eARC
+# receiver while it runs (webos25/kmod/README.md). The supervisor below runs it
+# and decides what the HDMI inputs' EDIDs offer. They offer DTS only through the
+# "Show DTS tracks in apps" edidType, so the opt-in needs that on; the supervisor
+# takes the eim hook off only while an eARC receiver is the sound output, because
+# on the TV speakers DTS from an HDMI device plays as silence (measured on a C5).
+# Each hook change restarts eim and arccontroller, so a change waits until the
+# output has held for HDMI_SETTLE polls, and offering DTS again waits
+# HDMI_COOLDOWN seconds after the last change. Devices already plugged in read a
+# changed EDID only after a replug or a power cycle.
+HDMI_POLL=10
+HDMI_SETTLE=3
+HDMI_COOLDOWN=300
+w25_hdmi_receiver() {
+  grep -qx 'EArcOnOff=On' /proc/lgtv-driver/audio/sndout 2>/dev/null &&
+    w25_luna luna://com.webos.settingsservice/getSystemSettings '{"category":"sound","keys":["soundOutput"]}' |
+      grep -q '"soundOutput" *: *"external_arc"'
+}
+# Points the HDMI EDIDs at $1 (dts|nodts); returns 1 when nothing had to change.
+w25_hdmi_edid() {
+  case $(w25_edid_stock) in *dts*) return 1 ;; esac
+  if [ "$1" = dts ]; then
+    grep -q libedidaudio "$EIM_ENV" 2>/dev/null || return 1
+    w25_hdmi_hook_off
+  else
+    [ -f "$APPDTS_FLAG" ] && ! w25_eim_hooked || return 1
+    w25_hdmi_hook_on
+  fi
+  return 0
+}
+w25_hdmi_poll() {
+  now=nodts
+  w25_hdmi_receiver && now=dts
+  if [ "$now" = "$want" ]; then same=$((same + 1)); else want=$now same=1; fi
+  [ "$same" -ge "$HDMI_SETTLE" ] || return 0
+  [ "$want" = nodts ] || [ $(($(date +%s) - changed)) -ge "$HDMI_COOLDOWN" ] || return 0
+  w25_hdmi_edid "$want" || return 0
+  changed=$(date +%s)
+  w25_log "hdmi: HDMI inputs now $want"
+}
+w25_hdmi_supervise() {
+  ( set -C; echo "$$" > "$HDMI_PID" ) 2>/dev/null || return 0
+  quit=
+  trap 'quit=1' INT TERM HUP
+  sh "$HDMI_DIR/hdmi-watch.sh" </dev/null >"$HDMI_OUT" 2>&1 &
+  watcher=$!
+  want= same=0 changed=0
+  while [ -z "$quit" ] && w25_alive "$watcher"; do
+    w25_hdmi_poll
+    sleep "$HDMI_POLL" & wait $!
+  done
+  kill "$watcher" 2>/dev/null
+  wait "$watcher"
+  echo "$?" > "$HDMI_EXIT"
+  w25_hdmi_edid nodts
+  rm -f "$HDMI_PID"
+}
+w25_hdmi_start() {
+  [ -f "$HDMI_FLAG" ] || return 0
+  w25_alive "$(cat "$HDMI_PID" 2>/dev/null)" && return 0
+  WHY=$(w25_hdmi_refusal)
+  if [ -n "$WHY" ]; then
+    w25_log "hdmi: not started ($WHY)"
+    return 0
+  fi
+  mkdir -p /run/dts25
+  rm -f "$HDMI_PID" "$HDMI_OUT" "$HDMI_EXIT"
+  W25_HDMI=run setsid sh "$INIT_SELF" </dev/null >/dev/null 2>&1 &
+}
+# The app's toggle. Waits until hdmi-watch.sh is watching or has stopped.
+w25_hdmi_on() {
+  WHY=$(w25_hdmi_refusal)
+  [ -n "$WHY" ] || case "$(w25_edid_stock) $(w25_edid_get)" in *dts*) ;; *) WHY=appdts ;; esac
+  if [ -n "$WHY" ]; then
+    echo "HDMI_REFUSED=$WHY"
+    return 0
+  fi
+  : > "$HDMI_FLAG" || return 1
+  w25_hdmi_start
+  i=0
+  while [ "$i" -lt 30 ] && [ ! -f "$HDMI_EXIT" ] && ! grep -q 'watching the HDMI input' "$HDMI_OUT" 2>/dev/null; do
+    sleep 1
+    i=$((i + 1))
+  done
+}
 # W25_PT=start|stop: only start or stop the watcher, for the app's toggle, so
 # turning passthrough on or off takes effect without a restart.
 if [ -n "${W25_PT:-}" ]; then
@@ -905,6 +1087,15 @@ if [ -n "${W25_APPDTS:-}" ]; then
     off) w25_appdts_off ;;
   esac
   echo "EDIDTYPE=$(w25_edid_get)"
+  exit 0
+fi
+# W25_HDMI=on|off: the app's HDMI passthrough toggle; run: the supervisor itself.
+if [ -n "${W25_HDMI:-}" ]; then
+  case $W25_HDMI in
+    on) w25_hdmi_on || exit 1 ;;
+    off) w25_hdmi_stop || exit 1; rm -f "$HDMI_FLAG" ;;
+    run) w25_hdmi_supervise ;;
+  esac
   exit 0
 fi
 # W25_STAND_DOWN=1: revert to stock and exit. Deliberately a mode of its own
@@ -961,6 +1152,7 @@ w25_unowned() {
 w25_self_heal() {
   w25_log "SELF-HEAL: $HEAL_WHY -- reverting every override"
   w25_pt_stop_soft
+  w25_hdmi_stop_soft
   w25_drop_binds
   if ! w25_stock_registry; then
     w25_log "SELF-HEAL DEFERRED: LG's registry could not be rebuilt, so our plugins and the boot hook are KEPT (deleting them now would leave the live registry pointing at missing plugins). Retrying at the next boot."
@@ -1095,6 +1287,7 @@ w25_appdts_start() {
 w25_appdts_start
 w25_pt_stop_soft
 w25_pt_start
+w25_hdmi_start
 # --- APPLY 2c) container demuxers with DTS re-enabled (mp4/ts/m2ts DTS -> audio/x-dts).
 #         Patched isomp4/mpegtsdemux/mpegpsdemux default dts_support=TRUE; patched matroska
 #         signals Dolby Vision profile 7. Bound BEFORE the regen below so the
@@ -1103,27 +1296,59 @@ w25_pt_start
 [ -f "$MYTSD" ] && ! grep -q " $LGTSD " /proc/mounts 2>/dev/null && mount -n --bind -o ro "$MYTSD" "$LGTSD" 2>>$LOG
 [ -f "$MYMKV" ] && ! grep -q " $LGMKV " /proc/mounts 2>/dev/null && mount -n --bind -o ro "$MYMKV" "$LGMKV" 2>>$LOG
 [ -f "$MYPSD" ] && [ -f "$LGPSD" ] && ! grep -q " $LGPSD " /proc/mounts 2>/dev/null && mount -n --bind -o ro "$MYPSD" "$LGPSD" 2>>$LOG
+# Bind the optional parser before the registry scan so it is available on the
+# first playback. Normalize the metadata in the parser as each stream starts.
+if w25_p7_parser_ready; then
+  if [ "$(w25_bound "$LGPARSE")" = 0 ]; then
+    mount -n --bind -o ro "$MYPARSE" "$LGPARSE" 2>>$LOG || w25_log "P7 parser bind failed; using the stock parser"
+  fi
+elif [ "$(w25_bound "$LGPARSE")" = 1 ] && ! w25_umount "$LGPARSE"; then
+  w25_stand_down
+  echo "REFUSED=pipeline"
+  echo "REASON=could not detach the inactive P7 parser override"
+  exit 0
+fi
 # --- APPLY 3) regenerate the media registry (fresh) with dtsdec + our libav, then write it to the media path.
 #    Bounded by `timeout` and scanned in-process (GST_REGISTRY_FORK=no) so a hang can't trip HBC
 #    failsafe and no gst-plugin-scanner child lingers past the timeout.
 REG_TMP=/tmp/gst_dts_reg.bin
-rm -f "$REG_TMP"
-LD_LIBRARY_PATH=/var/lib/webosbrew/truehd/libs \
-GST_REGISTRY_1_0="$REG_TMP" \
-GST_PLUGIN_PATH_1_0=/usr/lib/gstreamer-1.0:/mnt/lg/res/lglib/gstreamer-1.0:/var/lib/webosbrew/dts25 \
-GST_REGISTRY_FORK=no GST_REGISTRY_UPDATE=yes timeout 30 /usr/bin/gst-inspect-1.0 >/dev/null 2>>$LOG
+w25_scan_registry() {
+  rm -f "$REG_TMP" 2>>"$LOG" || { REG_MISS='could not clear the temporary registry cache'; return 1; }
+  LD_LIBRARY_PATH=/var/lib/webosbrew/truehd/libs \
+  GST_REGISTRY_1_0="$REG_TMP" \
+  GST_PLUGIN_PATH_1_0=/usr/lib/gstreamer-1.0:/mnt/lg/res/lglib/gstreamer-1.0:/var/lib/webosbrew/dts25 \
+  GST_REGISTRY_FORK=no GST_REGISTRY_UPDATE=yes timeout 30 /usr/bin/gst-inspect-1.0 >/dev/null 2>>"$LOG" ||
+    { REG_MISS='fresh registry scan failed'; return 1; }
+  # Without a valid cache, GStreamer can rescan despite GST_REGISTRY_UPDATE=no.
+  [ -s "$REG_TMP" ] || { REG_MISS='fresh registry scan produced no cache'; return 1; }
+}
 # --- GATE 2b) post-bind pipeline proof, then commit: overwrite the media
-#         registry only if the regen survived the binds with all six elements
-#         intact. Otherwise drop our own binds -- that is what turns "the
+#         registry only if the regen survived the binds with all required
+#         elements intact. Otherwise drop our own binds -- that is what turns "the
 #         override did not match" from a broken media pipeline into a no-op.
-if w25_reg_has_all "$REG_TMP"; then
-  cp -f "$REG_TMP" "$REG" 2>>$LOG && echo "registry updated (dtsdec+avdec_truehd+adecswitch+qtdemux+tsdemux+matroskademux)" >>$LOG
-  echo "APPLIED=$VERDICT"
+w25_prove_registry() {
+  w25_scan_registry || return 1
+  w25_reg_has_all "$REG_TMP" && return 0
+  # Only a failed factory from the optional parser can trigger a stock rescan.
+  [ "$REG_P7_MISS" = 1 ] && w25_umount "$LGPARSE" && [ "$(w25_bound "$LGPARSE")" = 0 ] || return 1
+  w25_log "P7 parser removed after registry proof failed ($REG_MISS); rescanning with the stock parser"
+  w25_scan_registry && w25_reg_has_all "$REG_TMP"
+}
+REG_RESTORE=
+if w25_prove_registry; then
+  if cp -f "$REG_TMP" "$REG" 2>>"$LOG"; then
+    echo "registry updated (dtsdec+avdec_truehd+adecswitch+qtdemux+tsdemux+matroskademux)" >>"$LOG"
+    echo "APPLIED=$VERDICT"
+    exit 0
+  fi
+  REG_FAILURE="could not install the regenerated plugin registry"
+  REG_RESTORE=restore-registry
 else
-  w25_log "REFUSED: regen is missing $REG_MISS; not committing it, and standing down"
-  w25_stand_down
-  toast "DTS Enabler: the plugin registry did not survive the override ($REG_MISS missing), so nothing was changed."
-  echo "REFUSED=pipeline"
-  echo "REASON=the regenerated plugin registry is missing $REG_MISS"
+  REG_FAILURE="the regenerated plugin registry failed validation ($REG_MISS)"
 fi
+w25_log "REFUSED: $REG_FAILURE. Standing down."
+w25_stand_down "$REG_RESTORE" || REG_FAILURE="$REG_FAILURE and stock registry restoration failed"
+toast "DTS Enabler could not apply the overrides ($REG_FAILURE)."
+echo "REFUSED=pipeline"
+echo "REASON=$REG_FAILURE"
 exit 0

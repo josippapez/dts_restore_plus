@@ -5,6 +5,10 @@ build/
 # OS cruft
 .DS_Store
 
+# The release workflow copies the HDMI passthrough loader and watcher from ../kmod/
+# next to the committed kmod-out/*.ko; those copies are build output.
+kmod-out/*.sh
+
 # dts2lpcm/ — local-only investigation area, never part of the shipped tool.
 # Path A (demuxer retag + in-pipeline converter) was REFUTED on hardware
 # 2026-07-24: umediaserver validates the LPCM stream at pipeline SETUP, so DTS

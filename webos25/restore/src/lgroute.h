@@ -20,6 +20,7 @@ typedef struct {
   guint64 window_media;
   guint slow_windows;
   const gchar *reason;
+  gchar unavailable[LGROUTE_WHY + 32];   /* reason, when eARC became unavailable */
   gchar resource[16], stream_id[128], converter[9];
   LgSession *session;
 } LgRoute;

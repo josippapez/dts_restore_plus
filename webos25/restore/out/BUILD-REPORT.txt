@@ -56,10 +56,10 @@ libgstdtsdec.so
                 gst_element_register_dtsdec, gst_plugin_dtsdec_register,
                 gst_plugin_dtsdec_get_desc, gst_truehd_mat_get_type and the
                 lgroute_* / lgroute_control_* helpers
-  size        : 3468412 bytes
-  md5         : 329270fad8843286e2fa654c17d8b425
-  sha1        : caa8ffde8e8e43bae326916c5639d1c44a72dda4
-  sha256      : f6791bfcfeae44541bcc4545a2014a368fc228ba248c1ac867869259ccf3d0e9
+  size        : 3468488 bytes
+  md5         : 8f24467561cf4dcc22020d17386cd1f4
+  sha1        : 298d651bac539216cdf1401d82b5abc8a37db46e
+  sha256      : 2292009b512a8461c05f3c880cecdbabaa27cd478d5dd3cb85f63138372a0580
 
 lgroute-control
 ---------------
@@ -71,12 +71,12 @@ lgroute-control
   NEEDED      : libc.so.6
   purpose     : `--check` reads LG's "Sndout EARC OnOff" / "Sndout EARC
                 Outputtype" ALSA controls; it never writes them
-  size        : 8900 bytes
-  md5         : fcd812b6995ab58d320c71d4ff887d45
-  sha256      : a037165c1645491488946d9317c889d46394c727f14e8758ffc31aaf7c3286cc
+  size        : 13096 bytes
+  md5         : be369e8d3c759f460e83e9bd5918a9e0
+  sha256      : 10d442fd679e954ef04f5e7390a5ed13961c84362fc725a3c47e7ce707ec5304
 
 switch-out/libgstadecswitch.so (built by build-switch.sh)
-  sha256      : fc2029da9c1631e9bd62f4d65fe47df332e9fe5e7bfc1cec0f813538462f4bd5
+  sha256      : 13cf6fce6e1bcc9037e57cec222d73d7eef6cc9a7bd40fd1fa2844b3b8e59733
 
 Replaces libgstdtsdec.so md5 41742e9ec2ce0754724b4d260c9fc09e (NEEDED
 libdca.so.0, RUNPATH /var/lib/webosbrew/dts25/libs) + libdca.so.0 md5
@@ -155,6 +155,22 @@ and no TV audio until a reboot. Four other switches in the same log were
 fine, so the wait is a best guess at the cause. On the C5 it loads and decodes
 the three app test files bit-identically to the 2.72 build; the eARC route is
 not verified on a receiver.
+The build after webos25-2.74 (2026-11-11) says in the route log why eARC Pass
+Through was unavailable (which ALSA control, and whether it could not be read,
+read off, or read an unknown output type) and logs each restore of LG's codec
+label. Two testers' 2.74 logs had one unavailable reading at a TrueHD to DTS
+switch: once the DTS track stayed core only and silent, once the TV's audio
+locked up, and neither log could say which part failed. At a track switch
+(LG's sink already has caps) eARC is now read again for up to 500 ms before the
+route gives up; a first play does not wait. During playback an unavailable
+reading gets the same second of silence as a mixed one before the decoder takes
+over, and a route that has failed no longer turns LG's bypass on for the next
+track. lgroute-control and switch-out/libgstadecswitch.so compile
+src/lgroute-control.c and were rebuilt with it; neither changes behaviour. The
+committed adecswitch did not rebuild byte-identically from its source (only the
+line numbers passed to gst_debug_log differed), so this one is built from the
+source as committed. Verified on the C5 (decode identical to the previous build,
+installer and TV report clean). Not verified on a receiver.
 
 This report is maintained by hand: update it whenever out/libgstdtsdec.so is
 rebuilt (build.sh prints the ABI values above).

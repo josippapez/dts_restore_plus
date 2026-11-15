@@ -66,7 +66,7 @@ test("all four payload copies and loader tracing are required", function () {
 });
 
 test("copy, write-commit, hook, config, and cleanup command faults execute fail-closed", function () {
-  [["FAIL_CP", /payload|cleanup/], ["FAIL_MV", /baseline|cleanup|state/], ["FAIL_CHMOD", /init|hook|rollback|recovery/], ["FAIL_SED", /config|recovery/]].forEach(function (scenario) {
+  [["FAIL_CP", /payload|cleanup/], ["FAIL_MV", /payload|baseline|cleanup|state/], ["FAIL_CHMOD", /init|hook|rollback|recovery/], ["FAIL_SED", /config|recovery/]].forEach(function (scenario) {
     var f = fixture(), o = f.overrides(), env = {}; env[scenario[0]] = "1";
     var r = run(f, service.c2Enable(true, o), env); ok(r, scenario[0]); assert.match(r.stdout, scenario[1], scenario[0] + " must fail closed");
   });
@@ -77,6 +77,11 @@ test("copy, write-commit, hook, config, and cleanup command faults execute fail-
   var f = fixture(), o = f.overrides();
   var r = run(f, service.c2Enable(true, o), {FAIL_MV_PATH: o.hook}); ok(r, "hook install failure");
   assert.match(r.stdout, /hook|rollback|recovery/);
+  // The payload is staged through a rename too, so FAIL_MV above stops there; the
+  // init/baseline commit rename still has to fail closed on its own.
+  f = fixture(); o = f.overrides();
+  r = run(f, service.c2Enable(true, o), {FAIL_MV_PATH: o.init}); ok(r, "init commit failure");
+  assert.match(r.stdout, /baseline|cleanup|state/);
 });
 
 test("disabled lifecycle, recovery boot, and foreign status remain coherent", function () {

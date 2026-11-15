@@ -16,7 +16,7 @@ var {service, C, sh, write, run, ok, initFn, SERVICE} = require("./helpers");
  * C2 family that element registers over a 128 KB stub with no decoder internals,
  * so the override must yield to the exact gate -- while still firing for C3/C4,
  * where the decoder is real and the demuxer gate is the actual problem. */
-test("dts_audiodec override yields to an exact C2 match but still fires elsewhere", function () {
+test("native DTS detection preserves the webOS 25 and C2 profiles", function () {
   var probe = service.DETECT_PROBE;
   var start = probe.indexOf("# --- PROFILE SELECTION ---");
   var end = probe.indexOf('echo "PROFILE=$PROFILE"');
@@ -51,6 +51,13 @@ test("dts_audiodec override yields to an exact C2 match but still fires elsewher
     audiodec: "yes", rank: "0"
   }), C.C2, "an exact C2 match must not be relabelled native-dts-gated");
 
+  // The updated G3 keeps the webOS 25 restore path even with the stock DTS element
+  // registered. The separate compatibility check decides whether Enable can run.
+  assert.strictEqual(profileFor({
+    gst: "1.24.0", hw: "HE_DTV_W23O_AFABATAA", pid: "OLED77G36LA",
+    webos: "10.3.1", fw: "33.31.68", audiodec: "yes", rank: "0"
+  }), "webos25-armel-gst124");
+
   // C3: decoder is real, demuxer gate off -> the override is correct here.
   assert.strictEqual(profileFor({
     gst: "1.18.4", hw: "HE_DTV_W23O_AFAAATAA", pid: "OLED55C34LA",
@@ -78,6 +85,42 @@ test("dts_audiodec override yields to an exact C2 match but still fires elsewher
     fw: "99.99.99", audiodec: "yes", rank: "0"
   }), "webos22-o22-c2-diagnostic",
     "a near-miss C2 must keep its diagnostic profile, not become native-dts-gated");
+});
+
+/* A webOS 25 set with LG's own dts_audiodec keeps the restore profile only when the
+ * compatibility check knows it. The G3 row needed the exemption, but applied to every
+ * 1.24 set it offered "Try anyway" to TVs that already have LG's DTS decoder. */
+test("native DTS on webOS 25 is decided by the compatibility check", function () {
+  var probe = service.DETECT_PROBE;
+  var start = probe.indexOf("# --- NATIVE DTS ON WEBOS 25 ---");
+  var end = probe.indexOf("# --- END NATIVE DTS ON WEBOS 25 ---");
+  assert.ok(start > 0 && end > start, "native DTS block not found in DETECT_PROBE");
+  var block = probe.slice(start, end);
+  function profileAfterGate(v) {
+    var pre = [
+      "set -u", "PROFILE=webos25-armel-gst124",
+      "HAS_DTS_AUDIODEC=" + v.audiodec, "DCA_RANK=" + v.rank, "VERDICT=" + v.verdict
+    ].concat(v.near ? ["TABLE_NEAR_MATCH=" + v.near] : []).join("\n");
+    var r = sh(pre + "\n" + block + '\nprintf "%s" "$PROFILE"');
+    assert.strictEqual(r.status, 0, "native DTS block failed: " + r.stderr);
+    var lines = r.stdout.trim().split("\n");
+    return lines[lines.length - 1].trim();
+  }
+  // Not in the table, LG's decoder ranked: native DTS, as before the G3 row.
+  assert.strictEqual(profileAfterGate({audiodec: "yes", rank: "290", verdict: "unverified"}), "native-dts");
+  // An absent DCA rank still reports native DTS when LG's decoder is registered.
+  assert.strictEqual(profileAfterGate({audiodec: "yes", rank: "absent", verdict: "unverified", near: "0"}), "native-dts");
+  // Not in the table, LG's decoder at rank 0: the gated native case.
+  assert.strictEqual(profileAfterGate({audiodec: "yes", rank: "0", verdict: "unverified"}), "native-dts-gated");
+  // The G3: a verified row keeps the restore profile.
+  assert.strictEqual(profileAfterGate({audiodec: "yes", rank: "0", verdict: "verified"}), "webos25-armel-gst124");
+  // Same stock plugins as a verified TV, another model: keeps it, so Try anyway is offered.
+  assert.strictEqual(profileAfterGate({audiodec: "yes", rank: "0", verdict: "unverified", near: "1"}), "webos25-armel-gst124");
+  // Already installed by us: keeps it, so Disable stays reachable.
+  assert.strictEqual(profileAfterGate({audiodec: "yes", rank: "0", verdict: "forced"}), "webos25-armel-gst124");
+  assert.strictEqual(profileAfterGate({audiodec: "yes", rank: "0", verdict: "drift"}), "webos25-armel-gst124");
+  // No LG decoder: the restore profile, whatever the verdict.
+  assert.strictEqual(profileAfterGate({audiodec: "no", rank: "absent", verdict: "unverified"}), "webos25-armel-gst124");
 });
 
 /* Issue #3: a C1 on GStreamer 1.16.2 was refused as unknown, while upstream
@@ -315,6 +358,170 @@ test("the Enable call fits a luna message and writes the exact boot script", fun
   assert.strictEqual(fs.readFileSync(out, "utf8"), service.w25InitScriptBody());
 });
 
+test("the optional Profile 7 parser requires a verified native library and a working loader", function () {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dts-p7-parser-"));
+  var staged = path.join(dir, "staged.so");
+  var stock = path.join(dir, "stock.so");
+  write(staged, "staged parser");
+  write(stock, "stock parser");
+  var verifiedHash = "a7434cf3b77c46be2d806e17bf38bfaeacfa51decec6fc64ee75089707827c83";
+  var script = [
+    "set -u",
+    "MYLIBS= LD_SO=trace_loader",
+    'w25_log() { :; }',
+    'sha256sum() { [ "$1" = /usr/lib/librpu_m.so ] && printf "%s  %s\\n" "$NATIVE_HASH" "$1"; }',
+    'trace_loader() { printf "%s\\n" "$TRACE_OUTPUT"; return "$TRACE_STATUS"; }',
+    initFn("w25_p7_parser_ready"),
+    "w25_p7_parser_ready"
+  ].join("\n");
+  try {
+    var defaults = { MYPARSE: staged, LGPARSE: stock, NATIVE_HASH: verifiedHash, TRACE_OUTPUT: "", TRACE_STATUS: "0" };
+    assert.strictEqual(sh(script, defaults).status, 0);
+    [
+      { MYPARSE: path.join(dir, "missing.so") },
+      { LGPARSE: path.join(dir, "missing.so") },
+      { NATIVE_HASH: "unknown" },
+      { TRACE_OUTPUT: "libdl.so.2 => not found" },
+      { TRACE_STATUS: "1" }
+    ].forEach(function (testCase) {
+      var result = sh(script, Object.assign({}, defaults, testCase));
+      assert.strictEqual(result.status, 1, JSON.stringify(testCase) + "\n" + result.stderr);
+    });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("registry proof loads every factory from the bound video parser and only retries its failures", function () {
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dts-p7-registry-"));
+  var events = path.join(dir, "events");
+  var core = "dtsdec avdec_truehd adecswitch qtdemux tsdemux matroskademux".split(" ");
+  var parsers = "h263parse h264parse diracparse mpegvideoparse mpeg4videoparse pngparse jpeg2000parse h265parse vc1parse vp9parse av1parse".split(" ");
+  var script = [
+    "set -u",
+    "LGPARSE=/usr/lib/gstreamer-1.0/libgstvideoparsersbad.so",
+    "LGPSD=/usr/lib/gstreamer-1.0/libgstmpegpsdemux.so",
+    'event() { printf "%s\\n" "$*" >> "$EVENTS"; }',
+    'w25_bound() { [ "$1" = "$LGPARSE" ] && printf "%s\\n" "$PARSER_BOUND"; }',
+    'grep() { [ "$1" = -q ] && [ "$2" = " $LGPSD " ] && [ "$3" = /proc/mounts ] && [ "$PS_BOUND" = 1 ]; }',
+    'rm() { [ "$CLEAR_CACHE" = 1 ] && command rm "$@"; }',
+    'w25_umount() { event detach; [ "$1" = "$LGPARSE" ] && [ "$DETACH_OK" = 1 ] || return 1; PARSER_BOUND=0; }',
+    'w25_log() { event "$*"; }',
+    'timeout() {',
+    '  if [ "$1" = 5 ]; then [ "$3" = --no-colors ] && "$2" "$4"; return $?; fi',
+    '  [ "$1" = 30 ] && [ "$GST_REGISTRY_1_0" = "$REG_TMP" ] && [ "$GST_REGISTRY_UPDATE" = yes ] && [ "$GST_REGISTRY_FORK" = no ] && [ ! -e "$REG_TMP" ] || return 2',
+    '  event "scan $PARSER_BOUND"',
+    '  status=$BOUND_SCAN; [ "$PARSER_BOUND" = 1 ] || status=$STOCK_SCAN',
+    '  case "$status" in',
+    '    empty) : > "$REG_TMP" ;;',
+    '    timeout) printf "partial cache" > "$REG_TMP"; return 124 ;;',
+    '    *) printf "registry cache" > "$REG_TMP" ;;',
+    '  esac',
+    '}',
+    'inspect() {',
+    '  [ "$GST_REGISTRY_1_0" = "$REG_TMP" ] && [ "$GST_REGISTRY_UPDATE" = no ] && [ "$GST_REGISTRY_FORK" = no ] || return 2',
+    '  event "$1"',
+    '  [ "$1" != "$MISSING" ] || return 1',
+    '  filename=$LGPARSE',
+    '  [ "$1" != "$FOREIGN" ] || filename=/mnt/lg/res/lglib/gstreamer-1.0/libgstvideoparsersbad.so',
+    '  printf "Plugin Details:\\n  Filename                 %s\\n" "$filename"',
+    '}',
+    initFn("w25_reg_has_all").replaceAll("/usr/bin/gst-inspect-1.0", "inspect"),
+    initFn("w25_scan_registry"),
+    initFn("w25_prove_registry"),
+    'w25_prove_registry; printf "%s:%s\\n" "$?" "$REG_MISS"'
+  ].join("\n");
+
+  function check(overrides, result, expected) {
+    write(events, "");
+    var env = {
+      EVENTS: events, LOG: path.join(dir, "log"), REG_TMP: path.join(dir, "registry"),
+      PARSER_BOUND: "1", PS_BOUND: "0", DETACH_OK: "1", MISSING: "", FOREIGN: "",
+      CLEAR_CACHE: "1", BOUND_SCAN: "ok", STOCK_SCAN: "ok"
+    };
+    write(env.REG_TMP, "stale registry cache");
+    var run = sh(script, Object.assign(env, overrides));
+    assert.strictEqual(run.status, 0, run.stderr);
+    assert.strictEqual(run.stdout.trim(), result, JSON.stringify(overrides));
+    assert.deepStrictEqual(fs.readFileSync(events, "utf8").trim().split("\n").filter(Boolean), expected);
+  }
+
+  function fallback(factory, inspected) {
+    return ["scan 1"].concat(core, inspected, [
+      "detach",
+      "P7 parser removed after registry proof failed (" + factory + "); rescanning with the stock parser",
+      "scan 0"
+    ], core);
+  }
+
+  try {
+    check({}, "0:", ["scan 1"].concat(core, parsers));
+    check({ PARSER_BOUND: "0" }, "0:", ["scan 0"].concat(core));
+    check({ MISSING: "qtdemux" }, "1:qtdemux", ["scan 1"].concat(core.slice(0, 4)));
+    check({ PS_BOUND: "1", MISSING: "mpegpsdemux" }, "1:mpegpsdemux", ["scan 1"].concat(core, "mpegpsdemux"));
+    check({ MISSING: "av1parse" }, "0:", fallback("av1parse", parsers));
+    check({ FOREIGN: "vp9parse" }, "0:", fallback("vp9parse", parsers.slice(0, -1)));
+    check({ MISSING: "av1parse", DETACH_OK: "0" }, "1:av1parse", ["scan 1"].concat(core, parsers, "detach"));
+    check({ CLEAR_CACHE: "0" }, "1:could not clear the temporary registry cache", []);
+    check({ BOUND_SCAN: "timeout" }, "1:fresh registry scan failed", ["scan 1"]);
+    check({ BOUND_SCAN: "empty" }, "1:fresh registry scan produced no cache", ["scan 1"]);
+    check({ MISSING: "av1parse", STOCK_SCAN: "timeout" }, "1:fresh registry scan failed", fallback("av1parse", parsers).slice(0, -core.length));
+    check({ MISSING: "av1parse", STOCK_SCAN: "empty" }, "1:fresh registry scan produced no cache", fallback("av1parse", parsers).slice(0, -core.length));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("registry publication must succeed before the boot hook reports APPLIED", function () {
+  var boot = service.w25InitScriptBody();
+  var publish = /^REG_RESTORE=\n[\s\S]+$/m.exec(boot);
+  assert.ok(publish, "registry publication block not found");
+  var dir = fs.mkdtempSync(path.join(os.tmpdir(), "dts-registry-commit-"));
+  var env = {
+    REG: path.join(dir, "live"), REG_TMP: path.join(dir, "candidate"),
+    LOG: path.join(dir, "log"), EVENTS: path.join(dir, "events"), VERDICT: "verified"
+  };
+  var script = [
+    "set -u",
+    'event() { printf "%s\\n" "$*" >> "$EVENTS"; }',
+    'w25_prove_registry() { REG_MISS=qtdemux; [ "$PROOF_OK" = 1 ]; }',
+    'w25_log() { :; }',
+    'toast() { :; }',
+    'w25_pt_stop_soft() { event stop-passthrough; }',
+    'w25_hdmi_stop_soft() { event stop-hdmi; }',
+    'w25_drop_binds() { event unmount; }',
+    'w25_reg_is_ours() { grep -q /var/lib/webosbrew "$REG"; }',
+    'w25_stock_registry() { event restore; [ "$RESTORE_OK" = 1 ] && printf stock > "$REG"; }',
+    // Simulate a write that truncates the old cache before failing.
+    'cp() { event copy; : > "$REG"; [ "$COPY_OK" = 1 ] && command cp "$@"; }',
+    initFn("w25_stand_down"),
+    publish[0]
+  ].join("\n");
+
+  function check(proof, copy, restore, stdout, events, registry) {
+    write(env.REG, "original");
+    write(env.REG_TMP, "replacement");
+    write(env.EVENTS, "");
+    var result = sh(script, Object.assign({}, env, { PROOF_OK: proof, COPY_OK: copy, RESTORE_OK: restore }));
+    assert.strictEqual(result.status, 0, result.stderr);
+    assert.strictEqual(result.stdout.trim(), stdout);
+    assert.deepStrictEqual(fs.readFileSync(env.EVENTS, "utf8").trim().split("\n"), events);
+    assert.strictEqual(fs.readFileSync(env.REG, "utf8"), registry);
+  }
+
+  var stop = ["stop-passthrough", "stop-hdmi", "unmount"];
+  var refusal = "REFUSED=pipeline\nREASON=";
+  var copyError = refusal + "could not install the regenerated plugin registry";
+  try {
+    check("1", "1", "1", "APPLIED=verified", ["copy"], "replacement");
+    check("0", "1", "1", refusal + "the regenerated plugin registry failed validation (qtdemux)", stop, "original");
+    check("1", "0", "1", copyError, ["copy"].concat(stop, "restore"), "stock");
+    check("1", "0", "0", copyError + " and stock registry restoration failed", ["copy"].concat(stop, "restore"), "");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 /* The generated script must resolve $APPBASE, not carry it as a literal.
  *
  * Regression for issue #1's actual cause: c2Q() single-quotes every config value,
@@ -393,6 +600,34 @@ test("the SHA refusal distinguishes no-tool, unreadable, and malformed", functio
  * it silently never ran -- the C2 fields came back empty and the app refused with
  * "no working sha256sum". 2.7.7 was verified against the enable script only, which
  * was one of the two that happened to be correct. */
+/* Same failure on webOS 25: w25AppDtsSteps copied $APPBASE/payload/... under `set -u`
+ * without the prelude, so "Show DTS tracks in apps" stopped right after writing the
+ * marker and only took effect at the next boot (c0ssie1's CS and our C5, 2.7.77). */
+test("every generated webOS 25 script defines $APPBASE before using it", function () {
+  var scripts = {
+    "w25AppDtsSteps(on)": service.w25AppDtsSteps(true),
+    "w25AppDtsSteps(off)": service.w25AppDtsSteps(false),
+    "w25Enable": service.w25Enable(false),
+    "w25Disable": service.w25Disable(),
+    "w25Uninstall": service.w25Uninstall(),
+    "w25InitScriptBody": service.w25InitScriptBody(),
+    "w25PassthroughSteps(on)": service.w25PassthroughSteps(true),
+    "w25PassthroughSteps(off)": service.w25PassthroughSteps(false),
+    "w25HdmiSteps(on)": service.w25HdmiSteps(true),
+    "w25HdmiSteps(off)": service.w25HdmiSteps(false)
+  };
+  Object.keys(scripts).forEach(function (name) {
+    var lines = scripts[name].split("\n");
+    var use = lines.findIndex(function (l) {
+      return l.indexOf("$APPBASE") >= 0 && l.indexOf("APPBASE=/media") !== 0;
+    });
+    if (use === -1) return;
+    var def = lines.findIndex(function (l) { return l.indexOf("APPBASE=") === 0; });
+    assert.notStrictEqual(def, -1, name + " uses $APPBASE but never defines it");
+    assert.ok(def < use, name + " defines APPBASE at line " + def + " but uses it at " + use);
+  });
+});
+
 test("every generated C2 script defines $APPBASE before using it", function () {
   var scripts = {
     DETECT_PROBE: service.DETECT_PROBE,
