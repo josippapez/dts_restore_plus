@@ -229,3 +229,48 @@ track for a TrueHD-only M2TS file, but the track contains no audio.
 
 The QEMU regression tests verify that the empty slot remains present
 and emits zero bytes.
+
+Dolby Vision profile 7 RPU normalization (libgstvideoparsersbad.so)
+------------------------------------------------------------------
+Built in a clean output directory with build-demux.sh using LG GStreamer
+1.24 source at 3937f0911dd0e2b0d14364828fba5013078e4565. The four container
+demuxers rebuilt byte-identically. Gate 53 checks the installed RPU library
+hash and verifies all eleven parser factories at the bind-mounted path.
+It retries the registry scan with the stock parser only if that factory
+check fails and the replacement is detached.
+
+  sha256   : 7bd9362e534553f3576408e7dcf5814d479d97b5b58a512afdf1a5e046462f8c
+  size     : 286520 bytes
+  ABI      : ARM EABI5 soft-float, e_flags 0x05000200, maximum GLIBC 2.4
+  NEEDED   : GStreamer and GLib libraries, libdl.so.2, libc.so.6
+
+The parser opens the same absolute native library path the gate fingerprints
+and preserves Annex B zero padding outside the RPU. The boot script requires
+a successful scan and a nonempty cache before it inspects registry factories.
+
+A clean rebuild reproduced all five plugins byte for byte. ARM/QEMU loaded
+all eleven factories from the exact committed parser above. H.264 SDR, HEVC
+HDR10, Dolby Vision P5 and P8.1, VP9 and AV1 parser pipelines reached end
+of stream. The P8.1 pipeline used a real P8.1 HEVC fixture.
+
+With the fingerprint-matched native library, the parser rewrote 50 P7 FEL
+RPUs in both Annex B and length-prefixed output. The other NAL units stayed
+byte-identical. With the native library absent, the P7 pipeline gave one
+warning and its output matched the reference byte for byte. ARM/QEMU buffer
+tests also cover Annex B padding, shared memory, metadata and stream reset
+after a failure.
+
+On-device validation (LG G3, firmware 33.31.68, local test IPK 2.7.80)
+-----------------------------------------------------------------
+The test IPK contained the exact rebuilt parser with the SHA-256 above.
+The owner reported successful playback in the following cases:
+
+  - P7 FEL after a cold boot.
+  - Dolby Vision P5 to P7 FEL, P8 to P7 FEL, and P7 MEL to P7 FEL.
+    The P7 cases covered single-layer MKV and dual-layer MP4.
+  - Dolby Vision, HDR10 and SDR in the USB player and web apps.
+  - Audio decoding and passthrough during playback.
+
+The earlier parser (SHA-256 5ab54958adb02382b8d79fddc885cc80849a1dcdbebf30288e5a7cfb1a349e57)
+was verified on an LG G3 with local test IPK 2.7.77. A full-frame P7 title
+cleared the active area from a preceding title with RPU letterbox offsets.

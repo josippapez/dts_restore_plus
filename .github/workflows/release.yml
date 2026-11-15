@@ -62,6 +62,7 @@ jobs:
                    switch-out/libgstadecswitch.so edid-out/libedidaudio.so \
                    demux-out/libgstisomp4.so demux-out/libgstmpegtsdemux.so \
                    demux-out/libgstmatroska.so demux-out/libgstmpegpsdemux.so \
+                   demux-out/libgstvideoparsersbad.so \
                    kmod-out/earc_route-5.4.ko; do
             [ -f "$f" ] || { echo "MISSING committed binary: $f"; exit 1; }
           done
@@ -126,6 +127,7 @@ jobs:
           cp -Pf ../restore/truehd-out/libav*.so* ../restore/truehd-out/libsw*.so* payload/webos25-truehd/
           cp -f  ../restore/demux-out/libgstisomp4.so ../restore/demux-out/libgstmpegtsdemux.so \
                  ../restore/demux-out/libgstmatroska.so ../restore/demux-out/libgstmpegpsdemux.so \
+                 ../restore/demux-out/libgstvideoparsersbad.so \
                  payload/webos25-demux/
           # HDMI passthrough opt-in: the 5.4 module only, since 6.12 is refused.
           mkdir -p payload/webos25-hdmi
@@ -190,7 +192,9 @@ jobs:
               `dts_support` enabled). DTS and DTS-HD MA (lossless, **up to 7.1**) decode
               to discrete S32LE, bit-exact against desktop ffmpeg — **no stereo downmix**.
             - **Dolby TrueHD / MLP** — in MKV.
-            - Audio-only patch: **Dolby Vision / HDR video is unaffected**.
+            - **Dolby Vision Profile 7** — the optional HEVC parser normalizes RPU
+              metadata for base-layer playback when the TV's native RPU library matches
+              the supported fingerprint.
             - No firmware modified — everything is bind-mounts, reverted by uninstall/reboot.
 
             ## Assets
