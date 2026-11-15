@@ -146,6 +146,9 @@ file decodes to **8 channels**, and that DTS-HD in `.ts`/`.m2ts` decodes **lossl
 (tsdemux passes substream 0x72): its decoded PCM matches a desktop `ffmpeg` decode of the
 same file bit for bit, after GStreamer's 40 ms segment clip at the start. A core-only
 decode does not match.
+For a rebuilt `libgstmpegtsdemux.so`, run the
+[HDMV TrueHD/AC-3 QEMU regression tests](webos25/restore/src/test/hdmv-ac3/README.md)
+to verify track order and payload routing.
 If `libgstmatroska.so` changed, also play a Dolby Vision profile 7 MKV (MEL and FEL) in
 LG's Media Player: it must show the **Dolby Vision** badge with correct colours (stock
 plays it as HDR10), a P8.1/P5 MKV must still show Dolby Vision, and a DTS MKV must have

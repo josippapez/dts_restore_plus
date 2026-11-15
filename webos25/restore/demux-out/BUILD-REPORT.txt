@@ -146,6 +146,23 @@ GST_REGISTRY), so the live bind-mounts were never touched:
     DTS-HD MA in .ts   (188-byte stride)
     DTS-HD MA in .m2ts (192-byte BDAV stride)
 
+HDMV TrueHD and AC-3 compatibility tracks
+-----------------------------------------
+patch-hdmv-truehd-ac3.py publishes TrueHD followed by its AC-3 compatibility
+track for HDMV PMT type 0x83. Both outputs share one physical PID and reassemble
+their own PES substream. An empty AC-3 slot keeps later track indices aligned
+with FFmpeg.
+
+  libgstmpegtsdemux.so SHA256 fea0d51f4e06fece578e256df9bc2188b0adeac1a5cf8ec27eb9c86ca2ac6a08
+  ELF32 ARM EABI5 soft-float, e_flags 0x05000200, maximum GLIBC 2.7
+
+The rebuilt ARM plugin was exercised with GStreamer 1.24 under QEMU. The
+stream collection matched FFprobe order, the AC-3 caps and both audio payloads
+matched the fixtures, and TrueHD-only input kept the empty compatibility slot.
+Non-HDMV input exposed no companion. The owner also confirmed the AC-3 fix
+on an LG G3 with local test IPK 2.7.79. That package used the same AC-3
+patch and additionally included the Dolby Vision profile 7 STDL TS change.
+
 Dolby Vision profile 7 MKV validation (real LG C5, webOS 10.3.1, 2026-09-28)
 -----------------------------------------------------------------------------
 Installed with install.sh (bind + stock.fp libgstmatroska= + APPLIED=verified;
@@ -200,3 +217,15 @@ the same mechanism tsdemux has and which the shipped patch already survives.
 Bound over /usr/lib/gstreamer-1.0/libgstmpegpsdemux.so only when staged AND that
 file exists; not fingerprinted and not a reason to refuse. Needs an on-TV check
 that the stock file exists at that path and that a DTS .vob plays.
+
+Known trade-off for HDMV TrueHD-only input
+-----------------------------------------
+The AC-3 compatibility slot remains in the stream collection even when
+the source contains no AC-3 PES packets. This preserves the audio track
+indices expected by FFmpeg and Jellyfin.
+
+Confirmed on an LG G3: LG's native player displays the additional AC-3
+track for a TrueHD-only M2TS file, but the track contains no audio.
+
+The QEMU regression tests verify that the empty slot remains present
+and emits zero bytes.
