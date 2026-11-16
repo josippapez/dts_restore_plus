@@ -286,6 +286,10 @@
       : s.passthroughHdRequested ? "not loaded" + (s.kmodLoader ? ": " + s.kmodLoader : "")
       : "loads when DTS-HD is on (" + (s.kmodKernel || "unknown kernel") + ")",
       s.kmodRefusal || (s.passthroughHdRequested && !s.kmodLoaded) ? "warn" : s.kmodLoaded ? "ok" : null);
+    $("btnKmodTry").hidden = !canW25Test || !s.kmodCanTry
+      || s.passthroughOutput !== "external_arc passThrough";
+    kmodTryPending = false;
+    $("btnKmodTry").textContent = "Try anyway (experimental)";
     // A/B compare renders through the patched dtsdec, so it needs the same profile.
     $("btnAb").disabled = !canW25Test;
     Array.prototype.slice.call(document.querySelectorAll("[data-gain], [data-preset], [data-center]"))
@@ -487,12 +491,23 @@
     }).catch(function (e) { toast("Could not change it: " + errText(e), "err"); });
   }
 
-  function doPassthrough(on, hd) {
+  // Same two-press arming as btnForce: a remote misclick must not load an untested module.
+  var kmodTryPending = false;
+  function doKmodTry() {
+    if (!kmodTryPending) {
+      kmodTryPending = true;
+      $("btnKmodTry").textContent = "Press again to load it on an untested kernel";
+      return;
+    }
+    doPassthrough(true, true, true);
+  }
+
+  function doPassthrough(on, hd, tryUnverified) {
     // The DTS-HD box keeps passthrough on while it turns DTS-HD off.
     toast(hd === undefined ? (on ? "Turning on…" : "Turning off…")
       : hd ? "Turning on DTS-HD…" : "Turning off DTS-HD…", "busy");
     $("hdPassthrough").disabled = true;
-    callService("setPassthrough", { enabled: on, hd: hd }).then(function (res) {
+    callService("setPassthrough", { enabled: on, hd: hd, tryUnverified: tryUnverified }).then(function (res) {
       toast(res.summary || res.errorText || (on ? "Turned on" : "Turned off"), res.returnValue ? "ok" : "err");
       return refreshStatus();
     }).catch(function (e) {
@@ -900,6 +915,7 @@
     $("hdPassthrough").addEventListener("change", function () {
       doPassthrough(this.checked || !$("btnPtOff").disabled, this.checked);
     });
+    $("btnKmodTry").addEventListener("click", doKmodTry);
     $("btnSaveGain").addEventListener("click", doSaveGain);
     $("btnAb").addEventListener("click", doAbRender);
     $("btnAbA").addEventListener("click", function () { doAbPlay("a"); });

@@ -124,7 +124,8 @@ EXPECT_GST=1.24
 #   55 the HDMI passthrough opt-in is gone: earc_route is held for DTS-HD only.
 #   57 earc_route is loaded by a transient systemd unit; the toggle waits for it.
 #   58 adds an optional HEVC parser for Profile 7 BL+RPU playback.
-#   59 earc_route only on ptl4tv.5; stopping it also stops 2.78's hdmi-watch.sh.
+#   59 earc_route only on ptl4tv.5 unless the user opts in (try-unverified);
+#      stopping it also stops 2.78's hdmi-watch.sh.
 W25_GATE_VERSION=59
 FP=/var/lib/webosbrew/dts25/stock.fp
 # Where the installed copy of THIS script lives, and the boot hook that symlinks
@@ -274,7 +275,7 @@ w25_kmod_refusal() {
   sh "$KMOD_DIR/earc-route-load.sh" --check >/dev/null 2>&1 || { echo kernel; return 0; }
   case $(uname -r) in
     5.4.268-329.ptl4tv.5) ;;
-    *) echo unverified; return 0 ;;
+    *) [ -f "$KMOD_DIR/try-unverified" ] || { echo unverified; return 0; } ;;
   esac
   if [ -f "$KMOD_DIR/loading" ]; then echo crashed
   elif [ -f /var/lib/lg-dts-core/enabled ]; then echo lg-dts-core

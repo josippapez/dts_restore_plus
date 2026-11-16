@@ -380,7 +380,8 @@ var W25_COMPAT_SH = [
   "#   55 the HDMI passthrough opt-in is gone: earc_route is held for DTS-HD only.",
   "#   57 earc_route is loaded by a transient systemd unit; the toggle waits for it.",
   "#   58 adds an optional HEVC parser for Profile 7 BL+RPU playback.",
-  "#   59 earc_route only on ptl4tv.5; stopping it also stops 2.78's hdmi-watch.sh.",
+  "#   59 earc_route only on ptl4tv.5 unless the user opts in (try-unverified);",
+  "#      stopping it also stops 2.78's hdmi-watch.sh.",
   "W25_GATE_VERSION=59",
   "FP=/var/lib/webosbrew/dts25/stock.fp",
   "# Where the installed copy of THIS script lives, and the boot hook that symlinks",
@@ -530,7 +531,7 @@ var W25_COMPAT_SH = [
   "  sh \"$KMOD_DIR/earc-route-load.sh\" --check >/dev/null 2>&1 || { echo kernel; return 0; }",
   "  case $(uname -r) in",
   "    5.4.268-329.ptl4tv.5) ;;",
-  "    *) echo unverified; return 0 ;;",
+  "    *) [ -f \"$KMOD_DIR/try-unverified\" ] || { echo unverified; return 0; } ;;",
   "  esac",
   "  if [ -f \"$KMOD_DIR/loading\" ]; then echo crashed",
   "  elif [ -f /var/lib/lg-dts-core/enabled ]; then echo lg-dts-core",
@@ -3881,6 +3882,7 @@ service.register("status", function (message) {
         base.passthroughHdReason = w25HdReason(kv.HD_REASON, base.passthroughOutput);
         base.kmodKernel = p.KMOD_KERNEL || "";
         base.kmodRefusal = w25KmodReason(p.KMOD_REFUSAL, p.KMOD_KERNEL);
+        base.kmodCanTry = p.KMOD_REFUSAL === "unverified";
         base.kmodLoaded = p.KMOD_LOADED === "1";
         base.kmodLoader = p.KMOD_LOADER || "";
         base.appDtsRequested = kv.APPDTS_FLAG === "1";
@@ -4122,7 +4124,7 @@ function w25HdOutput(out) {
   return out === "external_arc passThrough";
 }
 
-function w25PassthroughSteps(on, hd) {
+function w25PassthroughSteps(on, hd, tryUnverified) {
   var lines = ["set -u", 'FLAG=' + W25_PT_FLAG];
   if (hd === true) {
     lines.push('[ -x ' + W25_DEST + '/lgroute-control ] || { echo "ERROR=The eARC helper is not installed. Enable DTS again to install it."; exit 1; }');
@@ -4133,6 +4135,7 @@ function w25PassthroughSteps(on, hd) {
     lines.push('KMOD_DIR=' + W25_KMOD_DEST);
     // Turning DTS-HD on again is the user's explicit retry after a crashed load.
     lines.push('rm -f "$KMOD_DIR/loading"');
+    if (tryUnverified) lines.push(': > "$KMOD_DIR/try-unverified"');
     lines.push(W25_COMPAT_SH.slice(fn, W25_COMPAT_SH.indexOf("}", fn) + 1).join("\n"));
   }
   if (hd === true) lines.push('R=$(w25_kmod_refusal); [ -z "$R" ] || { echo "KMOD_REFUSED=$R"; echo "KMOD_KERNEL=$(uname -r)"; exit 1; }');
@@ -4144,7 +4147,7 @@ function w25PassthroughSteps(on, hd) {
   lines.push('chmod 0755 "' + W25_INIT_SCRIPT + '"');
   lines.push('W25_PT=stop sh "' + W25_INIT_SCRIPT + '" </dev/null || exit 1');
   if (typeof hd === "boolean") {
-    lines.push(hd ? ': > "' + W25_HD_FLAG + '"' : 'rm -f "' + W25_HD_FLAG + '"');
+    lines.push(hd ? ': > "' + W25_HD_FLAG + '"' : 'rm -f "' + W25_HD_FLAG + '" "' + W25_KMOD_DEST + '/try-unverified"');
   }
   if (on) {
     lines.push('mkdir -p "$(dirname "$FLAG")" 2>/dev/null');
@@ -4173,6 +4176,7 @@ function w25PtReceiver(out) {
 service.register("setPassthrough", function (message) {
   var want = !!(message.payload && message.payload.enabled);
   var hd = message.payload && message.payload.hd;
+  var tryUnverified = !!(message.payload && message.payload.tryUnverified);
   detectProfile().then(function (d) {
     if (d.profile !== PROFILE_W25) {
       message.respond({
@@ -4181,7 +4185,7 @@ service.register("setPassthrough", function (message) {
       });
       return;
     }
-    return rootExec(w25PassthroughSteps(want, hd)).then(function (r) {
+    return rootExec(w25PassthroughSteps(want, hd, tryUnverified)).then(function (r) {
       var kv = parseKv(r.stdout);
       var out = kv.PT_OUT || "";
       var refused = w25KmodReason(kv.KMOD_REFUSED, kv.KMOD_KERNEL);
@@ -4251,7 +4255,7 @@ service.register("setAppDts", function (message) {
 /** Why earc_route cannot run here (w25_kmod_refusal), as a sentence; DTS-HD needs it. */
 function w25KmodReason(code, kernel) {
   switch (code) {
-    case "unverified": return "The DTS-HD kernel module fits this TV's kernel (" + (kernel || "unknown") + ") but has not been tested on it yet, so it is disabled.";
+    case "unverified": return "The DTS-HD kernel module fits this TV's kernel (" + (kernel || "unknown") + ") but has not been tested on it yet, so it is disabled. Use Try anyway to load it at your own risk.";
     case "kernel": return "The DTS-HD kernel module does not fit this TV's kernel (" + (kernel || "unknown") + ").";
     case "crashed": return "The TV restarted while the DTS-HD kernel module was loading, so it is not loaded again. Turn DTS-HD off and on to retry.";
     case "lg-dts-core": return "lg-dts-core is enabled on this TV. Disable it first: its kernel hooks would collide.";

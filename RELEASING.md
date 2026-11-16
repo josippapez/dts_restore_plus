@@ -54,8 +54,8 @@ Never edit a generated `payload/**` binary.
 
 `earc-route-load.sh` is not vendored: the release workflow copies
 it from `webos25/kmod/` into the CLI tarball's `kmod-out/` and the app's
-`payload/webos25-hdmi/`. The 6.12 module is not vendored: it has never run on a TV, and
-the opt-in refuses that kernel.
+`payload/webos25-hdmi/`. The 6.12 module has never run on a TV: it loads only after the
+user presses Try anyway in the app.
 
 Editing `install.sh` / `init_dts25.sh` / the app JS/HTML does **not** require a
 rebuild — but still cut a new release so the tarball/`.ipk` carry the change.

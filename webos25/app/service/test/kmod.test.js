@@ -37,6 +37,9 @@ test("the loader's check decides the fit; only kernels run on are enabled", func
     assert.strictEqual(refusal("5.4.268-329.ptl4tv.2"), "[unverified]", "G2 kernel never run on");
     assert.strictEqual(refusal("5.4.268-320"), "[unverified]", "fits, never run on");
     assert.strictEqual(refusal("6.12.44-352"), "[unverified]");
+    write(path.join(kmod, "try-unverified"), "");
+    assert.strictEqual(refusal("5.4.268-329.ptl4tv.2"), "[]", "the user's Try anyway");
+    fs.unlinkSync(path.join(kmod, "try-unverified"));
     loaderSays("earc-route: REFUSED: 0 of earc_route-5.4.ko match this kernel");
     assert.strictEqual(refusal("5.4.268-329.ptl4tv.5"), "[kernel]", "the check outranks the release list");
     assert.strictEqual(refusal("6.6.1"), "[kernel]");
@@ -256,6 +259,10 @@ test("turning DTS-HD on refuses where the module cannot run; status says whether
   assert.strictEqual(spawnSync("sh", ["-n"], {input: steps, encoding: "utf8"}).status, 0);
   assert.match(steps, /R=\$\(w25_kmod_refusal\)/);
   assert.doesNotMatch(service.w25PassthroughSteps(true), /w25_kmod_refusal\)/, "core passthrough needs no module");
+  assert.doesNotMatch(steps, /: > "\$KMOD_DIR\/try-unverified"/, "no opt-in unless asked");
+  var tried = service.w25PassthroughSteps(true, true, true);
+  assert.ok(tried.indexOf(': > "$KMOD_DIR/try-unverified"') < tried.indexOf("R=$(w25_kmod_refusal)"), "opt-in lands before the refusal check");
+  assert.match(service.w25PassthroughSteps(true, false), /rm -f \S+passthrough-hd" "\S+\/try-unverified"/, "DTS-HD off drops the opt-in");
   return Promise.all([
     call(mockedService({}, "KMOD_REFUSED=kernel\nKMOD_KERNEL=6.6.1\n"), "setPassthrough", {enabled: true, hd: true}).then(function (res) {
       assert.strictEqual(res.returnValue, false);
@@ -270,6 +277,7 @@ test("turning DTS-HD on refuses where the module cannot run; status says whether
     }),
     call(mockedService({KMOD_KERNEL: "5.4.268-320", KMOD_REFUSAL: "unverified", KMOD_LOADED: "0"}, ""), "status").then(function (s) {
       assert.match(s.kmodRefusal, /fits this TV's kernel \(5\.4\.268-320\) but has not been tested/);
+      assert.strictEqual(s.kmodCanTry, true);
     }),
     call(mockedService({}, "WARN_KMOD=The DTS-HD kernel module could not undo all of its changes. Restart the TV.\nREG_REVERTED=1\nOK\n"), "disable").then(function (res) {
       assert.match(res.warning, /could not undo all of its changes/);

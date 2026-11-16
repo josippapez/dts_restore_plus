@@ -27,7 +27,7 @@ handles either HDMI audio decoder, 0 or 1, and keeps an HDMI input on DTS by its
 (see [HDMI input](#hdmi-input-mode7)).
 
 Status: both builds host-tested against the kernels listed under Test.
-Experimental. Automatic loading on 6.12 is disabled pending real-TV verification.
+Experimental. On 6.12 and other untested kernels it loads only after the app's Try anyway.
 The release ships both builds and `earc-route-load.sh` for the app
 (see [In the app](#in-the-app)); everything else here is root over SSH.
 
