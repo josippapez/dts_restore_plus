@@ -1,5 +1,5 @@
 Patched container demuxers for the webOS 25 profile:
-  libgstisomp4.so       — qtdemux with dts_support default TRUE (mp4 DTS)
+  libgstisomp4.so       — qtdemux with DTS and TrueHD in MP4
   libgstmpegtsdemux.so  — tsdemux with dts_support default TRUE (ts/m2ts DTS)
   libgstmatroska.so     — matroskademux signalling Dolby Vision profile 7 (MKV)
   libgstmpegpsdemux.so  — mpegpsdemux with dts_support default TRUE (DTS in .vob / MPEG-PS)

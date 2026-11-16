@@ -228,9 +228,13 @@ channel-mask=0x0c0f`. **The channel mask is the proof:** TrueHD decodes with the
 so `0x0c0f` means the TrueHD substream genuinely reached the decoder. DTS in both
 `.ts` (188-byte) and `.m2ts` (192-byte BDAV) re-verified unchanged.
 
-**`.mp4` TrueHD is still unsupported** — and unlike the TS case this is not a gate
-to flip: `qtdemux.c` has no TrueHD/MLP codepath at all (no `mlpa` fourcc
-handling), so it needs new demuxer logic. Use MKV or `.m2ts` for TrueHD.
+## TrueHD in MP4
+
+The [MP4 TrueHD patch](../restore/patch-mp4-truehd.py) maps `mlpa` sample entries
+to framed `audio/x-true-hd`. The decoder reads channels and sample rate from the
+bitstream. The patch raises the `moov` limit to 128 MiB and groups contiguous
+samples within each chunk for compatible nonfragmented tracks. It preserves declared
+sync points and keeps the existing sample-index allocation limit.
 
 ## Loudness / make-up gain
 

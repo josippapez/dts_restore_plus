@@ -17,7 +17,7 @@ webos25/restore/out/         libgstdtsdec.so                     (DTS decoder, f
 webos25/restore/truehd-out/  libgstlibav.so + libav*/libsw*      (TrueHD/MLP)
 webos25/restore/switch-out/  libgstadecswitch.so                 (track A stream-switch bin)
 webos25/restore/edid-out/    libedidaudio.so                     (eim hook: no DTS in HDMI EDIDs)
-webos25/restore/demux-out/   libgstisomp4.so, libgstmpegtsdemux.so (mp4/ts/m2ts DTS,
+webos25/restore/demux-out/   libgstisomp4.so, libgstmpegtsdemux.so (MP4/TS/M2TS DTS and TrueHD,
                               MP4 Dolby Vision profile 7), libgstmatroska.so (MKV DV profile 7)
                               libgstvideoparsersbad.so (HEVC Dolby Vision profile 7 RPU normalization)
 webos25/restore/ts114-out/   libgstmpegtsdemux.so                (1.14.4 build, C2 app profile)
@@ -40,6 +40,8 @@ Never edit a generated `payload/**` binary.
   `gstadecswitch.c`, `gstadecswitch.h`; `edidaudio.c`, `edidaudio.h`
 - the `dts_support` demuxer patch, the DTS-HD substream (0x72) tsdemux patch, the Dolby
   Vision profile 7 matroska/qtdemux patches, or their version, in `webos25/restore/build-demux.sh`
+- the MP4 TrueHD and large `moov` patch in `webos25/restore/patch-mp4-truehd.py` and
+  `webos25/restore/src/qtdemux-truehd-index.h`
 - the HEVC parser's Dolby Vision profile 7 RPU normalization in
   `webos25/restore/patch-p7-rpu-state.py` and `webos25/restore/src/dovi-rpu-normalize.h`
 - `webos25/restore/build.sh`, `build-truehd.sh`, `build-demux.sh`, `build-switch.sh`,
@@ -156,8 +158,13 @@ LG's Media Player: it must show the **Dolby Vision** badge with correct colours 
 plays it as HDR10), a P8.1/P5 MKV must still show Dolby Vision, and a DTS MKV must have
 sound (this build drops DTS tracks unless `dts_support` defaults TRUE). Its ABI report must
 list `NEEDED libbz2.so.1` (the C5 has no `libbz2.so.1.0`). Only then commit the new `.so`.
-If `libgstisomp4.so` changed, play a P7 MP4 the same way (Dolby Vision badge), plus a P8.1
-MP4 (still DV) and `DTS-in-mp4.mp4` (still has sound).
+If `libgstisomp4.so` changed, run the
+[MP4 TrueHD QEMU regression tests](webos25/restore/src/test/mp4-truehd/README.md).
+On the TV, stop playback and enable the override. Without rebooting, play a
+long TrueHD/Atmos MP4 and seek to multiple positions. In an MP4 with video,
+AC-3 and TrueHD, switch between the audio tracks and confirm playback continues.
+Play a P7 MP4 (Dolby Vision badge), a P8.1 MP4 (still Dolby Vision), and
+`DTS-in-mp4.mp4` (still has sound).
 If `libgstvideoparsersbad.so` changed, confirm that P7 FEL plays correctly after a cold
 boot and after P5, P8 and P7 MEL titles. Cover single-layer MKV and dual-layer MP4.
 Play a full-frame P7 title after one with RPU letterbox offsets and confirm that it
@@ -232,6 +239,8 @@ goes in `payload/c2-ts/` because `payload/cx/` is shared with the CX profile.
       bit-exact against desktop `ffmpeg` (if `libgstdtsdec.so` or `libgstmpegtsdemux.so` changed)
 - [ ] A Dolby Vision profile 7 MKV / MP4 shows the Dolby Vision badge on a real webOS-25 TV
       (if `libgstmatroska.so` / `libgstisomp4.so` changed)
+- [ ] MP4 TrueHD QEMU regression tests and on-device TrueHD playback and seeking pass
+      (if `libgstisomp4.so` changed)
 - [ ] If `libgstvideoparsersbad.so` changed, confirm the replacement is mounted on the
       TV and record the model, firmware, and playback results in the demux build report.
       In addition to the P7 checks above, play H.264 SDR, HEVC HDR10, and Dolby Vision
@@ -239,6 +248,8 @@ goes in `payload/c2-ts/` because `payload/cx/` is shared with the CX profile.
       expected HDR10 or Dolby Vision badge. Repeat playback in one or two apps and
       include AV1 or VP9 when compatible samples are available.
 - [ ] `sh webos25/restore/check-init-sync.sh` passes (the release workflow also runs it)
+- [ ] `node --test webos25/app/service/test/media-workers.test.js` passes (the release
+      workflow runs this before packaging)
 - [ ] `sh webos25/restore/check-manifest-floor.sh` passes (the workflow runs it too) —
       the Homebrew listing floor in `packaging/homebrew/*.yml` must not exclude a webOS
       release the service gates a profile on. `>=10.0` once shipped alongside a C2
