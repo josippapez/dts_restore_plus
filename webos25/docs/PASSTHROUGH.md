@@ -16,7 +16,8 @@ with app 2.7.71 or later (discussion #17). Other combinations are unverified.
 ## Full DTS-HD over eARC
 
 The exact tested C2 build uses LG's native ES bypass without synthetic renderer
-restarts. Other profiles keep the PCM bypass.
+restarts. Other profiles start on the PCM bypass and switch to native ES at a
+track switch, where LG kept the PCM carrier at the old track's pace.
 Both carry FFmpeg's IEC 61937 packing at 192 kHz. HD needs Digital Sound Output
 on Pass Through: Auto re-encodes and mixes TV sounds in.
 

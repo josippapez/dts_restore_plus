@@ -717,30 +717,11 @@ static void stale_buffer_tests (void)
   g_assert_false (route.failed); g_assert_true (route.configured);
   g_assert_cmpint (formats, ==, formats_before + 1);
   g_assert_false (((TestSink *) route.sink)->pcm);   /* the first ES event left with the flag clear */
-  /* LG's renderer still runs at the old track's pace (two testers' TVs, one a G3,
-   * played every such carrier four times too slowly): it is restarted, once. */
-  g_assert_true (route.restart_pending);
-  /* Not at once: LG has just restarted the renderer itself for the new track.
-   * A tester's TV froze twice, and once found no converter, when ours followed
-   * 10-20 ms later. Until LG has settled the receiver gets silence. */
-  push_carrier (source);
-  g_assert_cmpuint (route.restarts, ==, 0);
-  g_assert_true (route.restart_pending);
-  g_assert_cmpuint (pushed_byte, ==, 0);
-  route.restart_after = 0;
-  push_carrier (source);
-  g_assert_cmpuint (route.restarts, ==, 1);
-  g_assert_false (route.failed); g_assert_true (route.configured);
-  g_assert_cmpint (formats, ==, formats_before + 2);
-  g_assert_false (((TestSink *) route.sink)->pcm);
-  push_carrier (source);
-  g_assert_true (((TestSink *) route.sink)->pcm);
   g_assert_false (route.restart_pending);
-  g_assert_cmpuint (route.restarts, ==, 1);
+  g_assert_cmpuint (route.restarts, ==, 0);
   gchar *log = NULL;
   g_assert_true (g_file_get_contents (ROUTE_LOG, &log, NULL, NULL));
   g_assert_nonnull (strstr (log, "earlier stream still draining, passed through"));
-  g_assert_nonnull (strstr (log, "track switch: restarting LG's renderer once the sink plays"));
   g_free (log);
   unwire (&route, pad, source);
 
@@ -1012,7 +993,9 @@ static void native_es_tests (void)
   graph = "digraph {\nqueue_04180027_0000000000000001_out0 -> lipsync_04230029_0000000000000002_in0;\n}\n";
   aren_tail = 0x04230029;
   int formats_before = formats;
+  carrier_native = FALSE;
   g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
+  g_assert_true (carrier_native);   /* a replay on this carrier stays native */
   g_assert_cmpint (carrier (&route, TRUE), ==, GST_PAD_PROBE_OK);
   g_assert_false (((TestSink *) route.sink)->pcm);
   g_assert_cmpint (formats, ==, formats_before);

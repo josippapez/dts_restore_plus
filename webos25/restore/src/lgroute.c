@@ -1,4 +1,4 @@
-/* LG-managed HD bypass transport, native ES on the verified C2 build.
+/* LG-managed HD bypass transport: native ES on the verified C2 and at every track switch.
  * SPDX-License-Identifier: LGPL-2.1-or-later */
 #define _GNU_SOURCE
 #include "lgroute.h"
@@ -37,8 +37,6 @@ GST_DEBUG_CATEGORY_STATIC (lgroute_debug);
 /* The carrier's bytes per second: 192 kHz, 8 channels, 16 bit. */
 #define CARRIER_BYTES_PER_SECOND (192000 * 8 * 2)
 #define PACE_WINDOW (GST_SECOND / 4)
-/* How long after LG's own track-change restart ours may follow. */
-#define RESTART_SETTLE (500 * G_TIME_SPAN_MILLISECOND)
 #ifndef LGROUTE_SNDOUT
 #define LGROUTE_SNDOUT "/proc/lgtv-driver/audio/sndout"
 #endif
@@ -85,6 +83,8 @@ void lgroute_log (const gchar *format, ...)
 /* Guards the LgRoute fields that name what is armed (sink, sinkpad, probe ids,
  * resource). Never held across a GStreamer call. */
 static GMutex route_lock;
+/* The transport of the last configured carrier: a sink still holding carrier caps keeps it. */
+static gboolean carrier_native;
 
 /* The boot script hashes SINK_PLUGIN once and writes LGROUTE_SINK_OK on a match. */
 static gboolean verified_sink (GstElement *sink)
@@ -329,7 +329,6 @@ static gboolean restart_wanted (LgRoute *route, const gchar *why)
   if (route->native_es || route->restarts >= 2)
     return FALSE;
   route->restart_pending = TRUE;
-  route->restart_after = 0;
   lgroute_log ("%s: restarting LG's renderer once the sink plays", why);
   return TRUE;
 }
@@ -482,7 +481,7 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
     return GST_PAD_PROBE_DROP;
   }
   if (route->restart_pending) {
-    if (!sink_playing (route) || g_get_monotonic_time () < route->restart_after) {
+    if (!sink_playing (route)) {
       /* The restart starts LG's renderer at once, so it waits for playback;
        * until then the receiver gets silence, typed PCM like any carrier. */
       GstBuffer *buffer = gst_buffer_make_writable (GST_PAD_PROBE_INFO_BUFFER (info));
@@ -522,22 +521,12 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
     }
     GST_INFO_OBJECT (route->element, "lgroute: bypass transport verified, first carrier buffer");
     route->configured_at = g_get_monotonic_time ();
+    carrier_native = route->native_es;
     if (route->native_es)
       lgroute_log ("native ES bypass tail %s of this renderer", route->converter);
     else
       lgroute_log ("configured converter %s%s", route->converter, route->own ? " of this renderer" : "");
-    /* After a track switch LG's renderer keeps the old track's pace: a G3 and
-     * another tester's TV played every such carrier four times too slowly. Restart it, as
-     * after a resume. */
-    if (route->draining) {
-      route->draining = FALSE;
-      /* LG has restarted the renderer itself for the new track a moment ago
-       * and is still rewiring its output. A tester's TV, with ours following
-       * 10-20 ms later, twice hung in the restart with LG's audio driver
-       * locked (TV audio gone until a reboot) and once found no converter. */
-      if (restart_wanted (route, "track switch"))
-        route->restart_after = route->configured_at + RESTART_SETTLE;
-    }
+    route->draining = FALSE;
     if (route->lease_fd < 0)
       route->lease_fd = app_lease (route->lease);
     if (route->lease_fd < 0) {
@@ -835,6 +824,9 @@ gboolean lgroute_arm (LgRoute *route)
     gst_object_unref (sink);
     return FALSE;
   }
+  /* At a track switch the PCM carrier kept the old track's pace, a quarter speed
+   * on a G3; LG's native ES bypass switches cleanly there and on the C2. */
+  route->native_es |= pad_has_carrier (pad) ? carrier_native : gst_pad_has_current_caps (pad);
   /* The probes run at once on sticky events, so the route is published first.
    * Until our caps reach the sink, what arrives there is the earlier stream's. */
   route->waiting = TRUE;
@@ -883,7 +875,6 @@ void lgroute_disarm (LgRoute *route)
   int lease_fd = route->lease_fd;
   route->lease_fd = -1;
   route->lease = 0;
-  route->restart_after = 0;
   route->stream_id[0] = 0;
   route->resource[0] = 0;
   restart_pace (route);
