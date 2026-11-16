@@ -19,6 +19,7 @@ webos25/restore/switch-out/  libgstadecswitch.so                 (track A stream
 webos25/restore/edid-out/    libedidaudio.so                     (eim hook: no DTS in HDMI EDIDs)
 webos25/restore/demux-out/   libgstisomp4.so, libgstmpegtsdemux.so (mp4/ts/m2ts DTS,
                               MP4 Dolby Vision profile 7), libgstmatroska.so (MKV DV profile 7)
+                              libgstvideoparsersbad.so (HEVC Dolby Vision profile 7 RPU normalization)
 webos25/restore/ts114-out/   libgstmpegtsdemux.so                (1.14.4 build, C2 app profile)
 webos25/restore/kmod-out/    earc_route-5.4.ko, earc_route-6.12.ko (webos25/kmod, GPL-2.0-only)
 ```
@@ -39,6 +40,8 @@ Never edit a generated `payload/**` binary.
   `gstadecswitch.c`, `gstadecswitch.h`; `edidaudio.c`, `edidaudio.h`
 - the `dts_support` demuxer patch, the DTS-HD substream (0x72) tsdemux patch, the Dolby
   Vision profile 7 matroska/qtdemux patches, or their version, in `webos25/restore/build-demux.sh`
+- the HEVC parser's Dolby Vision profile 7 RPU normalization in
+  `webos25/restore/patch-p7-rpu-state.py` and `webos25/restore/src/dovi-rpu-normalize.h`
 - `webos25/restore/build.sh`, `build-truehd.sh`, `build-demux.sh`, `build-switch.sh`,
   `build-edid.sh`, `build-ts114.sh`
   (toolchain, flags, pinned sources, ABI — for `build.sh` that includes the ffmpeg
@@ -132,7 +135,7 @@ module and its two scripts (GPL-2.0-only), which `GPL-2.0.txt` covers.
 cd webos25/restore
 ./build.sh          # -> out/libgstdtsdec.so
 ./build-truehd.sh   # -> truehd-out/libgstlibav.so + libav*/libsw*
-./build-demux.sh    # -> demux-out/libgst{isomp4,mpegtsdemux,matroska,mpegpsdemux}.so
+./build-demux.sh    # -> demux-out/libgst{isomp4,mpegtsdemux,matroska,mpegpsdemux,videoparsersbad}.so
 ```
 
 Each build prints an ABI report — **confirm ARM EABI5 soft-float
@@ -145,6 +148,9 @@ file decodes to **8 channels**, and that DTS-HD in `.ts`/`.m2ts` decodes **lossl
 (tsdemux passes substream 0x72): its decoded PCM matches a desktop `ffmpeg` decode of the
 same file bit for bit, after GStreamer's 40 ms segment clip at the start. A core-only
 decode does not match.
+For a rebuilt `libgstmpegtsdemux.so`, run the
+[HDMV TrueHD/AC-3 QEMU regression tests](webos25/restore/src/test/hdmv-ac3/README.md)
+to verify track order and payload routing.
 If `libgstmatroska.so` changed, also play a Dolby Vision profile 7 MKV (MEL and FEL) in
 LG's Media Player: it must show the **Dolby Vision** badge with correct colours (stock
 plays it as HDR10), a P8.1/P5 MKV must still show Dolby Vision, and a DTS MKV must have
@@ -152,6 +158,10 @@ sound (this build drops DTS tracks unless `dts_support` defaults TRUE). Its ABI 
 list `NEEDED libbz2.so.1` (the C5 has no `libbz2.so.1.0`). Only then commit the new `.so`.
 If `libgstisomp4.so` changed, play a P7 MP4 the same way (Dolby Vision badge), plus a P8.1
 MP4 (still DV) and `DTS-in-mp4.mp4` (still has sound).
+If `libgstvideoparsersbad.so` changed, confirm that P7 FEL plays correctly after a cold
+boot and after P5, P8 and P7 MEL titles. Cover single-layer MKV and dual-layer MP4.
+Play a full-frame P7 title after one with RPU letterbox offsets and confirm that it
+resets the active area.
 
 The TrueHD `.ts`/`.m2ts` case is easy to skip and easy to be fooled by: BD TrueHD
 carries an AC-3 compatibility substream on the **same PID**, so if the TrueHD pad is
@@ -190,21 +200,25 @@ rm -f  payload/webos25/libdca.so.0     # left by pre-2.43 builds; would be packa
 cp -f  ../restore/out/libgstdtsdec.so                                    payload/webos25/
 cp -f  ../restore/switch-out/libgstadecswitch.so                        payload/webos25/
 cp -f  ../restore/edid-out/libedidaudio.so                              payload/webos25/
+cp -f  ../restore/out/lgroute-control                                 payload/webos25/
 cp -Pf ../restore/truehd-out/libgstlibav.so ../restore/truehd-out/libav*.so* \
        ../restore/truehd-out/libsw*.so*                                 payload/webos25-truehd/
 cp -f  ../restore/demux-out/libgstisomp4.so ../restore/demux-out/libgstmpegtsdemux.so \
-       ../restore/demux-out/libgstmatroska.so ../restore/demux-out/libgstmpegpsdemux.so payload/webos25-demux/
+       ../restore/demux-out/libgstmatroska.so ../restore/demux-out/libgstmpegpsdemux.so \
+       ../restore/demux-out/libgstvideoparsersbad.so payload/webos25-demux/
 cp -f  ../restore/kmod-out/earc_route-*.ko ../kmod/earc-route-load.sh \
        payload/webos25-hdmi/
 cp -f  ../../gst/libgstlibav.so ../../gst/libgstisomp4.so \
        ../../gst/libgstmatroska.so ../../gst/libgstisomp4_1_8.so          payload/cx/
+mkdir -p payload/c2-ts
+cp -f  ../restore/ts114-out/libgstmpegtsdemux.so                       payload/c2-ts/
 npm install -g @webosose/ares-cli
 ares-package . service -o dist        # -> dist/io.github.josippapez.dtsenabler_<ver>_all.ipk
 ```
 
 All four root `gst/` files are required for packaging even though C2 binds
-`libgstisomp4_1_8.so` only when that stock target exists. There is no legacy
-`libgstmpegtsdemux.so`, so the C2 profile must remain MKV/MP4-only.
+`libgstisomp4_1_8.so` only when that stock target exists. The C2-specific TS demuxer
+goes in `payload/c2-ts/` because `payload/cx/` is shared with the CX profile.
 
 ## Checklist
 
@@ -218,6 +232,12 @@ All four root `gst/` files are required for packaging even though C2 binds
       bit-exact against desktop `ffmpeg` (if `libgstdtsdec.so` or `libgstmpegtsdemux.so` changed)
 - [ ] A Dolby Vision profile 7 MKV / MP4 shows the Dolby Vision badge on a real webOS-25 TV
       (if `libgstmatroska.so` / `libgstisomp4.so` changed)
+- [ ] If `libgstvideoparsersbad.so` changed, confirm the replacement is mounted on the
+      TV and record the model, firmware, and playback results in the demux build report.
+      In addition to the P7 checks above, play H.264 SDR, HEVC HDR10, and Dolby Vision
+      P5 and P8.1 in LG's Media Player. Check startup, picture and sound, and the
+      expected HDR10 or Dolby Vision badge. Repeat playback in one or two apps and
+      include AV1 or VP9 when compatible samples are available.
 - [ ] `sh webos25/restore/check-init-sync.sh` passes (the release workflow also runs it)
 - [ ] `sh webos25/restore/check-manifest-floor.sh` passes (the workflow runs it too) —
       the Homebrew listing floor in `packaging/homebrew/*.yml` must not exclude a webOS

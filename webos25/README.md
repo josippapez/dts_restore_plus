@@ -1,16 +1,11 @@
-# DTS + TrueHD/MLP audio restore for webOS 25 (LG C5)
+# DTS + TrueHD/MLP audio restore for webOS 25
 
-Restores **DTS** *and* **Dolby TrueHD / MLP** audio playback on a rooted LG C5 /
-webOS 25 TV. Both codecs are **verified working on a real LG C5**, persistent
-across reboot (a boot hook re-applies everything). Reversibility: most changes
-are **bind-mounts** over a stock file, undone by Disable/Uninstall — a reboot drops
-the mounts but the boot hook re-applies them, so only Disable/Uninstall turns it off —
-the one exception is the GStreamer plugin registry, a persistent `cp -f`
-reverted by regenerating a clean stock registry — and it only applies to a TV
-whose stock plugins match a **verified set**, refusing (with an explicit
-experimental opt-in) otherwise. See
-[Compatibility gate, reversibility, and self-heal](#compatibility-gate-reversibility-and-self-heal)
-below.
+Restores **DTS** and **Dolby TrueHD / MLP** audio playback on rooted LG TVs
+that match a verified webOS 25 configuration. The boot hook reapplies the changes
+after reboot. Disable or Uninstall removes the bind mounts and regenerates a clean
+stock GStreamer plugin registry if it was replaced. Unverified configurations
+require an explicit experimental opt-in. See the verified TV sets under
+[Compatibility gate, reversibility, and self-heal](#compatibility-gate-reversibility-and-self-heal).
 
 ## Quick install (prebuilt — no build needed)
 
@@ -320,6 +315,7 @@ GStreamer major.minor version:
 |---|---|---|---|---|
 | LG C5 OLED77C51LA (webOS 10.3.1) | 1.24.0 | `0fd6d65ac9e3a78b393a615eaff8ac0b` | `57fe57060774f248c05af5a411fc9a8f` | `9b84a95cf29bc025553c7dee829b7cc1` |
 | LG G5 OLED77G55LW (webOS 10.3.1) | 1.24.0 | `0fd6d65ac9e3a78b393a615eaff8ac0b` | `57fe57060774f248c05af5a411fc9a8f` | `9b84a95cf29bc025553c7dee829b7cc1` |
+| LG G3 OLED77G36LA (webOS 10.3.1, firmware 33.31.68) | 1.24.0 | `0fd6d65ac9e3a78b393a615eaff8ac0b` | `cf4d9bb9e3c3ad83f1a75a399d2f0b93` | `772fb3b29e224423035eec9e93615b23` |
 | LG G2 OLED77G26LA/OLED77G29LA (webOS 10.3.1) | 1.24.0 | `0fd6d65ac9e3a78b393a615eaff8ac0b` | `cf4d9bb9e3c3ad83f1a75a399d2f0b93` | `772fb3b29e224423035eec9e93615b23` |
 | LG C2 OLED55C21LA (webOS 10.3.1) | 1.24.0 | `0fd6d65ac9e3a78b393a615eaff8ac0b` | `cf4d9bb9e3c3ad83f1a75a399d2f0b93` | `772fb3b29e224423035eec9e93615b23` |
 | LG CS OLED55CS6LA (webOS 10.3.1) | 1.24.0 | `0fd6d65ac9e3a78b393a615eaff8ac0b` | `cf4d9bb9e3c3ad83f1a75a399d2f0b93` | `772fb3b29e224423035eec9e93615b23` |
@@ -548,17 +544,24 @@ Verified on a C5 in LG's Media Player: P7 MEL and P7 FEL MKVs show the **Dolby V
 badge with correct colours; P8.1 and P5 MKVs still play as Dolby Vision with Atmos; TrueHD
 and DTS in MKV are unaffected.
 
-- DV comes from the **base layer + RPU metadata**. A FEL's residual (enhancement) layer is
-  **not decoded** — the TV has one video decoder — which is the same result as converting
-  P7 to P8.1.
+- DV comes from the **base layer + RPU metadata**. On firmware with a supported native
+  RPU library, the HEVC parser disables the FEL residual request for this playback path
+  and keeps the profile 7 signalling.
 - **MP4 too (since webos25-2.44):** `qtdemux.c` has the same gate, folded the same way in
   `libgstisomp4.so`. It reads the DOVI config only from the `dvcC`/`dvvC` box, so the MKV
   `hvcE` fix has no MP4 counterpart. Verified with P7 MEL/FEL MP4s (DV badge, sound), a P8.1
   MP4 (still DV) and DTS in MP4 (still decodes).
-- **Known issue:** on a TV that has been up for hours, a P7 **FEL** title can start with a
-  green/blue tint that clears on replay or after a reboot. Seen with both containers and
-  with a byte-patched stock demuxer too; not reproduced on a freshly booted TV. MEL titles
-  have not shown it.
+- With normalization active, each P7 stream starts with a full-frame active area and
+  applies its own RPU offsets. On an LG G3 (firmware 33.31.68), P7 FEL played after
+  a cold boot and after P5, P8 and P7 MEL titles. Tests covered single-layer MKV
+  and dual-layer MP4, along with Dolby Vision, HDR10 and SDR in the USB player and
+  web apps. Audio decoding and passthrough worked. The earlier parser also cleared
+  inherited letterbox offsets when switching to a full-frame P7 title. See the
+  [demux build report](restore/demux-out/BUILD-REPORT.txt) for the tested artifact.
+- **Known issue:** with the stock HEVC parser, a P7 **FEL** MKV or MP4 on a C5 could
+  start with a green/blue tint after hours of uptime. Replay or a reboot cleared it.
+  This can still happen when the optional parser is skipped or falls back to the stock
+  plugin, or when normalization fails and the parser passes through the original RPU.
 
 ## Build
 

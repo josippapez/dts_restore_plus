@@ -123,7 +123,8 @@ EXPECT_GST=1.24
 #      lease replaces dtsdec's PCM relabel), and on 6.12 kernels too.
 #   55 the HDMI passthrough opt-in is gone: earc_route is held for DTS-HD only.
 #   57 earc_route is loaded by a transient systemd unit; the toggle waits for it.
-W25_GATE_VERSION=57
+#   58 adds an optional HEVC parser for Profile 7 BL+RPU playback.
+W25_GATE_VERSION=58
 FP=/var/lib/webosbrew/dts25/stock.fp
 # Where the installed copy of THIS script lives, and the boot hook that symlinks
 # to it. Named here, in the shared block, so the read-only probe can fingerprint
@@ -138,6 +139,7 @@ LGISO=/usr/lib/gstreamer-1.0/libgstisomp4.so
 LGTSD=/usr/lib/gstreamer-1.0/libgstmpegtsdemux.so
 LGMKV=/usr/lib/gstreamer-1.0/libgstmatroska.so
 LGPSD=/usr/lib/gstreamer-1.0/libgstmpegpsdemux.so
+LGPARSE=/usr/lib/gstreamer-1.0/libgstvideoparsersbad.so
 # CORE payload -- without any of these there is no DTS, no TrueHD, and no
 # switching bin, so a missing one means "do not bind anything".
 MYDTS=/var/lib/webosbrew/dts25/libgstdtsdec.so
@@ -148,13 +150,13 @@ MYLIBAV=/var/lib/webosbrew/truehd/libgstlibav.so
 # decproxy (rank 300) for the actual decode. Staged alongside dtsdec -- the
 # plugin path at APPLY 3 below already includes /var/lib/webosbrew/dts25.
 MYSWITCH=/var/lib/webosbrew/dts25/libgstadecswitch.so
-# OPTIONAL payload: the patched container demuxers. Absent, DTS still works in
-# MKV -- which is exactly how this shipped before the gate existed -- so each is
-# bound only when staged and is never a reason to refuse or to delete anything.
+# OPTIONAL payload: the patched container demuxers and HEVC parser. DTS still
+# works in MKV without these overrides.
 MYISO=/var/lib/webosbrew/demux25/libgstisomp4.so
 MYTSD=/var/lib/webosbrew/demux25/libgstmpegtsdemux.so
 MYMKV=/var/lib/webosbrew/demux25/libgstmatroska.so
 MYPSD=/var/lib/webosbrew/demux25/libgstmpegpsdemux.so
+MYPARSE=/var/lib/webosbrew/demux25/libgstvideoparsersbad.so
 MYCFG=/var/lib/webosbrew/truehd/codec_capability.json
 MYGC=/var/lib/webosbrew/truehd/gstcool.conf
 MYLIBS=/var/lib/webosbrew/truehd/libs:/var/lib/webosbrew/dts25/libs
@@ -200,7 +202,7 @@ w25_umount() {
 # the warning up.
 w25_drop_binds() {
   UNMOUNT_FAILED=
-  for t in "$CFG" "$GC" "$LGLIBAV" "$LGISO" "$LGTSD" "$LGMKV" "$LGPSD" "$REG" "$LLS"; do
+  for t in "$CFG" "$GC" "$LGLIBAV" "$LGISO" "$LGTSD" "$LGMKV" "$LGPSD" "$LGPARSE" "$REG" "$LLS"; do
     w25_umount "$t" || UNMOUNT_FAILED="${UNMOUNT_FAILED:+$UNMOUNT_FAILED }$t"
   done
   [ -z "$UNMOUNT_FAILED" ] && return 0
@@ -298,6 +300,11 @@ w25_stand_down() {
   w25_pt_stop_soft
   w25_kmod_stop_soft
   w25_drop_binds
+  # A failed write can leave a truncated registry without our ownership string.
+  if [ "${1:-}" = restore-registry ]; then
+    w25_stock_registry
+    return $?
+  fi
   if w25_reg_is_ours; then
     w25_log "a registry of ours is still live; regenerating the stock registry so nothing of ours stays registered"
     w25_stock_registry
@@ -614,6 +621,24 @@ w25_loader_ok() {
   done
   return 0
 }
+# The optional parser uses a private native RPU ABI. A GStreamer version match
+# alone does not establish that ABI, so only bind on a verified library build.
+# This check and the optional loader trace leave the stock parser in use when
+# the native library or the parser's dependencies differ.
+w25_p7_parser_ready() {
+  [ -s "$MYPARSE" ] && [ -f "$LGPARSE" ] || return 1
+  p7_hash=$(sha256sum /usr/lib/librpu_m.so 2>/dev/null)
+  case "${p7_hash%% *}" in
+    a7434cf3b77c46be2d806e17bf38bfaeacfa51decec6fc64ee75089707827c83) ;;
+    *) w25_log "P7 parser skipped: unrecognized native RPU library"; return 1 ;;
+  esac
+  if ! p7_deps=$(LD_LIBRARY_PATH="$MYLIBS" LD_TRACE_LOADED_OBJECTS=1 "$LD_SO" "$MYPARSE" 2>&1) ||
+      printf '%s\n' "$p7_deps" | grep -q 'not found'; then
+    w25_log "P7 parser skipped: loader could not resolve the parser dependencies"
+    return 1
+  fi
+  return 0
+}
 # Is the live media registry one WE wrote? It is committed with `cp -f`, not
 # bind-mounted, so there is no mount to look for -- but a registry we generated
 # names our plugin directories, and a stock one never does. This is the signal
@@ -629,12 +654,26 @@ w25_reg_is_ours() { [ -f "$REG" ] && grep -q "/var/lib/webosbrew" "$REG" 2>/dev/
 # drops the binds, which turns "the override didn't match" into a plain no-op.
 w25_reg_has_all() {
   REG_MISS=
+  REG_P7_MISS=0
   for e in dtsdec avdec_truehd adecswitch qtdemux tsdemux matroskademux; do
     GST_REGISTRY_1_0="$1" GST_REGISTRY_UPDATE=no GST_REGISTRY_FORK=no /usr/bin/gst-inspect-1.0 "$e" >/dev/null 2>&1 || { REG_MISS=$e; return 1; }
   done
   # The .vob demuxer is optional: held to the same proof only while our bind is live.
   if grep -q " $LGPSD " /proc/mounts 2>/dev/null; then
     GST_REGISTRY_1_0="$1" GST_REGISTRY_UPDATE=no GST_REGISTRY_FORK=no /usr/bin/gst-inspect-1.0 mpegpsdemux >/dev/null 2>&1 || { REG_MISS=mpegpsdemux; return 1; }
+  fi
+  if [ "$(w25_bound "$LGPARSE")" = 1 ]; then
+    # The replacement carries all eleven factories from LG's videoparsersbad
+    # plugin, including VC-1. Check they load from the mounted plugin.
+    for e in h263parse h264parse diracparse mpegvideoparse mpeg4videoparse pngparse jpeg2000parse h265parse vc1parse vp9parse av1parse; do
+      if ! parser_info=$(GST_REGISTRY_1_0="$1" GST_REGISTRY_UPDATE=no GST_REGISTRY_FORK=no \
+          timeout 5 /usr/bin/gst-inspect-1.0 --no-colors "$e" 2>/dev/null) ||
+          ! printf '%s\n' "$parser_info" | awk -v filename="$LGPARSE" '$1 == "Filename" && $2 == filename { found=1 } END { exit !found }'; then
+        REG_MISS=$e
+        REG_P7_MISS=1
+        return 1
+      fi
+    done
   fi
   return 0
 }
@@ -666,6 +705,7 @@ w25_plugin_binds_present() {
   grep -q " $LGTSD " /proc/mounts 2>/dev/null && return 0
   grep -q " $LGMKV " /proc/mounts 2>/dev/null && return 0
   grep -q " $LGPSD " /proc/mounts 2>/dev/null && return 0
+  grep -q " $LGPARSE " /proc/mounts 2>/dev/null && return 0
   return 1
 }
 w25_stock_registry() {
@@ -1201,27 +1241,59 @@ w25_kmod_start --no-block
 [ -f "$MYTSD" ] && ! grep -q " $LGTSD " /proc/mounts 2>/dev/null && mount -n --bind -o ro "$MYTSD" "$LGTSD" 2>>$LOG
 [ -f "$MYMKV" ] && ! grep -q " $LGMKV " /proc/mounts 2>/dev/null && mount -n --bind -o ro "$MYMKV" "$LGMKV" 2>>$LOG
 [ -f "$MYPSD" ] && [ -f "$LGPSD" ] && ! grep -q " $LGPSD " /proc/mounts 2>/dev/null && mount -n --bind -o ro "$MYPSD" "$LGPSD" 2>>$LOG
+# Bind the optional parser before the registry scan so it is available on the
+# first playback. Normalize the metadata in the parser as each stream starts.
+if w25_p7_parser_ready; then
+  if [ "$(w25_bound "$LGPARSE")" = 0 ]; then
+    mount -n --bind -o ro "$MYPARSE" "$LGPARSE" 2>>$LOG || w25_log "P7 parser bind failed; using the stock parser"
+  fi
+elif [ "$(w25_bound "$LGPARSE")" = 1 ] && ! w25_umount "$LGPARSE"; then
+  w25_stand_down
+  echo "REFUSED=pipeline"
+  echo "REASON=could not detach the inactive P7 parser override"
+  exit 0
+fi
 # --- APPLY 3) regenerate the media registry (fresh) with dtsdec + our libav, then write it to the media path.
 #    Bounded by `timeout` and scanned in-process (GST_REGISTRY_FORK=no) so a hang can't trip HBC
 #    failsafe and no gst-plugin-scanner child lingers past the timeout.
 REG_TMP=/tmp/gst_dts_reg.bin
-rm -f "$REG_TMP"
-LD_LIBRARY_PATH=/var/lib/webosbrew/truehd/libs \
-GST_REGISTRY_1_0="$REG_TMP" \
-GST_PLUGIN_PATH_1_0=/usr/lib/gstreamer-1.0:/mnt/lg/res/lglib/gstreamer-1.0:/var/lib/webosbrew/dts25 \
-GST_REGISTRY_FORK=no GST_REGISTRY_UPDATE=yes timeout 30 /usr/bin/gst-inspect-1.0 >/dev/null 2>>$LOG
+w25_scan_registry() {
+  rm -f "$REG_TMP" 2>>"$LOG" || { REG_MISS='could not clear the temporary registry cache'; return 1; }
+  LD_LIBRARY_PATH=/var/lib/webosbrew/truehd/libs \
+  GST_REGISTRY_1_0="$REG_TMP" \
+  GST_PLUGIN_PATH_1_0=/usr/lib/gstreamer-1.0:/mnt/lg/res/lglib/gstreamer-1.0:/var/lib/webosbrew/dts25 \
+  GST_REGISTRY_FORK=no GST_REGISTRY_UPDATE=yes timeout 30 /usr/bin/gst-inspect-1.0 >/dev/null 2>>"$LOG" ||
+    { REG_MISS='fresh registry scan failed'; return 1; }
+  # Without a valid cache, GStreamer can rescan despite GST_REGISTRY_UPDATE=no.
+  [ -s "$REG_TMP" ] || { REG_MISS='fresh registry scan produced no cache'; return 1; }
+}
 # --- GATE 2b) post-bind pipeline proof, then commit: overwrite the media
-#         registry only if the regen survived the binds with all six elements
-#         intact. Otherwise drop our own binds -- that is what turns "the
+#         registry only if the regen survived the binds with all required
+#         elements intact. Otherwise drop our own binds -- that is what turns "the
 #         override did not match" from a broken media pipeline into a no-op.
-if w25_reg_has_all "$REG_TMP"; then
-  cp -f "$REG_TMP" "$REG" 2>>$LOG && echo "registry updated (dtsdec+avdec_truehd+adecswitch+qtdemux+tsdemux+matroskademux)" >>$LOG
-  echo "APPLIED=$VERDICT"
+w25_prove_registry() {
+  w25_scan_registry || return 1
+  w25_reg_has_all "$REG_TMP" && return 0
+  # Only a failed factory from the optional parser can trigger a stock rescan.
+  [ "$REG_P7_MISS" = 1 ] && w25_umount "$LGPARSE" && [ "$(w25_bound "$LGPARSE")" = 0 ] || return 1
+  w25_log "P7 parser removed after registry proof failed ($REG_MISS); rescanning with the stock parser"
+  w25_scan_registry && w25_reg_has_all "$REG_TMP"
+}
+REG_RESTORE=
+if w25_prove_registry; then
+  if cp -f "$REG_TMP" "$REG" 2>>"$LOG"; then
+    echo "registry updated (dtsdec+avdec_truehd+adecswitch+qtdemux+tsdemux+matroskademux)" >>"$LOG"
+    echo "APPLIED=$VERDICT"
+    exit 0
+  fi
+  REG_FAILURE="could not install the regenerated plugin registry"
+  REG_RESTORE=restore-registry
 else
-  w25_log "REFUSED: regen is missing $REG_MISS; not committing it, and standing down"
-  w25_stand_down
-  toast "DTS Enabler: the plugin registry did not survive the override ($REG_MISS missing), so nothing was changed."
-  echo "REFUSED=pipeline"
-  echo "REASON=the regenerated plugin registry is missing $REG_MISS"
+  REG_FAILURE="the regenerated plugin registry failed validation ($REG_MISS)"
 fi
+w25_log "REFUSED: $REG_FAILURE. Standing down."
+w25_stand_down "$REG_RESTORE" || REG_FAILURE="$REG_FAILURE and stock registry restoration failed"
+toast "DTS Enabler could not apply the overrides ($REG_FAILURE)."
+echo "REFUSED=pipeline"
+echo "REASON=$REG_FAILURE"
 exit 0
