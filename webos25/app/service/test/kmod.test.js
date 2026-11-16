@@ -34,7 +34,7 @@ test("the loader's check decides the fit; only kernels run on are enabled", func
     assert.strictEqual(refusal("5.4.268-329.ptl4tv.5"), "[payload]", "no loader installed");
     loaderSays("earc-route: CHECK OK: kernel x takes earc_route-5.4.ko");
     assert.strictEqual(refusal("5.4.268-329.ptl4tv.5"), "[]");
-    assert.strictEqual(refusal("5.4.268-329.ptl4tv.2"), "[]");
+    assert.strictEqual(refusal("5.4.268-329.ptl4tv.2"), "[unverified]", "G2 kernel never run on");
     assert.strictEqual(refusal("5.4.268-320"), "[unverified]", "fits, never run on");
     assert.strictEqual(refusal("6.12.44-352"), "[unverified]");
     loaderSays("earc-route: REFUSED: 0 of earc_route-5.4.ko match this kernel");
@@ -64,6 +64,8 @@ function holder(rmmodFails, loadFails) {
   var vars = ["KMOD_DIR=" + kmod, "KMOD_OUT=" + run + "/hdmi-watch.out",
     "KMOD_MODULE=" + module, "PT_FLAG=" + pt, "HD_FLAG=" + hd,
     "KMOD_UNIT=dts25-test.service", 'systemctl() { :; }',
+    "LEGACY_HDMI_PID=" + run + "/hdmi.pid", "LEGACY_HDMI_FLAG=" + dir + "/hdmi-passthrough",
+    oneLine("w25_alive"), initFn("w25_legacy_hdmi_stop"),
     oneLine("w25_module_wanted"), "w25_log() { :; }",
     rmmodFails ? "rmmod() { echo 'rmmod: busy' >&2; return 1; }" : 'rmmod() { rm -rf "' + module + '"; }'];
   var hold = path.join(dir, "hold.sh");
@@ -87,6 +89,22 @@ test("stop verifies the module is gone, with or without its unit", function () {
       fs.rmSync(h.dir, {recursive: true, force: true});
     }
   });
+});
+
+test("stop also stops a 2.78 hdmi-watch.sh left running by an upgrade", function () {
+  var h = holder(false);
+  try {
+    var flag = path.join(h.dir, "hdmi-passthrough"), pid = path.join(h.run, "hdmi.pid");
+    write(flag, "");
+    // No /proc on macOS hosts.
+    var alive = '[ -d /proc/self ] || w25_alive() { [ -n "$1" ] && kill -0 "$1" 2>/dev/null; }';
+    var r = sh(h.stop + "\n" + alive + '\nsleep 60 & echo $! > "' + pid + '"; W=$!\nw25_kmod_stop; echo "status=$?"\n' +
+      'w25_alive "$W" && echo alive || echo gone');
+    assert.match(r.stdout, /status=0\s+gone/, r.stderr);
+    assert.ok(!fs.existsSync(pid) && !fs.existsSync(flag), "legacy pid and marker removed");
+  } finally {
+    fs.rmSync(h.dir, {recursive: true, force: true});
+  }
 });
 
 test("the module is wanted only with passthrough and DTS-HD on", function () {
@@ -190,7 +208,7 @@ test("passthrough starts and stops the module; boot, stand-down, self-heal, Disa
   assert.ok(stop >= 0 && stop < disable.indexOf('rm -f "/var/lib/webosbrew/init.d/restore_dts25"'), "Disable stops it");
   var uninstall = service.w25Uninstall();
   assert.ok(uninstall.indexOf("\nw25_kmod_stop_soft\n") < uninstall.indexOf('rm -rf "'), "Uninstall stops it before deleting");
-  assert.strictEqual(/W25_HDMI|HDMI_FLAG|hdmi-passthrough/.test(body), false, "the HDMI opt-in is gone");
+  assert.strictEqual(/W25_HDMI|[^_]HDMI_FLAG/.test(body), false, "the HDMI opt-in is gone");
 });
 
 test("install.sh and Enable stage the module and its loader", function () {
