@@ -11,3 +11,6 @@ webos25/restore/licenses/
 /dts_restore_plus-restore-*.tar.gz
 
 /webos25/app/payload/webos25/lgroute-control
+
+# Kernel captures fetched by webos25/kmod/test/fetch.sh: LG firmware, never committed.
+webos25/kmod/test/kernels

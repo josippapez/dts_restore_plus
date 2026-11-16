@@ -21,7 +21,7 @@ it does **not** rebuild from source. Two obligations follow:
    The committed binaries live in
    `webos25/restore/{out,truehd-out,demux-out,switch-out,edid-out,ts114-out,kmod-out}`.
    (`out/` holds `libgstdtsdec.so` and `lgroute-control`; `kmod-out/` holds
-   `earc_route-5.4.ko`, copied from `webos25/kmod/out/`.)
+   `earc_route-5.4.ko` and `earc_route-6.12.ko`, copied from `webos25/kmod/out/`.)
    The app's `webos25/app/payload/**` `.so` are git-ignored and copied from
    `webos25/restore/**` at package time — never edit them there.
 

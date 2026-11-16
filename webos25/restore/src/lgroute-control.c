@@ -114,8 +114,7 @@ static int ready (int fd, long output[5], char why[LGROUTE_WHY])
   return 0;
 }
 
-/* 1 = LG requests unmixed eARC, 0 = mixed, -1 = unavailable. Never written:
- * in Pass Through LG derives the mixer word from its own setMixer state. */
+/* 1 = unmixed eARC, 0 = mixed, -1 = unavailable. */
 int lgroute_control_unmixed_why (char why[LGROUTE_WHY])
 {
   long output[5];
@@ -126,6 +125,25 @@ int lgroute_control_unmixed_why (char why[LGROUTE_WHY])
   else
     close (fd);
   return ok ? output[4] == 0 : -1;
+}
+
+/* Clears the mix word through LG's own setter; earc_route's probe keeps LG from
+ * setting it again while the lease is held. 0 on success. */
+int lgroute_control_unmix (void)
+{
+  struct snd_ctl_elem_value value;
+  long output[5];
+  int fd = open ("/dev/snd/controlC0", O_RDWR | O_CLOEXEC), ok = -1;
+  memset (&value, 0, sizeof value);
+  if (fd >= 0 && lgroute_control_read (fd, "Sndout EARC Outputtype", output, 5) == 0 && valid (output)
+      && describe (fd, "Sndout EARC Outputtype", 5, &value.id) == 0) {
+    for (int i = 0; i < 4; i++)
+      value.value.integer.value[i] = output[i];
+    ok = ioctl (fd, SNDRV_CTL_IOCTL_ELEM_WRITE, &value) < 0 ? -1 : 0;
+  }
+  if (fd >= 0)
+    close (fd);
+  return ok;
 }
 
 int lgroute_control_unmixed (void)

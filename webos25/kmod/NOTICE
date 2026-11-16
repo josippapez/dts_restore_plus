@@ -12,15 +12,10 @@ are its work. This port replaces Glasshouse's exact-image addresses with
 earc_decode.h, which derives them from LG's code at load time, and adds the
 loader and the host test.
 
-hdmi-session.sh is derived from lg-g5-dts's tools/dts-core-route/run-on-tv.sh
-and tools/dts-hd-route/run-on-tv.sh (https://github.com/dakenf/lg-g5-dts,
-GPL-2.0-only). lg-g5-dts designed and qualified both sessions: the preflight,
-the eARC control trigger, the bypass gain writes, the DSP instance writes, the
-muted wait for non-PCM transport and the cleanup are its work. This port reads
-the HDMI port, the decoder and the bypass gain block from the TV instead of
-one G5 image's values, loads earc_route in place of its modules, reads the
-non-PCM word from that module instead of a fixed address, and adds the host
-test under test/session.
+The session load (mode 7) is derived from lg-g5-dts's tools/dts-core-route and
+tools/dts-hd-route (https://github.com/dakenf/lg-g5-dts, GPL-2.0-only), which
+designed and qualified the DTS-from-HDMI kprobe route; its DSP instance values
+for DTS core and DTS-HD are what the HDMI input probes send.
 
 The module contains no LG code. It calls LG's kernel functions at run time and
 reads their machine code to find the data they use. Kernel images, kallsyms

@@ -51,7 +51,7 @@ entry has a `kernelVersion` field, so find firmwares on the user's release (from
 `firmwareotaID`. After the download and `zipFileSha256` check above, the kernel is
 `/boot/Image.lz4-<release>` in the extracted rootfs. On 33.22.x the EPK has no
 `kernel.pak`, so the rootfs is the only place. The remaining steps (LZ4P unpacking,
-symbol table, stock module, capture directory, allowlist, tests) are in
+symbol table, stock module, capture directory, tests) are in
 [`webos25/kmod/README.md`](../../../webos25/kmod/README.md#adding-a-kernel).
 
 In auto mode, building or running `epk2extract` may be blocked. Ask the user to

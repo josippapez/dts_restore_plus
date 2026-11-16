@@ -488,7 +488,6 @@ test("registry publication must succeed before the boot hook reports APPLIED", f
     'w25_log() { :; }',
     'toast() { :; }',
     'w25_pt_stop_soft() { event stop-passthrough; }',
-    'w25_hdmi_stop_soft() { event stop-hdmi; }',
     'w25_drop_binds() { event unmount; }',
     'w25_reg_is_ours() { grep -q /var/lib/webosbrew "$REG"; }',
     'w25_stock_registry() { event restore; [ "$RESTORE_OK" = 1 ] && printf stock > "$REG"; }',
@@ -509,7 +508,7 @@ test("registry publication must succeed before the boot hook reports APPLIED", f
     assert.strictEqual(fs.readFileSync(env.REG, "utf8"), registry);
   }
 
-  var stop = ["stop-passthrough", "stop-hdmi", "unmount"];
+  var stop = ["stop-passthrough", "unmount"];
   var refusal = "REFUSED=pipeline\nREASON=";
   var copyError = refusal + "could not install the regenerated plugin registry";
   try {
@@ -613,8 +612,7 @@ test("every generated webOS 25 script defines $APPBASE before using it", functio
     "w25InitScriptBody": service.w25InitScriptBody(),
     "w25PassthroughSteps(on)": service.w25PassthroughSteps(true),
     "w25PassthroughSteps(off)": service.w25PassthroughSteps(false),
-    "w25HdmiSteps(on)": service.w25HdmiSteps(true),
-    "w25HdmiSteps(off)": service.w25HdmiSteps(false)
+    "w25PassthroughSteps(hd)": service.w25PassthroughSteps(true, true)
   };
   Object.keys(scripts).forEach(function (name) {
     var lines = scripts[name].split("\n");

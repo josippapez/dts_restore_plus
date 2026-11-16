@@ -281,36 +281,20 @@
       : !s.passthroughRequested ? "off — passthrough disabled"
       : s.passthroughHdReady ? "ready for eARC" : s.passthroughHdReason || "HD readiness unavailable",
       s.passthroughHdRequested ? (s.passthroughHdReady ? "ok" : "warn") : null);
-    renderHdmi(s, canW25Test);
+    setVal("sKmod", s.kmodRefusal ? s.kmodRefusal
+      : s.kmodLoaded ? "loaded (" + s.kmodKernel + ")"
+      : s.passthroughHdRequested ? "not loaded" + (s.kmodLoader ? ": " + s.kmodLoader : "")
+      : "loads when DTS-HD is on (" + (s.kmodKernel || "unknown kernel") + ")",
+      s.kmodRefusal || (s.passthroughHdRequested && !s.kmodLoaded) ? "warn" : s.kmodLoaded ? "ok" : null);
+    $("btnKmodTry").hidden = !canW25Test || !s.kmodCanTry
+      || s.passthroughOutput !== "external_arc passThrough";
+    kmodTryPending = false;
+    $("btnKmodTry").textContent = "Try anyway (experimental)";
     // A/B compare renders through the patched dtsdec, so it needs the same profile.
     $("btnAb").disabled = !canW25Test;
     Array.prototype.slice.call(document.querySelectorAll("[data-gain], [data-preset], [data-center]"))
       .forEach(function (el) { el.disabled = !canW25Test; });
     $("btnSaveGain").disabled = !canW25Test;
-  }
-
-  /* HDMI-input DTS passthrough: webOS 25 only, and only the 5.4.268 kernels run it.
-   * A missing payload does not disable Turn on: the toggle installs it. */
-  function renderHdmi(s, canW25Test) {
-    $("cardHdmi").hidden = !canW25Test;
-    var blocked = s.hdmiRefusal && s.hdmiRefusal !== "payload";
-    $("btnHdmiOn").disabled = !canW25Test || s.hdmiRequested === true || !!blocked;
-    $("btnHdmiOff").disabled = !canW25Test || s.hdmiRequested !== true;
-    var exit = s.hdmiExit === "20" ? "stopped with its rollback incomplete; restart the TV"
-      : s.hdmiExit ? "stopped (exit " + s.hdmiExit + ")" : "not running";
-    setVal("sHdmi", !s.hdmiRequested ? (blocked ? "off — " + s.hdmiRefusalText : "off")
-      : s.hdmiRunning ? "on — watching the HDMI input"
-      : "on — " + (s.hdmiRefusalText || exit + (s.hdmiLoader ? ": " + s.hdmiLoader : "")),
-      s.hdmiRequested ? (s.hdmiRunning ? "ok" : "warn") : null);
-    setVal("sHdmiKernel", (s.hdmiKernel || "unknown") + (/^kernel/.test(s.hdmiRefusal || "")
-      ? (s.hdmiRefusal === "kernel-6.12" ? " — not supported yet" : " — not supported") : " — supported"),
-      /^kernel/.test(s.hdmiRefusal || "") ? "warn" : null);
-    setVal("sHdmiEdid", s.hdmiDtsOffered ? "yes"
-      : !s.hdmiRequested ? "no"
-      : !s.appDtsActive ? "no — Show DTS tracks in apps is off"
-      : "no — only while an eARC receiver is the sound output");
-    $("hdmiToolsNote").hidden = !s.hdmiToolsNote;
-    $("hdmiToolsNote").textContent = s.hdmiToolsNote || "";
   }
 
   /* Installed-boot-script staleness.
@@ -507,24 +491,24 @@
     }).catch(function (e) { toast("Could not change it: " + errText(e), "err"); });
   }
 
-  function doPassthrough(on, hd) {
+  // Same two-press arming as btnForce: a remote misclick must not load an untested module.
+  var kmodTryPending = false;
+  function doKmodTry() {
+    if (!kmodTryPending) {
+      kmodTryPending = true;
+      $("btnKmodTry").textContent = "Press again to load it on an untested kernel";
+      return;
+    }
+    doPassthrough(true, true, true);
+  }
+
+  function doPassthrough(on, hd, tryUnverified) {
     // The DTS-HD box keeps passthrough on while it turns DTS-HD off.
     toast(hd === undefined ? (on ? "Turning on…" : "Turning off…")
       : hd ? "Turning on DTS-HD…" : "Turning off DTS-HD…", "busy");
     $("hdPassthrough").disabled = true;
-    callService("setPassthrough", { enabled: on, hd: hd }).then(function (res) {
+    callService("setPassthrough", { enabled: on, hd: hd, tryUnverified: tryUnverified }).then(function (res) {
       toast(res.summary || res.errorText || (on ? "Turned on" : "Turned off"), res.returnValue ? "ok" : "err");
-      return refreshStatus();
-    }).catch(function (e) {
-      toast("Could not change it: " + errText(e), "err");
-      refreshStatus();
-    });
-  }
-
-  function doHdmi(on) {
-    toast(on ? "Turning on HDMI passthrough…" : "Turning off HDMI passthrough…", "busy");
-    callService("setHdmiPassthrough", { enabled: on }).then(function (res) {
-      toast(res.summary || (on ? "Turned on" : "Turned off"), "ok");
       return refreshStatus();
     }).catch(function (e) {
       toast("Could not change it: " + errText(e), "err");
@@ -926,24 +910,12 @@
         box.textContent = "Could not read the log: " + (e && (e.errorText || e.message) || e);
       });
     });
-    $("btnHdmiOn").addEventListener("click", function () { doHdmi(true); });
-    $("btnHdmiOff").addEventListener("click", function () { doHdmi(false); });
-    $("btnHdmiLog").addEventListener("click", function () {
-      var box = $("hdmiLog");
-      box.hidden = false;
-      box.textContent = "Reading…";
-      callService("hdmiLog", {}).then(function (r) {
-        box.textContent = r.log ? r.log : "No HDMI log yet. Turn HDMI passthrough on first.";
-        box.scrollTop = box.scrollHeight;
-      }, function (e) {
-        box.textContent = "Could not read the log: " + (e && (e.errorText || e.message) || e);
-      });
-    });
     $("btnPtOn").addEventListener("click", function () { doPassthrough(true); });
     $("btnPtOff").addEventListener("click", function () { doPassthrough(false); });
     $("hdPassthrough").addEventListener("change", function () {
       doPassthrough(this.checked || !$("btnPtOff").disabled, this.checked);
     });
+    $("btnKmodTry").addEventListener("click", doKmodTry);
     $("btnSaveGain").addEventListener("click", doSaveGain);
     $("btnAb").addEventListener("click", doAbRender);
     $("btnAbA").addEventListener("click", function () { doAbPlay("a"); });
