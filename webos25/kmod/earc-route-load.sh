@@ -1,11 +1,12 @@
 #!/bin/sh
-# earc-route-load.sh -- load earc_route.ko on a rooted LG webOS 25 TV.
+# earc-route-load.sh -- load earc_route.ko on a rooted LG webOS 25 TV, or a webOS 6 (4.4) one.
 #
 #   sh earc-route-load.sh                    audit: decode, print, unload (mode=0)
 #   sh earc-route-load.sh --dts-hd           the session (mode=7), until rmmod earc_route
 #   sh earc-route-load.sh --check            every loader check and the build choice, no insmod
 #
-# Runs as root, on the TV only (busybox sh + python3). There is no release
+# On 4.4 the build has no exit and no modes: --dts-hd loads it until reboot.
+# Runs as root, on the TV only (busybox sh + python3, or python 2.7 on webOS 6). There is no release
 # allowlist: the running kernel is checked, not its name. The loader refuses
 # unless the TV's own stock modules agree on one vermagic and struct module
 # layout, exactly one earc_route-*.ko next to this script has that same
@@ -46,7 +47,11 @@ fi
 # Picks the module from the running kernel's own stock modules, reads
 # /proc/kallsyms, and prints the module path then the fn_/sz_ parameters, or
 # the reason for refusing.
-parameters=$(python3 -I - "$ROOT" "$release" "$HERE" <<'PY'
+if PYTHON=$(command -v python3); then PYTHON="$PYTHON -I"
+elif PYTHON=$(command -v python2); then PYTHON="$PYTHON -E -s"
+else refuse "python not found"; fi
+# shellcheck disable=SC2086 # PYTHON is the interpreter and its isolation flags
+parameters=$($PYTHON - "$ROOT" "$release" "$HERE" <<'PY'
 import os
 import struct
 import sys
@@ -115,9 +120,14 @@ def module_abi(path):
         offset, info, _ = struct.unpack_from('<QQq', data, rela[4] + 24 * i)
         name_offset, = struct.unpack_from('<I', data, symtab[4] + 24 * (info >> 32))
         targets.setdefault(string(symtab[6], name_offset), []).append(offset)
-    if len(targets.get('init_module', [])) != 1 or len(targets.get('cleanup_module', [])) != 1:
+    if len(targets.get('init_module', [])) != 1 or len(targets.get('cleanup_module', [None])) != 1:
         fail(path + ': init_module/cleanup_module relocations not found once each')
-    return magic[0], named['.gnu.linkonce.this_module'][0][5], targets['init_module'][0], targets['cleanup_module'][0]
+    # A module without exit (the 4.4 build) has no cleanup relocation: None matches any exit offset.
+    return magic[0], named['.gnu.linkonce.this_module'][0][5], targets['init_module'][0], targets.get('cleanup_module', [None])[0]
+
+
+def same_abi(build, stock):
+    return build[:3] == stock[:3] and build[3] in (None, stock[3])
 
 
 root, release, here = sys.argv[1:4]
@@ -145,10 +155,14 @@ candidates = sorted(os.path.join(here, name) for name in os.listdir(here)
                     if name.startswith('earc_route-') and name.endswith('.ko'))
 if not candidates:
     fail('no earc_route-*.ko in ' + here)
-matching = [path for path in candidates if module_abi(path) == stock]
+matching = [path for path in candidates if same_abi(module_abi(path), stock)]
 if len(matching) != 1:
     fail('%d of %s match this kernel (vermagic %r, struct module %#x bytes, init %#x, exit %#x)' %
          ((len(matching), ', '.join(os.path.basename(path) for path in candidates)) + stock))
+# A build without exit (4.4, legacy-audio) finds and checks LG's code itself: no parameters.
+if module_abi(matching[0])[3] is None:
+    print(matching[0] + ' permanent')
+    sys.exit(0)
 
 wanted = {name for name, _ in FUNCTIONS} | {name for name, _ in HDMI_FUNCTIONS} | {'_stext', '_etext'}
 found = {}
@@ -213,6 +227,10 @@ PY
 KO=${parameters%% *}
 parameters=${parameters#* }
 if [ "$want_mode" = check ]; then echo "earc-route: CHECK OK: kernel $release takes $(basename "$KO")"; exit 0; fi
+if [ "$parameters" = permanent ]; then
+  [ "$want_mode" = 7 ] || refuse "$(basename "$KO") has no audit; it loads with --dts-hd only, until reboot"
+  parameters= options=
+fi
 INSMOD=$(command -v insmod || true)
 if [ -z "$INSMOD" ] && [ -x /sbin/insmod ]; then INSMOD=/sbin/insmod; fi
 [ -n "$INSMOD" ] || refuse "insmod not found"
@@ -238,6 +256,13 @@ after=$(dmesg | grep -c 'earc_route:' || true)
 [ "$after" != "$before" ] || last="(no earc_route kernel messages)"
 
 param() { cat "$ROOT/sys/module/earc_route/parameters/$1" 2>/dev/null; }
+if [ -z "$options" ]; then
+  # Partly patched, it stays loaded with enabled=0: a failure, not a session.
+  if [ "$status" = 0 ] && [ "$(param enabled)" = 1 ]; then
+    echo "earc-route: PASSTHROUGH ACTIVE (until reboot); EXPERIMENTAL ($last)"; exit 0
+  fi
+  echo "earc-route: PASSTHROUGH FAILED (insmod status $status: $result): $last"; exit 1
+fi
 case "$want_mode" in
   0)
     case "$result" in

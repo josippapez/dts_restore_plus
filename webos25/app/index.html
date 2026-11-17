@@ -269,6 +269,23 @@
         <pre id="routeLog" class="log" hidden></pre>
       </section>
 
+      <section class="card" id="cardC1Hd" hidden>
+        <h2>DTS-HD to an eARC receiver (C1, untested)</h2>
+        <p class="muted note-warn">
+          Nobody has run this on a C1 yet. It loads a kernel module that stays until the TV
+          restarts. Needs an eARC receiver and Digital Sound Output on Pass Through.
+        </p>
+        <div class="row">
+          <button id="btnC1HdOn"  class="btn btn--danger focusable" data-nav disabled>Turn on</button>
+          <button id="btnC1HdOff" class="btn focusable" data-nav disabled>Turn off</button>
+        </div>
+        <dl class="status">
+          <dt>DTS-HD</dt><dd id="sC1Hd">&mdash;</dd>
+          <dt>Kernel module</dt><dd id="sC1Kmod">&mdash;</dd>
+          <dt>Last</dt><dd id="sC1Last">&mdash;</dd>
+        </dl>
+      </section>
+
       <!-- ===== Support (static, deliberately not focusable) ===== -->
       <section class="card card--wide support" aria-labelledby="h-support">
         <img class="support__qr" src="img/kofi-qr.png" width="148" height="148" alt="QR code for ko-fi.com/josippapez">

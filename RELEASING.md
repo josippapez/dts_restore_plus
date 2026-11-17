@@ -21,7 +21,8 @@ webos25/restore/demux-out/   libgstisomp4.so, libgstmpegtsdemux.so (mp4/ts/m2ts 
                               MP4 Dolby Vision profile 7), libgstmatroska.so (MKV DV profile 7)
                               libgstvideoparsersbad.so (HEVC Dolby Vision profile 7 RPU normalization)
 webos25/restore/ts114-out/   libgstmpegtsdemux.so                (1.14.4 build, C2 app profile)
-webos25/restore/kmod-out/    earc_route-5.4.ko, earc_route-6.12.ko (webos25/kmod, GPL-2.0-only)
+webos25/restore/kmod-out/    earc_route-5.4.ko, earc_route-6.12.ko, earc_route-4.4.ko (webos25/kmod, GPL-2.0-only)
+webos25/restore/c1-out/      libgstdtsdec.so                     (C1/webOS 6 build, GStreamer 1.16)
 ```
 
 The app's `webos25/app/payload/**` `.so` are **git-ignored** generated copies. At
@@ -43,7 +44,7 @@ Never edit a generated `payload/**` binary.
 - the HEVC parser's Dolby Vision profile 7 RPU normalization in
   `webos25/restore/patch-p7-rpu-state.py` and `webos25/restore/src/dovi-rpu-normalize.h`
 - `webos25/restore/build.sh`, `build-truehd.sh`, `build-demux.sh`, `build-switch.sh`,
-  `build-edid.sh`, `build-ts114.sh`
+  `build-edid.sh`, `build-ts114.sh`, `build-c1.sh` (and `src/c1route.c`, `src/c1compat.h`)
   (toolchain, flags, pinned sources, ABI — for `build.sh` that includes the ffmpeg
   `n4.4.4` tag, its configure flags and the pinned Debian snapshot)
 - the kernel module in `webos25/kmod/`: `core/`, `platform/`, `target/`, `earc_route_brk.c`,
@@ -56,6 +57,12 @@ Never edit a generated `payload/**` binary.
 it from `webos25/kmod/` into the CLI tarball's `kmod-out/` and the app's
 `payload/webos25-hdmi/`. The 6.12 module has never run on a TV: it loads only after the
 user presses Try anyway in the app.
+
+**Exception: the C1 (webOS 6) DTS-HD binaries ship before any C1 has run them.**
+`c1-out/libgstdtsdec.so` and `kmod-out/earc_route-4.4.ko` go into `payload/c1/` with
+`init_c1.sh`; the app stages and loads them only after the user turns on DTS-HD in the
+C1 card and confirms twice. They are tested in QEMU against the extracted C1 firmware
+only. Remove this exception once a C1 owner has confirmed playback.
 
 Editing `install.sh` / `init_dts25.sh` / the app JS/HTML does **not** require a
 rebuild — but still cut a new release so the tarball/`.ipk` carry the change.
@@ -212,6 +219,9 @@ cp -f  ../../gst/libgstlibav.so ../../gst/libgstisomp4.so \
        ../../gst/libgstmatroska.so ../../gst/libgstisomp4_1_8.so          payload/cx/
 mkdir -p payload/c2-ts
 cp -f  ../restore/ts114-out/libgstmpegtsdemux.so                       payload/c2-ts/
+mkdir -p payload/c1
+cp -f  ../restore/c1-out/libgstdtsdec.so ../restore/kmod-out/earc_route-4.4.ko \
+       ../kmod/earc-route-load.sh ../restore/init_c1.sh                payload/c1/
 npm install -g @webosose/ares-cli
 ares-package . service -o dist        # -> dist/io.github.josippapez.dtsenabler_<ver>_all.ipk
 ```

@@ -23,7 +23,9 @@ chmod +x "$BUILD/bin/"*
 for dir in "$@"; do
   [ -f "$dir/stock-module.ko" ] || { echo "SKIP loader $dir: no stock-module.ko"; continue; }
   release=$(LC_ALL=C grep -a -o -m1 'Linux version [^ ]*' "$dir/kernel.bin" | cut -d' ' -f3)
+  mode=
   case $release in
+    4.4.84-229.kcl4tv.6) want=earc_route-4.4 mode=--dts-hd ;;
     5.4.268-329.ptl4tv.[25]|5.4.268-320) want=earc_route-5.4 ;;
     # Realtek audio stack: none of the module's symbols, so the loader must refuse.
     6.12.*qilian*) want=refuse ;;
@@ -34,7 +36,8 @@ for dir in "$@"; do
   cp "$dir/stock-module.ko" "$root/lib/modules/$release/"
   cp "$dir/kallsyms.txt" "$root/proc/kallsyms"
   printf '#!/bin/sh\necho %s\n' "$release" > "$BUILD/bin/uname"; chmod +x "$BUILD/bin/uname"
-  out=$(PATH="$BUILD/bin:$PATH" EARC_LOADER_ROOT="$root" sh "$BUILD/app/earc-route-load.sh" 2>&1) || true
+  # shellcheck disable=SC2086 # mode is empty or one flag
+  out=$(PATH="$BUILD/bin:$PATH" EARC_LOADER_ROOT="$root" sh "$BUILD/app/earc-route-load.sh" $mode 2>&1) || true
   check=$(PATH="$BUILD/bin:$PATH" EARC_LOADER_ROOT="$root" sh "$BUILD/app/earc-route-load.sh" --check 2>&1 | tail -n 1) || true
   echo "GATE $dir ($release): $check"
   if [ "$want" = refuse ]; then

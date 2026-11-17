@@ -67,7 +67,7 @@ needed; both kernels have PAC on.
 | `core/` | Shared by every target: `module.h` (struct module, parameters, modinfo), `lease.h` (`/dev/earc_route`), and for BRK targets `hook.h`, `code.h` (functions by name, accepted by link-independent shape) and `core.h` (hook table, patching) |
 | `platform/` | Per kernel ABI: `linux-5.4-6.12.h` (kprobes), `linux-4.4.h` (raw BRK hooks, C1) |
 | `target/aud-hal/` | webOS 25 (LG aud_hal): `earc_route.c` (audit `mode=0`, session `mode=7`), `earc_decode.h`, `earc_hdmi.h`, `earc_probe.h` (derivations and decisions, shared with the test) |
-| `target/legacy-audio/` | LG's old AUDIO_* driver (C1, W21K; 4.4.84-229), no built-in addresses, built through `earc_route_brk.c`; experimental, not shipped |
+| `target/legacy-audio/` | LG's old AUDIO_* driver (C1, W21K; 4.4.84-229), no built-in addresses, built through `earc_route_brk.c`; experimental, ships behind the app's C1 DTS-HD opt-in |
 | `build.sh`, `build.py` | Container build of every generation plus ABI, import and export checks against kernel captures |
 | `earc-route-load.sh` | TV-side loader (root, busybox sh + python3) |
 | `test/run.sh` | Runs every suite below |
