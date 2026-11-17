@@ -17,6 +17,7 @@
 #define LGROUTE_SINK_WAIT (600 * G_TIME_SPAN_MILLISECOND)
 #define LGROUTE_SNDOUT "/tmp/lgroute-test-run/sndout"
 #define LGROUTE_LEASE "/tmp/lgroute-test-run/earc_route"
+#define LGROUTE_HD_PROBES "/tmp/lgroute-test-run/hd_probes_registered"
 #include "../lgroute.h"
 #include "../lgroute-graph.h"
 
@@ -717,11 +718,30 @@ static void stale_buffer_tests (void)
   g_assert_false (route.failed); g_assert_true (route.configured);
   g_assert_cmpint (formats, ==, formats_before + 1);
   g_assert_false (((TestSink *) route.sink)->pcm);   /* the first ES event left with the flag clear */
-  g_assert_false (route.restart_pending);
+  /* LG's renderer still runs at the old track's pace (two testers' TVs, one a G3,
+   * played every such carrier four times too slowly): it is restarted, once. */
+  g_assert_true (route.restart_pending);
+  /* Not at once: LG has just restarted the renderer itself for the new track.
+   * A tester's TV froze twice, and once found no converter, when ours followed
+   * 10-20 ms later. Until LG has settled the receiver gets silence. */
+  push_carrier (source);
   g_assert_cmpuint (route.restarts, ==, 0);
+  g_assert_true (route.restart_pending);
+  g_assert_cmpuint (pushed_byte, ==, 0);
+  route.restart_after = 0;
+  push_carrier (source);
+  g_assert_cmpuint (route.restarts, ==, 1);
+  g_assert_false (route.failed); g_assert_true (route.configured);
+  g_assert_cmpint (formats, ==, formats_before + 2);
+  g_assert_false (((TestSink *) route.sink)->pcm);
+  push_carrier (source);
+  g_assert_true (((TestSink *) route.sink)->pcm);
+  g_assert_false (route.restart_pending);
+  g_assert_cmpuint (route.restarts, ==, 1);
   gchar *log = NULL;
   g_assert_true (g_file_get_contents (ROUTE_LOG, &log, NULL, NULL));
   g_assert_nonnull (strstr (log, "earlier stream still draining, passed through"));
+  g_assert_nonnull (strstr (log, "track switch: restarting LG's renderer once the sink plays"));
   g_free (log);
   unwire (&route, pad, source);
 
@@ -981,6 +1001,40 @@ static void native_es_tests (void)
   g_unlink (LGROUTE_RUN "/native-es");
   lgroute_init (&selected, NULL);
   g_assert_false (selected.native_es);
+  /* A track switch (the sink holds another codec's caps) takes native ES only
+   * where LG's kernel takes DTS-HD itself (earc_route placed no status probes):
+   * a G5, where it places them, played a native ES DTS:X switch silent. */
+  static GstStaticPadTemplate any_sink =
+      GST_STATIC_PAD_TEMPLATE ("sink", GST_PAD_SINK, GST_PAD_ALWAYS, GST_STATIC_CAPS_ANY);
+  GstPad *sinkpad = gst_pad_new_from_static_template (&any_sink, "switch"), *src = gst_pad_new ("src", GST_PAD_SRC);
+  gst_pad_set_event_function (sinkpad, accept_event);
+  g_assert_true (gst_pad_set_active (sinkpad, TRUE));
+  g_assert_true (gst_pad_set_active (src, TRUE));
+  g_assert_cmpint (gst_pad_link (src, sinkpad), ==, GST_PAD_LINK_OK);
+  g_assert_true (g_file_set_contents (LGROUTE_HD_PROBES, "0\n", -1, NULL));
+  g_assert_false (switch_native_es (sinkpad));   /* a fresh play */
+  GstCaps *ac3 = gst_caps_from_string ("audio/x-raw,format=S16LE,rate=48000,channels=10,layout=interleaved,codec=(uint)2,acmod=(uint)7");
+  gst_pad_push_event (src, gst_event_new_stream_start ("ac3"));
+  g_assert_true (gst_pad_push_event (src, gst_event_new_caps (ac3)));
+  gst_caps_unref (ac3);
+  g_assert_true (switch_native_es (sinkpad));
+  g_assert_true (g_file_set_contents (LGROUTE_HD_PROBES, "2\n", -1, NULL));
+  g_assert_false (switch_native_es (sinkpad));
+  g_unlink (LGROUTE_HD_PROBES);   /* module not loaded */
+  g_assert_false (switch_native_es (sinkpad));
+  g_assert_true (g_file_set_contents (LGROUTE_HD_PROBES, "0\n", -1, NULL));
+  /* A sink still holding the carrier keeps the last carrier's transport. */
+  GstCaps *carrier_caps = lgroute_carrier_caps ();
+  g_assert_true (gst_pad_push_event (src, gst_event_new_caps (carrier_caps)));
+  gst_caps_unref (carrier_caps);
+  carrier_native = FALSE;
+  g_assert_false (switch_native_es (sinkpad));
+  g_unlink (LGROUTE_HD_PROBES);
+  carrier_native = TRUE;
+  g_assert_true (switch_native_es (sinkpad));
+  carrier_native = FALSE;
+  gst_pad_unlink (src, sinkpad);
+  gst_object_unref (src); gst_object_unref (sinkpad);
 #ifdef __linux__
   int device = open (LGROUTE_AREN, O_RDWR | O_CREAT, 0600);
   g_assert_cmpint (device, >=, 0);

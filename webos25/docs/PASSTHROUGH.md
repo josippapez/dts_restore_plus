@@ -16,8 +16,10 @@ with app 2.7.71 or later (discussion #17). Other combinations are unverified.
 ## Full DTS-HD over eARC
 
 The exact tested C2 build uses LG's native ES bypass without synthetic renderer
-restarts. Other profiles start on the PCM bypass and switch to native ES at a
-track switch, where LG kept the PCM carrier at the old track's pace.
+restarts. Other profiles use the PCM bypass. At a track switch, TVs whose own
+kernel already takes DTS-HD (C3/G3, G4) switch to native ES, where LG kept the
+PCM carrier at the old track's pace. The rest keep the PCM carrier and restart
+LG's renderer, as in webos25-2.79: native ES there left DTS:X silent on a G5.
 Both carry FFmpeg's IEC 61937 packing at 192 kHz. HD needs Digital Sound Output
 on Pass Through: Auto re-encodes and mixes TV sounds in.
 

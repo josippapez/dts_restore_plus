@@ -1,4 +1,5 @@
-/* LG-managed HD bypass transport: native ES on the verified C2 and at every track switch.
+/* LG-managed HD bypass transport: native ES on the verified C2, and at a track
+ * switch where LG's own kernel takes DTS-HD.
  * SPDX-License-Identifier: LGPL-2.1-or-later */
 #define _GNU_SOURCE
 #include "lgroute.h"
@@ -37,6 +38,15 @@ GST_DEBUG_CATEGORY_STATIC (lgroute_debug);
 /* The carrier's bytes per second: 192 kHz, 8 channels, 16 bit. */
 #define CARRIER_BYTES_PER_SECOND (192000 * 8 * 2)
 #define PACE_WINDOW (GST_SECOND / 4)
+/* How long after LG's own track-change restart ours may follow. */
+#define RESTART_SETTLE (500 * G_TIME_SPAN_MILLISECOND)
+/* earc_route places no DTS-HD status probes where LG's own kernel already takes
+ * DTS-HD (C3/G3, G4). There native ES switched cleanly (a G3); where the module
+ * adds them, a G5 played a native ES DTS:X switch as silence, and the PCM
+ * carrier with a renderer restart played it on that G5 and on a G2. */
+#ifndef LGROUTE_HD_PROBES
+#define LGROUTE_HD_PROBES "/sys/module/earc_route/parameters/hd_probes_registered"
+#endif
 #ifndef LGROUTE_SNDOUT
 #define LGROUTE_SNDOUT "/proc/lgtv-driver/audio/sndout"
 #endif
@@ -303,6 +313,21 @@ static gboolean pad_has_carrier (GstPad *pad)
   return same;
 }
 
+/* At arm time: a sink still holding the carrier (a replay, or HD to HD) keeps
+ * the last carrier's transport. One holding another codec's caps is a track
+ * switch, where the PCM carrier kept the old track's pace, a quarter speed on a
+ * G3; native ES switched cleanly there. */
+static gboolean switch_native_es (GstPad *pad)
+{
+  if (pad_has_carrier (pad))
+    return carrier_native;
+  gchar *probes = NULL;
+  gboolean lg_takes_hd = g_file_get_contents (LGROUTE_HD_PROBES, &probes, NULL, NULL)
+      && !strcmp (g_strstrip (probes), "0");
+  g_free (probes);
+  return lg_takes_hd && gst_pad_has_current_caps (pad);
+}
+
 static void restart_pace (LgRoute *route)
 {
   route->window_start = route->last_push = 0;
@@ -329,6 +354,7 @@ static gboolean restart_wanted (LgRoute *route, const gchar *why)
   if (route->native_es || route->restarts >= 2)
     return FALSE;
   route->restart_pending = TRUE;
+  route->restart_after = 0;
   lgroute_log ("%s: restarting LG's renderer once the sink plays", why);
   return TRUE;
 }
@@ -481,7 +507,7 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
     return GST_PAD_PROBE_DROP;
   }
   if (route->restart_pending) {
-    if (!sink_playing (route)) {
+    if (!sink_playing (route) || g_get_monotonic_time () < route->restart_after) {
       /* The restart starts LG's renderer at once, so it waits for playback;
        * until then the receiver gets silence, typed PCM like any carrier. */
       GstBuffer *buffer = gst_buffer_make_writable (GST_PAD_PROBE_INFO_BUFFER (info));
@@ -526,7 +552,18 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
       lgroute_log ("native ES bypass tail %s of this renderer", route->converter);
     else
       lgroute_log ("configured converter %s%s", route->converter, route->own ? " of this renderer" : "");
-    route->draining = FALSE;
+    /* After a track switch LG's renderer keeps the old track's pace: a G3 and
+     * another tester's TV played every such carrier four times too slowly. Restart it, as
+     * after a resume. Native ES needs no restart. */
+    if (route->draining) {
+      route->draining = FALSE;
+      /* LG has restarted the renderer itself for the new track a moment ago
+       * and is still rewiring its output. A tester's TV, with ours following
+       * 10-20 ms later, twice hung in the restart with LG's audio driver
+       * locked (TV audio gone until a reboot) and once found no converter. */
+      if (restart_wanted (route, "track switch"))
+        route->restart_after = route->configured_at + RESTART_SETTLE;
+    }
     if (route->lease_fd < 0)
       route->lease_fd = app_lease (route->lease);
     if (route->lease_fd < 0) {
@@ -824,9 +861,7 @@ gboolean lgroute_arm (LgRoute *route)
     gst_object_unref (sink);
     return FALSE;
   }
-  /* At a track switch the PCM carrier kept the old track's pace, a quarter speed
-   * on a G3; LG's native ES bypass switches cleanly there and on the C2. */
-  route->native_es |= pad_has_carrier (pad) ? carrier_native : gst_pad_has_current_caps (pad);
+  route->native_es |= switch_native_es (pad);
   /* The probes run at once on sticky events, so the route is published first.
    * Until our caps reach the sink, what arrives there is the earlier stream's. */
   route->waiting = TRUE;
@@ -875,6 +910,7 @@ void lgroute_disarm (LgRoute *route)
   int lease_fd = route->lease_fd;
   route->lease_fd = -1;
   route->lease = 0;
+  route->restart_after = 0;
   route->stream_id[0] = 0;
   route->resource[0] = 0;
   restart_pace (route);
