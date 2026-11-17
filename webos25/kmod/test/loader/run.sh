@@ -17,7 +17,7 @@ V54='5.4.268 SMP preempt mod_unload aarch64'
 V612='6.12.44 SMP preempt mod_unload aarch64'
 
 # The loader's two function lists must equal the module's X-macro lists.
-python3 -I - "$LOADER" "$HERE/../../earc_decode.h" "$HERE/../../earc_hdmi.h" <<'PY' || exit 1
+python3 -I - "$LOADER" "$HERE/../../target/aud-hal/earc_decode.h" "$HERE/../../target/aud-hal/earc_hdmi.h" <<'PY' || exit 1
 import re, sys
 loader, decode, hdmi = (open(p).read() for p in sys.argv[1:4])
 def header(text, macro):

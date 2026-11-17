@@ -2,7 +2,7 @@
 /* Derives every LG-private data address the eARC route module needs from the
  * code of LG's own functions, so that one module binary can serve every
  * firmware of a kernel generation. Shared, unchanged, by the kernel module
- * (earc_route.c) and the host test (test/test_decode.c).
+ * (earc_route.c) and the host test (test/aud-hal/decode.c).
  *
  * Freestanding: no libc, no floating point, no allocation. All state is
  * static, so it is not reentrant; the module decodes once, in init.

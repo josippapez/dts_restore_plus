@@ -5,7 +5,7 @@ usage: build.py --output DIR CAPTURE_DIR...
 Each capture directory holds kernel.bin (raw arm64 Image), kallsyms.txt (live
 /proc/kallsyms, so 0x10000 below the survey capture on 6.12) and
 stock-module.ko (an unmodified module from that TV). The generation of a
-capture, 5.4.268 or 6.12.44, comes from its stock module's vermagic; one module
+capture (4.4.84, 5.4.268 or 6.12.44) comes from its stock module; one module
 is built per generation that has a capture. The modules themselves do not
 depend on the captures: they prove each module's layout matches the stock
 modules of its generation and that every symbol it imports is exported by each
@@ -21,38 +21,47 @@ import re
 import struct
 import subprocess
 
+# The webOS 25 target: LG's aud_hal driver, kprobes, addresses derived at load
+# (target/aud-hal). Direct imports, each proven exported by every kernel of the
+# generation. register_kernel_break_hook, unregister_kernel_break_hook and
+# aarch64_insn_patch_text are not exported and are called through kallsyms.
+AUD_HAL = {'source': 'target/aud-hal/earc_route.c', 'flags': [],
+           'imports': {'mutex_lock', 'mutex_unlock', 'msleep', 'kthread_create_on_node', 'wake_up_process',
+                       'kthread_stop', 'kthread_should_stop', 'param_set_uint', 'param_get_uint',
+                       'param_set_ulong', 'param_get_ulong', 'register_kprobe', 'unregister_kprobe',
+                       'cpus_read_lock', 'cpus_read_unlock', '__arch_copy_from_user'},
+           'exports': 'prel32'}
+# BRK targets (core/ + platform/ + target/legacy-audio): the 4.4
+# loader rejects ADRP relocations, so literals are PC-relative loads.
+BRK_FLAGS = ['-fno-common', '-fno-unwind-tables', '-mcmodel=large', '-mpc-relative-literal-loads']
+BRK_IMPORTS = {'printk', 'kallsyms_lookup_name', 'misc_register', 'misc_deregister', '__copy_from_user',
+               'get_online_cpus', 'put_online_cpus', 'param_set_uint', 'param_get_uint'}
+
 # Per kernel generation: vermagic, struct module (size, init offset, exit offset)
-# of the stock aspectratiodrv.ko, the kernel's name for printk, and the
-# -D macros earc_route.c takes. Neither generation uses MODVERSIONS or BTI.
-# kprobe: (sizeof struct kprobe, offset of its last field `flags`) of each
-# generation, measured from register_kprobe/arch_prepare_kprobe in the captures
-# (5.4: flags +0x80, size 0x88; 6.12: flags +0x78, size 0x80 after fault_handler
-# was dropped). The module's _Static_asserts, compiled per generation with these,
-# are the layout check; the captures hold no kprobe instance to measure directly.
+# of the stock module, the kernel's name for printk, the target built for it
+# and the -D macros it takes. No generation uses MODVERSIONS or BTI.
+# kprobe: (sizeof struct kprobe, offset of its last field `flags`), measured from
+# register_kprobe/arch_prepare_kprobe (5.4: flags +0x80, size 0x88; 6.12: +0x78,
+# 0x80 after fault_handler was dropped); the _Static_asserts are the layout check.
 GENERATIONS = {
+    '4.4': {'vermagic': '4.4.84 SMP preempt mod_unload aarch64', 'abi': (0x300, 0x158, 0x2d8),
+               'printk': 'printk', 'source': 'earc_route_brk.c', 'flags': BRK_FLAGS + [
+                   '-DEARC_PLATFORM="platform/linux-4.4.h"', '-DEARC_TARGET="target/legacy-audio/target.h"'],
+               'imports': BRK_IMPORTS, 'exports': 'absolute', 'exit': None},
     '5.4': {'vermagic': '5.4.268 SMP preempt mod_unload aarch64', 'abi': (0x380, 0x150, 0x338),
-            'printk': 'printk', 'kprobe': (0x88, 0x80)},
+            'printk': 'printk', 'kprobe': (0x88, 0x80), **AUD_HAL},
     '6.12': {'vermagic': '6.12.44 SMP preempt mod_unload aarch64', 'abi': (0x4c0, 0x138, 0x480),
-             'printk': '_printk', 'kprobe': (0x80, 0x78)},
+             'printk': '_printk', 'kprobe': (0x80, 0x78), **AUD_HAL},
     # C6 (2026, 43.21.79/98): same release and vermagic, exit 8 bytes lower.
     '6.12-c6': {'vermagic': '6.12.44 SMP preempt mod_unload aarch64', 'abi': (0x4c0, 0x138, 0x478),
-                'printk': '_printk', 'kprobe': (0x80, 0x78)},
+                'printk': '_printk', 'kprobe': (0x80, 0x78), **AUD_HAL},
 }
-# Direct imports, each proven exported by
-# every kernel of the generation (prel32_exports). register_kernel_break_hook,
-# unregister_kernel_break_hook and aarch64_insn_patch_text are NOT exported and
-# are called through kallsyms addresses, so they are not imports.
-IMPORTS = {'mutex_lock', 'mutex_unlock', 'msleep', 'kthread_create_on_node', 'wake_up_process',
-           'kthread_stop', 'kthread_should_stop', 'param_set_uint', 'param_get_uint',
-           'param_set_ulong', 'param_get_ulong',
-           'register_kprobe', 'unregister_kprobe', 'cpus_read_lock', 'cpus_read_unlock',
-           '__arch_copy_from_user'}
 
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
 parser.add_argument('--output', type=Path, required=True)
 parser.add_argument('captures', type=Path, nargs='+')
 args = parser.parse_args()
-source = Path(__file__).resolve().parent / 'earc_route.c'
+here = Path(__file__).resolve().parent
 work = args.output / 'build'
 work.mkdir(parents=True, exist_ok=True)
 
@@ -68,8 +77,10 @@ def module_abi(path):
     info = readelf('-p', '.modinfo', path)
     magic = [line.split('vermagic=')[1] for line in info.splitlines() if 'vermagic=' in line]
     relocations = readelf('-rW', path).split("Relocation section '.rela.gnu.linkonce.this_module'")[1]
-    offsets = {name: int(re.search(r'^([0-9a-f]+).* ' + name + r' \+', relocations, re.M).group(1), 16)
-               for name in ('init_module', 'cleanup_module')}
+    offsets = {}
+    for name in ('init_module', 'cleanup_module'):
+        found = re.search(r'^([0-9a-f]+).* ' + name + r' \+', relocations, re.M)
+        offsets[name] = int(found.group(1), 16) if found else None
     return {'size': size, 'vermagic': magic, **offsets}
 
 
@@ -109,6 +120,20 @@ def prel32_exports(image, symbols, names, base):
     return exports
 
 
+def absolute_exports(image, symbols, names, base):
+    """Each name whose 4.4 ksymtab entry {u64 value, u64 name} is its kallsyms
+    address and whose name pointer spells it exactly."""
+    exports = {}
+    for name in names:
+        entry = symbols.get('__ksymtab_' + name, [])
+        if len(entry) != 1 or len(symbols.get(name, [])) != 1:
+            continue
+        value, pointer = struct.unpack_from('<QQ', image, entry[0] - base)
+        if value == symbols[name][0] and image[pointer - base:pointer - base + len(name) + 1] == name.encode() + b'\0':
+            exports[name] = hex(value)
+    return exports
+
+
 def define(name, value):
     return '-D' + name + '=' + str(value)
 
@@ -119,7 +144,9 @@ def generation_of(capture):
         expected = {'size': generation['abi'][0], 'vermagic': [generation['vermagic']],
                     'init_module': generation['abi'][1], 'cleanup_module': generation['abi'][2]}
         if stock == expected:
-            return name, expected
+            # A module without exit leaves no relocation at the exit offset.
+            built = dict(expected, cleanup_module=generation.get('exit', expected['cleanup_module']))
+            return name, built
     raise SystemExit('Stock module of ' + str(capture) + ' matches no generation: ' + repr(stock))
 
 
@@ -133,15 +160,20 @@ for name, (expected_abi, captures) in sorted(by_generation.items()):
     size, init, exit_ = generation['abi']
     module = args.output / ('earc_route-' + name + '.ko')
     optimized = work / ('earc_route-' + name + '.optimized')
+    if 'kprobe' in generation:
+        layout = [define('EARC_MODULE_SIZE', hex(size)), define('EARC_MODULE_INIT', hex(init)),
+                  define('EARC_MODULE_EXIT', hex(exit_)), define('EARC_VERMAGIC', '"' + generation['vermagic'] + '"'),
+                  define('EARC_PRINTK_SYMBOL', '"' + generation['printk'] + '"'),
+                  define('EARC_KPROBE_SIZE', hex(generation['kprobe'][0])),
+                  define('EARC_KPROBE_FLAGS', hex(generation['kprobe'][1]))]
+    else:
+        layout = []
     subprocess.run(['aarch64-linux-gnu-gcc', '-c', '-O2', '-Wall', '-Wextra', '-Werror',
                     '-fno-stack-protector', '-fno-pic', '-fno-pie', '-fno-asynchronous-unwind-tables',
                     '-ffreestanding', '-fno-builtin', '-mgeneral-regs-only', '-mno-outline-atomics',
-                    define('EARC_MODULE_SIZE', hex(size)), define('EARC_MODULE_INIT', hex(init)),
-                    define('EARC_MODULE_EXIT', hex(exit_)), define('EARC_VERMAGIC', '"' + generation['vermagic'] + '"'),
-                    define('EARC_PRINTK_SYMBOL', '"' + generation['printk'] + '"'),
-                    define('EARC_KPROBE_SIZE', hex(generation['kprobe'][0])),
-                    define('EARC_KPROBE_FLAGS', hex(generation['kprobe'][1])),
-                    '-fdump-tree-optimized=' + str(optimized), str(source), '-o', str(module)], check=True)
+                    *layout, *generation['flags'], '-I', str(here),
+                    '-fdump-tree-optimized=' + str(optimized), str(here / generation['source']), '-o', str(module)],
+                   check=True)
     # GCC 12 once replaced a call through a constant kernel address, reached via
     # a function-pointer parameter, with __builtin_unreachable; the function then
     # ran off its end. No such path may survive in a module.
@@ -152,7 +184,7 @@ for name, (expected_abi, captures) in sorted(by_generation.items()):
         raise SystemExit('Built ' + name + ' module ABI differs from stock: ' + repr(actual))
     undefined = subprocess.check_output(['aarch64-linux-gnu-nm', '-u', str(module)], text=True)
     imports = {line.split()[-1] for line in undefined.splitlines() if line.strip()}
-    allowed = IMPORTS | {generation['printk']}
+    allowed = generation['imports'] | {generation['printk']}
     if imports - allowed or generation['printk'] not in imports:
         raise SystemExit('Unexpected unresolved imports in ' + name + ' module: ' + repr(sorted(imports ^ allowed)))
 
@@ -160,7 +192,8 @@ for name, (expected_abi, captures) in sorted(by_generation.items()):
     for capture in captures:
         image = (capture / 'kernel.bin').read_bytes()
         symbols = kallsyms(capture / 'kallsyms.txt')
-        exports = prel32_exports(image, symbols, imports, link_base(image, symbols))
+        prove = prel32_exports if generation['exports'] == 'prel32' else absolute_exports
+        exports = prove(image, symbols, imports, link_base(image, symbols))
         if set(exports) != imports:
             raise SystemExit('Imports not exported by ' + str(capture) + ': ' + repr(sorted(imports - set(exports))))
         kernels[hashlib.sha256(image).hexdigest()] = exports

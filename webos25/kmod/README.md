@@ -64,14 +64,17 @@ needed; both kernels have PAC on.
 
 | File | What it is |
 |---|---|
-| `earc_decode.h` | Freestanding AArch64 decoder and derivations, shared by the module and the test |
-| `earc_route.c` | The module: parameter checks, decode, audit (`mode=0`), session (`mode=7`) |
-| `earc_hdmi.h` | The HDMI passthrough audit's derivations and its break-hook list walk, shared by the module and the test |
-| `earc_probe.h` | The session's pure decision logic (break-hook decision, `_set_output` policies, gate-restore rule, the two DTS-HD probes, refusal), shared by the module and the test |
-| `build.sh`, `build.py` | Container build plus ABI, import and export checks against kernel captures |
+| `core/` | Shared by every target: `module.h` (struct module, parameters, modinfo), `lease.h` (`/dev/earc_route`), and for BRK targets `hook.h`, `code.h` (functions by name, accepted by link-independent shape) and `core.h` (hook table, patching) |
+| `platform/` | Per kernel ABI: `linux-5.4-6.12.h` (kprobes), `linux-4.4.h` (raw BRK hooks, C1) |
+| `target/aud-hal/` | webOS 25 (LG aud_hal): `earc_route.c` (audit `mode=0`, session `mode=7`), `earc_decode.h`, `earc_hdmi.h`, `earc_probe.h` (derivations and decisions, shared with the test) |
+| `target/legacy-audio/` | LG's old AUDIO_* driver (C1, W21K; 4.4.84-229), no built-in addresses, built through `earc_route_brk.c`; experimental, not shipped |
+| `build.sh`, `build.py` | Container build of every generation plus ABI, import and export checks against kernel captures |
 | `earc-route-load.sh` | TV-side loader (root, busybox sh + python3) |
-| `test/run.sh`, `test/test_decode.c` | Host test: sha-keyed oracles, refusal tests, C5/G5 and 5.4/6.12 differences |
-| `test/loader/run.sh` | Host test of `earc-route-load.sh`'s kernel check (module chosen from the running kernel's stock modules, refusals), with generated stand-in modules and stubbed commands |
+| `test/run.sh` | Runs every suite below |
+| `test/captures/` | `fetch.sh` and `kernels.tsv`: private kernel captures (git-ignored), one directory each |
+| `test/aud-hal/` | Host test: sha-keyed oracles, refusal tests, C5/G5 and 5.4/6.12 differences |
+| `test/legacy-audio/` | Shape check and derivation on the host, then the 4.4 module on every 4.4 capture in QEMU |
+| `test/loader/` | `earc-route-load.sh`'s kernel check with stand-in modules (`run.sh`), and on each capture (`captures.sh`) |
 
 ## What is derived, and from where
 
@@ -401,16 +404,15 @@ refuses unless, per generation:
 ## Test
 
 ```sh
-sh webos25/kmod/test/fetch.sh        # once: firmwares in test/kernels.tsv -> test/kernels/ (git-ignored)
-sh webos25/kmod/test/run.sh          # every capture in test/kernels/, plus any EARC_*_DIR
-sh webos25/kmod/test/loader/run.sh   # the loader's kernel check; needs no captures
+sh webos25/kmod/test/captures/fetch.sh   # once: firmwares in kernels.tsv -> test/captures/NAME/ (git-ignored)
+sh webos25/kmod/test/run.sh             # every suite; those needing captures SKIP without them
 ```
 
-`kernels.tsv` lists one firmware per kernel build the archive has for webOS 23
-to 26, with its zip's sha256. `run.sh` also runs the shipped loader on each
+`kernels.tsv` lists one firmware per kernel build the archive has for webOS 21
+to 26, with its zip's sha256. `loader/captures.sh` runs the shipped loader on each
 capture's own stock module and kallsyms: a kernel the boot script accepts must
-get its generation's `.ko` and every symbol. Every directory is passed to the
-decode test with the sha256 of its `kernel.bin`
+get its generation's `.ko` and every symbol. `aud-hal/run.sh` passes every directory
+to the decode test with the sha256 of its `kernel.bin`
 (`--kernel SHA256 DIR`); the four variables are equivalent apart from naming.
 Without captures it prints `SKIP` and passes. With them, the test applies the
 oracle table keyed by that sha256, so an oracle never meets another image:
@@ -499,30 +501,16 @@ it to the host test, which is what qualifies a kernel before a TV run:
 2. Find firmwares on that release in the firmware archive index,
    `https://lg.slada.sk/processed_fw.json`: each EPK entry has a `kernelVersion`
    field. Match the user's board by `firmwareotaID`, not by the version string.
-3. Download from `https://tv.slada.sk/<relativePath>` and check the file against
-   the entry's `zipFileSha256`.
-4. Extract the EPK with epk2extract (steps in
-   [`add-tv-generation`](../../.claude/skills/add-tv-generation/SKILL.md)).
-5. The kernel is `/boot/Image.lz4-<release>` in the rootfs. On 33.22.x the EPK has
-   no `kernel.pak`, so the rootfs is the only place. LG's LZ4P container needs
-   unpacking before it is a raw arm64 Image (c5-native's `unlz4p.py`, in a private
-   repository).
-6. Make the symbol table with `kallsyms-finder` from vmlinux-to-elf. It must be
-   what `/proc/kallsyms` shows on the TV (see Build for the 6.12 offset).
-7. The stock module is `/lib/modules/<release>/kernel/aspectratiodrv.ko` in the
-   rootfs (`/usr/lib/modules/<release>/...` on 6.12).
-8. Put the files in a capture directory: `kernel.bin`, `kallsyms.txt`,
-   `stock-module.ko`, and a `NOTES.txt` of your own (firmware version, source
-   file, hashes; no script reads it). `build.sh` and `test/run.sh` need only the
-   first three. Keep the directory outside the repository.
-9. (No loader change.)
-10. Run `webos25/kmod/build.sh CAPTURE_DIR...` (it runs `build.py`'s ABI, import
-    and export checks against the capture).
-11. Add the image to `test/test_decode.c`: an oracle row for the eARC values and an
-    HDMI oracle row, derived independently of the decoder, keyed by the
-    `kernel.bin` sha256. Run `sh test/run.sh` with the directory in
-    `EARC_EXTRA_DIRS` and check that the refusal tests still fail on a mutated
-    instruction.
+3. Add a row to `test/captures/kernels.tsv` (the zip's `relativePath` and
+   `zipFileSha256`) and run `sh test/captures/fetch.sh NAME`. It checks the sha256
+   and extracts `kernel.bin`, `kallsyms.txt` and `stock-module.ko`.
+4. (No loader change.)
+5. Run `webos25/kmod/build.sh CAPTURE_DIR...` (it runs `build.py`'s ABI, import
+   and export checks against the capture).
+6. Add the image to `test/aud-hal/decode.c`: an oracle row for the eARC values and an
+   HDMI oracle row, derived independently of the decoder, keyed by the
+   `kernel.bin` sha256. Run `sh test/aud-hal/run.sh` and check that the refusal
+   tests still fail on a mutated instruction.
 
 Host tests passing is not a TV run. Say so in the Status paragraph until someone
 has loaded the module on that kernel.

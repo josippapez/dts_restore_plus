@@ -46,8 +46,8 @@ Never edit a generated `payload/**` binary.
   `build-edid.sh`, `build-ts114.sh`
   (toolchain, flags, pinned sources, ABI — for `build.sh` that includes the ffmpeg
   `n4.4.4` tag, its configure flags and the pinned Debian snapshot)
-- the kernel module in `webos25/kmod/`: `earc_route.c`, `earc_decode.h`, `earc_hdmi.h`,
-  `earc_probe.h`, `build.sh`, `build.py`. Rebuild with `webos25/kmod/build.sh` (see its
+- the kernel module in `webos25/kmod/`: `core/`, `platform/`, `target/`, `earc_route_brk.c`,
+  `build.sh`, `build.py`. Rebuild with `webos25/kmod/build.sh` (see its
   README), copy `out/earc_route-*.ko` into `webos25/restore/kmod-out/`, and run the
   module on a TV of that kernel generation (audit, self-test, the mode the opt-in
   loads, unload) before committing it

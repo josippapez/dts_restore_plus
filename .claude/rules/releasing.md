@@ -15,8 +15,8 @@ it does **not** rebuild from source. Two obligations follow:
      `gstadecswitch.h`, `edidaudio.c`, `edidaudio.h`
    - the `dts_support` patch / pinned sources / flags in `webos25/restore/build-demux.sh`
    - `webos25/restore/build.sh`, `build-truehd.sh`, `build-demux.sh`, `build-switch.sh`, `build-edid.sh`, `build-ts114.sh`
-   - the kernel module: `webos25/kmod/earc_route.c`, `earc_decode.h`, `earc_hdmi.h`,
-     `earc_probe.h`, `build.sh`, `build.py`
+   - the kernel module: `webos25/kmod/core/`, `platform/`, `target/`, `earc_route_brk.c`,
+     `build.sh`, `build.py`
 
    The committed binaries live in
    `webos25/restore/{out,truehd-out,demux-out,switch-out,edid-out,ts114-out,kmod-out}`.
