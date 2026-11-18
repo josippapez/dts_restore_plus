@@ -22,6 +22,7 @@ check() {
 check "C2 model glob" 'OLED*C2*|OLED*G2*|OLED*CS*) C2_MODEL=1 ;; *) C2_MODEL=0 ;; esac'
 check "C2 firmware triple 7.4.0" '[ "$WEBOS_MANUFACTURING_VERSION" = "04.40.93" ] || [ "$WEBOS_MANUFACTURING_VERSION" = "04.40.93.01" ]; } && [ "$WEBOS_RELEASE" = "7.4.0" ] && [ "$GST_VERSION" = "1.18.2" ]'
 check "C2 firmware triple 9.2.2" '[ "$WEBOS_MANUFACTURING_VERSION" = "23.25.55" ] || [ "$WEBOS_MANUFACTURING_VERSION" = "23.25.55.01" ]; } && [ "$WEBOS_RELEASE" = "9.2.2" ] && [ "$GST_VERSION" = "1.18.5" ]'
+check "C2 firmware triple 8.3.0" '[ "$WEBOS_MANUFACTURING_VERSION" = "13.30.56" ] && [ "$WEBOS_RELEASE" = "8.3.0" ] && [ "$GST_VERSION" = "1.18.5" ] && C2_FWOK=1'
 check "C2 hardware ids" 'HE_DTV_W22O_AFABATAA|HE_DTV_W22O_AFABATPU)'
 check "gate: model" '[ "$C2_MODEL" = 1 ] || C2_GATE_FAIL="$C2_GATE_FAIL model($PRODUCT_ID)"'
 check "gate: board-type" '[ "$BOARD_TYPE" != unknown ] || C2_GATE_FAIL="$C2_GATE_FAIL board-type"'

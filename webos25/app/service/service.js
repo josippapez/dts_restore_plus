@@ -1851,6 +1851,12 @@ var C2_HOOK        = "/var/lib/webosbrew/init.d/restore_dts_c2";
  *   release newer. Added so that owner can take the two-step experimental opt-in and
  *   actually test the profile -- nobody has run it on any C2/G2 yet, so it stays
  *   hardware-unverified either way.
+ * Set 3 (native): 13.30.56 / webOS 8.3.0 (GStreamer 1.18.5) on an OLED55CS9LA
+ *   (issue #37). Its libgstlibav and libgstmatroska are LG's webOS 23 C3 build, which
+ *   registers LG's own dts_audiodec but never hands it DTS. The owner got DTS playing
+ *   by binding only the demuxers, so this set takes DESIGN-C3-PROFILE.md's mechanism:
+ *   no libgstlibav, no gstcool.conf, no rank change. Which set matched is the only
+ *   record of that; no baseline key is added.
  *
  * Adding a set does NOT promote the profile to verified. It only makes the exact
  * gate recognise one more firmware as opt-in-eligible. */
@@ -1862,8 +1868,13 @@ var C2_EXPECTED_SETS = [
   { libav: "499d56a598bd800a4116c93c179074015c46191fecbf58c39dc831cce172ad5c",
     iso:   "f84fd5b7af3e84aae28262ab57b606b8a8d1bfb42287ff7d62c79a61496bbbc3",
     mkv:   "07cfe1ee022bc2b1521b0f57139d896724394dd6d19d2e2ef1a85173f51c19fc",
-    label: "global C2/G2 23.25.55 (webOS 9.2.2, GStreamer 1.18.5)" }
+    label: "global C2/G2 23.25.55 (webOS 9.2.2, GStreamer 1.18.5)" },
+  { libav: "99156a09fec83e869533f3e1359732fed8f83b4f70dcca44871fd5facadea2df",
+    iso:   "ddd4ee8af9181f74dc93c2bc5de9c053fd114bcf387f742ae153f56024ac023d",
+    mkv:   "d07223a1cf35739690df9cc35f1a3303e3251b303085550816fbe67e8e879f6c",
+    label: "CS9 13.30.56 (webOS 8.3.0, GStreamer 1.18.5, LG dts_audiodec)", native: true }
 ];
+var C2_NATIVE_SETS = C2_EXPECTED_SETS.filter(function (t) { return t.native; });
 /* Does this measured triple match ONE accepted set exactly? Returns the set (so the
  * label is available) or null. Deliberately all-three-from-one-set: comparing each
  * hash against "any set" independently would let a chimera of two firmwares pass. */
@@ -1873,6 +1884,11 @@ function c2MatchSet(libav, iso, mkv) {
     if (libav === t.libav && iso === t.iso && mkv === t.mkv) return t;
   }
   return null;
+}
+/* A native install leaves the stock libgstlibav in place, so its baseline libav hash
+ * alone names the mode once installed. */
+function c2IsNativeLibav(libav) {
+  return C2_NATIVE_SETS.some(function (t) { return libav === t.libav; });
 }
 
 /* =======================================================================
@@ -2068,6 +2084,7 @@ var DETECT_PROBE = [
   '        C2_FWOK=0',
   '        { [ "$WEBOS_MANUFACTURING_VERSION" = "04.40.93" ] || [ "$WEBOS_MANUFACTURING_VERSION" = "04.40.93.01" ]; } && [ "$WEBOS_RELEASE" = "7.4.0" ] && [ "$GST_VERSION" = "1.18.2" ] && C2_FWOK=1',
   '        { [ "$WEBOS_MANUFACTURING_VERSION" = "23.25.55" ] || [ "$WEBOS_MANUFACTURING_VERSION" = "23.25.55.01" ]; } && [ "$WEBOS_RELEASE" = "9.2.2" ] && [ "$GST_VERSION" = "1.18.5" ] && C2_FWOK=1',
+  '        [ "$WEBOS_MANUFACTURING_VERSION" = "13.30.56" ] && [ "$WEBOS_RELEASE" = "8.3.0" ] && [ "$GST_VERSION" = "1.18.5" ] && C2_FWOK=1',
   // Name the gate(s) that actually failed. "one or more of these seven mismatched"
   // is unactionable for an owner -- they cannot tell a wrong firmware from a wrong
   // ABI, and the opt-in button is simply absent with no explanation. Report the
@@ -2531,7 +2548,8 @@ function compatVerdict(profile, kv) {
     var exactHashes = matchedSet !== null;
     var ownerPresent = kv.C2_OWNED === "1";
     var owned = ownerPresent && kv.C2_BASELINE_VALID === "1";
-    var bound = kv.C2_MOUNT_LIBAV === "owned";
+    // A native install never binds libgstlibav, so its first bind stands in.
+    var bound = (c2IsNativeLibav(kv.C2_FP_LIBGSTLIBAV) ? kv.C2_MOUNT_ISO : kv.C2_MOUNT_LIBAV) === "owned";
     var foreign = kv.C2_FOREIGN === "1";
     var baselineIdentity = kv.C2_FP_HARDWARE_ID === (kv.HARDWARE_ID || "") &&
       kv.C2_FP_PRODUCT_ID === (kv.PRODUCT_ID || "") && kv.C2_FP_BOARD_TYPE === (kv.BOARD_TYPE || "") &&
@@ -2543,7 +2561,9 @@ function compatVerdict(profile, kv) {
       (kv.C2_MOUNT_ISO === "owned" || kv.C2_FP_LIBGSTISOMP4 === kv.C2_ISOMP4_SHA256) &&
       (kv.C2_MOUNT_MKV === "owned" || kv.C2_FP_LIBGSTMATROSKA === kv.C2_MATROSKA_SHA256) &&
       (kv.C2_MOUNT_CONFIG === "owned" || kv.C2_FP_GSTCOOL === kv.C2_GSTCOOL_SHA256);
-    var reason = "C2/G2 support is experimental and requires an explicit two-step opt-in.";
+    var reason = matchedSet && matchedSet.native
+      ? "This firmware (" + matchedSet.label + ") has LG's own DTS decoder; the experimental fix binds DTS-capable demuxers only, with no decoder and no rank change. It requires an explicit two-step opt-in."
+      : "C2/G2 support is experimental and requires an explicit two-step opt-in.";
     var verdict = "unverified";
     var canForce = hashable && exactHashes && !foreign && !ownerPresent;
     if (!hashable) {
@@ -3320,6 +3340,9 @@ function c2InspectorLines(c) {
     // means the service's namespace differs, and only the records it matched can show how.
     'c2_mount_one() { id=$1; target=$2; source=$3; ct=$(c2_canon "$2"); cs=$(c2_canon "$3"); records=$(awk -v t="$target" -v c="$ct" \'$5 == t || $5 == c { print $3 "|" $4 }\' "$C2_MOUNTINFO" 2>/dev/null); count=$(printf "%s\\n" "$records" | sed \'/^$/d\' | wc -l | tr -d " "); state=none; if [ "$count" -eq 1 ]; then state=foreign; for e in $(c2_expected_sources "$source"; c2_expected_sources "$cs"); do [ "$records" = "$e" ] && { state=owned; break; }; done; elif [ "$count" -gt 1 ]; then state=foreign; fi; eval "C2_MOUNT_${id}=\\$state"; [ "$state" = owned ] || C2_MOUNT_DEBUG="$C2_MOUNT_DEBUG ${id}[$state,n=$count,t=$target,got=$(echo $records)|want=$(c2_expected_sources "$source" | tr \'\\n\' \' \')]"; [ "$state" != foreign ] || { [ -n "$C2_INSPECT_REASON" ] || C2_INSPECT_REASON="foreign, stacked, duplicate, or ambiguous mount at $target"; return 1; }; }',
     'c2_baseline_complete() { [ -f "$C2_BASELINE" ] || return 1; for k in hardware_id product_id board_type firmware webos gstreamer libgstlibav libgstisomp4 libgstmatroska gstcool registry init_sha256 hook_sha256; do v=$(c2_fp "$k"); [ -n "$v" ] || return 1; done; reg=$(c2_fp registry); c2_registry_valid "$reg"; }',
+    'c2_baseline_native() { ' + C2_NATIVE_SETS.map(function (t) {
+      return '[ "$(c2_fp libgstlibav)" = "' + t.libav + '" ]';
+    }).join(' || ') + '; }',
     'c2_inspect() { C2_INSPECT_REASON=; C2_MOUNT_DEBUG=; rc=0; C2_INIT_KIND=$(c2_init_kind); C2_HOOK_KIND=$(c2_hook_kind); C2_REGISTRY=$(c2_fp registry); [ -n "$C2_REGISTRY" ] || C2_REGISTRY=${GST_REGISTRY_1_0:-};'
   ]);
   targets.forEach(function (t) { lines.push('  c2_mount_one ' + t.map(c2Q).join(" ") + ' || rc=1;'); });
@@ -3329,19 +3352,22 @@ function c2InspectorLines(c) {
   return lines;
 }
 
+function c2SetTest(t) {
+  return '{ [ "$H_LIBAV" = "' + t.libav + '" ] && [ "$H_ISO" = "' + t.iso + '" ] && [ "$H_MKV" = "' + t.mkv + '" ]; }';
+}
+
 function c2EngineLines(c) {
   var lines = c2InspectorLines(c).concat([
     'c2_refuse() { echo "REFUSED=$1"; echo "REASON=$2"; exit 0; }',
     'c2_hash() { h=$(sha256sum "$1" 2>/dev/null | awk \'{print $1}\'); [ -n "$h" ] || h=$(busybox sha256sum "$1" 2>/dev/null | awk \'{print $1}\'); [ "${#h}" -eq 64 ] && case "$h" in *[!0-9a-f]*) return 1;; *) printf "%s" "$h";; esac; }',
     'c2_value() { nyx-cmd "$1" query "$2" 2>/dev/null | head -n1; }',
-    'c2_identity() { HW=$(c2_value DeviceInfo hardware_id); PID=$(c2_value DeviceInfo product_id); BT=$(c2_value DeviceInfo board_type); FW=$(c2_value OSInfo webos_manufacturing_version); WOS=$(c2_value OSInfo webos_release); GST=$(GST_REGISTRY_FORK=no "$C2_INSPECT" --version 2>/dev/null | grep -i GStreamer | head -n1 | awk \'{print $2}\'); { [ "$HW" = HE_DTV_W22O_AFABATAA ] || [ "$HW" = HE_DTV_W22O_AFABATPU ]; } || return 1; case "$PID" in OLED*C2*|OLED*G2*|OLED*CS*) :;; *) return 1;; esac; C2_FWOK=0; { [ "$FW" = 04.40.93 ] || [ "$FW" = 04.40.93.01 ]; } && [ "$WOS" = 7.4.0 ] && [ "$GST" = 1.18.2 ] && C2_FWOK=1; { [ "$FW" = 23.25.55 ] || [ "$FW" = 23.25.55.01 ]; } && [ "$WOS" = 9.2.2 ] && [ "$GST" = 1.18.5 ] && C2_FWOK=1; [ -n "$BT" ] && [ "$BT" != unknown ] && [ "$C2_FWOK" = 1 ] && [ -x "$C2_LOADER" ] || return 1; bytes=$(od -An -t x1 -j 36 -N 4 "$C2_CORE" 2>/dev/null | tr -d " \\n"); [ "${#bytes}" -eq 8 ] || return 1; b0=$(printf "%s" "$bytes"|cut -c1-2); b1=$(printf "%s" "$bytes"|cut -c3-4); b2=$(printf "%s" "$bytes"|cut -c5-6); b3=$(printf "%s" "$bytes"|cut -c7-8); val=$(printf "%d" "0x$b3$b2$b1$b0" 2>/dev/null || echo 0); [ "$((val & 0x200))" -ne 0 ] && [ "$((val & 0x400))" -eq 0 ]; }',
+    'c2_identity() { HW=$(c2_value DeviceInfo hardware_id); PID=$(c2_value DeviceInfo product_id); BT=$(c2_value DeviceInfo board_type); FW=$(c2_value OSInfo webos_manufacturing_version); WOS=$(c2_value OSInfo webos_release); GST=$(GST_REGISTRY_FORK=no "$C2_INSPECT" --version 2>/dev/null | grep -i GStreamer | head -n1 | awk \'{print $2}\'); { [ "$HW" = HE_DTV_W22O_AFABATAA ] || [ "$HW" = HE_DTV_W22O_AFABATPU ]; } || return 1; case "$PID" in OLED*C2*|OLED*G2*|OLED*CS*) :;; *) return 1;; esac; C2_FWOK=0; { [ "$FW" = 04.40.93 ] || [ "$FW" = 04.40.93.01 ]; } && [ "$WOS" = 7.4.0 ] && [ "$GST" = 1.18.2 ] && C2_FWOK=1; { [ "$FW" = 23.25.55 ] || [ "$FW" = 23.25.55.01 ]; } && [ "$WOS" = 9.2.2 ] && [ "$GST" = 1.18.5 ] && C2_FWOK=1; [ "$FW" = 13.30.56 ] && [ "$WOS" = 8.3.0 ] && [ "$GST" = 1.18.5 ] && C2_FWOK=1; [ -n "$BT" ] && [ "$BT" != unknown ] && [ "$C2_FWOK" = 1 ] && [ -x "$C2_LOADER" ] || return 1; bytes=$(od -An -t x1 -j 36 -N 4 "$C2_CORE" 2>/dev/null | tr -d " \\n"); [ "${#bytes}" -eq 8 ] || return 1; b0=$(printf "%s" "$bytes"|cut -c1-2); b1=$(printf "%s" "$bytes"|cut -c3-4); b2=$(printf "%s" "$bytes"|cut -c5-6); b3=$(printf "%s" "$bytes"|cut -c7-8); val=$(printf "%d" "0x$b3$b2$b1$b0" 2>/dev/null || echo 0); [ "$((val & 0x200))" -ne 0 ] && [ "$((val & 0x400))" -eq 0 ]; }',
     'c2_stock_hashes() { H_LIBAV=$(c2_hash "$C2_GSTTARGET/libgstlibav.so") && H_ISO=$(c2_hash "$C2_GSTTARGET/libgstisomp4.so") && H_MKV=$(c2_hash "$C2_GSTTARGET/libgstmatroska.so") && H_GC=$(c2_hash "$C2_GSTCOOL"); }',
     // One clause per accepted set; still an exact triple match, just more than one
     // known firmware. Generated from C2_EXPECTED_SETS so the JS and shell sides
     // cannot drift.
-    'c2_expected() { ' + C2_EXPECTED_SETS.map(function (t) {
-      return '{ [ "$H_LIBAV" = "' + t.libav + '" ] && [ "$H_ISO" = "' + t.iso + '" ] && [ "$H_MKV" = "' + t.mkv + '" ]; }';
-    }).join(' || ') + '; }',
+    'c2_expected() { ' + C2_EXPECTED_SETS.map(c2SetTest).join(' || ') + '; }',
+    'c2_expected_native() { ' + C2_NATIVE_SETS.map(c2SetTest).join(' || ') + '; }',
     'c2_baseline_matches() { c2_baseline_complete && [ "$(c2_fp hardware_id)" = "$HW" ] && [ "$(c2_fp product_id)" = "$PID" ] && [ "$(c2_fp board_type)" = "$BT" ] && [ "$(c2_fp firmware)" = "$FW" ] && [ "$(c2_fp webos)" = "$WOS" ] && [ "$(c2_fp gstreamer)" = "$GST" ] && [ "$(c2_fp libgstlibav)" = "$H_LIBAV" ] && [ "$(c2_fp libgstisomp4)" = "$H_ISO" ] && [ "$(c2_fp libgstmatroska)" = "$H_MKV" ] && [ "$(c2_fp gstcool)" = "$H_GC" ]; }',
     // Report WHICH file failed and WHICH library is missing. "one of four payload
     // copies or loader traces failed" is unactionable: it cannot distinguish a
@@ -3349,7 +3375,7 @@ function c2EngineLines(c) {
     // are deleted by the rollback that follows. The owner in issue #1 hit exactly
     // this and the reason told us nothing. C2_PAYLOAD_FAIL is a global on purpose
     // (no subshell), so the caller can append it to its own reason.
-    'c2_payload() { C2_PAYLOAD_FAIL=; C2_TS_OK=0; C2_TS_SKIP=; "$C2_MKDIR" -p "$C2_GST" || { C2_PAYLOAD_FAIL="cannot create $C2_GST"; return 1; }; for f in libgstlibav.so libgstisomp4.so libgstmatroska.so libgstisomp4_1_8.so; do [ -f "$C2_PAYLOAD/$f" ] || { C2_PAYLOAD_FAIL="payload file absent: $f"; return 1; }; { "$C2_CP" -f "$C2_PAYLOAD/$f" "$C2_GST/$f.new" && "$C2_MV" -f "$C2_GST/$f.new" "$C2_GST/$f"; } || { "$C2_RM" -f "$C2_GST/$f.new"; C2_PAYLOAD_FAIL="cannot copy $f"; return 1; }; [ -s "$C2_GST/$f" ] || { C2_PAYLOAD_FAIL="empty after copy: $f"; return 1; }; LD_TRACE_LOADED_OBJECTS=1 "$C2_LOADER" "$C2_GST/$f" > "$C2_STATE/trace.$f" 2>&1 || { C2_PAYLOAD_FAIL="loader could not trace $f"; return 1; }; miss=$(grep "not found" "$C2_STATE/trace.$f" | sed "s/^[[:space:]]*//;s/[[:space:]]*=>.*//" | tr "\n" " "); [ -z "$miss" ] || { C2_PAYLOAD_FAIL="$f is missing dependencies on this TV: $miss"; return 1; }; done; C2_TS_OK=0; tsf=libgstmpegtsdemux.so; if [ -f "$C2_PAYLOADTS/$tsf" ]; then if "$C2_CP" -f "$C2_PAYLOADTS/$tsf" "$C2_GST/$tsf.new" && "$C2_MV" -f "$C2_GST/$tsf.new" "$C2_GST/$tsf" && [ -s "$C2_GST/$tsf" ]; then if LD_TRACE_LOADED_OBJECTS=1 "$C2_LOADER" "$C2_GST/$tsf" > "$C2_STATE/trace.$tsf" 2>&1 && ! grep -q "not found" "$C2_STATE/trace.$tsf"; then C2_TS_OK=1; else C2_TS_SKIP="unresolved dependencies on this TV"; "$C2_RM" -f "$C2_GST/$tsf"; fi; else C2_TS_SKIP="could not stage"; "$C2_RM" -f "$C2_GST/$tsf" "$C2_GST/$tsf.new"; fi; else C2_TS_SKIP="not shipped in this app build"; fi; return 0; }',
+    'c2_payload() { C2_PAYLOAD_FAIL=; C2_TS_OK=0; C2_TS_SKIP=; "$C2_MKDIR" -p "$C2_GST" || { C2_PAYLOAD_FAIL="cannot create $C2_GST"; return 1; }; for f in libgstlibav.so libgstisomp4.so libgstmatroska.so libgstisomp4_1_8.so; do [ "$f" != libgstlibav.so ] || [ "$C2_NATIVE" != 1 ] || continue; [ -f "$C2_PAYLOAD/$f" ] || { C2_PAYLOAD_FAIL="payload file absent: $f"; return 1; }; { "$C2_CP" -f "$C2_PAYLOAD/$f" "$C2_GST/$f.new" && "$C2_MV" -f "$C2_GST/$f.new" "$C2_GST/$f"; } || { "$C2_RM" -f "$C2_GST/$f.new"; C2_PAYLOAD_FAIL="cannot copy $f"; return 1; }; [ -s "$C2_GST/$f" ] || { C2_PAYLOAD_FAIL="empty after copy: $f"; return 1; }; LD_TRACE_LOADED_OBJECTS=1 "$C2_LOADER" "$C2_GST/$f" > "$C2_STATE/trace.$f" 2>&1 || { C2_PAYLOAD_FAIL="loader could not trace $f"; return 1; }; miss=$(grep "not found" "$C2_STATE/trace.$f" | sed "s/^[[:space:]]*//;s/[[:space:]]*=>.*//" | tr "\n" " "); [ -z "$miss" ] || { C2_PAYLOAD_FAIL="$f is missing dependencies on this TV: $miss"; return 1; }; done; C2_TS_OK=0; tsf=libgstmpegtsdemux.so; if [ -f "$C2_PAYLOADTS/$tsf" ]; then if "$C2_CP" -f "$C2_PAYLOADTS/$tsf" "$C2_GST/$tsf.new" && "$C2_MV" -f "$C2_GST/$tsf.new" "$C2_GST/$tsf" && [ -s "$C2_GST/$tsf" ]; then if LD_TRACE_LOADED_OBJECTS=1 "$C2_LOADER" "$C2_GST/$tsf" > "$C2_STATE/trace.$tsf" 2>&1 && ! grep -q "not found" "$C2_STATE/trace.$tsf"; then C2_TS_OK=1; else C2_TS_SKIP="unresolved dependencies on this TV"; "$C2_RM" -f "$C2_GST/$tsf"; fi; else C2_TS_SKIP="could not stage"; "$C2_RM" -f "$C2_GST/$tsf" "$C2_GST/$tsf.new"; fi; else C2_TS_SKIP="not shipped in this app build"; fi; return 0; }',
     'c2_regular_or_absent() { { [ ! -e "$1" ] && [ ! -L "$1" ]; } || { [ -f "$1" ] && [ ! -L "$1" ]; }; }',
     'c2_state_known() { [ -d "$C2_STATE" ] && [ ! -L "$C2_STATE" ] || return 1; for p in "$C2_OWNER" "$C2_BASELINE" "$C2_BASELINE.tmp" "$C2_RECOVERY" "$C2_INIT" "$C2_INIT.tmp" "$C2_ENV" "$C2_HOOKSOURCE" "$C2_CONFIGSOURCE" "$C2_REGISTRYSOURCE" "$C2_STATE/trace.libgstlibav.so" "$C2_STATE/trace.libgstisomp4.so" "$C2_STATE/trace.libgstmatroska.so" "$C2_STATE/trace.libgstisomp4_1_8.so" "$C2_STATE/trace.libgstmpegtsdemux.so"; do c2_regular_or_absent "$p" || return 1; done; if [ -e "$C2_GST" ] || [ -L "$C2_GST" ]; then [ -d "$C2_GST" ] && [ ! -L "$C2_GST" ] || return 1; for p in "$C2_GST"/* "$C2_GST"/.[!.]* "$C2_GST"/..?*; do { [ -e "$p" ] || [ -L "$p" ]; } || continue; case "$p" in "$C2_GST/libgstlibav.so"|"$C2_GST/libgstisomp4.so"|"$C2_GST/libgstmatroska.so"|"$C2_GST/libgstisomp4_1_8.so"|"$C2_GST/libgstmpegtsdemux.so") c2_regular_or_absent "$p" || return 1;; *) return 1;; esac; done; fi; for p in "$C2_STATE"/* "$C2_STATE"/.[!.]* "$C2_STATE"/..?*; do { [ -e "$p" ] || [ -L "$p" ]; } || continue; case "$p" in "$C2_GST"|"$C2_OWNER"|"$C2_BASELINE"|"$C2_BASELINE.tmp"|"$C2_RECOVERY"|"$C2_INIT"|"$C2_INIT.tmp"|"$C2_ENV"|"$C2_HOOKSOURCE"|"$C2_CONFIGSOURCE"|"$C2_REGISTRYSOURCE"|"$C2_STATE/trace.libgstlibav.so"|"$C2_STATE/trace.libgstisomp4.so"|"$C2_STATE/trace.libgstmatroska.so"|"$C2_STATE/trace.libgstisomp4_1_8.so"|"$C2_STATE/trace.libgstmpegtsdemux.so") :;; *) return 1;; esac; done; }',
     'c2_snapshot_state() { c2_state_known && c2_baseline_complete && [ -f "$C2_OWNER" ] && [ -f "$C2_INIT" ] && [ ! -L "$C2_INIT" ] && [ -f "$C2_ENV" ] && [ ! -L "$C2_ENV" ] || return 1; C2_KEEP_BASELINE=$(cat "$C2_BASELINE") || return 1; C2_KEEP_INIT=$(cat "$C2_INIT") || return 1; C2_KEEP_ENV=$(cat "$C2_ENV") || return 1; C2_KEEP_HOOK_KIND=$(c2_hook_kind); [ "$C2_KEEP_HOOK_KIND" != foreign ] || return 1; C2_KEEP_HOOK=; if [ "$C2_KEEP_HOOK_KIND" = exact ]; then C2_KEEP_HOOK=$(cat "$C2_HOOK") || return 1; fi; }',
@@ -3360,7 +3386,9 @@ function c2EngineLines(c) {
     'c2_detach() { c2_inspect || return 1; c2_detach_one "$C2_MOUNT_REGISTRY" "$C2_REGISTRY" && c2_detach_one "$C2_MOUNT_CONFIG" "$C2_GSTCOOL" && c2_detach_one "$C2_MOUNT_TS" "$C2_GSTTARGET/libgstmpegtsdemux.so" && c2_detach_one "$C2_MOUNT_ISO18" "$C2_GSTTARGET/libgstisomp4_1_8.so" && c2_detach_one "$C2_MOUNT_MKV" "$C2_GSTTARGET/libgstmatroska.so" && c2_detach_one "$C2_MOUNT_ISO" "$C2_GSTTARGET/libgstisomp4.so" && c2_detach_one "$C2_MOUNT_LIBAV" "$C2_GSTTARGET/libgstlibav.so"; }',
     'c2_recovery_fail() { why=$1; if [ ! -f "$C2_RECOVERY" ]; then : > "$C2_RECOVERY" 2>/dev/null || { echo "REFUSED=recovery"; echo "REASON=$why; recovery marker could not be written, so no further cleanup mutation was attempted"; exit 0; }; fi; c2_state_known || { echo "REFUSED=recovery"; echo "REASON=$why; unexpected C2 state was retained before detach"; exit 0; }; C2_SNAPSHOT=0; if [ "${WAS_OWNED:-1}" = 0 ] && c2_snapshot_state; then C2_SNAPSHOT=1; fi; c2_inspect && c2_detach || { echo "REFUSED=recovery"; echo "REASON=$why; detach incomplete, so C2 ownership, baseline, hook, and recovery state were retained"; exit 0; }; if [ "${WAS_OWNED:-1}" = 0 ]; then hook_kind=$(c2_hook_kind); [ "$hook_kind" != foreign ] || { echo "REFUSED=recovery"; echo "REASON=$why; hook ownership is ambiguous, so recovery state was retained"; exit 0; }; [ "$hook_kind" != exact ] || { echo "REFUSED=recovery"; echo "REASON=$why; exact hook and dedicated state were retained together for guarded Disable or Uninstall"; exit 0; }; if c2_cleanup_state; then echo "REFUSED=rollback"; echo "REASON=$why; first-install rollback completed"; exit 0; fi; if [ "$C2_SNAPSHOT" = 1 ]; then c2_restore_snapshot || { echo "REFUSED=recovery"; echo "REASON=$why; checked rollback failed and recovery snapshot restoration failed"; exit 0; }; fi; fi; echo "REFUSED=recovery"; echo "REASON=$why; C2 ownership, baseline, exact hook when installed, and recovery marker retained"; exit 0; }',
     'c2_bind() { "$C2_MOUNT" -n --bind -o ro "$1" "$2" || c2_recovery_fail "bind failed for $2"; }',
-    'c2_apply() { c2_bind "$C2_GST/libgstlibav.so" "$C2_GSTTARGET/libgstlibav.so"; c2_bind "$C2_GST/libgstisomp4.so" "$C2_GSTTARGET/libgstisomp4.so"; c2_bind "$C2_GST/libgstmatroska.so" "$C2_GSTTARGET/libgstmatroska.so"; if [ -f "$C2_GSTTARGET/libgstisomp4_1_8.so" ]; then c2_bind "$C2_GST/libgstisomp4_1_8.so" "$C2_GSTTARGET/libgstisomp4_1_8.so"; fi; C2_TS_BOUND=0; if [ "$C2_TS_OK" = 1 ] && [ -f "$C2_GSTTARGET/libgstmpegtsdemux.so" ]; then c2_bind "$C2_GST/libgstmpegtsdemux.so" "$C2_GSTTARGET/libgstmpegtsdemux.so"; C2_TS_BOUND=1; fi; "$C2_SED" "s/avdec_dca=0/avdec_dca=' + CX_DCA_RANK + '/" "$C2_GSTCOOL" > "$C2_CONFIGSOURCE" || c2_recovery_fail "config generation failed"; c2_bind "$C2_CONFIGSOURCE" "$C2_GSTCOOL"; GST_REGISTRY_1_0="$C2_REGISTRYSOURCE" GST_REGISTRY_UPDATE=yes GST_REGISTRY_FORK=no "$C2_INSPECT" >/dev/null 2>&1 || c2_recovery_fail "registry generation failed"; C2_PROVE="avdec_dca qtdemux matroskademux"; [ "$C2_TS_BOUND" = 1 ] && C2_PROVE="$C2_PROVE tsdemux"; for e in $C2_PROVE; do GST_REGISTRY_1_0="$C2_REGISTRYSOURCE" GST_REGISTRY_UPDATE=no GST_REGISTRY_FORK=no "$C2_INSPECT" "$e" >/dev/null 2>&1 || c2_recovery_fail "registry proof missing $e"; done; c2_bind "$C2_REGISTRYSOURCE" "$C2_REGISTRY"; "$C2_RM" -f "$C2_RECOVERY" || c2_recovery_fail "cannot clear recovery marker"; echo "TS_BOUND=$C2_TS_BOUND"; [ "$C2_TS_BOUND" = 1 ] || echo "TS_SKIP=${C2_TS_SKIP:-stock target absent}"; echo VERDICT=forced; echo OK; }'
+    // C2_NATIVE=1 (a native set): LG's dts_audiodec must stay the only DTS decoder,
+    // so libgstlibav and the avdec_dca rank stay stock and the proof names LG's.
+    'c2_apply() { [ "$C2_NATIVE" = 1 ] || c2_bind "$C2_GST/libgstlibav.so" "$C2_GSTTARGET/libgstlibav.so"; c2_bind "$C2_GST/libgstisomp4.so" "$C2_GSTTARGET/libgstisomp4.so"; c2_bind "$C2_GST/libgstmatroska.so" "$C2_GSTTARGET/libgstmatroska.so"; if [ -f "$C2_GSTTARGET/libgstisomp4_1_8.so" ]; then c2_bind "$C2_GST/libgstisomp4_1_8.so" "$C2_GSTTARGET/libgstisomp4_1_8.so"; fi; C2_TS_BOUND=0; if [ "$C2_TS_OK" = 1 ] && [ -f "$C2_GSTTARGET/libgstmpegtsdemux.so" ]; then c2_bind "$C2_GST/libgstmpegtsdemux.so" "$C2_GSTTARGET/libgstmpegtsdemux.so"; C2_TS_BOUND=1; fi; if [ "$C2_NATIVE" != 1 ]; then "$C2_SED" "s/avdec_dca=0/avdec_dca=' + CX_DCA_RANK + '/" "$C2_GSTCOOL" > "$C2_CONFIGSOURCE" || c2_recovery_fail "config generation failed"; c2_bind "$C2_CONFIGSOURCE" "$C2_GSTCOOL"; fi; GST_REGISTRY_1_0="$C2_REGISTRYSOURCE" GST_REGISTRY_UPDATE=yes GST_REGISTRY_FORK=no "$C2_INSPECT" >/dev/null 2>&1 || c2_recovery_fail "registry generation failed"; C2_PROVE="avdec_dca qtdemux matroskademux"; [ "$C2_NATIVE" = 1 ] && C2_PROVE="dts_audiodec qtdemux matroskademux"; [ "$C2_TS_BOUND" = 1 ] && C2_PROVE="$C2_PROVE tsdemux"; for e in $C2_PROVE; do GST_REGISTRY_1_0="$C2_REGISTRYSOURCE" GST_REGISTRY_UPDATE=no GST_REGISTRY_FORK=no "$C2_INSPECT" "$e" >/dev/null 2>&1 || c2_recovery_fail "registry proof missing $e"; done; c2_bind "$C2_REGISTRYSOURCE" "$C2_REGISTRY"; "$C2_RM" -f "$C2_RECOVERY" || c2_recovery_fail "cannot clear recovery marker"; echo "TS_BOUND=$C2_TS_BOUND"; [ "$C2_TS_BOUND" = 1 ] || echo "TS_SKIP=${C2_TS_SKIP:-stock target absent}"; echo VERDICT=forced; echo OK; }'
   ]);
   return lines;
 }
@@ -3387,6 +3415,7 @@ function c2InitScriptBody(testOverrides) {
     ': > "$C2_RECOVERY" || c2_refuse recovery "cannot write recovery marker"',
     'c2_detach || c2_recovery_fail "pre-apply detach incomplete"',
     'c2_identity && c2_stock_hashes && c2_baseline_matches || c2_recovery_fail "persisted identity or hashes drifted"',
+    'C2_NATIVE=0; c2_baseline_native && C2_NATIVE=1',
     'c2_payload || c2_recovery_fail "payload or dynamic-loader trace failed: ${C2_PAYLOAD_FAIL:-no detail}"',
     'c2_apply', 'exit 0'
   ]).join("\n") + "\n";
@@ -3412,6 +3441,7 @@ function c2Enable(firstForce, testOverrides) {
     'if [ "$OWNED" = 0 ]; then [ "$C2_HOOK_KIND" = absent ] || c2_refuse foreign "C2 hook already exists"; { [ ! -e "$C2_LEGACYHOOK" ] && [ ! -L "$C2_LEGACYHOOK" ]; } || c2_refuse foreign "legacy hook exists"; c2_any_mount && c2_refuse foreign "managed target is already mounted"; { [ ! -e "$C2_STATE" ] && [ ! -L "$C2_STATE" ]; } || c2_refuse foreign "unowned C2 state exists"; else [ "$C2_INIT_KIND" = exact ] || c2_refuse drift "C2 init content is foreign"; [ "$C2_HOOK_KIND" != foreign ] || c2_refuse drift "C2 hook is foreign"; fi',
     'if [ "$OWNED" = 1 ]; then : > "$C2_RECOVERY" || c2_refuse recovery "cannot write recovery marker"; c2_detach || c2_recovery_fail "refresh detach incomplete"; fi',
     'c2_identity && c2_stock_hashes && c2_expected || c2_refuse drift "exact C2 identity or hashes do not match"',
+    'C2_NATIVE=0; c2_expected_native && C2_NATIVE=1',
     'if [ "$OWNED" = 1 ]; then c2_baseline_matches || c2_recovery_fail "persisted baseline drifted"; fi',
     'if [ "$OWNED" = 1 ]; then reg=$(c2_fp registry); else reg=${GST_REGISTRY_1_0:-}; fi; c2_registry_valid "$reg" || c2_refuse registry "GST_REGISTRY_1_0 must be an existing safe absolute path"; C2_REGISTRY=$reg',
     'c2_payload || c2_tx_fail "payload: ${C2_PAYLOAD_FAIL:-one of four copies or loader traces failed}" payload',
@@ -3451,7 +3481,8 @@ function c2StatusProbe(testOverrides) {
     'OWNER=0; [ -f "$C2_OWNER" ] && OWNER=1; BASELINE=0; c2_baseline_complete && BASELINE=1; RECOVERY=0; [ -f "$C2_RECOVERY" ] && RECOVERY=1',
     'INSPECT=1; c2_inspect || INSPECT=0',
     'ISO18_TARGET=0; [ -f "$C2_GSTTARGET/libgstisomp4_1_8.so" ] && ISO18_TARGET=1',
-    'echo "OWNER=$OWNER"; echo "BASELINE=$BASELINE"; echo "RECOVERY=$RECOVERY"; echo "INIT=$C2_INIT_KIND"; echo "HOOK=$C2_HOOK_KIND"; echo "INSPECT=$INSPECT"; echo "REASON=$C2_INSPECT_REASON"',
+    'NATIVE=0; c2_baseline_native && NATIVE=1',
+    'echo "OWNER=$OWNER"; echo "BASELINE=$BASELINE"; echo "RECOVERY=$RECOVERY"; echo "INIT=$C2_INIT_KIND"; echo "HOOK=$C2_HOOK_KIND"; echo "INSPECT=$INSPECT"; echo "REASON=$C2_INSPECT_REASON"; echo "NATIVE=$NATIVE"',
     'echo "LIBAV=$C2_MOUNT_LIBAV"; echo "ISO=$C2_MOUNT_ISO"; echo "MKV=$C2_MOUNT_MKV"; echo "ISO18=$C2_MOUNT_ISO18"; echo "ISO18_TARGET=$ISO18_TARGET"; echo "TS=$C2_MOUNT_TS"; echo "CONFIG=$C2_MOUNT_CONFIG"; echo "REGISTRY=$C2_MOUNT_REGISTRY"'
   ]).join("\n");
 }
@@ -3459,8 +3490,9 @@ function c2StatusProbe(testOverrides) {
 function c2StatusBindsComplete(kv) {
   var iso18Complete = kv.ISO18_TARGET === "0" ? kv.ISO18 === "none" :
     kv.ISO18_TARGET === "1" && kv.ISO18 === "owned";
-  return kv.LIBAV === "owned" && kv.ISO === "owned" && kv.MKV === "owned" &&
-    iso18Complete && kv.CONFIG === "owned" && kv.REGISTRY === "owned";
+  var libavConfig = kv.NATIVE === "1" ? "none" : "owned";
+  return kv.LIBAV === libavConfig && kv.ISO === "owned" && kv.MKV === "owned" &&
+    iso18Complete && kv.CONFIG === libavConfig && kv.REGISTRY === "owned";
 }
 
 function c2SelfTest(testOverrides) {
@@ -3470,9 +3502,24 @@ function c2SelfTest(testOverrides) {
     '[ ! -f "$C2_RECOVERY" ] || { echo "REFUSED=recovery"; echo "REASON=C2 recovery state is active"; exit 0; }',
     '[ "$(c2_init_kind)" = exact ] && [ "$(c2_hook_kind)" = exact ] || { echo "REFUSED=drift"; echo "REASON=C2 init or hook content is not exact"; exit 0; }',
     'c2_inspect || { echo "REFUSED=foreign"; echo "REASON=$C2_INSPECT_REASON"; exit 0; }',
-    '[ "$C2_MOUNT_LIBAV" = owned ] && [ "$C2_MOUNT_ISO" = owned ] && [ "$C2_MOUNT_MKV" = owned ] && { [ ! -f "$C2_GSTTARGET/libgstisomp4_1_8.so" ] || [ "$C2_MOUNT_ISO18" = owned ]; } && [ "$C2_MOUNT_CONFIG" = owned ] && [ "$C2_MOUNT_REGISTRY" = owned ] || { echo "REFUSED=inactive"; echo "REASON=C2 app-owned overrides are not fully active"; exit 0; }',
+    'C2_WANT=owned; c2_baseline_native && C2_WANT=none',
+    '[ "$C2_MOUNT_LIBAV" = "$C2_WANT" ] && [ "$C2_MOUNT_ISO" = owned ] && [ "$C2_MOUNT_MKV" = owned ] && { [ ! -f "$C2_GSTTARGET/libgstisomp4_1_8.so" ] || [ "$C2_MOUNT_ISO18" = owned ]; } && [ "$C2_MOUNT_CONFIG" = "$C2_WANT" ] && [ "$C2_MOUNT_REGISTRY" = owned ] || { echo "REFUSED=inactive"; echo "REASON=C2 app-owned overrides are not fully active"; exit 0; }',
     'OUT=/tmp/dtsenabler_c2.wav; F="' + PAYLOAD_TESTS + '/DTS-in-mp4.mp4"',
-    'export GST_REGISTRY_1_0="$C2_REGISTRY" GST_REGISTRY_UPDATE=no GST_REGISTRY_FORK=no', 'rm -f "$OUT"',
+    'export GST_REGISTRY_1_0="$C2_REGISTRY" GST_REGISTRY_UPDATE=no GST_REGISTRY_FORK=no',
+    // Native: LG's DSP decoders hang in a plain gst-launch pipeline (measured on a C5),
+    // so this proves only that the bound demuxers hand out DTS. "demux" in place of a
+    // byte count, because no audio was decoded.
+    'if [ "$C2_WANT" = none ]; then',
+    '  if timeout 60 gst-launch-1.0 -q filesrc location="$F" ! qtdemux ! audio/x-dts ! fakesink >/dev/null 2>&1; then echo "mp4=PASS:demux"; else echo "mp4=FAIL:demux"; fi',
+    '  if [ "$C2_MOUNT_TS" = owned ]; then',
+    '    for c in ts m2ts; do',
+    '      F="' + PAYLOAD_TESTS + '/DTS-HD-MA-5.1.$c"',
+    '      if timeout 60 gst-launch-1.0 -q filesrc location="$F" ! tsdemux ! audio/x-dts ! fakesink >/dev/null 2>&1; then echo "$c=PASS:demux"; else echo "$c=FAIL:demux"; fi',
+    '    done',
+    '  fi',
+    '  exit 0',
+    'fi',
+    'rm -f "$OUT"',
     'timeout 60 gst-launch-1.0 -q filesrc location="$F" ! qtdemux name=d d. ! queue ! avdec_dca ! audioconvert ! wavenc ! filesink location="$OUT" >/dev/null 2>&1',
     'SZ=$(stat -c%s "$OUT" 2>/dev/null || echo 0); rm -f "$OUT"; if [ "$SZ" -ge ' + TEST_WAV_MIN + ' ]; then echo "mp4=PASS:$SZ"; else echo "mp4=FAIL:$SZ"; fi',
     // TS/M2TS only when our TS demuxer is actually bound; otherwise stay silent so
@@ -3921,8 +3968,13 @@ service.register("status", function (message) {
         var hook = kv.HOOK === "exact";
         var owned = kv.OWNER === "1";
         var allBinds = kv.INSPECT === "1" && c2StatusBindsComplete(kv);
+        // Before an install there is no baseline, so name what Enable would apply.
+        base.c2Native = owned ? kv.NATIVE === "1" :
+          !!(c2MatchSet(p.C2_LIBAV_SHA256, p.C2_ISOMP4_SHA256, p.C2_MATROSKA_SHA256) || {}).native;
         base.tsBound = kv.TS === "owned";
-        base.mechanism = kv.TS === "owned"
+        base.mechanism = base.c2Native
+          ? "experimental demuxers for LG's own DTS decoder (" + (kv.TS === "owned" ? "MKV/MP4 + TS/M2TS)" : "MKV/MP4)")
+          : kv.TS === "owned"
           ? "experimental legacy payload (C2/G2, MP4 + TS/M2TS)"
           : "experimental legacy payload (C2/G2, MP4 only)";
         base.hookInstalled = hook;
@@ -3982,6 +4034,7 @@ service.register("test", function (message) {
           if (!kv[k]) return;
           var parts = String(kv[k]).split(":");
           results[k] = { verdict: parts[0], bytes: parseInt(parts[1] || "0", 10) || 0, file: files[k] };
+          if (parts[1] === "demux") results[k].demuxOnly = true;
         });
         var raw = kv.mp4 || "FAIL:0";
         var verdict = raw.split(":")[0];

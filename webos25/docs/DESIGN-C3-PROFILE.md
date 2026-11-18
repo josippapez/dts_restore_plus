@@ -1,8 +1,18 @@
 # DESIGN — C3/G3/M3 profile (`webos23-o22n-gst118`)
 
-Status: **DRAFT / NOT IMPLEMENTED.** No C3 hardware has been available to this
+Status: **DRAFT / NOT IMPLEMENTED for C3.** No C3 hardware has been available to this
 project, and the project's rule is that a bind mechanism is verified on a real TV
 before it ships. This document is the spec to implement against when one appears.
+
+**Implemented for one CS9 firmware, as an experimental opt-in.** An OLED55CS9LA on
+`13.30.56` / webOS 8.3.0 / GStreamer 1.18.5 carries this design's stock
+`libgstlibav.so` and `libgstmatroska.so` hashes. Its owner bound the four demuxers
+below by hand and DTS played in every MKV, MP4 and TS file they tried (issue #37). That
+firmware is now a third, native set in the C2 profile (`C2_EXPECTED_SETS` in
+`service.js`). It binds the demuxers and the regenerated registry, never
+`libgstlibav.so` or `gstcool.conf`. Its self-test only checks that the demuxers hand
+out `audio/x-dts`, because LG's DSP decoders hang in a plain `gst-launch` pipeline.
+Nobody has run it through the app yet, so it reports **hardware verification NO**.
 
 Evidence base: extracted C3 webOS-23 firmware (see
 [`FIRMWARE-COMPATIBILITY.md`](FIRMWARE-COMPATIBILITY.md)), LG's own webOS GStreamer
