@@ -24,16 +24,17 @@ for dir in "$@"; do
   [ -f "$dir/stock-module.ko" ] || { echo "SKIP loader $dir: no stock-module.ko"; continue; }
   release=$(LC_ALL=C grep -a -o -m1 'Linux version [^ ]*' "$dir/kernel.bin" | cut -d' ' -f3)
   mode=
+  refusal=
   case $release in
     4.4.84-229.kcl4tv.6) want=earc_route-4.4 mode=--dts-hd ;;
     5.4.268-329.ptl4tv.[25]|5.4.268-320) want=earc_route-5.4 ;;
     # Realtek audio stack: none of the module's symbols, so the loader must refuse.
-    6.12.*qilian*) want=refuse ;;
+    6.12.*qilian*) refusal='REFUSED: kallsyms:' ;;
     6.12.*) want=earc_route-6.12 ;;
     *) want= ;;
   esac
   # C6 shares the C5's release but not its struct module; its 6.12-c6 build is not vendored.
-  case $(basename "$dir") in c6-*) want=refuse-abi ;; esac
+  case $(basename "$dir") in c6-*) refusal='REFUSED: 0 of' ;; esac
   root=$BUILD/root; rm -rf "$root"; mkdir -p "$root/proc" "$root/lib/modules/$release"
   cp "$dir/stock-module.ko" "$root/lib/modules/$release/"
   cp "$dir/kallsyms.txt" "$root/proc/kallsyms"
@@ -42,15 +43,9 @@ for dir in "$@"; do
   out=$(PATH="$BUILD/bin:$PATH" EARC_LOADER_ROOT="$root" sh "$BUILD/app/earc-route-load.sh" $mode 2>&1) || true
   check=$(PATH="$BUILD/bin:$PATH" EARC_LOADER_ROOT="$root" sh "$BUILD/app/earc-route-load.sh" --check 2>&1 | tail -n 1) || true
   echo "GATE $dir ($release): $check"
-  if [ "$want" = refuse ]; then
-    if printf '%s\n' "$out" | grep -q 'REFUSED: kallsyms:' && ! printf '%s\n' "$out" | grep -q 'loading '; then
+  if [ -n "$refusal" ]; then
+    if printf '%s\n' "$out" | grep -Fq "$refusal" && ! printf '%s\n' "$out" | grep -q 'loading '; then
       echo "PASS loader $dir ($release): refused before insmod: $(printf '%s\n' "$out" | tail -n1)"
-    else
-      echo "FAIL loader $dir ($release): not refused: $(printf '%s\n' "$out" | tail -n1)"; status=1
-    fi
-  elif [ "$want" = refuse-abi ]; then
-    if printf '%s\n' "$out" | grep -q 'REFUSED: 0 of' && ! printf '%s\n' "$out" | grep -q 'loading '; then
-      echo "PASS loader $dir ($release): no vendored build matches its ABI, refused"
     else
       echo "FAIL loader $dir ($release): not refused: $(printf '%s\n' "$out" | tail -n1)"; status=1
     fi

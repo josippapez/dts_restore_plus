@@ -3698,7 +3698,6 @@ function hd44Steps(on) {
     return [
       'rm -f "' + HD44_DIR + '/enabled"',
       '[ -f "' + HD44_INIT_SCRIPT + '" ] && HD44=stop sh "' + HD44_INIT_SCRIPT + '" </dev/null',
-      'echo "KMOD_STAYS=$([ -d /sys/module/earc_route ] && echo 1 || echo 0)"',
       'echo OK'
     ].join("\n");
   }

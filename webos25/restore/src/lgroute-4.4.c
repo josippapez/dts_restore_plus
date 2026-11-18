@@ -216,9 +216,7 @@ gboolean lgroute_arm (LgRoute *route)
   g_mutex_lock (&route_lock);
   route->sink = sink;
   route->sinkpad = pad;
-  route->lease = (gint) index + 1;
   route->lease_fd = fd;
-  g_snprintf (route->resource, sizeof route->resource, "ADEC%u", index);
   g_mutex_unlock (&route_lock);
   route->buffers = pad ? gst_pad_add_probe (pad, GST_PAD_PROBE_TYPE_BUFFER, buffer_probe, route, NULL) : 0;
   route->configured = TRUE;
@@ -249,7 +247,6 @@ void lgroute_disarm (LgRoute *route)
   route->sinkpad = NULL;
   route->buffers = 0;
   route->lease_fd = -1;
-  route->lease = 0;
   route->configured = route->unmixed = FALSE;
   route->mixed_since = 0;
   g_mutex_unlock (&route_lock);

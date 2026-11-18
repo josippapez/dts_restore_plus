@@ -13,20 +13,13 @@ RUN=/run/dts25
 LOG=/var/lib/webosbrew/dtsenabler/hd-4.4.log
 MYDTS=$HD44_DIR/libgstdtsdec.so
 SINK=/usr/lib/gstreamer-1.0/libgstlxaudiosink.so
+SINK_SHA256=a3e8dc6ad3ed584c29008ca48579eed94ac7b27284982648f9d65d2a32d26f8d
 # The CX profile's registry: init_dts.sh regenerates it and binds it over LG's at boot.
 REG_TMP=/tmp/gst_1_0_registry.arm.bin
 REG_LIVE=${GST_REGISTRY_1_0:-}
 [ -n "$REG_LIVE" ] || { [ -f /var/lib/webosbrew/dtsenabler/cx/env.conf ] && . /var/lib/webosbrew/dtsenabler/cx/env.conf; REG_LIVE=${BAKED_GST_REGISTRY:-}; }
 
 hd44_log() { mkdir -p "$(dirname "$LOG")" && echo "$(date '+%F %T') $*" >> "$LOG" 2>/dev/null; }
-
-# LG's webOS 6 audio sink, 03.53.45 (C1 W21O, W21K): dtsdec arms the HD route only behind it.
-hd44_sink_verified() {
-  case "$1" in
-    a3e8dc6ad3ed584c29008ca48579eed94ac7b27284982648f9d65d2a32d26f8d) return 0 ;;
-  esac
-  return 1
-}
 
 # Same file and format as webOS 25 (lgroute-control.c reads it): "<pid> <soundOutput> <digital>".
 hd44_watch() {
@@ -74,7 +67,7 @@ mkdir -p "$RUN" && rm -f "$RUN/stopping"
 : > /var/lib/webosbrew/dts25/passthrough
 : > /var/lib/webosbrew/dts25/passthrough-hd
 SHA=$(sha256sum "$SINK" 2>/dev/null)
-if hd44_sink_verified "${SHA%% *}"; then : > "$RUN/sink-ok"
+if [ "${SHA%% *}" = "$SINK_SHA256" ]; then : > "$RUN/sink-ok"
 else hd44_log "HD refused: untested LG sink build (${SHA%% *})"; rm -f "$RUN/sink-ok"; fi
 
 # LG ships no dtsdec on webOS 6. As on webOS 25, the registry is rescanned with our directory
