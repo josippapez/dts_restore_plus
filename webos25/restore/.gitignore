@@ -26,3 +26,5 @@ kmod-out/*.sh
 # tracked ON PURPOSE and rule #1 requires re-committing them after a rebuild, so
 # a blanket ignore would make `git add` silently skip a rebuilt decoder.
 dts2lpcm/
+# build-gst116.sh source cache (pinned upstream checkouts)
+.gst116-src/
