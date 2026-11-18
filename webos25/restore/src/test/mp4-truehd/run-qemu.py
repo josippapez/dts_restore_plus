@@ -105,26 +105,39 @@ def map_sample_tables(data, table_type, replace):
     return b"".join(result)
 
 
-def delayed_sync_fixture(work):
+def sync_table_fixture(work, name, edit):
     replaced = 0
 
-    def remove_first_sync(table):
+    def replace(table):
         nonlocal replaced
         count, first, second = struct.unpack_from(">III", table, 4)
         if count < 2 or first != 1 or second <= 1:
             raise RuntimeError("Expected the generated sync table to start at sample 1")
         replaced += 1
-        return b"stss", table[:4] + struct.pack(">I", count - 1) + table[12:]
+        return b"stss", edit(table, count)
 
-    # The fixture's moov follows mdat. Removing the first sync entry changes
-    # neither the media offsets nor any compressed samples.
+    # The fixture's moov follows mdat. Editing the sync table changes neither
+    # the media offsets nor any compressed samples.
     source = work / "truehd-ac3.mp4"
-    boxes = [mp4_box(kind, map_sample_tables(payload, b"stss", remove_first_sync)
+    boxes = [mp4_box(kind, map_sample_tables(payload, b"stss", replace)
                      if kind == b"moov" else payload)
              for kind, payload in mp4_boxes(source.read_bytes())]
     if replaced != 1:
         raise RuntimeError("Expected one TrueHD sync table in the generated fixture")
-    (work / "delayed-sync.mp4").write_bytes(b"".join(boxes))
+    (work / name).write_bytes(b"".join(boxes))
+
+
+def delayed_sync_fixture(work):
+    sync_table_fixture(work, "delayed-sync.mp4", lambda table, count:
+                       table[:4] + struct.pack(">I", count - 1) + table[12:])
+
+
+def extra_sync_fixture(work):
+    # The compact index rejects a sync entry past the last sample. The ordinary
+    # index ignores it, so the file must still play.
+    sync_table_fixture(work, "extra-sync.mp4", lambda table, count:
+                       table[:4] + struct.pack(">I", count + 1) + table[8:]
+                       + struct.pack(">I", 0x7fffffff))
 
 
 def non_interleaved_fixtures(work):
@@ -188,17 +201,20 @@ def non_interleaved_fixtures(work):
     return reference(source, 0, "truehd", work / "expected-non-interleaved.truehd"), ranges
 
 
-def check_chunk_ranges(console, video, audio, end_of_audio):
+def check_chunk_ranges(console, kind, video, audio, end_of_audio):
     matches = dict((stream, (int(first), int(last))) for stream, first, last in re.findall(
         r"\(stream (vide|soun)\) first offset (\d+), last offset (\d+)", console))
-    if matches.get("vide") != (video[0], video[-1]):
+    # Only TrueHD tracks get the corrected read. Stock qtdemux misreads a co64
+    # video table as having no range, which leaves the interleave check off.
+    stock_video = (video[0], video[-1]) if kind == "stco" else None
+    if matches.get("vide") != stock_video:
         raise RuntimeError(f"Incorrect video chunk range: {matches.get('vide')}")
     # Compaction can split the final audio chunk into several logical chunks.
     first, last = matches.get("soun", (0, 0))
     if first != audio[0] or not audio[-1] <= last < end_of_audio:
         raise RuntimeError(f"Incorrect TrueHD chunk range: {(first, last)}")
-    if "stream not interleaved file" not in console:
-        raise RuntimeError("Separate video and audio chunks were classified as interleaved")
+    if ("stream not interleaved file" in console) != (kind == "stco"):
+        raise RuntimeError(f"Unexpected interleave classification for {kind}")
 
 
 def check_payload(work, source, expected, codec):
@@ -221,7 +237,7 @@ def check_truehd(console, compact):
     if compact and (not counts or not 0 < int(counts[2]) < int(counts[1])):
         raise RuntimeError("The fixture did not exercise TrueHD sample index compaction")
     if not compact and counts:
-        raise RuntimeError("Expected the delayed sync fixture to use the ordinary index")
+        raise RuntimeError("Expected the sync table fixture to use the ordinary index")
     if "GstFileSink:ac3.GstPad:sink: caps = audio/x-ac3" not in console:
         raise RuntimeError("Expected the second audio track to retain its AC-3 caps")
 
@@ -284,8 +300,10 @@ def main():
 
         expected = make_fixtures(work)
         delayed_sync_fixture(work)
+        extra_sync_fixture(work)
         for mode, queue in (("pull", []), ("push", ["!", "queue"])):
-            for sample in ("truehd-ac3.mp4", "large-moov.mp4", "delayed-sync.mp4"):
+            for sample in ("truehd-ac3.mp4", "large-moov.mp4", "delayed-sync.mp4",
+                           "extra-sync.mp4"):
                 console = gst(launch, "-v", "filesrc", f"location={sample}", *queue,
                               "!", "qtdemux", "name=d",
                               "d.audio_0", "!", "filesink", "name=truehd",
@@ -294,7 +312,7 @@ def main():
                               "location=actual.ac3", "async=false")
                 if f"activating {mode}" not in console:
                     raise RuntimeError(f"{sample}: expected {mode} scheduling")
-                compact = sample != "delayed-sync.mp4"
+                compact = sample not in ("delayed-sync.mp4", "extra-sync.mp4")
                 check_truehd(console, compact)
                 for codec, payload in expected.items():
                     check_payload(work, sample, payload, codec)
@@ -317,7 +335,7 @@ def main():
             console = gst(launch, "filesrc", f"location={sample}", "!", "qtdemux", "name=d",
                           "d.video_0", "!", "fakesink", "async=false",
                           "d.audio_0", "!", "filesink", "location=actual.truehd", "async=false")
-            check_chunk_ranges(console, *ranges)
+            check_chunk_ranges(console, kind, *ranges)
             check_payload(work, sample, expected_audio, "truehd")
             print(f"PASS {kind} non-interleaved chunk ranges and exact TrueHD payload")
 

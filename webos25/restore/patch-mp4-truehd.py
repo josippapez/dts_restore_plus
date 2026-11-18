@@ -73,28 +73,30 @@ def patch_truehd_samples(source):
 '''
     if source.count(anchor) != 1:
         raise ValueError('MP4 TrueHD sample table anchor mismatch')
-    # Compact before qtdemux allocates its bounded per-sample index.
+    # Compact before qtdemux allocates its bounded per-sample index. A table the
+    # helper rejects is left untouched, so the ordinary index still gets a try.
     return source.replace(anchor, anchor + '''  if (CUR_STREAM (stream)->fourcc == GST_MAKE_FOURCC ('m', 'l', 'p', 'a') &&
       !qtdemux_compact_truehd_index (qtdemux, stream))
-    goto corrupt_file;
+    GST_INFO_OBJECT (qtdemux, "TrueHD index not compacted, using the ordinary index");
 ''', 1)
 
 
 def patch_chunk_range(source):
-    # Both atom types have the same 8-byte header. Only the offsets differ
-    # in width, including when TrueHD index compaction creates a co64 table.
-    before = """    guint32 entry_num;
-
-    entry_num = QT_UINT32 (stream->stco.data + stream->co_size);
-
-    if (entry_num > 1 && entry_num < G_MAXUINT32) {
-      stream->first_chunk_offset =
-          QT_UINT32 (stream->stco.data + stream->co_size * 2);
-      stream->last_chunk_offset =
-          QT_UINT32 (stream->stco.data + stream->co_size * (entry_num + 1));"""
-    after = """    GstByteReader chunks = stream->stco;
+    # Index compaction always writes co64, which the stock range read below
+    # misreads as stco. Read TrueHD tables at their real width and leave every
+    # other track on the stock read, so non-TrueHD files behave as before.
+    before = """  if (stream->stco.data != NULL) {
     guint32 entry_num;
 
+    entry_num = QT_UINT32 (stream->stco.data + stream->co_size);
+"""
+    after = """  if (stream->stco.data != NULL &&
+      CUR_STREAM (stream)->fourcc == GST_MAKE_FOURCC ('m', 'l', 'p', 'a')) {
+    GstByteReader chunks = stream->stco;
+    guint32 entry_num;
+
+    stream->first_chunk_offset = 0;
+    stream->last_chunk_offset = 0;
     /* The entry count follows the 4-byte version and flags in stco and co64. */
     if (gst_byte_reader_set_pos (&chunks, 4) &&
         gst_byte_reader_get_uint32_be (&chunks, &entry_num) &&
@@ -104,7 +106,17 @@ def patch_chunk_range(source):
           qt_atom_parser_get_offset_unchecked (&chunks, stream->co_size);
       gst_byte_reader_skip_unchecked (&chunks, (entry_num - 2) * stream->co_size);
       stream->last_chunk_offset =
-          qt_atom_parser_get_offset_unchecked (&chunks, stream->co_size);"""
+          qt_atom_parser_get_offset_unchecked (&chunks, stream->co_size);
+      GST_DEBUG_OBJECT (qtdemux,
+          "(stream %" GST_FOURCC_FORMAT ") first offset %" G_GINT64_FORMAT
+          ", last offset %" G_GINT64_FORMAT, GST_FOURCC_ARGS (stream->subtype),
+          stream->first_chunk_offset, stream->last_chunk_offset);
+    }
+  } else if (stream->stco.data != NULL) {
+    guint32 entry_num;
+
+    entry_num = QT_UINT32 (stream->stco.data + stream->co_size);
+"""
     if source.count(before) != 1:
         raise ValueError("MP4 chunk offset range anchor mismatch")
     return source.replace(before, after, 1)

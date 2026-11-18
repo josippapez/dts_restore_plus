@@ -27,8 +27,11 @@ other atoms stays at 32 MiB.
 Non-interleaved video and TrueHD fixtures check the chunk ranges used for
 interleave detection and compare the extracted audio bytes with FFmpeg.
 They cover 32-bit `stco` and 64-bit `co64` tables, with audio offsets above
-4 GiB in a sparse file for the co64 case.
+4 GiB in a sparse file for the co64 case. Only the TrueHD track gets the
+corrected range, so the co64 video track must keep stock qtdemux's empty
+range and the file is not classified as non-interleaved.
 
 The delayed sync fixture removes sample 1 from the TrueHD `stss` table.
-Both scheduling modes must use the ordinary index and preserve the full
-TrueHD and AC-3 payloads.
+The extra sync fixture adds an `stss` entry past the last sample, which the
+compact index rejects. Both scheduling modes must use the ordinary index
+for each and preserve the full TrueHD and AC-3 payloads.
