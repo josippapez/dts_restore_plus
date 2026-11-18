@@ -289,19 +289,19 @@
     $("btnKmodTry").hidden = !canW25Test || !s.kmodCanTry
       || s.passthroughOutput !== "external_arc passThrough";
     kmodTryPending = false;
-    // C1 DTS-HD: its own card, only where the service says the kernel fits.
-    $("cardC1Hd").hidden = !s.c1HdAvailable;
-    $("btnC1HdOn").disabled = !s.c1HdAvailable || s.c1HdRequested === true;
-    $("btnC1HdOff").disabled = !s.c1HdAvailable || s.c1HdRequested !== true;
-    c1HdPending = false;
-    $("btnC1HdOn").textContent = "Turn on";
-    setVal("sC1Hd", !s.c1HdRequested ? "off"
-      : s.c1HdOutput === "external_arc passThrough" ? "on, eARC receiver in Pass Through"
+    // 4.4 DTS-HD: its own card, only where the service says the kernel fits.
+    $("cardHd44").hidden = !s.hd44Available;
+    $("btnHd44On").disabled = !s.hd44Available || s.hd44Requested === true;
+    $("btnHd44Off").disabled = !s.hd44Available || s.hd44Requested !== true;
+    hd44Pending = false;
+    $("btnHd44On").textContent = "Turn on";
+    setVal("sHd44", !s.hd44Requested ? "off"
+      : s.hd44Output === "external_arc passThrough" ? "on, eARC receiver in Pass Through"
       : "on, waiting for an eARC receiver in Pass Through",
-      s.c1HdRequested ? (s.c1HdOutput === "external_arc passThrough" ? "ok" : "warn") : null);
-    setVal("sC1Kmod", s.kmodLoaded ? "loaded until restart" : "not loaded",
-      s.c1HdRequested && !s.kmodLoaded ? "warn" : s.kmodLoaded ? "ok" : null);
-    setVal("sC1Last", s.c1HdLast || "—");
+      s.hd44Requested ? (s.hd44Output === "external_arc passThrough" ? "ok" : "warn") : null);
+    setVal("sHd44Kmod", s.kmodLoaded ? "loaded until restart" : "not loaded",
+      s.hd44Requested && !s.kmodLoaded ? "warn" : s.kmodLoaded ? "ok" : null);
+    setVal("sHd44Last", s.hd44Last || "—");
     $("btnKmodTry").textContent = "Try anyway (experimental)";
     // A/B compare renders through the patched dtsdec, so it needs the same profile.
     $("btnAb").disabled = !canW25Test;
@@ -515,15 +515,15 @@
     doPassthrough(true, true, true);
   }
 
-  var c1HdPending = false;
-  function doC1Hd(on) {
-    if (on && !c1HdPending) {
-      c1HdPending = true;
-      $("btnC1HdOn").textContent = "Press again: untested, stays loaded until restart";
+  var hd44Pending = false;
+  function doHd44(on) {
+    if (on && !hd44Pending) {
+      hd44Pending = true;
+      $("btnHd44On").textContent = "Press again: untested, stays loaded until restart";
       return;
     }
     toast(on ? "Turning on DTS-HD…" : "Turning off DTS-HD…", "busy");
-    callService("setC1Passthrough", { enabled: on }).then(function (res) {
+    callService("setHd44Passthrough", { enabled: on }).then(function (res) {
       toast(res.summary || res.errorText || "Done", res.returnValue ? "ok" : "err");
       return refreshStatus();
     }).catch(function (e) {
@@ -940,8 +940,8 @@
         box.textContent = "Could not read the log: " + (e && (e.errorText || e.message) || e);
       });
     });
-    $("btnC1HdOn").addEventListener("click", function () { doC1Hd(true); });
-    $("btnC1HdOff").addEventListener("click", function () { doC1Hd(false); });
+    $("btnHd44On").addEventListener("click", function () { doHd44(true); });
+    $("btnHd44Off").addEventListener("click", function () { doHd44(false); });
     $("btnPtOn").addEventListener("click", function () { doPassthrough(true); });
     $("btnPtOff").addEventListener("click", function () { doPassthrough(false); });
     $("hdPassthrough").addEventListener("change", function () {

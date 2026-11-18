@@ -14,8 +14,8 @@ Fork of [`lgstreamer/dts_restore`](https://github.com/lgstreamer/dts_restore). T
   `webos25/restore/**` at packaging time.
 - `webos25/kmod/`: self-adapting eARC/HDMI passthrough kernel module (GPL-2.0-only,
   experimental). Its 5.4, 6.12 and 4.4 builds are vendored in `webos25/restore/kmod-out/`
-  and ship in the app with `earc-route-load.sh`; the 4.4 build and `restore/c1-out/` are
-  the C1 DTS-HD opt-in, not yet run on a C1. See its README.
+  and ship in the app with `earc-route-load.sh`; the 4.4 build and `restore/4.4-out/` are
+  the webOS 6 DTS-HD opt-in, not yet run on a TV. See its README.
 - `gst/` — upstream CX binaries (unchanged).
 
 ## Non-negotiable rules

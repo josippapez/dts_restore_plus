@@ -8,6 +8,11 @@ typedef unsigned int u32;
 typedef unsigned long u64;
 typedef long s64;
 
+/* x0..x30, sp, pc (+256), pstate (+264): the user_pt_regs prefix, ABI on 4.4, 5.4 and 6.12. */
+struct target_pt_regs { u64 regs[31]; u64 sp; u64 pc; u64 pstate; };
+_Static_assert(__builtin_offsetof(struct target_pt_regs, pc) == 256, "pt_regs pc");
+_Static_assert(__builtin_offsetof(struct target_pt_regs, pstate) == 264, "pt_regs pstate");
+
 #define EARC_BRK_IMMEDIATE 0x4c31U
 #define EARC_BRK_INSTRUCTION (0xd4200000U | (EARC_BRK_IMMEDIATE << 5))
 

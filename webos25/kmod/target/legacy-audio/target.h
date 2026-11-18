@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* LG's old AUDIO_* driver on webOS 6 (C1 and its 2021 siblings, kernel 4.4.84-229).
+/* LG's old AUDIO_* driver on webOS 6 (kernel 4.4.84-229: C1, W21K and other 2021 models).
  * No address is built in: each function comes from kallsyms and must have the analysed
  * shape (core/code.h), and the data the hooks read is derived from LG's own code. */
 #ifndef EARC_TARGET_LEGACY_AUDIO_H

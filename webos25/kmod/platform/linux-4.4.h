@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Linux 4.4.84 arm64 as LG builds it for webOS 6 (C1): module and hook ABI.
- * Layouts measured from the stock si2151.ko and the C1 kernel's own code. */
+/* Linux 4.4.84 arm64 as LG builds it for webOS 6: module and hook ABI.
+ * Layouts measured from the stock si2151.ko and the kernel's own code. */
 #ifndef EARC_PLATFORM_LINUX_4_4_H
 #define EARC_PLATFORM_LINUX_4_4_H
 
@@ -18,10 +18,6 @@ extern void misc_deregister(void *device);
 extern unsigned long __copy_from_user(void *to, const void *from, unsigned long length);
 extern void get_online_cpus(void);
 extern void put_online_cpus(void);
-
-struct target_pt_regs { u64 regs[31]; u64 sp; u64 pc; u64 pstate; };
-_Static_assert(__builtin_offsetof(struct target_pt_regs, pc) == 256, "pt_regs pc");
-_Static_assert(__builtin_offsetof(struct target_pt_regs, pstate) == 264, "pt_regs pstate");
 
 /* struct break_hook {list_head; u32 esr; u32 esr_mask; fn}, read by brk_handler +0x58/+0x68. */
 struct target_break_hook {

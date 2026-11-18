@@ -23,9 +23,8 @@
 #define EARC_KPROBE_FLAGS 0x80
 #endif
 
-typedef unsigned long u64;
-typedef unsigned int u32;
-typedef unsigned char u8;
+#include "../core/hook.h"
+
 extern int printk(const char *format, ...) __asm__(EARC_PRINTK_SYMBOL);
 extern void *kthread_create_on_node(int (*function)(void *), void *data, int node, const char *name, ...);
 extern int wake_up_process(void *task);
@@ -45,12 +44,6 @@ extern void cpus_read_unlock(void);
 extern unsigned long __arch_copy_from_user(void *to, const void *from, unsigned long n);
 #define copy_from_user __arch_copy_from_user
 
-/* x0..x30, sp, pc (+256), pstate (+264): the user_pt_regs prefix, which is ABI;
- * kprobe_breakpoint_handler of both generations reads pc and pstate there. */
-struct target_pt_regs { u64 regs[31]; u64 sp; u64 pc; u64 pstate; };
-_Static_assert(__builtin_offsetof(struct target_pt_regs, regs) == 0, "pt_regs regs");
-_Static_assert(__builtin_offsetof(struct target_pt_regs, pc) == 256, "pt_regs pc");
-_Static_assert(__builtin_offsetof(struct target_pt_regs, pstate) == 264, "pt_regs pstate");
 /* Only addr and pre_handler are set; the kernel fills the rest. */
 struct target_kprobe;
 typedef int (*prehandler_fn)(struct target_kprobe *, struct target_pt_regs *);

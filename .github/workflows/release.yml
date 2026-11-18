@@ -64,7 +64,7 @@ jobs:
                    demux-out/libgstmatroska.so demux-out/libgstmpegpsdemux.so \
                    demux-out/libgstvideoparsersbad.so \
                    kmod-out/earc_route-5.4.ko kmod-out/earc_route-4.4.ko \
-                   c1-out/libgstdtsdec.so; do
+                   4.4-out/libgstdtsdec.so; do
             [ -f "$f" ] || { echo "MISSING committed binary: $f"; exit 1; }
           done
           echo "all prebuilt binaries present"
@@ -148,13 +148,13 @@ jobs:
           mkdir -p payload/c2-ts
           cp -f ../restore/ts114-out/libgstmpegtsdemux.so payload/c2-ts/
           [ -s "payload/c2-ts/libgstmpegtsdemux.so" ] || { echo "MISSING C2 TS payload"; exit 1; }
-          # C1 (webOS 6) DTS-HD, EXPERIMENTAL and off by default: staged on the TV only
-          # when the user turns it on (setC1Passthrough).
-          mkdir -p payload/c1
-          cp -f ../restore/c1-out/libgstdtsdec.so ../restore/kmod-out/earc_route-4.4.ko \
-                ../kmod/earc-route-load.sh ../restore/init_c1.sh payload/c1/
-          for f in libgstdtsdec.so earc_route-4.4.ko earc-route-load.sh init_c1.sh; do
-            [ -s "payload/c1/$f" ] || { echo "MISSING C1 payload: $f"; exit 1; }
+          # Kernel 4.4 (webOS 6) DTS-HD, EXPERIMENTAL and off by default: staged on the TV only
+          # when the user turns it on (setHd44Passthrough).
+          mkdir -p payload/4.4
+          cp -f ../restore/4.4-out/libgstdtsdec.so ../restore/kmod-out/earc_route-4.4.ko \
+                ../kmod/earc-route-load.sh ../restore/init_4.4.sh payload/4.4/
+          for f in libgstdtsdec.so earc_route-4.4.ko earc-route-load.sh init_4.4.sh; do
+            [ -s "payload/4.4/$f" ] || { echo "MISSING 4.4 payload: $f"; exit 1; }
           done
 
       - name: Build the .ipk

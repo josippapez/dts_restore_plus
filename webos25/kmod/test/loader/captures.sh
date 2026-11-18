@@ -32,6 +32,8 @@ for dir in "$@"; do
     6.12.*) want=earc_route-6.12 ;;
     *) want= ;;
   esac
+  # C6 shares the C5's release but not its struct module; its 6.12-c6 build is not vendored.
+  case $(basename "$dir") in c6-*) want=refuse-abi ;; esac
   root=$BUILD/root; rm -rf "$root"; mkdir -p "$root/proc" "$root/lib/modules/$release"
   cp "$dir/stock-module.ko" "$root/lib/modules/$release/"
   cp "$dir/kallsyms.txt" "$root/proc/kallsyms"
@@ -43,6 +45,12 @@ for dir in "$@"; do
   if [ "$want" = refuse ]; then
     if printf '%s\n' "$out" | grep -q 'REFUSED: kallsyms:' && ! printf '%s\n' "$out" | grep -q 'loading '; then
       echo "PASS loader $dir ($release): refused before insmod: $(printf '%s\n' "$out" | tail -n1)"
+    else
+      echo "FAIL loader $dir ($release): not refused: $(printf '%s\n' "$out" | tail -n1)"; status=1
+    fi
+  elif [ "$want" = refuse-abi ]; then
+    if printf '%s\n' "$out" | grep -q 'REFUSED: 0 of' && ! printf '%s\n' "$out" | grep -q 'loading '; then
+      echo "PASS loader $dir ($release): no vendored build matches its ABI, refused"
     else
       echo "FAIL loader $dir ($release): not refused: $(printf '%s\n' "$out" | tail -n1)"; status=1
     fi

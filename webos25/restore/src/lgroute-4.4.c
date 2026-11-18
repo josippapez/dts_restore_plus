@@ -1,10 +1,14 @@
-/* webOS 6 (LG C1) HD route for dtsdec: lgroute.h's API over the 4.4 earc_route module.
+/* Kernel 4.4 (webOS 6) HD route for dtsdec: lgroute.h's API over the 4.4 earc_route module.
  *
- * The C1's lxaudiosink has no ES carrier caps and no /proc/aaudio, so the carrier is
- * plain 192 kHz/8ch/16-bit PCM with LG's PCM bypass on (pcm-multi-ch). The module,
- * while this lease is held, keeps the converter of the leased renderer at that format,
- * clears LG's eARC mix flag and sets the eARC encoded type to MAT (LG's HBR route).
- * EXPERIMENTAL: built from the extracted C1 firmware; no C1 has played it yet.
+ * webOS 6's lxaudiosink has no ES carrier caps and no /proc/aaudio, so the carrier is
+ * plain 192 kHz/8ch/16-bit PCM with LG's PCM bypass on (pcm-multi-ch). From the 03.53.45
+ * firmware: liblxa opens a second (bypass) renderer and marks it ES only in
+ * lxao_open_renderer, and the sink reopens its renderer only on new caps or a new stream
+ * id, so pcm-multi-ch goes on before a fresh STREAM_START. The DSP's eARC ES writer
+ * (irqout_fill_bc_es8) byte-swaps each 16-bit word, so bursts stay big-endian as on
+ * webOS 25. The module, while this lease is held, keeps the leased renderer's converter
+ * at that format, clears LG's eARC mix flag and sets the eARC encoded type to MAT.
+ * EXPERIMENTAL: built from extracted 4.4 firmware (C1 03.53.45); no TV has played it yet.
  * SPDX-License-Identifier: LGPL-2.1-or-later */
 #define _GNU_SOURCE
 #include "lgroute.h"
@@ -19,10 +23,23 @@
 #define SINK_PLUGIN "/usr/lib/gstreamer-1.0/libgstlxaudiosink.so"
 #define ROUTE_LOG LGROUTE_RUN "/lgroute.log"
 
-GST_DEBUG_CATEGORY_STATIC (c1route_debug);
-#define GST_CAT_DEFAULT (c1route_debug)
+GST_DEBUG_CATEGORY_STATIC (lgroute_debug);
+#define GST_CAT_DEFAULT (lgroute_debug)
 
 static GMutex route_lock;
+
+/* ponytail: lease and log duplicate lgroute.c's; sharing them shifts __LINE__ in the
+ * shipped webOS 25 binary, so merge them with its next on-TV rebuild. */
+static int app_lease (gint value)
+{
+  gchar text = '0' + value;
+  int fd = open (LGROUTE_LEASE, O_WRONLY | O_CLOEXEC);
+  if (fd >= 0 && write (fd, &text, 1) != 1) {
+    close (fd);
+    fd = -1;
+  }
+  return fd;
+}
 
 void lgroute_log (const gchar *format, ...)
 {
@@ -32,9 +49,9 @@ void lgroute_log (const gchar *format, ...)
   if (!log)
     return;
   GDateTime *now = g_date_time_new_now_local ();
-  gchar *when = g_date_time_format (now, "%T");
+  gchar *when = g_date_time_format (now, "%T.%f");
   g_date_time_unref (now);
-  fprintf (log, "%s c1: ", when);
+  fprintf (log, "%.12s ", when);
   va_list args;
   va_start (args, format);
   vfprintf (log, format, args);
@@ -44,13 +61,6 @@ void lgroute_log (const gchar *format, ...)
   fclose (log);
 }
 
-GstCaps *lgroute_carrier_caps (void)
-{
-  return gst_caps_new_simple ("audio/x-raw", "format", G_TYPE_STRING, "S16LE",
-      "layout", G_TYPE_STRING, "interleaved", "rate", G_TYPE_INT, 192000,
-      "channels", G_TYPE_INT, 8, "channel-mask", GST_TYPE_BITMASK, (guint64) 0xc3f, NULL);
-}
-
 /* The boot script hashes SINK_PLUGIN once and writes LGROUTE_SINK_OK on a match. */
 static gboolean verified_sink (GstElement *sink)
 {
@@ -58,9 +68,7 @@ static gboolean verified_sink (GstElement *sink)
   GstPlugin *plugin;
   gboolean ok;
   if (!factory || strcmp (GST_OBJECT_NAME (factory), "audiosink")
-      || !g_object_class_find_property (G_OBJECT_GET_CLASS (sink), "pcm-multi-ch")
-      || !g_object_class_find_property (G_OBJECT_GET_CLASS (sink), "index")
-      || !g_object_class_find_property (G_OBJECT_GET_CLASS (sink), "mixer"))
+      || !g_object_class_find_property (G_OBJECT_GET_CLASS (sink), "pcm-multi-ch"))
     return FALSE;
   plugin = gst_plugin_feature_get_plugin (GST_PLUGIN_FEATURE (factory));
   if (!plugin)
@@ -70,7 +78,23 @@ static gboolean verified_sink (GstElement *sink)
   return ok;
 }
 
-/* The one verified LG sink in the pipeline, or NULL. */
+static void route_fail (LgRoute *route, const gchar *reason)
+{
+  route->failed = TRUE;
+  route->reason = reason;
+  GST_WARNING_OBJECT (route->element, "lgroute: HD transport failed: %s", reason);
+  lgroute_log ("failed, decoding instead: %s", reason);
+}
+
+GstCaps *lgroute_carrier_caps (void)
+{
+  return gst_caps_new_simple ("audio/x-raw", "format", G_TYPE_STRING, "S16LE",
+      "layout", G_TYPE_STRING, "interleaved", "rate", G_TYPE_INT, 192000,
+      "channels", G_TYPE_INT, 8, "channel-mask", GST_TYPE_BITMASK, (guint64) 0xc3f, NULL);
+}
+
+/* The one verified LG sink in the pipeline, or NULL. The hash in sink-ok pins its
+ * index and mixer properties. */
 static GstElement *find_sink (GstElement *element)
 {
   GstObject *top = gst_object_ref (element), *parent;
@@ -81,7 +105,7 @@ static GstElement *find_sink (GstElement *element)
   GstElement *sink = NULL;
   guint count = 0;
   if (GST_IS_BIN (top)) {
-    /* gst_bin_iterate_all_by_element_factory_name is 1.18; the C1 has 1.16. */
+    /* gst_bin_iterate_all_by_element_factory_name is 1.18; webOS 6 has 1.16. */
     GstIterator *it = gst_bin_iterate_recurse (GST_BIN (top));
     GValue value = G_VALUE_INIT;
     for (GstIteratorResult r; (r = gst_iterator_next (it, &value)) != GST_ITERATOR_DONE && r != GST_ITERATOR_ERROR;) {
@@ -92,8 +116,7 @@ static GstElement *find_sink (GstElement *element)
         continue;
       }
       GstElement *candidate = g_value_get_object (&value);
-      GstElementFactory *factory = gst_element_get_factory (candidate);
-      if (factory && !strcmp (GST_OBJECT_NAME (factory), "audiosink") && verified_sink (candidate) && !count++)
+      if (verified_sink (candidate) && !count++)
         sink = gst_object_ref (candidate);
       g_value_reset (&value);
     }
@@ -104,14 +127,6 @@ static GstElement *find_sink (GstElement *element)
   if (count != 1)
     g_clear_object (&sink);
   return sink;
-}
-
-static void route_fail (LgRoute *route, const gchar *reason)
-{
-  route->failed = TRUE;
-  route->reason = reason;
-  GST_WARNING_OBJECT (route->element, "c1route: HD transport failed: %s", reason);
-  lgroute_log ("failed, decoding instead: %s", reason);
 }
 
 /* Silence until LG's eARC is unmixed; a lasting mix gives up, as on webOS 25. */
@@ -152,7 +167,7 @@ void lgroute_init (LgRoute *route, GstElement *element)
 {
   static gsize category;
   if (g_once_init_enter (&category)) {
-    GST_DEBUG_CATEGORY_INIT (c1route_debug, "dtsdec-c1route", 0, "LG C1 eARC HD transport");
+    GST_DEBUG_CATEGORY_INIT (lgroute_debug, "dtsdec-lgroute", 0, "LG eARC HD transport, kernel 4.4");
     g_once_init_leave (&category, 1);
   }
   memset (route, 0, sizeof *route);
@@ -191,12 +206,9 @@ gboolean lgroute_arm (LgRoute *route)
     gst_object_unref (sink);
     return FALSE;
   }
-  /* The lease lasts as long as this descriptor: the kernel drops it on close or a crash. */
-  gchar value = (gchar) ('1' + index);
-  int fd = open (LGROUTE_LEASE, O_WRONLY | O_CLOEXEC);
-  if (fd < 0 || write (fd, &value, 1) != 1) {
+  int fd = app_lease ((gint) index + 1);
+  if (fd < 0) {
     lgroute_log ("not armed: earc_route did not take the lease");
-    if (fd >= 0) close (fd);
     gst_object_unref (sink);
     return FALSE;
   }
@@ -211,6 +223,17 @@ gboolean lgroute_arm (LgRoute *route)
   route->buffers = pad ? gst_pad_add_probe (pad, GST_PAD_PROBE_TYPE_BUFFER, buffer_probe, route, NULL) : 0;
   route->configured = TRUE;
   g_object_set (sink, "pcm-multi-ch", TRUE, NULL);
+  /* New caps reopen LG's renderer with the flag; unchanged carrier caps (a replay) do not,
+   * so a new stream id reopens it. */
+  GstCaps *current = pad ? gst_pad_get_current_caps (pad) : NULL, *carrier = lgroute_carrier_caps ();
+  gboolean same = current && gst_caps_is_equal (current, carrier);
+  gst_caps_unref (carrier);
+  if (current) gst_caps_unref (current);
+  if (same) {
+    gchar *id = g_strdup_printf ("lgroute-%p-%" G_GINT64_FORMAT, (void *) route, g_get_monotonic_time ());
+    gst_pad_send_event (pad, gst_event_new_stream_start (id));
+    g_free (id);
+  }
   lgroute_log ("armed on ADEC%u: PCM bypass on, earc_route holds the lease", index);
   return TRUE;
 }

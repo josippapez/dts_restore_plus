@@ -14,15 +14,15 @@ it does **not** rebuild from source. Two obligations follow:
      `lgroute-graph.h`, `lgroute-control.c`, `lgroute-control.h`, `gstadecswitch.c`,
      `gstadecswitch.h`, `edidaudio.c`, `edidaudio.h`
    - the `dts_support` patch / pinned sources / flags in `webos25/restore/build-demux.sh`
-   - `webos25/restore/build.sh`, `build-truehd.sh`, `build-demux.sh`, `build-switch.sh`, `build-edid.sh`, `build-ts114.sh`, `build-c1.sh`, and `src/c1route.c`, `src/c1compat.h`
+   - `webos25/restore/build.sh`, `build-truehd.sh`, `build-demux.sh`, `build-switch.sh`, `build-edid.sh`, `build-ts114.sh`, `build-4.4.sh`, and `src/lgroute-4.4.c`, `src/compat-4.4.h`
    - the kernel module: `webos25/kmod/core/`, `platform/`, `target/`, `earc_route_brk.c`,
      `build.sh`, `build.py`
 
    The committed binaries live in
-   `webos25/restore/{out,truehd-out,demux-out,switch-out,edid-out,ts114-out,kmod-out,c1-out}`.
+   `webos25/restore/{out,truehd-out,demux-out,switch-out,edid-out,ts114-out,kmod-out,4.4-out}`.
    (`out/` holds `libgstdtsdec.so` and `lgroute-control`; `kmod-out/` holds
-   `earc_route-{5.4,6.12,4.4}.ko`, copied from `webos25/kmod/out/`; `c1-out/` holds the
-   C1 `libgstdtsdec.so`. The C1 pair is the one exception to TV verification: see RELEASING.md.)
+   `earc_route-{5.4,6.12,4.4}.ko`, copied from `webos25/kmod/out/`; `4.4-out/` holds the
+   webOS 6 `libgstdtsdec.so`. The 4.4 pair is the one exception to TV verification: see RELEASING.md.)
    The app's `webos25/app/payload/**` `.so` are git-ignored and copied from
    `webos25/restore/**` at package time — never edit them there.
 
