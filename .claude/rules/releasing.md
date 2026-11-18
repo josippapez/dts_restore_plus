@@ -26,7 +26,7 @@ it does **not** rebuild from source. Two obligations follow:
    `webos25/restore/**` at package time — never edit them there.
 
 2. **Publish by tagging.** After any change you want released (binary, installer,
-   or app), cut a release: `git tag webos25-<X.Y> && git push origin webos25-<X.Y>`.
+   or app), cut a release: `git tag webos25-<X.Y.Z> && git push origin webos25-<X.Y.Z>`.
    The **Release (webOS 25)** workflow builds the CLI tarball + the `.ipk` and
    publishes them. Confirm the run is green and both assets are attached.
 

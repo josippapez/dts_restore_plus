@@ -28,7 +28,7 @@ Fork of [`lgstreamer/dts_restore`](https://github.com/lgstreamer/dts_restore). T
    webOS-25 TV**, and re-commit the binary in the same change. See
    [`.claude/rules/releasing.md`](.claude/rules/releasing.md) and [`RELEASING.md`](RELEASING.md).
 2. **Release by tagging.** After any change to be shipped, cut a release:
-   `git tag webos25-<X.Y> && git push origin webos25-<X.Y>` → the **Release (webOS 25)**
+   `git tag webos25-<X.Y.Z> && git push origin webos25-<X.Y.Z>` → the **Release (webOS 25)**
    Action packages the CLI tarball + builds the `.ipk` and publishes. Agents: use the
    `release-webos25` skill. Don't let the release drift behind the committed binaries.
 3. **Keep the app mechanism in sync with `install.sh`.** `webos25/app/service/service.js`

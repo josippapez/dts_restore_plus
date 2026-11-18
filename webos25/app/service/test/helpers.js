@@ -57,6 +57,8 @@ var stubs = {};
 function exe(file, text) {
   var body = "#!/bin/sh\n" + text + "\n";
   fs.mkdirSync(path.dirname(file), {recursive: true});
+  // Overwriting a cached stub would hand its new body to every later link of the old one.
+  Object.keys(stubs).forEach(function (b) { if (stubs[b] === file) delete stubs[b]; });
   fs.rmSync(file, {force: true});
   try { fs.linkSync(stubs[body], file); } catch (e) { write(file, body, 0o755); stubs[body] = file; }
 }

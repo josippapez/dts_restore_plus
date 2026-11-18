@@ -56,10 +56,10 @@ libgstdtsdec.so
                 gst_element_register_dtsdec, gst_plugin_dtsdec_register,
                 gst_plugin_dtsdec_get_desc, gst_truehd_mat_get_type and the
                 lgroute_* / lgroute_control_* helpers
-  size        : 3463676 bytes
-  md5         : 3b4ff888bbc72b58d1b3bb8df1144ac3
-  sha1        : 2afcb0e32bc001e0709ff3f64fd6d6ac00d909fb
-  sha256      : c47b1566725858867a2e571bc39f14c30e9cfc85897666a4163ac541ea3bb4eb
+  size        : 3472824 bytes
+  md5         : e5e8c069d7ff3006ccb9f91f025e5ee7
+  sha1        : bcabb893b104b1148cf0f9aaa594886d811ace2e
+  sha256      : b1ab19b15cef40ce23d33d377e8eefd404220a715befac191644c73576dd02d9
 
 lgroute-control
 ---------------
@@ -189,6 +189,21 @@ eARC receiver, in the app's player: AC3 then DTS failed 3 of 3 before and
 passed 8 of 8 AC3 -> DTS -> AC3 cycles after (eARC [ARC] Pass-Through for 6 s
 of each DTS stretch); the four DTS samples, DTS MKV, pause/resume, a seek and
 DTS -> AC3 -> DTS also passed. lgroute-control rebuilt byte-identically.
+The 2026-11-17 build takes native ES at a track switch only where earc_route
+placed no DTS-HD status probes (LG's own kernel takes DTS-HD: C3/G3, G4);
+everywhere else a switch keeps the PCM carrier and its renderer restart, as in
+webos25-2.79. With native ES at every switch, a G5 played DTS:X silent after
+a switch and a G2 lost DTS:X too, where 2.79 had played both. Rebuilding the committed
+source reproduced the previous binary byte for byte; lgroute-control rebuilt
+byte-identically.
+The 2026-11-18 build describes the PCM carrier to LG as 8-channel PCM again, as
+2.79 did, and takes the earc_route lease only after LG has kept the carrier
+mixed for a second (native ES keeps it from the start): with the lease held from
+the start a G5 played DTS:X silent and played it once the lease was released.
+A renderer restart that waits 3 s of buffers for LG's sink to play now falls
+back to decoding (a C5 resume sent 100 s of silence). On the C5 (33.31.68, TV
+speakers) the four sample decodes and a DTS-HD MKV pass. Not run on a receiver.
+lgroute-control rebuilt byte-identically.
 
 This report is maintained by hand: update it whenever out/libgstdtsdec.so is
 rebuilt (build.sh prints the ABI values above).

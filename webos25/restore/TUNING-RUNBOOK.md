@@ -190,8 +190,8 @@ must be kept in sync, on a real TV, in the same change.
    Never let the committed binaries drift behind the source.
 5. **Tag the release:**
    ```sh
-   git tag webos25-<X.Y>
-   git push origin webos25-<X.Y>
+   git tag webos25-<X.Y.Z>
+   git push origin webos25-<X.Y.Z>
    ```
    The **Release (webOS 25)** GitHub Action packages the CLI tarball + builds
    the `.ipk` from the tag — it does not rebuild from source, so step 4 must

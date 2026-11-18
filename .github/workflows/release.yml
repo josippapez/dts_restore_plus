@@ -8,8 +8,9 @@ name: Release (webOS 25)
 #     out/ + truehd-out/ + demux-out/ + install.sh — one-command install)
 #   - io.github.josippapez.dtsenabler_<ver>_all.ipk         (the Homebrew app)
 #
-# Trigger:  git tag webos25-1.2 && git push origin webos25-1.2
-#           (or a v* tag, or run manually via workflow_dispatch)
+# Trigger:  git tag webos25-2.82.1 && git push origin webos25-2.82.1
+#           (or a v* tag, or run manually via workflow_dispatch). The number is
+#           MAJOR.MINOR.PATCH and must match the app's version.
 
 on:
   push:
@@ -19,7 +20,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag/name for a manual release (e.g. webos25-1.2)"
+        description: "Tag/name for a manual release (e.g. webos25-2.82.1)"
         required: true
 
 permissions:
@@ -73,6 +74,11 @@ jobs:
 
       - name: Test media worker refresh
         run: node --test webos25/app/service/test/media-workers.test.js
+
+      - name: Verify the tag is MAJOR.MINOR.PATCH and matches the app version
+        env:
+          REL_NAME: ${{ steps.rel.outputs.name }}   # sanitized by the rel step
+        run: sh webos25/restore/check-app-version.sh "$REL_NAME"
 
       # The listing floor and the service's profile gates live in different files
       # with nothing tying them together, which is how '>=10.0' shipped while the C2

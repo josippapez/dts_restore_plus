@@ -183,13 +183,17 @@ straight disc copy.
 
 1. Make sure the binaries in `webos25/restore/**` are current and committed
    (rebuilt + verified if they were affected — see above).
-2. Bump the app version in `webos25/app/appinfo.json` +
-   `webos25/app/service/package.json` if the app changed.
+2. Pick the version, MAJOR.MINOR.PATCH: a bug fix bumps PATCH (`2.82.0` → `2.82.1`),
+   a feature MINOR (`2.83.0`), a breaking change MAJOR (`3.0.0`). Set it in
+   `webos25/app/appinfo.json` + `webos25/app/service/package.json`; the tag carries
+   the same number (`webos25-2.82.1` ships app `2.82.1`). The workflow refuses a tag
+   that is not `webos25-MAJOR.MINOR.PATCH` or does not match the app
+   (`check-app-version.sh`).
 3. Tag and push — the workflow does the rest:
 
    ```sh
-   git tag webos25-1.2        # or v1.2.0
-   git push origin webos25-1.2
+   git tag webos25-2.82.1
+   git push origin webos25-2.82.1
    ```
 
    The Action packages `dts_restore_plus-webos25-restore-<tag>.tar.gz` (the CLI:
@@ -254,6 +258,6 @@ goes in `payload/c2-ts/` because `payload/cx/` is shared with the CX profile.
       the Homebrew listing floor in `packaging/homebrew/*.yml` must not exclude a webOS
       release the service gates a profile on. `>=10.0` once shipped alongside a C2
       profile gated on webOS 7.4.0, making that profile unreachable
-- [ ] `appinfo.json` and `service/package.json` versions match and are bumped if the app changed
+- [ ] `appinfo.json` and `service/package.json` both carry the tag's MAJOR.MINOR.PATCH
 - [ ] Docs updated (`webos25/README.md`, this file)
 - [ ] Tag pushed → release workflow green → assets present on the release

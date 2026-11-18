@@ -16,16 +16,22 @@ with app 2.7.71 or later (discussion #17). Other combinations are unverified.
 ## Full DTS-HD over eARC
 
 The exact tested C2 build uses LG's native ES bypass without synthetic renderer
-restarts. Other profiles start on the PCM bypass and switch to native ES at a
-track switch, where LG kept the PCM carrier at the old track's pace.
+restarts. Other profiles use the PCM bypass. At a track switch, TVs whose own
+kernel already takes DTS-HD (C3/G3, G4) switch to native ES, where LG kept the
+PCM carrier at the old track's pace. The rest keep the PCM carrier and restart
+LG's renderer, as in webos25-2.79: native ES there left DTS:X silent on a G5.
 Both carry FFmpeg's IEC 61937 packing at 192 kHz. HD needs Digital Sound Output
 on Pass Through: Auto re-encodes and mixes TV sounds in.
 
 LG mixes any input codec missing from the receiver's short eARC list, which omits
-DTS on many soundbars. The decoder holds `earc_route`'s `/dev/earc_route` lease, which
-forces the bypass; without the module loaded HD is not offered. The carrier stays
-silent until eARC is unmixed. The helper clears eARC mixing; if it stays on for a
-second, the stream falls back to the core.
+DTS on many soundbars. The PCM carrier is described to LG as 8-channel PCM while it
+plays, as in webos25-2.79, and LG's own label comes back when it stops. Only if LG
+keeps the carrier mixed for a second, where 2.79 decoded, does the decoder take `earc_route`'s
+`/dev/earc_route` lease, which forces the bypass: held from the start, it left
+DTS:X silent on a G5 (#39). Native ES takes the lease at once. Without the module
+loaded HD is not offered. The carrier stays silent until eARC is unmixed. The
+helper clears eARC mixing; if it stays on for a second, the stream falls back to
+the core.
 
 LG's mixer word is only its request. The kernel says which route it took in
 `/proc/lgtv-driver/audio/sndout`: `[ARC] OutputCodec=Pass-Through` is the bypass,

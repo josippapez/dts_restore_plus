@@ -103,10 +103,10 @@
     if (btn) { btn.textContent = "Try anyway (experimental)"; }
   }
 
-  function mechLabel(profile, mech) {
+  function mechLabel(profile, mech, c2Native) {
     if (profile === "webos25-armel-gst124") return "decoder-inject (patched dtsdec)";
     if (profile === "cx-armv7-gst114" || profile === "webos6-armel-gst116") return "demuxer-override (rebuilt LG libs)";
-    if (profile === "webos22-o22-gst118") return "experimental legacy payload (C2/G2)";
+    if (profile === "webos22-o22-gst118") return c2Native ? "experimental demuxers for LG's own DTS decoder" : "experimental legacy payload (C2/G2)";
     return mech || "none";
   }
 
@@ -117,7 +117,7 @@
     lastSupported = supported;
 
     setVal("stProfile", profile, supported ? "ok" : "warn");
-    setVal("stMech", mechLabel(profile, s.mechanism), supported ? null : "warn");
+    setVal("stMech", mechLabel(profile, s.mechanism, s.c2Native), supported ? null : "warn");
     setVal("stModel", s.model || "unknown");
     setVal("stOta", s.otaId || "unknown");
     setVal("stFirmware", s.firmwareVersion || "unknown");
@@ -393,8 +393,9 @@
       var v = r[pair[0]] || {};
       var verdict = v.verdict || "—";
       var cls = verdict === "PASS" ? "ok" : (verdict === "FAIL" ? "warn" : null);
-      var label = verdict === "PASS" ? "PASS (decoded)"
-                : verdict === "FAIL" ? "FAIL (no audio)"
+      // A native C2 install only checks that the demuxer hands out DTS.
+      var label = verdict === "PASS" ? (v.demuxOnly ? "PASS (DTS demuxed)" : "PASS (decoded)")
+                : verdict === "FAIL" ? (v.demuxOnly ? "FAIL (no DTS stream)" : "FAIL (no audio)")
                 : verdict === "MISSING" ? "sample missing" : "—";
       setVal(pair[1], label, cls);
     });
