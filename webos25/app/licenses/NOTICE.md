@@ -7,8 +7,8 @@ here relicenses anything. The full texts are alongside this file: [`LGPL-2.1.txt
 | Shipped artifact | License | Upstream / how it is built |
 |---|---|---|
 | App (`index.html`, `js/`, `css/`), JS service, `install.sh`, `init_dts25.sh`, `uninstall.sh` | LGPL-2.1-or-later | this project |
-| `payload/webos25-demux/libgstisomp4.so` | LGPL-2.1-or-later | gst-plugins-good, `dts_support` default flipped to TRUE; built by `restore/build-demux.sh` |
-| `payload/webos25-demux/libgstmpegtsdemux.so` | LGPL-2.1-or-later | gst-plugins-bad, same patch; built by `restore/build-demux.sh` |
+| `payload/webos25-demux/libgstisomp4.so` | LGPL-2.1-or-later | gst-plugins-good, `dts_support` default flipped to TRUE, with MP4 TrueHD and Dolby Vision profile 7 patches; built by `restore/build-demux.sh` |
+| `payload/webos25-demux/libgstmpegtsdemux.so` | LGPL-2.1-or-later | gst-plugins-bad, DTS and TrueHD/AC-3 patches; built by `restore/build-demux.sh` |
 | `payload/webos25-demux/libgstmatroska.so` | LGPL-2.1-or-later | gst-plugins-good, Dolby Vision profile 7 patch; links the system libbz2; built by `restore/build-demux.sh` |
 | `payload/webos25-demux/libgstvideoparsersbad.so` | LGPL-2.1-or-later | gst-plugins-bad, Dolby Vision profile 7 RPU normalization built by `restore/build-demux.sh` and `restore/patch-p7-rpu-state.py`. Uses the TV's installed RPU library. |
 | `payload/webos25-truehd/libgstlibav.so` | LGPL-2.1-or-later | gst-libav; built by `restore/build-truehd.sh` |

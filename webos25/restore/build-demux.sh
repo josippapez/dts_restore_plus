@@ -39,6 +39,9 @@ TSDEMUX="$CTX/src/gst-plugins-bad/gst/mpegtsdemux/tsdemux.c"
 MKVDEMUX="$CTX/src/gst-plugins-good/gst/matroska/matroska-demux.c"
 PSDEMUX="$CTX/src/gst-plugins-bad/gst/mpegdemux/gstmpegdemux.c"
 
+# Apply TrueHD caps, large moov handling and bounded index compaction together.
+python3 "$(dirname "$0")/patch-mp4-truehd.py" "$QTDEMUX"
+
 perl -0pi -e 's/qtdemux->dts_support = FALSE;/qtdemux->dts_support = TRUE;/g' "$QTDEMUX"
 perl -0pi -e 's/demux->dts_support = FALSE;/demux->dts_support = TRUE;/g'     "$TSDEMUX"
 # matroska: with dts_support FALSE this build drops A_DTS tracks entirely (no

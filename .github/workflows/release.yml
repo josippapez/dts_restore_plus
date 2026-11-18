@@ -72,6 +72,9 @@ jobs:
       - name: Verify the boot script's three copies are in sync
         run: sh webos25/restore/check-init-sync.sh
 
+      - name: Test media worker refresh
+        run: node --test webos25/app/service/test/media-workers.test.js
+
       - name: Verify the tag is MAJOR.MINOR.PATCH and matches the app version
         env:
           REL_NAME: ${{ steps.rel.outputs.name }}   # sanitized by the rel step
@@ -171,7 +174,7 @@ jobs:
           # ipkUrl is a bare filename: repogen urljoin()s it against manifestUrl,
           # so it resolves to the same release the manifest is hosted in.
           cat > webos25/app/dist/io.github.josippapez.dtsenabler.manifest.json <<EOF
-          {"id":"io.github.josippapez.dtsenabler","version":"$VER","type":"web","title":"DTS Enabler","appDescription":"Restore DTS and Dolby TrueHD/MLP audio on rooted LG webOS 25 TVs, including DTS in mp4/ts/m2ts containers. Also offers exact-firmware experimental DTS support for C2/G2 via explicit opt-in. Requires the Homebrew Channel + root.","iconUri":"https://raw.githubusercontent.com/josippapez/dts_restore_plus/main/assets/icon160.png","sourceUrl":"https://github.com/josippapez/dts_restore_plus","rootRequired":true,"ipkUrl":"$IPK_NAME","ipkSize":$SIZE,"ipkHash":{"sha256":"$SHA"}}
+          {"id":"io.github.josippapez.dtsenabler","version":"$VER","type":"web","title":"DTS Enabler","appDescription":"Restore DTS and Dolby TrueHD/MLP audio on rooted LG webOS 25 TVs, including DTS and TrueHD in MKV, MP4, TS and M2TS. Also offers exact-firmware experimental DTS support for C2/G2 via explicit opt-in. Requires the Homebrew Channel + root.","iconUri":"https://raw.githubusercontent.com/josippapez/dts_restore_plus/main/assets/icon160.png","sourceUrl":"https://github.com/josippapez/dts_restore_plus","rootRequired":true,"ipkUrl":"$IPK_NAME","ipkSize":$SIZE,"ipkHash":{"sha256":"$SHA"}}
           EOF
           cat webos25/app/dist/io.github.josippapez.dtsenabler.manifest.json
 
@@ -193,11 +196,11 @@ jobs:
             (C5 class — 32-bit ARM soft-float, GStreamer 1.24). Not for CX/webOS 3–6
             (use upstream `lgstreamer/dts_restore` for those).
 
-            ## What works (verified on a real LG C5)
+            ## What works
             - **DTS** — MKV **and** `.mp4` / `.ts` / `.m2ts` (patched demuxers with
               `dts_support` enabled). DTS and DTS-HD MA (lossless, **up to 7.1**) decode
               to discrete S32LE, bit-exact against desktop ffmpeg — **no stereo downmix**.
-            - **Dolby TrueHD / MLP** — in MKV.
+            - **Dolby TrueHD / MLP** — in MKV, with TrueHD also supported in MP4, TS and M2TS.
             - **Dolby Vision Profile 7** — the optional HEVC parser normalizes RPU
               metadata for base-layer playback when the TV's native RPU library matches
               the supported fingerprint.

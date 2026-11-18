@@ -32,7 +32,7 @@ https://josippapez.github.io/dts_restore_plus/api/apps.json
 ```
 
 Then install **DTS Enabler** from the list — it restores **DTS + Dolby TrueHD/MLP**
-(incl. DTS in `.mkv`/`.mp4`/`.ts`/`.m2ts`) with Enable/Disable/Uninstall, a self-test,
+(including DTS and TrueHD in `.mkv`, `.mp4`, `.ts` and `.m2ts`) with Enable/Disable/Uninstall, a self-test,
 and play-by-ear. The `.ipk` is pulled from the release and **sha256-verified**;
 updates are automatic. Prefer SSH? Use the CLI in [`webos25/`](webos25/README.md).
 
@@ -57,8 +57,8 @@ upstream project is the reference. This fork adds and changes the following on t
 **soft-float**, GStreamer 1.24). `webos25/` is a self-contained tool that restores **both DTS
 and TrueHD/MLP** there:
 - `webos25/restore/` — prebuilt soft-float decoders (patched `dtsdec` → S32LE; `avdec_truehd` from
-  a minimal ffmpeg) + patched container demuxers (`isomp4`/`mpegtsdemux` with `dts_support` default
-  TRUE, so **DTS in `.mp4`/`.ts`/`.m2ts`** works, not just MKV) + a single self-contained
+  a minimal ffmpeg) + patched container demuxers for **DTS and TrueHD in `.mp4`, `.ts` and `.m2ts`**
+  + a single self-contained
   `install.sh`. Verified playing on a real C5, including against real Blu-ray DTS-HD MA samples.
 - `webos25/app/` — a "DTS Enabler" webOS homebrew app (GUI). **Install via the Homebrew Channel**
   by adding the repository `https://josippapez.github.io/dts_restore_plus/api/apps.json` (Settings → Add

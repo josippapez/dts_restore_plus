@@ -92,8 +92,7 @@ string sent to the Homebrew Channel (HBC) exec service via the hardened
 ### `webos25-armel-gst124` — decoder-inject + demux-enable (VERIFIED)
 
 Mirrors `../restore/install.sh` + `../restore/init_dts25.sh` exactly. Restores **DTS
-(incl. mp4/ts/m2ts containers) and TrueHD/MLP (MKV + ts/m2ts; `.mp4` TrueHD is
-not supported — `qtdemux` has no TrueHD codepath)**.
+and TrueHD/MLP decoding, including DTS and TrueHD in MKV, MP4, TS and M2TS**.
 
 - **Enable:** re-detect, then run the same **compatibility gate** the CLI boot hook
   runs (see below) — refuse unless the TV's stock plugins match a verified set, or
@@ -102,8 +101,8 @@ not supported — `qtdemux` has no TrueHD codepath)**.
   stream-switch bin (`libgstadecswitch.so`, compiled rank 320, also →
   `/var/lib/webosbrew/dts25/` — see `../README.md`), TrueHD (`libgstlibav.so` +
   ffmpeg libs → `/var/lib/webosbrew/truehd/`), and the container demuxers (patched
-  `libgstisomp4.so` + `libgstmpegtsdemux.so`, `dts_support` default TRUE plus the BD
-  TrueHD stream-type case un-`#if-0`d, and `libgstmatroska.so` with Dolby Vision
+  `libgstisomp4.so` + `libgstmpegtsdemux.so` with DTS and TrueHD support, and
+  `libgstmatroska.so` with Dolby Vision
   profile 7 enabled → `/var/lib/webosbrew/demux25/`).
   Generate the two `/etc` overrides
   (codec-capability TRUEHD/MLP; gstcool `avdec_truehd/mlp=310`, `adecswitch=320`).
@@ -111,10 +110,10 @@ not supported — `qtdemux` has no TrueHD codepath)**.
   the overrides, then regenerates the media GStreamer registry and — only if `dtsdec`,
   `avdec_truehd`, `adecswitch`, `qtdemux`, `tsdemux`, **and** `matroskademux` all
   survive the scan — writes it to `/mnt/flash/data/gst_1_0_registry.arm.bin`. Symlink
-  the boot hook, apply now, restart `starfish-media-pipeline`. `libgstadecswitch.so`
-  is CORE-required exactly like `libgstdtsdec.so`/`libgstlibav.so` as of gate version
-  18; an app-driven Enable stages it the same as the CLI `restore/install.sh` does,
-  and the payload-drift check (below) covers it too.
+  the boot hook and apply while playback is stopped. After committing the registry,
+  the hook checks for idle playback before refreshing the media workers.
+  Enable and the CLI installer both require `libgstadecswitch.so` alongside
+  `libgstdtsdec.so` and `libgstlibav.so`. The payload-drift check also covers it.
 - **Disable:** remove the boot hook, drop every bind (libav, demuxers, both `/etc`
   overrides — with a lazy-detach (`umount -l`) fallback if a target is busy, e.g. the
   live C5's `WebAppMgr` holding `libgstlibav.so` mapped), then regenerate a clean
