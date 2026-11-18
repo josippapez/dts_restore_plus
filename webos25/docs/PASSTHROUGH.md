@@ -24,10 +24,14 @@ Both carry FFmpeg's IEC 61937 packing at 192 kHz. HD needs Digital Sound Output
 on Pass Through: Auto re-encodes and mixes TV sounds in.
 
 LG mixes any input codec missing from the receiver's short eARC list, which omits
-DTS on many soundbars. The decoder holds `earc_route`'s `/dev/earc_route` lease, which
-forces the bypass; without the module loaded HD is not offered. The carrier stays
-silent until eARC is unmixed. The helper clears eARC mixing; if it stays on for a
-second, the stream falls back to the core.
+DTS on many soundbars. The PCM carrier is described to LG as 8-channel PCM while it
+plays, as in webos25-2.79, and LG's own label comes back when it stops. Only if LG
+keeps the carrier mixed for a second, where 2.79 decoded, does the decoder take `earc_route`'s
+`/dev/earc_route` lease, which forces the bypass: held from the start, it left
+DTS:X silent on a G5 (#39). Native ES takes the lease at once. Without the module
+loaded HD is not offered. The carrier stays silent until eARC is unmixed. The
+helper clears eARC mixing; if it stays on for a second, the stream falls back to
+the core.
 
 LG's mixer word is only its request. The kernel says which route it took in
 `/proc/lgtv-driver/audio/sndout`: `[ARC] OutputCodec=Pass-Through` is the bypass,

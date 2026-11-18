@@ -4,6 +4,8 @@
 #include <gst/gst.h>
 #include "lgroute-control.h"
 
+typedef struct LgSession LgSession;
+
 typedef struct {
   GstElement *element;
   GstElement *sink;
@@ -16,13 +18,15 @@ typedef struct {
   guint restarts;
   gint64 next_check, mixed_since, configured_at;
   gint64 restart_after;   /* a track-switch restart waits until LG has settled */
+  gint64 restart_since, pending_push;   /* a pending restart: since when buffers have waited, the last one */
   gint64 window_start, last_push;   /* carrier pace check */
   guint64 window_media;
   guint slow_windows;
   const gchar *reason;
   gchar unavailable[LGROUTE_WHY + 32];   /* reason, when eARC became unavailable */
   gchar resource[16], stream_id[128], converter[9];
-  gint lease;      /* the renderer index + 1 written to /dev/earc_route */
+  LgSession *session;   /* LG's own report of this pipeline, for the PCM carrier's label */
+  gint lease;     /* the renderer index + 1 written to /dev/earc_route */
   int lease_fd;    /* the open /dev/earc_route holding it, or -1 */
 } LgRoute;
 
