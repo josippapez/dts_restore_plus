@@ -46,14 +46,15 @@ rebuild — but still cut a release so the assets carry the change.
    (`0x0c0f`) not AC-3's **rear** pair (`0x003f`). Do not test this with an
    ffmpeg-muxed TS — no BD PES substream framing, so TrueHD reports 2 channels and
    decodes to nothing.
-3. Bump the app version in `webos25/app/appinfo.json` and
-   `webos25/app/service/package.json` if the app changed. Update
+3. Pick MAJOR.MINOR.PATCH (fix → PATCH, feature → MINOR, breaking → MAJOR) and set
+   it in `webos25/app/appinfo.json` and `webos25/app/service/package.json`; the tag
+   is `webos25-` plus the same number. The workflow refuses a mismatch. Update
    `webos25/README.md` / `RELEASING.md` as needed.
 4. Ensure everything is committed and on `main`.
 5. **Tag to release:**
    ```sh
-   git tag webos25-<X.Y>      # e.g. webos25-1.2  (or v<X.Y.Z>)
-   git push origin webos25-<X.Y>
+   git tag webos25-<X.Y.Z>    # e.g. webos25-2.82.1
+   git push origin webos25-<X.Y.Z>
    ```
 6. Watch the **Release (webOS 25)** Action. When green, confirm the release has
    both assets: `dts_restore_plus-webos25-restore-*.tar.gz` and
