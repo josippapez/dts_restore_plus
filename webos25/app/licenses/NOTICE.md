@@ -14,6 +14,7 @@ here relicenses anything. The full texts are alongside this file: [`LGPL-2.1.txt
 | `payload/webos25-truehd/libgstlibav.so` | LGPL-2.1-or-later | gst-libav; built by `restore/build-truehd.sh` |
 | `libavcodec.so.58`, `libavformat.so.58`, `libavfilter.so.7`, `libavutil.so.56`, `libswresample.so.3` | LGPL-2.1-or-later | ffmpeg 4.4, configured **without** `--enable-gpl` and **without** `--enable-version3`, with a make-up-gain/DRC patch to `libavcodec/mlpdec.c`; built by `restore/build-truehd.sh` |
 | `payload/webos25/libgstdtsdec.so` | LGPL-2.1-or-later | gst-plugins-bad `ext/dts` plugin with ffmpeg n4.4.4's `dca` decoder linked in statically (ffmpeg configured **without** `--enable-gpl`, `--enable-version3` or `--enable-nonfree`); built by `restore/build.sh` |
+| `payload/c1/libgstdtsdec.so` (CLI: `gst116-out/`) | LGPL-2.1-or-later | dtsdec for GStreamer 1.16 (OLED C1/G1) with ffmpeg n4.4.4's `dca` decoder linked in statically (ffmpeg configured **without** `--enable-gpl`, `--enable-version3` or `--enable-nonfree`); source `restore/src/gst116/gstdtsdec116.c`, built by `restore/build-gst116.sh` |
 | `payload/cx/libgstmatroska.so`, `libgstisomp4.so`, `libgstisomp4_1_8.so` | LGPL-2.1-or-later | legacy LG GStreamer 1.14.4 gst-plugins-good payload tracked in root `gst/`; DTS demux restored, with the inherited Matroska Dolby Vision changes |
 | `payload/cx/libgstlibav.so` | LGPL-2.1-or-later | legacy LG GStreamer 1.14.4 gst-libav payload tracked in root `gst/`; dca decode with the inherited forced stereo-integer downmix |
 | `payload/webos25-hdmi/earc_route-*.ko`, `earc-route-load.sh` (CLI: `kmod-out/`) | GPL-2.0-only | `webos25/kmod/`: kernel module derived from Glasshouse's `native/dts-forwarding`, HDMI session scripts derived from lg-g5-dts (see `webos25/kmod/NOTICE`); module built by `webos25/kmod/build.sh` |
@@ -30,7 +31,8 @@ control compilation and installation, is published at:
 
   https://github.com/josippapez/dts_restore_plus
 
-Specifically: `webos25/restore/build.sh` (dtsdec + static ffmpeg dca), `webos25/restore/build-truehd.sh`
+Specifically: `webos25/restore/build.sh` (dtsdec + static ffmpeg dca), `webos25/restore/build-gst116.sh`
+(the GStreamer 1.16 dtsdec + static ffmpeg dca), `webos25/restore/build-truehd.sh`
 (gst-libav + ffmpeg), `webos25/restore/build-demux.sh` (container demuxers and HEVC parser), and the patched
 sources under `webos25/restore/src/`. Those webOS-25 builds are containerised and reproducible from
 that repository alone. The kernel module's source and its build script are in `webos25/kmod/`. The separately packaged legacy `payload/cx/` files are generated unchanged

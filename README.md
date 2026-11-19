@@ -115,6 +115,38 @@ Then **fully power off** the TV to clear the GStreamer registry overlay. If **Qu
 enabled the TV never truly powers off — unplug it, or turn off *Settings → General → Quick Start+*
 and power-cycle.
 
+## OLED C1/G1 (webOS 6): DTS to an optical or ARC receiver
+
+On a C1/G1 (GStreamer 1.16) the installer and the DTS Enabler app also add a `dtsdec` built for
+GStreamer 1.16 ([source](webos25/restore/src/gst116/gstdtsdec116.c),
+[build script](webos25/restore/build-gst116.sh)). It decodes DTS to stereo, or sends the DTS core
+to an optical or ARC receiver.
+
+Install from this repository, not the upstream tarball, so the installer finds the plugin:
+
+```sh
+cd /home/root
+wget -O dts_restore_plus.tar.gz https://github.com/josippapez/dts_restore_plus/archive/refs/heads/main.tar.gz
+tar -xzf dts_restore_plus.tar.gz && cd dts_restore_plus-main
+./install.sh                 # decode only
+./install.sh --passthrough   # also send DTS to an optical/ARC receiver
+```
+
+In the app, use **Send DTS to a receiver**.
+
+- **Passthrough** needs the receiver as the sound output and *Settings → Sound → Advanced
+  Settings → Digital Sound Output* on **Pass Through**. The decoder checks this once a second and
+  decodes otherwise, because the bitstream on TV speakers is loud noise. DTS-HD tracks send their
+  DTS core.
+- **Tested** on one OLED65C17LB (firmware 03.53.45) with an optical receiver: LG Media Player
+  (USB) and Moonfin with Emby Direct Play reach the receiver as DTS 5.1.
+- **Not tested:** HDMI ARC, a G1, DTS in MP4/TS/M2TS, and decoding to the TV speakers on a TV.
+- **Native Emby app:** it decides DTS support from the model year, so the server transcodes.
+- **Kodi** decodes DTS itself. Don't make `tv.model.edidType` advertise DTS: Kodi's playback
+  then fails with `Resource Allocation Error` (601).
+
+`./uninstall.sh` also removes the passthrough opt-in.
+
 ---
 
 ## Supported models
@@ -128,7 +160,7 @@ can still install (the installer just warns first), using the same binaries.
 |---|---|---|---|
 | **OLED CX** | 5.x | 1.14.4 | **Reference target** |
 | OLED BX | 5.x | 1.14-class | Same generation as CX |
-| OLED C1 / G1 | 6.x | 1.14-class | Community-confirmed |
+| OLED C1 / G1 | 6.x | 1.16.2 | Community-confirmed. Also gets a GStreamer 1.16 `dtsdec` with receiver passthrough ([above](#oled-c1g1-webos-6-dts-to-an-optical-or-arc-receiver)) |
 | OLED C2 / G2 | "22" | stock **1.18.2**; legacy payload 1.14.4 | The root CX installer still only warns and applies its one legacy recipe. DTS Enabler 2.6.0 instead offers a fail-closed, exact-firmware **experimental opt-in** for global `W22O` `04.40.93`/`04.40.93.01`; firmware/QEMU evidence only, **not hardware-verified** ([firmware evidence](webos25/docs/FIRMWARE-COMPATIBILITY.md)) |
 | NanoCell / LCD (UN7xxx, NANO7xx, 2020–2021) | 5.x / 6.x | 1.14-class | Community-confirmed |
 | webOS 22 / 23 / 24 (C3/C4, G3/G4, Realtek B2/B3) | 22 / 23 / 24 | stock **1.18.2 / 1.18.5**; webOS 24 unextracted | C4/G4 already have DTS from LG (decode and passthrough) and need nothing from this project. C3/G3 have LG's DTS decoder too, but local MKV playback is gated. B2/B3 receive diagnostic refusal profiles. No forceable restore mechanism ([firmware evidence](webos25/docs/FIRMWARE-COMPATIBILITY.md)) |
@@ -208,7 +240,8 @@ The flag is checked at each playback start (no reboot needed) but **resets on re
   not reach LG's multichannel sink. (This does **not** apply to the webOS 25 build, which emits
   discrete channels up to 7.1 — since webos25-2.43 bit-exact against desktop ffmpeg on a C5,
   DTS-HD MA lossless included.)
-  The CX tool decodes to PCM only; it does not pass a bitstream to a receiver. For webOS 25,
+  The CX tool decodes to PCM only; it does not pass a bitstream to a receiver, except on a
+  [C1/G1](#oled-c1g1-webos-6-dts-to-an-optical-or-arc-receiver). For webOS 25,
   see the [receiver section](webos25/README.md#send-dts-to-a-receiver-passthrough-opt-in).
 - **Root required.**
 - **4K content cannot 2× fast-forward** — a stock LG limitation that also applies to AC3/AAC.
@@ -265,6 +298,7 @@ passthrough module and its scripts, which are GPL-2.0-only; each keeps its own l
 | Legacy `gst/libgst{matroska,isomp4,isomp4_1_8,libav}.so` (packaged in `payload/cx/`) | LGPL-2.1-or-later | LG GStreamer 1.14.4 sources; shared by the inherited CX mechanism and experimental C2 profile |
 | `webos25/restore/demux-out/libgst{isomp4,mpegtsdemux,matroska,mpegpsdemux}.so` | LGPL-2.1-or-later | built from gst-plugins-good / -bad |
 | `webos25/restore/truehd-out/libgstlibav.so`, `libav*.so*`, `libsw*.so*` | LGPL-2.1-or-later | ffmpeg 4.4 configured **without** `--enable-gpl` / `--enable-version3` (see `webos25/restore/build-truehd.sh`) |
+| `webos25/restore/gst116-out/libgstdtsdec.so` (packaged in `payload/c1/`) | LGPL-2.1-or-later | `webos25/restore/src/gst116/gstdtsdec116.c` (from gst-plugins-bad `ext/dts`) with ffmpeg n4.4.4's `dca` decoder linked in **statically**, configured **without** `--enable-gpl` / `--enable-version3` / `--enable-nonfree` (see `webos25/restore/build-gst116.sh`) |
 | `webos25/restore/out/libgstdtsdec.so` | LGPL-2.1-or-later | gst-plugins-bad `ext/dts` (LGPL) with ffmpeg n4.4.4's `dca` decoder linked in **statically**, configured **without** `--enable-gpl` / `--enable-version3` / `--enable-nonfree` (see `webos25/restore/build.sh`). Before webos25-2.43 it linked libdca and was GPL-2.0-or-later |
 | `webos25/restore/kmod-out/earc_route-*.ko`, `webos25/kmod/earc-route-load.sh` | GPL-2.0-only | `webos25/kmod/`, derived from Glasshouse and lg-g5-dts (see `webos25/kmod/NOTICE`); nothing else links it |
 

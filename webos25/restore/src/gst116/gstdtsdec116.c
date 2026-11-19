@@ -1,6 +1,6 @@
-/* dtsdec for LG webOS 6 / GStreamer 1.16 (OLED C1/G1, profile
- * webos6-o20n-gst116-spdif): DTS core -> IEC 61937 for an optical/ARC
- * receiver, with an FFmpeg dca stereo decode as the safe fallback.
+/* dtsdec for LG webOS 6 / GStreamer 1.16 (OLED C1/G1, the C1 profile of the
+ * repo-root init_dts.sh and of the app): DTS core -> IEC 61937 for an
+ * optical/ARC receiver, with an FFmpeg dca stereo decode as the safe fallback.
  *
  * Copyright (C) 2004 Ronald Bultje <rbultje@ronald.bitfreak.net>
  * Copyright (C) 2009 Jan Schmidt <thaytan@noraisin.net>
@@ -49,7 +49,7 @@
  *   passthrough  only if ALL hold:
  *     - mode is "auto" and the opt-in flag file exists, or mode is
  *       "passthrough" (property or DTSDEC_OUTPUT env, for tests);
- *     - in "auto": the live sound-output watcher (started by init_dts_c1.sh)
+ *     - in "auto": the live sound-output watcher (started by the boot script)
  *       reports external_optical or external_arc AND Digital Sound Output
  *       passThrough, and its pid is alive. A missing file, a dead watcher,
  *       TV speakers or headphones mean decode: the bitstream on speakers is
@@ -113,7 +113,7 @@ typedef struct _GstDtsDec
   gboolean passthrough;         /* per stream, after the decision */
   gint pt_period;               /* bytes per burst currently negotiated */
   gboolean pt_auto;             /* passthrough chosen by the live watcher */
-  guint pt_frames;              /* frames since the last watcher re-check */
+  gint64 pt_checked;            /* monotonic time of the last watcher check */
   gchar *stream_id;
 
   /* decode path */
@@ -322,7 +322,7 @@ dts_iec61937_pack (const guint8 * d, gsize size, guint8 * out, gint out_size)
  * ------------------------------------------------------------------------- */
 
 /* 1 when the live watcher reports a receiver output with LG's Digital Sound
- * Output on passThrough. File format (init_dts_c1.sh):
+ * Output on passThrough. File format (the boot script's watcher):
  * "<watcher pid> <soundOutput> <soundOutputDigital>". */
 static gboolean
 dtsc1_receiver_live (gchar * why, gsize why_len)
@@ -440,7 +440,7 @@ gst_dtsdec_decide (GstDtsDec * dts, const guint8 * d, gsize size)
   dts->passthrough = TRUE;
   dts->pt_period = period;
   dts->pt_auto = (mode == DTSDEC_OUTPUT_AUTO);
-  dts->pt_frames = 0;
+  dts->pt_checked = g_get_monotonic_time ();
   dts->dec_rate = 0;
   dtsc1_record (dts, "passthrough", why);
 }
@@ -759,13 +759,14 @@ gst_dtsdec_handle_frame (GstAudioDecoder * bdec, GstBuffer * buffer)
   if (!dts->decided)
     gst_dtsdec_decide (dts, map.data, map.size);
 
-  /* Re-check the live sound output about once a second (96 frames of 512
-   * samples at 48 kHz): switching to TV speakers mid-play must not leave the
-   * bitstream on them. */
-  if (dts->passthrough && dts->pt_auto && ++dts->pt_frames >= 96) {
+  /* Re-check the live sound output once a second: switching to TV speakers
+   * mid-play must not leave the bitstream on them. On a clock, because a frame
+   * holds 512, 1024 or 2048 samples. */
+  if (dts->passthrough && dts->pt_auto
+      && g_get_monotonic_time () - dts->pt_checked >= G_USEC_PER_SEC) {
     gchar why[160];
 
-    dts->pt_frames = 0;
+    dts->pt_checked = g_get_monotonic_time ();
     if (access (DTSC1_PT_FLAG, F_OK) != 0) {
       dts->passthrough = FALSE;
       dtsc1_record (dts, "decode", "passthrough disabled mid-play");

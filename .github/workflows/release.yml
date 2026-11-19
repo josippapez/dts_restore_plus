@@ -64,6 +64,7 @@ jobs:
                    demux-out/libgstisomp4.so demux-out/libgstmpegtsdemux.so \
                    demux-out/libgstmatroska.so demux-out/libgstmpegpsdemux.so \
                    demux-out/libgstvideoparsersbad.so \
+                   gst116-out/libgstdtsdec.so \
                    kmod-out/earc_route-5.4.ko; do
             [ -f "$f" ] || { echo "MISSING committed binary: $f"; exit 1; }
           done
@@ -149,6 +150,11 @@ jobs:
           for f in libgstlibav.so libgstisomp4.so libgstmatroska.so libgstisomp4_1_8.so; do
             [ -s "payload/cx/$f" ] || { echo "MISSING generated C2/CX payload: $f"; exit 1; }
           done
+          # C1/G1-only GStreamer 1.16 dtsdec. Kept OUT of payload/cx: the CX profile
+          # runs GStreamer 1.14, which refuses a 1.16 plugin.
+          mkdir -p payload/c1
+          cp -f ../restore/gst116-out/libgstdtsdec.so payload/c1/
+          [ -s "payload/c1/libgstdtsdec.so" ] || { echo "MISSING C1 payload"; exit 1; }
           # C2-only TS demuxer (LG 1.14.4). Kept OUT of payload/cx because that
           # directory is shared with the cx-armv7-gst114 profile. Optional at
           # runtime: if it cannot stage or its deps do not resolve, the C2 engine

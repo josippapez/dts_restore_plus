@@ -28,12 +28,19 @@ PAYLOAD_DIR=/var/lib/webosbrew/dts_restore
 INIT_DIR=/var/lib/webosbrew/init.d
 INIT_STUB=$INIT_DIR/restore_dts   # must NOT end in .sh (run-parts skips dotted names)
 
+# webOS 6 (OLED C1/G1, GStreamer 1.16) only: a dtsdec that decodes DTS or, with
+# --passthrough, sends it to an optical/ARC receiver. The flag path is compiled in.
+GST116_SO=$SCRIPT_DIR/webos25/restore/gst116-out/libgstdtsdec.so
+PT_FLAG=/var/lib/webosbrew/dtsc1/passthrough
+
 # --- Options ---
 ASSUME_YES=0
+PASSTHROUGH=0
 for arg in "$@"; do
   case "$arg" in
     -y|--yes) ASSUME_YES=1 ;;
-    -h|--help) echo "Usage: install.sh [-y|--yes]"; exit 0 ;;
+    --passthrough) PASSTHROUGH=1 ;;
+    -h|--help) echo "Usage: install.sh [-y|--yes] [--passthrough]"; exit 0 ;;
     *) echo "Unknown option: $arg"; exit 1 ;;
   esac
 done
@@ -119,6 +126,23 @@ cp -f "$GST_SRC"/*.so "$PAYLOAD_DIR/gst/" || { echo "Could not copy libraries - 
 cp -f "$SCRIPT_DIR/init_dts.sh" "$PAYLOAD_DIR/init_dts.sh" || { echo "Could not copy init_dts.sh - Aborting"; exit 1; }
 chmod 755 "$PAYLOAD_DIR/init_dts.sh"
 
+rm -rf "$PAYLOAD_DIR/gst116"
+GST116=0
+case "$GST_VERSION" in
+  1.16.*)
+    if [ -f "$GST116_SO" ]; then
+      mkdir -p "$PAYLOAD_DIR/gst116" && cp -f "$GST116_SO" "$PAYLOAD_DIR/gst116/" && GST116=1
+    fi
+    [ "$GST116" -eq 1 ] || echo "WARNING: $GST116_SO is missing - DTS decodes with the CX libraries only"
+    ;;
+esac
+if [ "$PASSTHROUGH" -eq 1 ] && [ "$GST116" -eq 1 ]; then
+  mkdir -p "$(dirname "$PT_FLAG")" && : > "$PT_FLAG"
+else
+  [ "$PASSTHROUGH" -eq 1 ] && echo "WARNING: --passthrough needs webOS 6 (GStreamer 1.16) - ignored"
+  rm -f "$PT_FLAG"
+fi
+
 # User-editable downmix coefficients, preserved across reinstalls.
 if [ ! -f "$PAYLOAD_DIR/downmix.conf" ]; then
   cp -f "$SCRIPT_DIR/downmix.conf" "$PAYLOAD_DIR/downmix.conf" 2>/dev/null || {
@@ -150,3 +174,6 @@ echo
 echo "DTS and MKV DV playback have been enabled - Enjoy!"
 echo "  log:     /tmp/dts_restore.log"
 echo "  downmix: $PAYLOAD_DIR/downmix.conf"
+if [ -f "$PT_FLAG" ]; then
+  echo "  passthrough: on (optical/ARC receiver with Digital Sound Output on Pass Through)"
+fi

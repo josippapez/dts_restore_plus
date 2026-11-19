@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # build-gst116.sh — Cross-build the webOS 6 / GStreamer 1.16 `dtsdec` plugin
-# for LG OLED C1/G1 (profile webos6-o20n-gst116-spdif) and test it under qemu.
+# for LG OLED C1/G1 (webOS 6, GStreamer 1.16) and test it under qemu.
 #
 # Target ABI (report-tv.sh on an OLED65C17LB, firmware 03.53.45):
 #   ELF32 ARM, EABI5 soft-float (e_flags 0x05000200), loader ld-linux.so.3,
@@ -169,7 +169,10 @@ docker run --rm -i \
   "$IMAGE" /bin/bash -euo pipefail -s <<'CONTAINER_EOF'
 R=/out/BUILD-REPORT.txt
 exec > >(tee "$R") 2>&1
-echo "=== webos6-o20n-gst116-spdif dtsdec build ==="
+# Let tee finish the report before the container exits, or its last lines are lost.
+TEE=$!
+trap 'exec >&- 2>&-; wait $TEE' EXIT
+echo "=== webOS 6 (GStreamer 1.16) dtsdec build ==="
 echo "toolchain: $(arm-linux-gnueabi-gcc --version | head -1)"
 echo "sysroot glibc: $(ls /usr/arm-linux-gnueabi/lib/libc-*.so | sed 's/.*libc-//; s/\.so//')"
 echo "gstreamer headers: $(pkg-config --modversion gstreamer-1.0) / base $(pkg-config --modversion gstreamer-audio-1.0)"
@@ -291,6 +294,24 @@ GL filesrc location=$MP4 ! decodebin ! fakesink
 [ -f /run/dtsc1/last-decision ] || fail "decodebin did not instantiate dtsdec"
 d=$(cut -d' ' -f2- /run/dtsc1/last-decision); echo "decodebin picked dtsdec: $d"
 case $d in decode*|passthrough*) ;; *) fail "decodebin did not use dtsdec";; esac
+
+echo "--- 7. passthrough re-checks the watcher once a second, whatever the frame rate"
+# 10 frames a second: counting 96 frames would first look again after 9.6 s.
+sleep 600 & W=$!
+echo "$W external_optical passThrough" > /run/dtsc1/sound-output
+rm -f /run/dtsc1/last-decision
+qemu-arm /opt/sr/bin/gst-launch-1.0 -q filesrc location=$MP4 ! qtdemux \
+  ! identity sleep-time=100000 ! dtsdec ! fakesink >/dev/null 2>&1 & P=$!
+i=0
+until grep -q " passthrough " /run/dtsc1/last-decision 2>/dev/null; do
+  i=$((i + 1)); [ $i -lt 300 ] || fail "no passthrough decision"; sleep 0.1
+done
+echo "$W tv_speaker passThrough" > /run/dtsc1/sound-output
+sleep 2.5
+d=$(cut -d' ' -f2- /run/dtsc1/last-decision)
+kill $P $W 2>/dev/null; wait $P $W 2>/dev/null || true
+echo "2.5 s after switching to TV speakers -> $d"
+case $d in decode*) ;; *) fail "still $d";; esac
 
 echo; echo "ALL QEMU TESTS PASSED"
 CONTAINER_EOF

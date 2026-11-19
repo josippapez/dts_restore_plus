@@ -259,12 +259,17 @@
     setVal("sAppDtsLast", last
       ? new Date(last.at * 1000).toLocaleString() + ": " + last.message
       : "—", last ? (last.result === "on" ? "ok" : "warn") : null);
-    // DTS passthrough: also webOS 25 only, since it lives in the webOS 25 dtsdec.
-    $("cardPassthrough").hidden = !canW25Test;
-    $("btnPtOn").disabled  = !canW25Test || s.passthroughRequested === true;
-    $("btnPtOff").disabled = !canW25Test || s.passthroughRequested !== true;
+    // DTS passthrough lives in our dtsdec: webOS 25, and the C1/G1 one (DTS core,
+    // Pass Through only, no DTS-HD).
+    var canC1Pt = profile === "webos6-armel-gst116";
+    var canPt = canW25Test || canC1Pt;
+    $("cardPassthrough").hidden = !canPt;
+    $("ptHd").hidden = !canW25Test;
+    $("btnPtOn").disabled  = !canPt || s.passthroughRequested === true;
+    $("btnPtOff").disabled = !canPt || s.passthroughRequested !== true;
     setVal("sPt", !s.passthroughRequested ? "off"
       : s.passthroughToReceiver ? "on — DTS goes to the receiver"
+      : canC1Pt ? "on — waiting for an ARC or optical receiver on Pass Through"
       : "on — waiting for an ARC/eARC or optical receiver",
       s.passthroughToReceiver ? "ok" : (s.passthroughRequested ? "warn" : null));
     setVal("sPtOut", s.passthroughOutput || "—");

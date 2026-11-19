@@ -21,6 +21,8 @@ webos25/restore/demux-out/   libgstisomp4.so, libgstmpegtsdemux.so (MP4/TS/M2TS 
                               MP4 Dolby Vision profile 7), libgstmatroska.so (MKV DV profile 7)
                               libgstvideoparsersbad.so (HEVC Dolby Vision profile 7 RPU normalization)
 webos25/restore/ts114-out/   libgstmpegtsdemux.so                (1.14.4 build, C2 app profile)
+webos25/restore/gst116-out/  libgstdtsdec.so                     (GStreamer 1.16 dtsdec, C1/G1: root
+                              installer and C1 app profile)
 webos25/restore/kmod-out/    earc_route-5.4.ko, earc_route-6.12.ko (webos25/kmod, GPL-2.0-only)
 ```
 
@@ -37,7 +39,8 @@ Never edit a generated `payload/**` binary.
   `lgroute.c`, `lgroute.h`, `lgroute-graph.h` (linked into `libgstdtsdec.so`);
   `lgroute-control.c`, `lgroute-control.h` (linked into `libgstdtsdec.so` and
   `libgstadecswitch.so`, and built alone as `out/lgroute-control`);
-  `gstadecswitch.c`, `gstadecswitch.h`; `edidaudio.c`, `edidaudio.h`
+  `gstadecswitch.c`, `gstadecswitch.h`; `edidaudio.c`, `edidaudio.h`;
+  `gst116/gstdtsdec116.c` (the C1/G1 dtsdec in `gst116-out/`, verified on a C1, not a C5)
 - the `dts_support` demuxer patch, the DTS-HD substream (0x72) tsdemux patch, the Dolby
   Vision profile 7 matroska/qtdemux patches, or their version, in `webos25/restore/build-demux.sh`
 - the MP4 TrueHD and large `moov` patch in `webos25/restore/patch-mp4-truehd.py` and
@@ -45,7 +48,7 @@ Never edit a generated `payload/**` binary.
 - the HEVC parser's Dolby Vision profile 7 RPU normalization in
   `webos25/restore/patch-p7-rpu-state.py` and `webos25/restore/src/dovi-rpu-normalize.h`
 - `webos25/restore/build.sh`, `build-truehd.sh`, `build-demux.sh`, `build-switch.sh`,
-  `build-edid.sh`, `build-ts114.sh`
+  `build-edid.sh`, `build-ts114.sh`, `build-gst116.sh`
   (toolchain, flags, pinned sources, ABI — for `build.sh` that includes the ffmpeg
   `n4.4.4` tag, its configure flags and the pinned Debian snapshot)
 - the kernel module in `webos25/kmod/`: `earc_route.c`, `earc_decode.h`, `earc_hdmi.h`,
@@ -223,6 +226,8 @@ cp -f  ../../gst/libgstlibav.so ../../gst/libgstisomp4.so \
        ../../gst/libgstmatroska.so ../../gst/libgstisomp4_1_8.so          payload/cx/
 mkdir -p payload/c2-ts
 cp -f  ../restore/ts114-out/libgstmpegtsdemux.so                       payload/c2-ts/
+mkdir -p payload/c1
+cp -f  ../restore/gst116-out/libgstdtsdec.so                          payload/c1/
 npm install -g @webosose/ares-cli
 ares-package . service -o dist        # -> dist/io.github.josippapez.dtsenabler_<ver>_all.ipk
 ```
