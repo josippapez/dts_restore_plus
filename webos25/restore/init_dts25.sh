@@ -126,7 +126,8 @@ EXPECT_GST=1.24
 #   58 adds an optional HEVC parser for Profile 7 BL+RPU playback.
 #   59 earc_route only on ptl4tv.5 unless the user opts in (try-unverified);
 #      stopping it also stops 2.78's hdmi-watch.sh.
-W25_GATE_VERSION=59
+#   60 refreshes idle media workers after registry commit for MP4 TrueHD activation.
+W25_GATE_VERSION=60
 FP=/var/lib/webosbrew/dts25/stock.fp
 # Where the installed copy of THIS script lives, and the boot hook that symlinks
 # to it. Named here, in the shared block, so the read-only probe can fingerprint
@@ -336,6 +337,50 @@ w25_stand_down() {
   return 0
 }
 w25_md5() { [ -f "$1" ] || return 0; md5sum "$1" 2>/dev/null | cut -d" " -f1; }
+# A worker keeps mapped plugin code and the registry it loaded before activation.
+# On boot, retire workers with a stale MP4 mapping. During explicit activation,
+# also refresh idle workers that cached the previous registry or other plugins.
+w25_refresh_media_workers() (
+  w25_pool_proc=${1:-/proc}
+  if [ "${W25_REFRESH_MEDIA:-0}" != 1 ]; then
+    [ "$(w25_bound "$LGISO")" = 1 ] || exit 0
+    w25_pool_expected=$(w25_md5 "$MYISO")
+    [ -n "$w25_pool_expected" ] || exit 0
+    [ "$(w25_md5 "$LGISO")" = "$w25_pool_expected" ] || exit 0
+  fi
+  for w25_pool_pid in $(pidof starfish-media-pipeline 2>/dev/null); do
+    case "$w25_pool_pid" in *[!0-9]*|'') continue;; esac
+    w25_pool_dir=$w25_pool_proc/$w25_pool_pid
+    w25_pool_start=$(awk '{ sub(/^.*\) /, ""); print $20 }' "$w25_pool_dir/stat" 2>/dev/null)
+    [ -n "$w25_pool_start" ] || continue
+    w25_pool_cmd=$(tr '\000' ' ' 2>/dev/null < "$w25_pool_dir/cmdline")
+    case "$w25_pool_cmd" in '/usr/sbin/starfish-media-pipeline pipeline_process '*) ;; *) continue;; esac
+    if [ "${W25_REFRESH_MEDIA:-0}" != 1 ]; then
+      # An update can replace the staged inode while a worker still maps it.
+      w25_pool_range=$(awk -v lib="$LGISO" '
+        $2 ~ /^r-x/ && ($NF == lib || ($(NF-1) == lib && $NF == "(deleted)")) {
+          print $1; exit
+        }' "$w25_pool_dir/maps" 2>/dev/null)
+      [ -n "$w25_pool_range" ] || continue
+      w25_pool_mapped=$w25_pool_dir/map_files/$w25_pool_range
+      w25_pool_hash=$(w25_md5 "$w25_pool_mapped")
+      [ -n "$w25_pool_hash" ] && [ "$w25_pool_hash" != "$w25_pool_expected" ] || continue
+    fi
+    # Require two empty activity lists to reduce the chance of racing a new
+    # load. An active pipeline or an unknown reply leaves the pool alone.
+    for w25_pool_check in 1 2; do
+      w25_pool_active=$(timeout 3 luna-send -n 1 luna://com.webos.media/getActivePipelines '{}' 2>/dev/null) || exit 0
+      [ "$(printf '%s' "$w25_pool_active" | tr -d '[:space:]')" = '[]' ] || exit 0
+    done
+    [ "$(awk '{ sub(/^.*\) /, ""); print $20 }' "$w25_pool_dir/stat" 2>/dev/null)" = "$w25_pool_start" ] || continue
+    if [ "${W25_REFRESH_MEDIA:-0}" != 1 ]; then
+      [ "$(w25_md5 "$w25_pool_mapped")" = "$w25_pool_hash" ] || continue
+    fi
+    if kill -TERM "$w25_pool_pid" 2>/dev/null; then
+      w25_log "media pool: retired idle worker $w25_pool_pid"
+    fi
+  done
+)
 w25_bound() { if grep -q " $1 " /proc/mounts 2>/dev/null; then echo 1; else echo 0; fi; }
 w25_fp_get() { [ -f "$FP" ] || return 0; sed -n "s/^$1=//p" "$FP" 2>/dev/null | head -n1; }
 w25_gst_mm() { /usr/bin/gst-inspect-1.0 --version 2>/dev/null | sed -n 's/^GStreamer \([0-9]*\.[0-9]*\).*/\1/p' | head -n1; }
@@ -1307,6 +1352,7 @@ REG_RESTORE=
 if w25_prove_registry; then
   if cp -f "$REG_TMP" "$REG" 2>>"$LOG"; then
     echo "registry updated (dtsdec+avdec_truehd+adecswitch+qtdemux+tsdemux+matroskademux)" >>"$LOG"
+    w25_refresh_media_workers
     echo "APPLIED=$VERDICT"
     exit 0
   fi

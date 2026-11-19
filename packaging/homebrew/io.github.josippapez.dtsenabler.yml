@@ -16,7 +16,7 @@ requirements:
 description: |
   # DTS Enabler
   Restores **DTS** and **Dolby TrueHD/MLP** audio on rooted LG TVs whose firmware
-  removed it — verified on **webOS 25** (C5), including DTS in `.mkv`, `.mp4`, `.ts`
+  removed it on **webOS 25**, including DTS and TrueHD in `.mkv`, `.mp4`, `.ts`
   and `.m2ts`. Decodes discrete PCM up to 7.1, DTS-HD MA lossless included (no stereo
   downmix). Enable / disable /
   uninstall from the app, plus a self-test and play-by-ear. No stock firmware file is

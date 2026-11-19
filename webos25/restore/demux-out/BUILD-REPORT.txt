@@ -1,5 +1,5 @@
 Container-demuxer rebuild — DTS re-enabled for mp4/ts/m2ts (with the DTS-HD
-extension in ts/m2ts), TrueHD in ts/m2ts, and Dolby Vision profile 7 in MKV and MP4
+extension in ts/m2ts), TrueHD in MP4 and ts/m2ts, and Dolby Vision profile 7 in MKV and MP4
 ==================================================================================
 
 Source: LG webOS-25 GStreamer 1.24 monorepo (lgstreamer/gstreamer-webos-25).
@@ -190,9 +190,68 @@ it bind-mounted and the registry regenerated:
 (test MP4s were remuxed from the P7/P8.1 MKV samples with ffmpeg -c copy
 -tag:v hvc1 -strict unofficial, which keeps the dvcC box.)
 
-NOT covered: TrueHD in .mp4. qtdemux.c has no TrueHD/MLP codepath at all (no
-`mlpa` fourcc handling), so that needs new code, not a gate flip — still
-unsupported and documented as such.
+TrueHD in MP4 (libgstisomp4.so)
+-------------------------------
+patch-mp4-truehd.py maps mlpa to framed audio/x-true-hd and lets the audio
+major sync determine the sample rate and channel count. The moov limit is
+128 MiB in push and pull mode. Other atom limits and the 200 MiB sample-index
+limit still apply.
+
+The index helper groups contiguous access units within each original chunk
+and splits at declared sync samples. This preserves packet bytes and timing
+without allocating a separate index entry for every access unit. Fragmented
+files, multiple sample descriptions, composition offsets and partial-sync
+tables use the ordinary bounded index path. A valid explicit sync table
+whose first entry is after sample 1 also uses that path. If the sync table
+is absent or empty, seek points follow the original chunk boundaries. A
+table the helper rejects (a zero time delta, a sync entry past the last
+sample) is left untouched and goes to the ordinary index, so the file still
+plays as long as stock qtdemux would accept it.
+
+Index compaction always writes a co64 table, which the stock interleave
+check misreads as having no chunk range. For TrueHD tracks the check reads
+the chunk count from the common stco/co64 header, validates the table
+length and reads offsets at their actual width. Every other track keeps the
+stock read, so files without TrueHD behave exactly as before.
+Only the MP4 demuxer changed in the rebuild: the other four demux-out
+binaries rebuilt byte-identical.
+
+  source   : LG GStreamer 1.24 at 3937f0911dd0e2b0d14364828fba5013078e4565
+  sha256   : b4494215443f506a5b400e7dcb677e32f61d61f15ee6f226363e78bbd7b0b1df
+  size     : 631496 bytes
+  ABI      : ELF32 ARM EABI5 soft-float, e_flags 0x05000200, maximum GLIBC 2.7
+  NEEDED   : GStreamer and GLib libraries, libz.so.1, libm.so.6, libc.so.6
+
+On-device tests with the original MP4 TrueHD binary (SHA-256
+cec458772d3c39ccb2ebcba174dfdba92469b3b5b89aa6a68f7e3e887839a3b1) confirmed
+TV speaker playback and DTS-HD, DTS:X and Dolby TrueHD with Atmos
+passthrough. A TrueHD MP4 that failed after Disable played immediately
+after Enable without a reboot.
+
+On-device tests on an LG G3 with the previous build (SHA-256
+0e4490439b0903f80ec7c8721a2d1673c45decde5c66067175b557f70fa1a5ac) passed:
+  - Playback and seeks to multiple positions in a long TrueHD/Atmos MP4.
+  - Playback of an MP4 with video, AC-3 and TrueHD, including switches
+    between the two audio tracks.
+  - Dolby Vision P7 and P8.1 MP4 playback and the existing DTS-in-MP4 check.
+
+This build on an LG C5 (webOS 25, 10.3.1), loaded with gst-launch from a
+private plugin directory: the TrueHD+AC-3, delayed-sync and extra-sync
+fixtures demuxed with byte-exact TrueHD and AC-3 payloads, and the TrueHD
+decoded through avdec_truehd. The previous build rejected the extra-sync
+fixture as corrupt.
+
+The ARM/QEMU regression runner at src/test/mp4-truehd/run-qemu.py passed
+against this binary. Push and pull tests verified TrueHD caps, index
+compaction, byte-exact TrueHD and AC-3 payloads, and the moov limits.
+Non-interleaved video and TrueHD fixtures verified the chunk ranges,
+interleave detection and exact TrueHD payload for stco and co64, including
+offsets above 4 GiB. The delayed-sync and extra-sync fixtures use the
+ordinary index with byte-exact TrueHD and AC-3 payloads in push and pull
+mode. The previous build failed the extra-sync fixture and reported a
+range for the co64 video track. The DTS MP4 payload also matched byte for
+byte.
+See src/test/mp4-truehd/README.md for setup and the cases covered.
 
 Dolby Vision profile 7 STDL in TS/M2TS
 -------------------------------------

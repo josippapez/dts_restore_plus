@@ -483,7 +483,7 @@ and normal AAC mp4 playback is unaffected. Since webos25-2.43 `tsdemux` also pas
 substream **0x72** (the DTS-HD extension) instead of only the 0x71 core, so DTS-HD MA in
 `.ts`/`.m2ts` decodes lossless: bit-exact against desktop ffmpeg on the C5.
 
-**TrueHD containers:** **MKV and `.ts`/`.m2ts` are supported; `.mp4` is not.** TrueHD in
+**TrueHD containers:** MKV, `.mp4`, `.ts` and `.m2ts`. TrueHD in
 MPEG-TS needed its own fix: separately from DTS, LG wraps the BluRay TrueHD stream-type case
 in `tsdemux.c` in `#if 0` and falls through to `goto done`, so stream_type `0x83`
 (`ST_BD_AUDIO_AC3_TRUE_HD`) was silently dropped and the pad never exposed. What actually
@@ -496,8 +496,11 @@ TrueHD 5.1 + AC-3 previously exposed only the AC-3 tracks, and now reports
 `audio: Dolby TrueHD, Channels: 6 (FL FR FC LFE SL SR)` decoding to
 `audio/x-raw, S32LE, 6 channels, 48000 Hz` — the side-pair channel mask (`0x0c0f`) rather than
 AC-3's rear-pair (`0x003f`) proving it is the TrueHD substream. DTS in `.ts`/`.m2ts` re-checked
-unchanged. **`.mp4` TrueHD remains unsupported** — `qtdemux.c` has no TrueHD/MLP codepath at all
-(no `mlpa` fourcc handling), so it needs new code rather than a gate flip.
+unchanged.
+
+For MP4, the patched `qtdemux` exposes `mlpa` tracks as framed TrueHD. It accepts
+`moov` boxes up to 128 MiB and compacts compatible TrueHD sample tables within the
+existing sample-index memory limit while preserving declared sync points.
 
 **Caveats (honest):**
 - **Discrete 5.1 reaches LG's sink — confirmed in real playback, no downmix in the pipeline.**
@@ -572,7 +575,7 @@ soft-float `0x05000200` before deploying.
 ```sh
 ./build.sh          # -> out/libgstdtsdec.so                      (patched dtsdec + static ffmpeg dca)
 ./build-truehd.sh   # -> truehd-out/libgstlibav.so + libav*/libsw* (gst-libav + ffmpeg n4.4.4)
-./build-demux.sh    # -> demux-out/libgst{isomp4,mpegtsdemux,matroska}.so   (DTS demux, dts_support=TRUE; MKV DV7)
+./build-demux.sh    # -> demux-out/libgst{isomp4,mpegtsdemux,matroska}.so   (container DTS, MP4/TS TrueHD, Dolby Vision P7)
 ```
 
 `build.sh` needs Docker with arm64 emulation
