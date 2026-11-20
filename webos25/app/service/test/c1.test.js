@@ -17,16 +17,21 @@ var SCRIPTS = {
   app: {
     body: function () { return service.cxInitScriptBody(); },
     dir: "var/lib/webosbrew/dtsenabler/cx",
-    gst116: "var/lib/webosbrew/dtsenabler/cx/gst116"
+    gst116: "var/lib/webosbrew/dtsenabler/cx/gst116",
+    log: "tmp/dtsenabler.log"
   },
   root: {
     body: function () { return fs.readFileSync(path.join(ROOT, "init_dts.sh"), "utf8"); },
     dir: "var/lib/webosbrew/dts_restore",
-    gst116: "var/lib/webosbrew/dts_restore/gst116"
+    gst116: "var/lib/webosbrew/dts_restore/gst116",
+    log: "tmp/dts_restore.log"
   }
 };
 
-function tv(kind) {
+// The C1's kill -0 "" succeeds, unlike the shells the tests run on.
+var C1_KILL = 'kill() { if [ "$1" = -0 ] && [ -z "${2-}" ]; then return 0; fi; command kill "$@"; }\n';
+
+function tv(kind, c1Kill) {
   var r = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "dts-c1-")));
   var bin = path.join(r, "bin"), s = SCRIPTS[kind];
   ["tmp", "var/tmp", "proc", "usr/lib/gstreamer-1.0", s.dir].forEach(function (d) {
@@ -44,9 +49,11 @@ function tv(kind) {
   // One settings line, then the subscription stays open a few seconds.
   exe(path.join(bin, "luna-send"), 'echo \'{"settings":{"soundOutput":"external_optical","soundOutputDigital":"passThrough"}}\'; exec sleep 3');
   var script = path.join(r, s.dir, "init_dts.sh");
-  write(script, s.body().replace(TV_PATHS, function (p) {
+  var body = s.body().replace(TV_PATHS, function (p) {
     return p === "/usr/bin/gst-inspect-1.0" ? "gst-inspect-1.0" : r + p;
-  }), 0o755);
+  });
+  if (c1Kill) body = body.replace(/^#![^\n]*\n/, function (l) { return l + C1_KILL; });
+  write(script, body, 0o755);
   return {
     root: r,
     gst116: path.join(r, s.gst116),
@@ -115,6 +122,17 @@ Object.keys(SCRIPTS).forEach(function (kind) {
     } finally { t.done(); }
   });
 
+  test(kind + " boot script: with the opt-in and no watcher yet, the watcher starts on a C1", function () {
+    var t = tv(kind, true);
+    var flag = path.join(t.root, "var/lib/webosbrew/dtsc1/passthrough");
+    try {
+      t.stage();
+      write(flag, "");
+      t.run();
+      assert.match(t.read(SCRIPTS[kind].log) || "", /sound-output watcher started/);
+    } finally { fs.rmSync(flag, {force: true}); t.done(); }
+  });
+
   // The watcher takes its own pid from /proc/self/stat, as on the TV.
   test(kind + " boot script: with the opt-in the watcher writes the sound output for dtsdec",
       {skip: !fs.existsSync("/proc/self/stat") && "needs Linux /proc"}, function () {
@@ -153,14 +171,50 @@ function installer(gstVersion) {
   exe(path.join(bin, "nyx-cmd"), "echo OLED65C17LB");
   exe(path.join(bin, "gst-inspect-1.0"), '[ "${1:-}" = --version ] && { echo "GStreamer ' + gstVersion + '"; exit 0; }; ' +
     'printf "stock %s" "${GST_PLUGIN_PATH_1_0:-}" > "$GST_REGISTRY_1_0"');
-  t.sh = function (cmd) {
+  t.sh = function (cmd, status) {
     var res = sh("cd '" + src + "' && " + cmd, {PATH: bin + ":" + process.env.PATH,
       GST_REGISTRY_1_0: path.join(t.root, "registry.bin")});
-    assert.equal(res.status, 0, res.stdout + res.stderr);
+    assert.equal(res.status, status || 0, res.stdout + res.stderr);
     return res.stdout;
   };
+  // install.sh finds its shell with ps -o pid,comm, and the media player with ps -ef.
+  // -A: without a terminal, macOS ps lists nothing else.
+  function ps(player) {
+    exe(path.join(bin, "ps"), 'if [ "${1:-}" = -ef ]; then ' + (player ?
+      'echo "root 2491 2342 0 18:56 ? 00:00:00 /usr/sbin/starfish-media-pipeline pipeline_process -a -r1"' : ":") +
+      '; else exec /bin/ps -A "$@"; fi');
+  }
+  ps(false);
+  // LG's media player, as the C1 runs it idle from boot.
+  t.player = function () { ps(true); };
   return t;
 }
+
+test("install.sh installs past the idle media player on GStreamer 1.16 and asks for a reboot", function () {
+  var t = installer("1.16.2");
+  try {
+    t.player();
+    assert.match(t.sh("bash install.sh -y"), /reboot the TV for DTS to take effect/);
+    assert.equal(t.read("var/lib/webosbrew/dts_restore/gst116/libgstdtsdec.so"), "dtsdec-116");
+  } finally { t.done(); }
+});
+
+test("install.sh still refuses a running media player on other GStreamer versions", function () {
+  var t = installer("1.14.4");
+  try {
+    t.player();
+    assert.match(t.sh("bash install.sh -y", 1), /Cannot install while the media player is running/);
+    assert.equal(t.read("var/lib/webosbrew/init.d/restore_dts"), null);
+  } finally { t.done(); }
+});
+
+// The C1's root shell starts the script without $_, as dash does.
+test("install.sh runs in a shell that leaves $_ unset", {skip: !fs.existsSync("/bin/dash") && "needs dash"}, function () {
+  var t = installer("1.16.2");
+  try {
+    assert.match(t.sh("env -u _ /bin/dash install.sh -y"), /have been enabled/);
+  } finally { t.done(); }
+});
 
 test("install.sh stages the 1.16 dtsdec and the passthrough opt-in on GStreamer 1.16", function () {
   var t = installer("1.16.2");
