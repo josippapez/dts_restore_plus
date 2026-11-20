@@ -62,15 +62,20 @@ information needed to start a new MAT sequence. The decoder consumes the
 pending access units from the incomplete burst without emitting it, then
 starts the new muxer with the current access unit. The eARC route, sink and
 lease stay in place. The code applies wherever the existing TrueHD MAT path
-is active. It does not change the stream's timestamps or correct lip sync.
+is active. Recovery is scoped to jumps detected on a major sync. A jump
+observed only on a minor access unit is outside this recovery path. Container
+timestamps and lip sync are outside the scope of this change.
 
 The prototype recovery was exercised twice on the G3. Both passes logged the
 1,770-sample jump, the receiver reported TrueHD Atmos 7.1 at 48 kHz after
-recovery, and the tester heard playback continue. Format lock alone was
-present during the original dropout. For a new build, check both the
-receiver's actual input format and audibility through the jump. The
-diagnostic log line `truehd: MAT resync at major sync` includes the measured
-timing delta. See the
+recovery, and the tester heard playback continue. The final decoder also
+passed the listening test through the system-wide installation, including
+additional files with and without TrueHD. See the
+[build report](../restore/out/BUILD-REPORT.txt) for the tested artifact.
+Format lock remained present during the original dropout. For a new build,
+check both the receiver's actual input format and audibility through the
+jump. The diagnostic log line `truehd: MAT resync at major sync` includes
+the measured timing delta. See the
 [TrueHD MAT QEMU regression tests](../restore/src/test/mat-truehd/README.md)
 for repeatable software checks.
 

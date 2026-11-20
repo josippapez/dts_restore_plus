@@ -220,6 +220,10 @@ Artifact verification for SHA-256 dbeeedcef156465fa62f231df08294c247994fe9269a14
     a short gap, the 1,770-sample discontinuity, seek/flush and the existing
     fallback for truncated or unsupported-rate major sync units. Recovered
     MAT bursts and timestamps match a fresh mux starting at the same unit.
+    Boundary tests keep the muxer at 639, 1,279 and 2,559 samples and reset
+    it once at 640, 1,280 and 2,560 samples for 48, 96 and 192 kHz respectively.
+    The higher-rate cases use synthetic headers. The existing FFmpeg timing
+    diagnostic can still appear below the reset threshold.
     The regression fails on the pre-change source. A separate QEMU PCM
     decode using desktop-demuxed elementary streams matched FFmpeg for 7.1
     MKV and 5.1 TS/M2TS.
@@ -234,10 +238,12 @@ Artifact verification for SHA-256 dbeeedcef156465fa62f231df08294c247994fe9269a14
     507e331ce627202d1dfee53676b6c9fbfa9b9084a13aa7adedae395eadaaa5d2).
     Independent TrueHD PCM smoke tests reached EOS in MKV and BD-framed M2TS.
     The latter negotiated the TrueHD track and side-channel mask 0x0c0f.
-    The normal boot hook also accepted Gate 61 and committed the refreshed
-    product registry on this TV (APPLIED=verified). Audible recovery was
-    confirmed on the prototype. The listening check through the refreshed
-    product registry still needs a fresh passthrough session.
+    The normal boot hook accepted Gate 61 and committed the refreshed
+    product registry on this TV (APPLIED=verified).
+  - Final on-device listening test: PASS. With the exact decoder above
+    active in the system-wide installation, the tester confirmed audible
+    TrueHD playback through the previously reproducible dropout. The tester
+    also played additional files with and without TrueHD successfully.
   - The pre-existing host DRC suite reports the same five detector assertions
     on the branch and on clean fbb01d1. The full service suite is 84/90 on both,
     with the same six failures. The media-worker tests and the init/revert,
