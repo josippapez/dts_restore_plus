@@ -3,11 +3,10 @@ DTS decoder plugin (dtsdec) for LG C5 / webOS 25 -- BUILD REPORT
 
 out/ holds libgstdtsdec.so and, since the LG-managed eARC route (PR #23),
 lgroute-control. The decoder is ffmpeg's dca linked in statically; libdca.so.0
-is no longer built or shipped. The values below were read from the committed
-binaries, not from a rebuild.
+is no longer built or shipped. The values below describe the vendored binaries.
 
 Built reproducibly by build.sh:
-  host        : debian:12-slim --platform linux/arm64, apt pinned to the Debian
+  host        : debian:12-slim (linux/amd64 for the 2026-11-20 build), apt pinned to the Debian
                 snapshot 20250601T000000Z (Pin-Priority 1001 + dist-upgrade
                 --allow-downgrades, so the arm64 base libs match their armel
                 counterparts), armel foreign architecture
@@ -57,9 +56,9 @@ libgstdtsdec.so
                 gst_plugin_dtsdec_get_desc, gst_truehd_mat_get_type and the
                 lgroute_* / lgroute_control_* helpers
   size        : 3472824 bytes
-  md5         : e5e8c069d7ff3006ccb9f91f025e5ee7
-  sha1        : bcabb893b104b1148cf0f9aaa594886d811ace2e
-  sha256      : b1ab19b15cef40ce23d33d377e8eefd404220a715befac191644c73576dd02d9
+  md5         : 3637cd5aa4d4f26cb7f051552c3e690f
+  sha1        : a34734bdc033aa295f44cc570ca3eb0605666de7
+  sha256      : dbeeedcef156465fa62f231df08294c247994fe9269a14b7e828c49e33050fc5
 
 lgroute-control
 ---------------
@@ -204,6 +203,51 @@ A renderer restart that waits 3 s of buffers for LG's sink to play now falls
 back to decoding (a C5 resume sent 100 s of silence). On the C5 (33.31.68, TV
 speakers) the four sample decodes and a DTS-HD MKV pass. Not run on a receiver.
 lgroute-control rebuilt byte-identically.
+
+The 2026-11-20 build recovers TrueHD MAT after a large timing discontinuity
+at a TrueHD major sync. The old muxer skipped the padding for a measured
+1,770-sample jump, after which audible output could disappear while the
+receiver still showed TrueHD. The change drops the partial MAT burst and
+starts a new mux at that major sync on the existing audio route. Gate 61
+identifies the updated payload. See ../src/test/mat-truehd/README.md for
+the reproducible ARM/QEMU test.
+
+Artifact verification for SHA-256 dbeeedcef156465fa62f231df08294c247994fe9269a14b7e828c49e33050fc5:
+  - Two builds with build.sh produced identical ARM EABI5 soft-float binaries.
+    The plugin needs at most GLIBC_2.35 and exports zero FFmpeg symbols.
+    lgroute-control rebuilt byte-identically to the previous vendored file.
+  - ARM/QEMU with the pinned FFmpeg n4.4.4 build passed normal timing wrap,
+    a short gap, the 1,770-sample discontinuity, seek/flush and the existing
+    fallback for truncated or unsupported-rate major sync units. Recovered
+    MAT bursts and timestamps match a fresh mux starting at the same unit.
+    Boundary tests keep the muxer at 639, 1,279 and 2,559 samples and reset
+    it once at 640, 1,280 and 2,560 samples for 48, 96 and 192 kHz respectively.
+    The higher-rate cases use synthetic headers. The existing FFmpeg timing
+    diagnostic can still appear below the reset threshold.
+    The regression fails on the pre-change source. A separate QEMU PCM
+    decode using desktop-demuxed elementary streams matched FFmpeg for 7.1
+    MKV and 5.1 TS/M2TS.
+  - On LG G3, webOS 10.3.1 / GStreamer 1.24.0, a private registry loaded
+    this exact plugin. DTS in MKV, MP4 and M2TS reached EOS in decode mode.
+    DTS-HD MA 7.1 MKV produced 480,256 eight-channel S32LE frames at 48 kHz,
+    all byte-identical to FFmpeg 8.0.1 (mask 0x0c3f; SHA-256
+    7f51ef7512f6043c4af66d053e5ee2bb2e89d52dfdeeec764714df1fd425bee5).
+    DTS-HD MA 5.1 M2TS produced 176,269 six-channel frames, byte-identical
+    after clipping the first 1,907 reference frames (39.729 ms) to align the
+    demux segment (SHA-256
+    507e331ce627202d1dfee53676b6c9fbfa9b9084a13aa7adedae395eadaaa5d2).
+    Independent TrueHD PCM smoke tests reached EOS in MKV and BD-framed M2TS.
+    The latter negotiated the TrueHD track and side-channel mask 0x0c0f.
+    The normal boot hook accepted Gate 61 and committed the refreshed
+    product registry on this TV (APPLIED=verified).
+  - Final on-device listening test: PASS. With the exact decoder above
+    active in the system-wide installation, the tester confirmed audible
+    TrueHD playback through the previously reproducible dropout. The tester
+    also played additional files with and without TrueHD successfully.
+  - The pre-existing host DRC suite reports the same five detector assertions
+    on the branch and on clean fbb01d1. The full service suite is 84/90 on both,
+    with the same six failures. The media-worker tests and the init/revert,
+    manifest-floor, report/profile, app-version and probe-key checks pass.
 
 This report is maintained by hand: update it whenever out/libgstdtsdec.so is
 rebuilt (build.sh prints the ABI values above).

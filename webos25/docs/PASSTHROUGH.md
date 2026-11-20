@@ -44,6 +44,41 @@ The carrier is also silent while LG plays it too slowly.
 Unknown sink builds refuse HD. The older investigation below describes the stock
 software-decoding path.
 
+## TrueHD MAT recovery after a timing discontinuity
+
+The TrueHD access-unit header carries a 16-bit timing counter. The FFmpeg
+S/PDIF muxer uses the difference between consecutive values to place access
+units in Dolby MAT bursts. Normal counter wrap is part of that calculation.
+One stream tested on a G3 had a 1,770-sample jump into a major
+sync at 48 kHz, where a normal access unit spans 40 samples. The muxer reported
+`Unusual frame timing` and discarded the calculated padding. Playback went
+silent for minutes while the receiver still identified TrueHD Atmos 7.1.
+Starting a fresh muxer at that major sync produced MAT without the warning.
+
+At a major sync, a modular timing jump of at least 16 access units starts a
+fresh MAT muxer. This threshold is above the muxer's half-burst padding limit
+after accounting for the previous access unit. A major sync provides the
+information needed to start a new MAT sequence. The decoder consumes the
+pending access units from the incomplete burst without emitting it, then
+starts the new muxer with the current access unit. The eARC route, sink and
+lease stay in place. The code applies wherever the existing TrueHD MAT path
+is active. Recovery is scoped to jumps detected on a major sync. A jump
+observed only on a minor access unit is outside this recovery path. Container
+timestamps and lip sync are outside the scope of this change.
+
+The prototype recovery was exercised twice on the G3. Both passes logged the
+1,770-sample jump, the receiver reported TrueHD Atmos 7.1 at 48 kHz after
+recovery, and the tester heard playback continue. The final decoder also
+passed the listening test through the system-wide installation, including
+additional files with and without TrueHD. See the
+[build report](../restore/out/BUILD-REPORT.txt) for the tested artifact.
+Format lock remained present during the original dropout. For a new build,
+check both the receiver's actual input format and audibility through the
+jump. The diagnostic log line `truehd: MAT resync at major sync` includes
+the measured timing delta. See the
+[TrueHD MAT QEMU regression tests](../restore/src/test/mat-truehd/README.md)
+for repeatable software checks.
+
 ## DTS core over optical
 
 Optical (S/PDIF) carries the DTS core as IEC 61937 in the same 48 kHz 16-bit

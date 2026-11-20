@@ -153,6 +153,14 @@ file decodes to **8 channels**, and that DTS-HD in `.ts`/`.m2ts` decodes **lossl
 (tsdemux passes substream 0x72): its decoded PCM matches a desktop `ffmpeg` decode of the
 same file bit for bit, after GStreamer's 40 ms segment clip at the start. A core-only
 decode does not match.
+For changes to TrueHD MAT packing, run the
+[TrueHD MAT QEMU regression tests](webos25/restore/src/test/mat-truehd/README.md)
+and test passthrough across a known timing discontinuity with an eARC receiver.
+Start playback before the discontinuity and
+let it play through without seeking. Record both audible playback and the actual
+receiver input format. At the discontinuity the receiver can retain TrueHD lock
+even when playback is silent. Also verify uninterrupted playback of a normal
+TrueHD stream, including a seek, and record which build ran on the TV.
 For a rebuilt `libgstmpegtsdemux.so`, run the
 [HDMV TrueHD/AC-3 QEMU regression tests](webos25/restore/src/test/hdmv-ac3/README.md)
 to verify track order and payload routing.
@@ -246,6 +254,8 @@ goes in `payload/c2-ts/` because `payload/cx/` is shared with the CX profile.
 - [ ] A DTS-HD MA 7.1 file decodes to 8 channels (if `libgstdtsdec.so` changed)
 - [ ] DTS-HD in `.ts`/`.m2ts` decodes lossless — tsdemux passes substream 0x72, output
       bit-exact against desktop `ffmpeg` (if `libgstdtsdec.so` or `libgstmpegtsdemux.so` changed)
+- [ ] TrueHD MAT packing passes the QEMU timing regression tests, and audible TrueHD
+      continues across the discontinuity on a TV and eARC receiver (if MAT packing changed)
 - [ ] A Dolby Vision profile 7 MKV / MP4 shows the Dolby Vision badge on a real webOS-25 TV
       (if `libgstmatroska.so` / `libgstisomp4.so` changed)
 - [ ] MP4 TrueHD QEMU regression tests and on-device TrueHD playback and seeking pass
