@@ -132,6 +132,9 @@ tar -xzf dts_restore_plus.tar.gz && cd dts_restore_plus-main
 ./install.sh --passthrough   # also send DTS to an optical/ARC receiver
 ```
 
+LG's media player already runs from boot on these TVs, so the installer asks for a reboot.
+Reboot the TV once it finishes.
+
 In the app, use **Send DTS to a receiver**.
 
 - **Passthrough** needs the receiver as the sound output and *Settings → Sound → Advanced
