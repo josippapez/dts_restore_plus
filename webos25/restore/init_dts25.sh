@@ -127,7 +127,8 @@ EXPECT_GST=1.24
 #   59 earc_route only on ptl4tv.5 unless the user opts in (try-unverified);
 #      stopping it also stops 2.78's hdmi-watch.sh.
 #   60 refreshes idle media workers after registry commit for MP4 TrueHD activation.
-W25_GATE_VERSION=60
+#   61 identifies the payload with TrueHD MAT timing recovery.
+W25_GATE_VERSION=61
 FP=/var/lib/webosbrew/dts25/stock.fp
 # Where the installed copy of THIS script lives, and the boot hook that symlinks
 # to it. Named here, in the shared block, so the read-only probe can fingerprint

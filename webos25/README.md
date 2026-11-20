@@ -294,6 +294,11 @@ Media Player, through seeking, pausing and volume changes. Also tested over opti
 - **48 kHz, 16-bit DTS core** (every DTS track in MKV, MP4 and TS). Anything else is
   decoded.
 
+TrueHD passthrough also recovers from a large access-unit timing jump at a major
+sync by starting a new MAT sequence on the existing eARC route. See the
+[TrueHD timing notes](docs/PASSTHROUGH.md#truehd-mat-recovery-after-a-timing-discontinuity)
+for the trigger and how to verify audible recovery.
+
 How it works: the marker `/var/lib/webosbrew/dts25/passthrough` turns it on. A watcher
 started by the boot hook (and by the app's toggle) keeps
 `/run/dts25/sound-output` as `<pid> <soundOutput> <soundOutputDigital>` from a

@@ -1689,14 +1689,10 @@ gst_dtsdec_hd_stop (GstDtsDec * dts, gboolean decide)
 
 /* No private sink offsets or DSP edge rewiring. Unknown stacks decode. */
 static gboolean
-gst_dtsdec_hd_open (GstDtsDec * dts, enum AVCodecID codec)
+gst_dtsdec_mux_open (GstDtsDec * dts, enum AVCodecID codec)
 {
   AVStream *st;
   guint8 *hdr;
-
-  if (!lgroute_arm (&dts->hd_route))
-    return FALSE;
-  dts->hd_silence = 0;
 
   if (avformat_alloc_output_context2 (&dts->spdif, NULL, "spdif", NULL) < 0
       || !(st = avformat_new_stream (dts->spdif, NULL))
@@ -1724,6 +1720,19 @@ fail:
     avio_close_dyn_buf (dts->spdif->pb, &hdr);
     av_free (hdr);
   }
+  avformat_free_context (dts->spdif);
+  dts->spdif = NULL;
+  return FALSE;
+}
+
+static gboolean
+gst_dtsdec_hd_open (GstDtsDec * dts, enum AVCodecID codec)
+{
+  if (!lgroute_arm (&dts->hd_route))
+    return FALSE;
+  dts->hd_silence = 0;
+  if (gst_dtsdec_mux_open (dts, codec))
+    return TRUE;
   gst_dtsdec_hd_close (dts);
   return FALSE;
 }
@@ -2152,7 +2161,8 @@ gst_dtsdec_get_property (GObject * object, guint prop_id, GValue * value,
 typedef struct {
   GstDtsDec parent;
   gint pending;
-  gboolean synced;
+  guint16 last_timing;
+  guint samples_per_unit;  /* zero until a supported TrueHD major sync */
 } GstTruehdMat;
 typedef struct { GstDtsDecClass parent; } GstTruehdMatClass;
 G_DEFINE_TYPE (GstTruehdMat, gst_truehd_mat, GST_TYPE_DTSDEC)
@@ -2163,7 +2173,7 @@ gst_truehd_mat_start (GstAudioDecoder * decoder)
   GstTruehdMat *self = (GstTruehdMat *) decoder;
   GstDtsDec *dts = GST_DTSDEC (decoder);
   self->pending = 0;
-  self->synced = FALSE;
+  self->samples_per_unit = 0;
   dts->pt_output_ok = TRUE;
   lgroute_init (&dts->hd_route, GST_ELEMENT (dts));
   return TRUE;
@@ -2234,7 +2244,7 @@ gst_truehd_mat_handle_frame (GstAudioDecoder * decoder, GstBuffer * input)
   GstMapInfo map;
   AVPacket packet = { 0 };
   guint8 *data = NULL;
-  gint size, result;
+  gint size, result, discarded = 0;
   GstBuffer *output;
 
   if (!input) {
@@ -2252,22 +2262,42 @@ gst_truehd_mat_handle_frame (GstAudioDecoder * decoder, GstBuffer * input)
   }
   if (!gst_buffer_map (input, &map, GST_MAP_READ))
     return GST_FLOW_ERROR;
-  if (map.size >= 8 && GST_READ_UINT32_BE (map.data + 4) == 0xf8726fba
-      && (map.size < 10 || (map.data[8] >> 4) > 2)) {
+  /* TrueHD's major-sync word follows the four-byte access-unit header.
+   * Only a major sync supplies the format information for a fresh mux. */
+  gboolean major_sync = map.size >= 8
+      && GST_READ_UINT32_BE (map.data + 4) == 0xf8726fba;
+  if (major_sync && (map.size < 10 || (map.data[8] >> 4) > 2)) {
     gst_buffer_unmap (input, &map);
     /* The 44.1 kHz family has no MAT carrier; later frames follow the failed path. */
     dts->hd_route.failed = TRUE;
     dts->hd_route.reason = "TrueHD rate outside the 48 kHz family";
     return gst_truehd_mat_fallback (decoder);
   }
-  if (!self->synced) {
-    self->synced = map.size >= 10
-        && GST_READ_UINT32_BE (map.data + 4) == 0xf8726fba;
-    if (!self->synced) {
-      gst_buffer_unmap (input, &map);
-      return gst_audio_decoder_finish_frame (decoder, NULL, 1);
-    }
+  if (!major_sync && !self->samples_per_unit) {
+    gst_buffer_unmap (input, &map);
+    return gst_audio_decoder_finish_frame (decoder, NULL, 1);
   }
+  guint16 timing = GST_READ_UINT16_BE (map.data + 2);
+  if (major_sync) {
+    guint samples_per_unit = 40u << (map.data[8] >> 4);
+    guint16 delta = timing - self->last_timing;  /* modulo 2^16 */
+    /* At 16 access units the gap exceeds the S/PDIF muxer's half-MAT
+     * padding limit even after subtracting the previous access unit.
+     * Restart at major sync and keep the existing renderer and eARC lease. */
+    if (self->samples_per_unit && delta >= 16 * samples_per_unit) {
+      avformat_free_context (dts->spdif);
+      dts->spdif = NULL;
+      if (!gst_dtsdec_mux_open (dts, AV_CODEC_ID_TRUEHD)) {
+        gst_buffer_unmap (input, &map);
+        return gst_truehd_mat_fallback (decoder);
+      }
+      discarded = self->pending;
+      self->pending = 0;
+      lgroute_log ("truehd: MAT resync at major sync, timing delta %u", (guint) delta);
+    }
+    self->samples_per_unit = samples_per_unit;
+  }
+  self->last_timing = timing;
   if (avio_open_dyn_buf (&dts->spdif->pb) < 0) {
     gst_buffer_unmap (input, &map);
     return GST_FLOW_ERROR;
@@ -2282,6 +2312,15 @@ gst_truehd_mat_handle_frame (GstAudioDecoder * decoder, GstBuffer * input)
   if (result < 0 || size < 0) {
     av_free (data);
     return GST_FLOW_ERROR;
+  }
+  /* Retire only the access units lost with the partial burst. The frame
+   * just muxed belongs to the new sequence and keeps its input timestamp. */
+  if (discarded) {
+    GstFlowReturn flow = gst_audio_decoder_finish_frame (decoder, NULL, discarded);
+    if (flow != GST_FLOW_OK) {
+      av_free (data);
+      return flow;
+    }
   }
   self->pending++;
   if (!size) {
@@ -2305,7 +2344,7 @@ gst_truehd_mat_flush (GstAudioDecoder * decoder, gboolean hard)
   GstDtsDec *dts = GST_DTSDEC (decoder);
   (void) hard;
   self->pending = 0;
-  self->synced = FALSE;
+  self->samples_per_unit = 0;
   /* Seeking resets MAT accumulation, not the already configured renderer. */
   avformat_free_context (dts->spdif);
   dts->spdif = NULL;
