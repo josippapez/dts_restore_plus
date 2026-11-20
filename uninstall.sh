@@ -44,6 +44,14 @@ if [ -f "$PAYLOAD_DIR/env.conf" ]; then
   fi
 fi
 
+# Stop the webOS 6 passthrough watcher and drop its opt-in.
+W=$(cat /run/dtsc1/watcher.pid 2>/dev/null)
+if [ -n "$W" ]; then
+  kill "$W" 2>/dev/null
+  pkill -P "$W" 2>/dev/null
+fi
+rm -rf /run/dtsc1 /var/lib/webosbrew/dtsc1
+
 # Remove the installed payload.
 if [ -d "$PAYLOAD_DIR" ]; then
   rm -rf "$PAYLOAD_DIR"

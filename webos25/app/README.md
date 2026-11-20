@@ -43,7 +43,7 @@ PROFILE                         ACTION
 webos25-armel-gst124            verified/experimental webOS-25 mechanism
 webos22-o22-gst118              exact-firmware C2/G2 opt-in, hardware unverified
 cx-armv7-gst114                 inherited CX demuxer override
-webos6-armel-gst116             CX demuxer override on GStreamer 1.16 (C1 class)
+webos6-armel-gst116             CX demuxer override + GStreamer 1.16 dtsdec (C1 class)
 webos22/23 diagnostic profiles  refuse with family-specific evidence
 unknown / unknown-*             refuse cleanly
 ```
@@ -510,6 +510,7 @@ cp ../restore/kmod-out/earc_route-*.ko ../kmod/earc-route-load.sh \
 # small DTS samples for the self-test / play-by-ear (already bundled)
 # payload/testfiles/{DTS-in-mp4.mp4,DTS-HD-MA-5.1.ts,DTS-HD-MA-5.1.m2ts}
 cp -f ../../gst/*.so                                           payload/cx/  # shared CX + C2
+mkdir -p payload/c1 && cp -f ../restore/gst116-out/libgstdtsdec.so payload/c1/  # C1 only
 
 # 2. Generate the icon
 rsvg-convert -w 80 -h 80 icon.svg > icon.png
@@ -561,7 +562,7 @@ Current app and service version: **2.6.0**.
 | `webos25-armel-gst124` | LG C5 / G5 (webOS 25, GStreamer 1.24, armel soft-float) | decoder-inject (patched dtsdec, FFmpeg dca) + TrueHD (avdec_truehd) | **Mechanism VERIFIED playing on a real C5** (via the `restore/` CLI install): both DTS and TrueHD decode and play, LG's sink receives `audio/x-raw, S32LE` (5.1 for DTS, and 8ch/7.1 for a TrueHD Atmos title — its full base bed), persistent across reboot. NOTE: the exec-bridge **role/permission manifest is now shipped** (service `*.role.json` with `outbound:["*"]` + api/perm files — see "Exec-bridge permissions"), so the app's detect/enable/test should reach the Homebrew Channel; **on-device confirmation (auto-discovery vs. the `/var/luna-service2-dev/` fallback) is pending**. The `restore/install.sh` CLI path remains the verified route. The app now also stages the **container demuxers** and includes a **self-test + play-by-ear** for mp4/ts/m2ts. |
 | `webos22-o22-gst118` | Exact global OLED C2/G2/CS `W22O`, firmware `04.40.93`/`04.40.93.01` (webOS `7.4.0`, GStreamer `1.18.2`) or `23.25.55`/`23.25.55.01` (webOS `9.2.2`, GStreamer `1.18.5`), soft-float | exact-gated legacy libav/Matroska/isomp4 override + `avdec_dca` rank | **EXPERIMENTAL; hardware verification NO.** Requires exact identity plus the three stock SHA-256 values and a two-step opt-in. Firmware inspection, QEMU plugin load/decode, and community reports support a tester path, but no rooted C2/G2 ran Enable, playback, reboot, Disable, or Uninstall. MP4 self-test only; MKV/MP4 capability, no TS/M2TS/TrueHD/gain/A-B. |
 | `cx-armv7-gst114` | OLED CX / BX / C1 / NanoCell (webOS 3–6, GStreamer 1.14) | demuxer-override (rebuilt LG libs + `avdec_dca` rank) | **Carried over, UNVERIFIED by this project** — no CX hardware. The payload itself is measured ELF32 ARM EABI5 soft-float; the stock CX loader/e_flags were not captured on-device. Confirm the target with `detect` before trusting field compatibility. |
-| `webos6-armel-gst116` | OLED C1 class (webOS 6, GStreamer 1.16, `ld-linux.so.3` soft-float) | same as `cx-armv7-gst114`, same payload | **UNVERIFIED by this project.** Upstream `dts_restore` 2.0, whose plugins are byte-identical to `payload/cx`, was reported working on a C1 with GStreamer 1.16.2. Stereo only. |
+| `webos6-armel-gst116` | OLED C1 class (webOS 6, GStreamer 1.16, `ld-linux.so.3` soft-float) | same as `cx-armv7-gst114`, same payload, plus a GStreamer 1.16 `dtsdec` from `payload/c1/` ranked above `avdec_dca` | **UNVERIFIED by this project.** Upstream `dts_restore` 2.0, whose plugins are byte-identical to `payload/cx`, was reported working on a C1 with GStreamer 1.16.2. The `dtsdec` decodes to stereo, or with **Send DTS to a receiver** passes the DTS core to an optical/ARC receiver on Pass Through; a contributor verified passthrough on one C1. |
 | C3/G3/M3 (`W23O`) | webOS 23, GStreamer 1.18.5 | **none needed** | **Native DTS — LG restored it in 2023.** `dts_audiodec` is registered and `gstcool.conf` raises it to rank 290. Only local **MKV** is gated (`enable-dts` defaults false). Owner-reported working via upstream `dts_restore`. The current `webos23-w23o-diagnostic` refusal is **wrong and pending removal** — see [`../docs/FIRMWARE-COMPATIBILITY.md`](../docs/FIRMWARE-COMPATIBILITY.md). |
 | C4/G4/M4/T4 (`W24G`, `W24O`) | webOS 24 | **none needed** | **Native DTS, local decode *and* passthrough.** Nothing for this app to add; must not be offered a mechanism, and must not report "unknown". Product/press evidence, not extracted firmware. |
 | B2/W22H, B3/W23H | webOS 22/23, GStreamer 1.18.2/1.18.5 | diagnostic only | **Explicit non-forceable refusal profiles.** B2 has no registered decoder and an unverified Realtek sink path; B3 has a distinct proprietary decoder/sink path. |

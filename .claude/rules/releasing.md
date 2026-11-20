@@ -12,14 +12,15 @@ it does **not** rebuild from source. Two obligations follow:
    - the sources of the committed binaries, all in `webos25/restore/src/`:
      `gstdtsdec.c`, `gstdtsdec.h`, `dtsdec-track.h`, `lgroute.c`, `lgroute.h`,
      `lgroute-graph.h`, `lgroute-control.c`, `lgroute-control.h`, `gstadecswitch.c`,
-     `gstadecswitch.h`, `edidaudio.c`, `edidaudio.h`
+     `gstadecswitch.h`, `edidaudio.c`, `edidaudio.h`, `gst116/gstdtsdec116.c` (the C1/G1
+     dtsdec: re-verify it on a C1, not a C5)
    - the `dts_support` patch / pinned sources / flags in `webos25/restore/build-demux.sh`
-   - `webos25/restore/build.sh`, `build-truehd.sh`, `build-demux.sh`, `build-switch.sh`, `build-edid.sh`, `build-ts114.sh`
+   - `webos25/restore/build.sh`, `build-truehd.sh`, `build-demux.sh`, `build-switch.sh`, `build-edid.sh`, `build-ts114.sh`, `build-gst116.sh`
    - the kernel module: `webos25/kmod/earc_route.c`, `earc_decode.h`, `earc_hdmi.h`,
      `earc_probe.h`, `build.sh`, `build.py`
 
    The committed binaries live in
-   `webos25/restore/{out,truehd-out,demux-out,switch-out,edid-out,ts114-out,kmod-out}`.
+   `webos25/restore/{out,truehd-out,demux-out,switch-out,edid-out,ts114-out,gst116-out,kmod-out}`.
    (`out/` holds `libgstdtsdec.so` and `lgroute-control`; `kmod-out/` holds
    `earc_route-5.4.ko` and `earc_route-6.12.ko`, copied from `webos25/kmod/out/`.)
    The app's `webos25/app/payload/**` `.so` are git-ignored and copied from

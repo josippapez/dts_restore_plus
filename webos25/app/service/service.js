@@ -49,7 +49,9 @@
  *   webos6-armel-gst116   (OLED C1 class, GStreamer 1.16) -- UNVERIFIED by this
  *       project. Same demuxer-override mechanism and payload as CX. Upstream
  *       dts_restore 2.0, whose four plugins are byte-identical to payload/cx,
- *       was field-reported working on a C1 running 1.16.2 (issue #3).
+ *       was field-reported working on a C1 running 1.16.2 (issue #3). Adds a
+ *       GStreamer 1.16 dtsdec (payload/c1) ranked above avdec_dca, with an
+ *       optical/ARC passthrough opt-in a contributor verified on one C1.
  *
  *   unknown / unknown-*   -- REFUSE. We never apply an ABI-mismatched
  *       mechanism (applying CX 1.14 libs on a 1.24 TV would break MKV/MP4
@@ -150,6 +152,7 @@ var PAYLOAD_W25_DMX = APP_INSTALL + "/payload/webos25-demux";    // patched isom
 var PAYLOAD_W25_KMOD = APP_INSTALL + "/payload/webos25-hdmi";    // earc_route-5.4.ko, earc_route-6.12.ko + their loader
 var W25_KMOD_DEST = "/var/lib/webosbrew/dts25/hdmi";
 var PAYLOAD_CX      = APP_INSTALL + "/payload/cx";               // CX demuxer/libav .so set
+var PAYLOAD_C1      = APP_INSTALL + "/payload/c1";               // GStreamer 1.16 dtsdec (C1 only)
 // C2-only, deliberately NOT in payload/cx: that directory is shared with the
 // cx-armv7-gst114 profile, and adding a TS demuxer there would change CX behaviour.
 var PAYLOAD_C2_TS   = APP_INSTALL + "/payload/c2-ts";            // LG 1.14.4 TS demuxer (C2 only)
@@ -1873,6 +1876,13 @@ var CX_GST_LIBS = [
 // constants only -- never caller-supplied.
 var CX_DOWNMIX = { front: "1.25", center: "0.75", lfe: "0.75", rear: "0.75", rear2: "0.70" };
 var CX_DCA_RANK = "290";
+/* C1/G1 (GStreamer 1.16) only: a dtsdec built for 1.16, staged beside the CX
+ * payload. It is compiled at rank 256, so gstcool.conf puts it above avdec_dca.
+ * The passthrough opt-in and the sound-output watcher's paths are compiled in. */
+var C1_GST          = CX_STATE + "/gst116";
+var C1_DTSDEC_RANK  = "300";
+var C1_PT_FLAG      = "/var/lib/webosbrew/dtsc1/passthrough";
+var C1_PT_RUN       = "/run/dtsc1";
 var C2_STATE       = "/var/lib/webosbrew/dtsenabler/c2";
 var C2_GST         = C2_STATE + "/gst";
 var C2_OWNER       = C2_STATE + "/owner";
@@ -3609,15 +3619,27 @@ function cxInitScriptBody() {
     'log() { echo "[dts_restore-cx $*]" >> "$LOG" 2>/dev/null; }',
     "BAKED_GST_REGISTRY=\"\"",
     '[ -f "' + CX_ENV_CONF + '" ] && . "' + CX_ENV_CONF + '"',
+    "# C1/G1 (GStreamer 1.16): Enable stages a dtsdec there and nowhere else. It",
+    "# decodes DTS, or passes it to an optical/ARC receiver when passthrough is on.",
+    'GST116=""',
+    '[ -f "' + C1_GST + '/libgstdtsdec.so" ] && GST116="' + C1_GST + '"',
+    'PT_FLAG=' + C1_PT_FLAG,
+    'PT_RUN=' + C1_PT_RUN,
     "# 1) Override the GStreamer plugins LG nerfed (guarded against double-mount).",
     libLoop,
     "# 2) Refresh the GStreamer registry (regenerated in /tmp, bound over the real path).",
+    "#    A registry bound by an install without dtsdec is rebuilt.",
     'REG="${GST_REGISTRY_1_0:-$BAKED_GST_REGISTRY}"',
     'if [ -n "$REG" ] && [ -f "$REG" ]; then',
-    '  if grep -q " $REG " /proc/mounts 2>/dev/null; then log "registry already overridden";',
+    '  if grep -q " $REG " /proc/mounts 2>/dev/null && { [ -z "$GST116" ] || grep -q "$GST116/libgstdtsdec.so" "$REG"; }; then log "registry already overridden";',
     '  else',
     '    log "refreshing GStreamer registry"',
     '    export GST_REGISTRY_1_0=/tmp/gst_1_0_registry.arm.bin',
+    '    if [ -n "$GST116" ]; then',
+    '      # GST_PLUGIN_PATH_1_0 replaces GST_PLUGIN_PATH, so keep the one in use.',
+    '      P=${GST_PLUGIN_PATH_1_0-${GST_PLUGIN_PATH-}}',
+    '      export GST_PLUGIN_PATH_1_0="$GST116${P:+:$P}"',
+    '    fi',
     '    GST_REGISTRY_FORK=no /usr/bin/gst-inspect-1.0 > /var/tmp/gst-inspect.log 2>&1',
     '    chmod 644 "$GST_REGISTRY_1_0" 2>/dev/null',
     '    chown :compositor "$GST_REGISTRY_1_0" 2>/dev/null',
@@ -3625,9 +3647,20 @@ function cxInitScriptBody() {
     '  fi',
     'fi',
     "# 3) Raise avdec_dca priority + apply the stereo downmix coefficients.",
+    "#    A rank file written by an install without dtsdec is rebuilt from LG's.",
+    'if [ -n "$GST116" ] && [ -f "' + GSTCOOL_TMP + '" ] && ! grep -q "^dtsdec=" "' + GSTCOOL_TMP + '"; then',
+    '  umount "' + GSTCOOL + '" 2>/dev/null',
+    '  rm -f "' + GSTCOOL_TMP + '"',
+    'fi',
     'if [ ! -f "' + GSTCOOL_TMP + '" ] && [ -f "' + GSTCOOL + '" ]; then',
     '  log "overriding ' + GSTCOOL + '"',
-    '  sed "s/avdec_dca=0/avdec_dca=' + CX_DCA_RANK + '/" "' + GSTCOOL + '" > "' + GSTCOOL_TMP + '"',
+    '  if [ -n "$GST116" ]; then',
+    '    # dtsdec is compiled at rank 256: put it above avdec_dca, in the same section.',
+    '    sed -e "s/avdec_dca=0/avdec_dca=' + CX_DCA_RANK + '/" -e \'/avdec_dca=/a\\',
+    "dtsdec=" + C1_DTSDEC_RANK + "' \"" + GSTCOOL + '" > "' + GSTCOOL_TMP + '"',
+    '  else',
+    '    sed "s/avdec_dca=0/avdec_dca=' + CX_DCA_RANK + '/" "' + GSTCOOL + '" > "' + GSTCOOL_TMP + '"',
+    '  fi',
     '  {',
     '    echo ""',
     '    echo "[downmix]"',
@@ -3639,14 +3672,44 @@ function cxInitScriptBody() {
     '  } >> "' + GSTCOOL_TMP + '"',
     '  mount -n --bind "' + GSTCOOL_TMP + '" "' + GSTCOOL + '" || log "WARN: gstcool bind failed"',
     'fi',
+    "# 4) Passthrough opt-in (C1 dtsdec only): a watcher writes",
+    '#    "<its pid> <soundOutput> <soundOutputDigital>" on every sound settings',
+    "#    change. dtsdec passes DTS through only while that pid is alive and the",
+    "#    output is an optical/ARC receiver on Pass Through.",
+    '#    The C1\'s kill -0 "" succeeds, so a missing pid is checked on its own.',
+    'pid=$(cat "$PT_RUN/watcher.pid" 2>/dev/null)',
+    'if [ -n "$GST116" ] && [ -f "$PT_FLAG" ] && { [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null; }; then',
+    '  mkdir -p "$PT_RUN"',
+    '  (',
+    '    read -r MY _ < /proc/self/stat',
+    '    echo "$MY" > "$PT_RUN/watcher.pid"',
+    '    trap \'rm -f "$PT_RUN/sound-output" "$PT_RUN/watcher.pid"\' EXIT',
+    "    trap 'exit 0' INT TERM HUP",
+    '    while [ -f "$PT_FLAG" ]; do',
+    '      out= digital=',
+    '      luna-send -i luna://com.webos.settingsservice/getSystemSettings \\',
+    '        \'{"category":"sound","keys":["soundOutput","soundOutputDigital"],"subscribe":true}\' \\',
+    '        </dev/null | while read -r line; do',
+    '          v=$(echo "$line" | sed -n \'s/.*"soundOutput" *: *"\\([^"]*\\)".*/\\1/p\'); [ -n "$v" ] && out=$v',
+    '          v=$(echo "$line" | sed -n \'s/.*"soundOutputDigital" *: *"\\([^"]*\\)".*/\\1/p\'); [ -n "$v" ] && digital=$v',
+    '          [ -n "$out" ] && [ -n "$digital" ] || continue',
+    '          echo "$MY $out $digital" > "$PT_RUN/sound-output.tmp" && mv -f "$PT_RUN/sound-output.tmp" "$PT_RUN/sound-output"',
+    '        done',
+    '      rm -f "$PT_RUN/sound-output"   # subscription ended: decode until it is back',
+    '      sleep 5',
+    '    done',
+    '  ) </dev/null >/dev/null 2>&1 &',
+    '  log "sound-output watcher started"',
+    'fi',
     "# A non-zero webosbrew init script trips the failsafe that disables ALL root",
     "# customisations on the next boot, so always succeed.",
     "exit 0"
   ].join("\n");
 }
 
-/** enable (CX): stage payload, bake registry env, write init script, hook, apply. */
-function cxEnable() {
+/** enable (CX): stage payload, bake registry env, write init script, hook, apply.
+ *  c1: also stage the GStreamer 1.16 dtsdec, which only the C1 profile may load. */
+function cxEnable(c1) {
   var b64 = Buffer.from(cxInitScriptBody(), "utf8").toString("base64");
   return [
     "set -u",
@@ -3658,6 +3721,12 @@ function cxEnable() {
     'mkdir -p "' + CX_GST + '" || { log "FATAL: cannot create ' + CX_GST + '"; exit 0; }',
     'n=0; for f in "' + PAYLOAD_CX + '"/*.so; do [ -f "$f" ] && cp -f "$f" "' + CX_GST + '/" && n=$((n+1)); done',
     'log "staged $n .so from ' + PAYLOAD_CX + '"',
+    'rm -rf "' + C1_GST + '"'
+  ].concat(c1 ? [
+    // Optional: without it, DTS decodes through the CX payload as before.
+    'if mkdir -p "' + C1_GST + '" && cp -f "' + PAYLOAD_C1 + '/libgstdtsdec.so" "' + C1_GST + '/"; then log "staged the GStreamer 1.16 dtsdec";',
+    'else rm -rf "' + C1_GST + '"; log "WARN: GStreamer 1.16 dtsdec not staged; DTS decodes with the CX payload only"; fi'
+  ] : []).concat([
     // 2. Bake the GStreamer registry path from THIS exec session (boot has none).
     'mkdir -p "' + CX_STATE + '"',
     'if [ -n "${GST_REGISTRY_1_0:-}" ] && [ -f "${GST_REGISTRY_1_0:-}" ]; then',
@@ -3676,7 +3745,7 @@ function cxEnable() {
     'log "=== enable (cx) done ==="',
     'echo OK',
     "exit 0"
-  ].join("\n");
+  ]).join("\n");
 }
 
 /** disable (CX): remove boot hook + best-effort unmount. Original libs untouched. */
@@ -3698,7 +3767,8 @@ function cxDisable() {
     '  return 1',
     '}',
     'log "=== disable (cx) start ==="',
-    'if [ -e "' + CX_HOOK + '" ] || [ -L "' + CX_HOOK + '" ]; then rm -f "' + CX_HOOK + '" && log "removed boot hook"; else log "boot hook not present"; fi'
+    'if [ -e "' + CX_HOOK + '" ] || [ -L "' + CX_HOOK + '" ]; then rm -f "' + CX_HOOK + '" && log "removed boot hook"; else log "boot hook not present"; fi',
+    c1WatcherStop()
   ];
   CX_GST_LIBS.forEach(function (lib) {
     var dst = CX_GST_TARGET + "/" + lib;
@@ -3718,6 +3788,7 @@ function cxUninstall() {
   return [
     cxDisable().replace(/\necho OK$/, ""),
     'rm -rf "' + CX_STATE + '" && echo "[dts_restore-cx-uninstall] removed ' + CX_STATE + '" >> "' + LOG + '" 2>&1',
+    'rm -rf "$(dirname "' + C1_PT_FLAG + '")"',
     'echo OK'
   ].join("\n");
 }
@@ -3764,7 +3835,10 @@ function cxStatusProbe() {
     'echo "HOOK=$([ -e ' + CX_HOOK + ' ] && echo 1 || echo 0)"',
     'echo "MOUNTS=$(grep -c gstreamer-1.0 /proc/mounts 2>/dev/null)"',
     'echo "RANK=$(grep -oE \'avdec_dca=[0-9]+\' ' + GSTCOOL + ' 2>/dev/null | head -1 | cut -d= -f2)"',
-    'echo "LIBSTAGED=$([ -d ' + CX_GST + ' ] && echo 1 || echo 0)"'
+    'echo "LIBSTAGED=$([ -d ' + CX_GST + ' ] && echo 1 || echo 0)"',
+    // C1 passthrough, same contract as webOS 25: the output only while the watcher is alive.
+    'echo "PT_FLAG=$([ -f ' + C1_PT_FLAG + ' ] && echo 1 || echo 0)"',
+    'P=$(cat ' + C1_PT_RUN + '/watcher.pid 2>/dev/null); echo "PT_OUT=$([ -n "$P" ] && [ -d /proc/$P ] && cut -d" " -f2- ' + C1_PT_RUN + '/sound-output 2>/dev/null)"'
   ].join("\n");
 }
 
@@ -4001,6 +4075,9 @@ service.register("status", function (message) {
         base.mountCount = isFinite(mounts) ? mounts : 0;
         base.avdecDcaRank = (rank != null && isFinite(rank)) ? rank : null;
         base.payloadStaged = kv.LIBSTAGED === "1";
+        base.passthroughRequested = kv.PT_FLAG === "1";
+        base.passthroughOutput = kv.PT_OUT || "";
+        base.passthroughToReceiver = base.passthroughRequested && c1PtReceiver(kv.PT_OUT);
         base.active = hook && base.overridesMounted && rank === parseInt(CX_DCA_RANK, 10);
         base.verified = false;  // CX mechanism carried over, NOT verified on hardware
         message.respond(base);
@@ -4271,15 +4348,64 @@ function w25PtReceiver(out) {
   return /^external_(arc|optical) (passThrough|auto)$/.test(out || "");
 }
 
+/** The C1 dtsdec passes DTS through only to these outputs (gstdtsdec116.c). */
+function c1PtReceiver(out) {
+  return /^external_(arc|optical) passThrough$/.test(out || "");
+}
+
+/** Stop the C1 sound-output watcher: the subshell, then its luna-send and reader. */
+function c1WatcherStop() {
+  return 'W=$(cat ' + C1_PT_RUN + '/watcher.pid 2>/dev/null); if [ -n "$W" ]; then kill "$W" 2>/dev/null; pkill -P "$W" 2>/dev/null; fi; rm -rf ' + C1_PT_RUN;
+}
+
+/** C1 passthrough on/off. On re-runs the boot script, which starts the watcher. */
+function c1PassthroughSteps(on) {
+  var lines = ["set -u"];
+  if (on) {
+    lines.push('[ -f "' + C1_GST + '/libgstdtsdec.so" ] && [ -f "' + CX_INIT_SCRIPT + '" ] || { echo "ERROR=Enable DTS first."; exit 1; }');
+    lines.push('mkdir -p "$(dirname "' + C1_PT_FLAG + '")" && : > "' + C1_PT_FLAG + '"');
+    lines.push('sh "' + CX_INIT_SCRIPT + '" </dev/null >/dev/null 2>&1');
+    lines.push('i=0; while [ "$i" -lt 10 ]; do [ -s ' + C1_PT_RUN + '/sound-output ] && break; sleep 1; i=$((i + 1)); done');
+  } else {
+    lines.push('rm -f "' + C1_PT_FLAG + '"');
+    lines.push(c1WatcherStop());
+  }
+  lines.push('echo "PT_OUT=$(cut -d" " -f2- ' + C1_PT_RUN + '/sound-output 2>/dev/null)"');
+  lines.push('echo OK');
+  lines.push("exit 0");
+  return lines.join("\n");
+}
+
 service.register("setPassthrough", function (message) {
   var want = !!(message.payload && message.payload.enabled);
   var hd = message.payload && message.payload.hd;
   var tryUnverified = !!(message.payload && message.payload.tryUnverified);
   detectProfile().then(function (d) {
+    if (d.profile === PROFILE_C1) {
+      return rootExec(c1PassthroughSteps(want)).then(function (r) {
+        var kv = parseKv(r.stdout);
+        var out = kv.PT_OUT || "";
+        if (kv.ERROR || !/^OK$/m.test(r.stdout || "")) {
+          message.respond({ returnValue: false, errorText: kv.ERROR || "Passthrough settings could not be changed." });
+          return;
+        }
+        logActionResult("passthrough", d.profile, want ? "on" : "off", "soundOutput=" + out);
+        message.respond({
+          returnValue: true,
+          profile: d.profile,
+          enabled: want,
+          soundOutput: out,
+          receiver: c1PtReceiver(out),
+          summary: !want ? "Passthrough off: DTS is decoded again."
+            : c1PtReceiver(out) ? "Passthrough on: DTS goes to your receiver from the next video."
+            : "Passthrough on. It starts once the TV sends sound to an optical or ARC receiver with Digital Sound Output on Pass Through."
+        });
+      });
+    }
     if (d.profile !== PROFILE_W25) {
       message.respond({
         returnValue: false, profile: d.profile, supported: false,
-        errorText: "DTS passthrough is only available on the webOS 25 profile (found '" + d.profile + "')."
+        errorText: "DTS passthrough is only available on the webOS 25 and C1/G1 profiles (found '" + d.profile + "')."
       });
       return;
     }
@@ -4603,7 +4729,8 @@ function runMechanism(message, action) {
         builder = { disable: w25Disable, uninstall: w25Uninstall }[action];
       }
     } else if (isCxPayloadProfile(profile)) {
-      builder = { enable: cxEnable, disable: cxDisable, uninstall: cxUninstall }[action];
+      builder = { enable: function () { return cxEnable(profile === PROFILE_C1); },
+        disable: cxDisable, uninstall: cxUninstall }[action];
     } else if (profile === PROFILE_C2) {
       if (action === "enable") {
         var alreadyOwned = false;

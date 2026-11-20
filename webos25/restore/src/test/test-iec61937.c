@@ -1,7 +1,8 @@
 /* Host test for dts_iec61937_pack(): two frames of the bundled DTS-HD MA
  * sample (core + extension) must come out byte for byte as
  * `ffmpeg -c:a copy -f spdif` writes them (iec61937-dts.ref). The function is
- * pulled out of ../gstdtsdec.c by run-tests.sh, so this tests shipped code. */
+ * pulled out of ../gstdtsdec.c and ../gst116/gstdtsdec116.c by run-tests.sh, so
+ * this tests shipped code. The webOS 6 copy has no DTS-HD path: IEC61937_CORE_ONLY. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -85,9 +86,14 @@ main (int argc, char **argv)
       core[4] = 0x80 | (nblks[i] >> 6);
       core[5] = (nblks[i] & 0x3f) << 2;
       gint period = dts_iec61937_pack (core, 2012, NULL, 0);
-      if (period != (nblks[i] + 1) * 128 || dts_hd_period_ok (period, 768000) != fits[i]) {
+#ifdef IEC61937_CORE_ONLY
+      gint hd_ok = fits[i];
+#else
+      gint hd_ok = dts_hd_period_ok (period, 768000);
+#endif
+      if (period != (nblks[i] + 1) * 128 || hd_ok != fits[i]) {
         fprintf (stderr, "FAIL: %d-sample core: period %d, HD ok %d\n", (nblks[i] + 1) * 32,
-            period, dts_hd_period_ok (period, 768000));
+            period, hd_ok);
         return 1;
       }
     }
