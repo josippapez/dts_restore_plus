@@ -14,8 +14,9 @@ LOG=/var/lib/webosbrew/dtsenabler/hd-4.4.log
 MYDTS=$HD44_DIR/libgstdtsdec.so
 SINK=/usr/lib/gstreamer-1.0/libgstlxaudiosink.so
 SINK_SHA256=a3e8dc6ad3ed584c29008ca48579eed94ac7b27284982648f9d65d2a32d26f8d
-# The CX profile's registry: init_dts.sh regenerates it and binds it over LG's at boot.
-REG_TMP=/tmp/gst_1_0_registry.arm.bin
+# Our files go in $RUN, which only root can write: /tmp is open to every user.
+REG_TMP=$RUN/registry.bin
+# LG's registry path, which the CX boot hook has already bound its own registry over.
 REG_LIVE=${GST_REGISTRY_1_0:-}
 [ -n "$REG_LIVE" ] || { [ -f /var/lib/webosbrew/dtsenabler/cx/env.conf ] && . /var/lib/webosbrew/dtsenabler/cx/env.conf; REG_LIVE=${BAKED_GST_REGISTRY:-}; }
 
@@ -51,8 +52,8 @@ hd44_stop() {
   [ -n "$P" ] && kill "$P" 2>/dev/null
   rm -f "$RUN/sound-output" "$RUN/watcher.pid" "$RUN/sink-ok" /var/lib/webosbrew/dts25/passthrough \
     /var/lib/webosbrew/dts25/passthrough-hd
-  [ -f /tmp/gstcool.conf ] && sed '/^dtsdec=/d' /tmp/gstcool.conf > /tmp/gstcool.conf.c1 \
-    && cat /tmp/gstcool.conf.c1 > /tmp/gstcool.conf; rm -f /tmp/gstcool.conf.c1
+  [ -f /tmp/gstcool.conf ] && sed '/^dtsdec=/d' /tmp/gstcool.conf > "$RUN/gstcool.conf" \
+    && cat "$RUN/gstcool.conf" > /tmp/gstcool.conf; rm -f "$RUN/gstcool.conf"
   # dtsdec stays registered until the next boot but decodes again: its markers are gone.
   hd44_log "stopped; dtsdec decodes again, earc_route stays loaded until reboot, idle without the lease"
 }
@@ -94,8 +95,8 @@ fi
 # would swap the inode out from under the bind).
 GC_TMP=/tmp/gstcool.conf
 if [ -f "$GC_TMP" ] && ! grep -q '^dtsdec=' "$GC_TMP"; then
-  sed 's/^\[rank\]$/[rank]\ndtsdec=300/' "$GC_TMP" > "$GC_TMP.c1" && cat "$GC_TMP.c1" > "$GC_TMP"
-  rm -f "$GC_TMP.c1"
+  sed 's/^\[rank\]$/[rank]\ndtsdec=300/' "$GC_TMP" > "$RUN/gstcool.conf" && cat "$RUN/gstcool.conf" > "$GC_TMP"
+  rm -f "$RUN/gstcool.conf"
   grep -q '^dtsdec=300$' "$GC_TMP" && hd44_log "dtsdec ranked 300, above avdec_dca" \
     || hd44_log "WARN could not rank dtsdec in $GC_TMP"
 fi

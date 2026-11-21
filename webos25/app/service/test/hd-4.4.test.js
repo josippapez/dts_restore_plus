@@ -79,7 +79,7 @@ test("init_4.4.sh binds the rescanned registry over one the CX hook already boun
     write(path.join(r, "init_4.4.sh"), script, 0o755);
     var res = sh('sh "' + r + '/init_4.4.sh"', {PATH: bin + ":" + process.env.PATH, GST_REGISTRY_1_0: live});
     assert.strictEqual(res.status, 0, res.stderr);
-    var reg = path.join(r, "tmp/gst_1_0_registry.arm.bin");
+    var reg = path.join(r, "run/dts25/registry.bin");
     assert.strictEqual(fs.readFileSync(reg, "utf8"), "with-dtsdec\n");
     assert.strictEqual(fs.existsSync(path.join(r, "binds")) && fs.readFileSync(path.join(r, "binds"), "utf8"), reg + " " + live + "\n");
   } finally { fs.rmSync(r, {recursive: true, force: true}); }
