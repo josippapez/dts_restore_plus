@@ -5,7 +5,8 @@ var assert = require("node:assert/strict");
 var fs = require("node:fs");
 var path = require("node:path");
 var spawnSync = require("node:child_process").spawnSync;
-var {service, ROOT} = require("./helpers");
+var os = require("node:os");
+var {service, ROOT, sh, write, exe} = require("./helpers");
 
 var HD44_INIT = "/var/lib/webosbrew/dts25/4.4/init_4.4.sh";
 
@@ -53,4 +54,33 @@ test("init_4.4.sh: off by default, exact kernel, never writes /usr, exits 0", fu
   var r = spawnSync("sh", ["-c", script.replace(/^HD44_DIR=.*$/m, "HD44_DIR=/nonexistent-hd44-dir")], { encoding: "utf8" });
   assert.strictEqual(r.status, 0);
   assert.strictEqual(r.stdout + r.stderr, "");
+});
+
+// The CX boot hook has already bound its registry when init_4.4.sh runs, and the rescan
+// replaces the file under that bind, so only a fresh bind makes dtsdec reach LG's player.
+test("init_4.4.sh binds the rescanned registry over one the CX hook already bound", function () {
+  var r = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "dts-hd44-")));
+  var bin = path.join(r, "bin"), live = path.join(r, "registry.bin");
+  try {
+    write(path.join(r, "var/lib/webosbrew/dts25/4.4/enabled"), "");
+    write(path.join(r, "var/lib/webosbrew/dts25/4.4/libgstdtsdec.so"), "dtsdec-4.4");
+    write(path.join(r, "var/lib/webosbrew/dts25/4.4/earc-route-load.sh"), "echo loaded");
+    write(live, "stock");
+    write(path.join(r, "proc/mounts"), "x " + live + " bind 0 0\n");
+    exe(path.join(bin, "uname"), "echo 4.4.84-229.kcl4tv.6");
+    exe(path.join(bin, "mount"), 'for a in "$@"; do s=$t; t=$a; done; echo "$s $t" >> "' + r + '/binds"');
+    exe(path.join(bin, "chown"), "exit 0");
+    exe(path.join(bin, "luna-send"), "exit 0");
+    exe(path.join(bin, "gst-inspect-1.0"), '[ "${GST_REGISTRY_UPDATE:-}" = yes ] && echo with-dtsdec > "$GST_REGISTRY_1_0"; [ -f "$GST_REGISTRY_1_0" ]');
+    var script = fs.readFileSync(path.join(ROOT, "webos25/restore/init_4.4.sh"), "utf8")
+      .replace(/\/usr\/bin\/gst-inspect-1\.0/g, "gst-inspect-1.0")
+      .replace(/\/var\/lib\/webosbrew|\/run\/dts25|\/proc\/mounts|\/tmp\/|\/usr\/lib\/gstreamer-1\.0/g, function (p) { return r + p; });
+    fs.mkdirSync(path.join(r, "tmp"));
+    write(path.join(r, "init_4.4.sh"), script, 0o755);
+    var res = sh('sh "' + r + '/init_4.4.sh"', {PATH: bin + ":" + process.env.PATH, GST_REGISTRY_1_0: live});
+    assert.strictEqual(res.status, 0, res.stderr);
+    var reg = path.join(r, "tmp/gst_1_0_registry.arm.bin");
+    assert.strictEqual(fs.readFileSync(reg, "utf8"), "with-dtsdec\n");
+    assert.strictEqual(fs.existsSync(path.join(r, "binds")) && fs.readFileSync(path.join(r, "binds"), "utf8"), reg + " " + live + "\n");
+  } finally { fs.rmSync(r, {recursive: true, force: true}); }
 });

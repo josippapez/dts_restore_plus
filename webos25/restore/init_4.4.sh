@@ -78,7 +78,8 @@ if [ -n "$REG_LIVE" ] && [ -f "$REG_LIVE" ]; then
     timeout 60 /usr/bin/gst-inspect-1.0 dtsdec >/dev/null 2>>"$LOG"
   if GST_REGISTRY_1_0=$REG_TMP.c1 GST_REGISTRY_UPDATE=no GST_REGISTRY_FORK=no /usr/bin/gst-inspect-1.0 dtsdec >/dev/null 2>&1; then
     mv -f "$REG_TMP.c1" "$REG_TMP" && chmod 644 "$REG_TMP" && chown :compositor "$REG_TMP" 2>/dev/null
-    grep -q " $REG_LIVE " /proc/mounts 2>/dev/null || mount -n --bind "$REG_TMP" "$REG_LIVE"
+    # mv gives $REG_TMP a new inode and an existing bind keeps showing the old one: bind again.
+    mount -n --bind "$REG_TMP" "$REG_LIVE"
     hd44_log "registered dtsdec in $REG_LIVE"
   else
     rm -f "$REG_TMP.c1"

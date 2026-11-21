@@ -16,7 +16,10 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 OUT="${OUT:-$HERE/4.4-out}"
 mkdir -p "$OUT"
 
-docker build -t dts25-dtsdec-4.4-build - <<'DOCKERFILE_EOF'
+# An empty build context: Apple's container has no context-less `docker build -`.
+CTX="$(mktemp -d)"
+trap 'rm -rf "$CTX"' EXIT
+docker build -t dts25-dtsdec-4.4-build -f - "$CTX" <<'DOCKERFILE_EOF'
 FROM debian:10-slim
 ENV DEBIAN_FRONTEND=noninteractive
 RUN SNAPSHOT=20240101T000000Z \
