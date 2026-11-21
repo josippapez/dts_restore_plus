@@ -157,6 +157,11 @@ var PAYLOAD_C1      = APP_INSTALL + "/payload/c1";               // GStreamer 1.
 // cx-armv7-gst114 profile, and adding a TS demuxer there would change CX behaviour.
 var PAYLOAD_C2_TS   = APP_INSTALL + "/payload/c2-ts";            // LG 1.14.4 TS demuxer (C2 only)
 var PAYLOAD_TESTS   = APP_INSTALL + "/payload/testfiles";        // DTS container samples (self-test)
+// Kernel 4.4 (webOS 6) DTS-HD opt-in, EXPERIMENTAL: dtsdec built for GStreamer 1.16,
+// earc_route-4.4.ko and its loader, and init_4.4.sh. Staged only when the user opts in.
+var PAYLOAD_44      = APP_INSTALL + "/payload/4.4";
+var HD44_DIR          = "/var/lib/webosbrew/dts25/4.4";
+var HD44_INIT_SCRIPT  = HD44_DIR + "/init_4.4.sh";
 
 var LOG = "/tmp/dtsenabler.log";
 
@@ -3737,6 +3742,8 @@ function cxEnable(c1) {
     b64,
     "B64EOF",
     'chmod 0755 "' + CX_INIT_SCRIPT + '" && log "wrote ' + CX_INIT_SCRIPT + '"',
+    // The 4.4 DTS-HD opt-in chains its own boot script; a rewrite here keeps it.
+    '[ -f "' + HD44_DIR + '/enabled" ] && sed -i "s|^exit 0$|sh ' + HD44_INIT_SCRIPT + ' </dev/null; exit 0|" "' + CX_INIT_SCRIPT + '"',
     // 4. Boot stub (exec our init script) + apply now.
     'mkdir -p "$(dirname "' + CX_HOOK + '")"',
     'if [ -L "' + CX_HOOK + '" ] || [ -e "' + CX_HOOK + '" ]; then rm -f "' + CX_HOOK + '"; fi',
@@ -3767,6 +3774,8 @@ function cxDisable() {
     '  return 1',
     '}',
     'log "=== disable (cx) start ==="',
+    // 4.4 DTS-HD first: its watcher and markers go before the registry bind it relies on.
+    'if [ -f "' + HD44_INIT_SCRIPT + '" ]; then rm -f "' + HD44_DIR + '/enabled"; HD44=stop sh "' + HD44_INIT_SCRIPT + '" </dev/null; log "stopped 4.4 DTS-HD"; fi',
     'if [ -e "' + CX_HOOK + '" ] || [ -L "' + CX_HOOK + '" ]; then rm -f "' + CX_HOOK + '" && log "removed boot hook"; else log "boot hook not present"; fi',
     c1WatcherStop()
   ];
@@ -3789,6 +3798,7 @@ function cxUninstall() {
     cxDisable().replace(/\necho OK$/, ""),
     'rm -rf "' + CX_STATE + '" && echo "[dts_restore-cx-uninstall] removed ' + CX_STATE + '" >> "' + LOG + '" 2>&1',
     'rm -rf "$(dirname "' + C1_PT_FLAG + '")"',
+    'rm -rf "' + HD44_DIR + '"',
     'echo OK'
   ].join("\n");
 }
@@ -3838,7 +3848,44 @@ function cxStatusProbe() {
     'echo "LIBSTAGED=$([ -d ' + CX_GST + ' ] && echo 1 || echo 0)"',
     // C1 passthrough, same contract as webOS 25: the output only while the watcher is alive.
     'echo "PT_FLAG=$([ -f ' + C1_PT_FLAG + ' ] && echo 1 || echo 0)"',
-    'P=$(cat ' + C1_PT_RUN + '/watcher.pid 2>/dev/null); echo "PT_OUT=$([ -n "$P" ] && [ -d /proc/$P ] && cut -d" " -f2- ' + C1_PT_RUN + '/sound-output 2>/dev/null)"'
+    'P=$(cat ' + C1_PT_RUN + '/watcher.pid 2>/dev/null); echo "PT_OUT=$([ -n "$P" ] && [ -d /proc/$P ] && cut -d" " -f2- ' + C1_PT_RUN + '/sound-output 2>/dev/null)"',
+    'echo "HD44_KERNEL=$(uname -r)"',
+    'echo "HD44_ENABLED=$([ -f ' + HD44_DIR + '/enabled ] && echo 1 || echo 0)"',
+    'echo "HD44_KMOD=$([ -d /sys/module/earc_route ] && echo 1 || echo 0)"',
+    'P=$(cat /run/dts25/watcher.pid 2>/dev/null); echo "HD44_OUT=$([ -n "$P" ] && [ -d /proc/$P ] && cut -d" " -f2- /run/dts25/sound-output 2>/dev/null)"',
+    'echo "HD44_LAST=$(tail -n1 /var/lib/webosbrew/dtsenabler/hd-4.4.log 2>/dev/null | cut -c1-200)"'
+  ].join("\n");
+}
+
+/* 4.4 DTS-HD opt-in: stage the 4.4 payload, chain init_4.4.sh after the CX boot hook, apply.
+ * Off stops the watcher; earc_route-4.4.ko has no exit and stays loaded until reboot. */
+function hd44Steps(on) {
+  if (!on) {
+    return [
+      'rm -f "' + HD44_DIR + '/enabled"',
+      '[ -f "' + HD44_INIT_SCRIPT + '" ] && HD44=stop sh "' + HD44_INIT_SCRIPT + '" </dev/null',
+      'echo OK'
+    ].join("\n");
+  }
+  return [
+    "set -u",
+    APPBASE_PRELUDE,
+    '[ "$(uname -r)" = 4.4.84-229.kcl4tv.6 ] || { echo "ERROR=DTS-HD on webOS 6 needs kernel 4.4.84-229.kcl4tv.6; this TV runs $(uname -r)."; exit 1; }',
+    '[ -e "' + CX_HOOK + '" ] || { echo "ERROR=Press Enable first: DTS-HD builds on the DTS restore it installs."; exit 1; }',
+    'case "$(cut -d" " -f2- /run/dts25/sound-output 2>/dev/null)" in "external_arc passThrough"|"") ;; *) echo "ERROR=DTS-HD needs an eARC receiver with Digital Sound Output on Pass Through."; exit 1 ;; esac',
+    'mkdir -p "' + HD44_DIR + '" || exit 1',
+    'for f in libgstdtsdec.so earc_route-4.4.ko earc-route-load.sh init_4.4.sh; do',
+    '  [ -f "' + PAYLOAD_44 + '/$f" ] || { echo "ERROR=The 4.4 payload is incomplete ($f)."; exit 1; }',
+    '  cp -f "' + PAYLOAD_44 + '/$f" "' + HD44_DIR + '/$f" || exit 1',
+    'done',
+    'chmod 0755 "' + HD44_INIT_SCRIPT + '"',
+    // The CX boot hook runs init_4.4.sh after init_dts.sh; it does nothing without the marker.
+    'grep -q init_4.4.sh "' + CX_INIT_SCRIPT + '" 2>/dev/null || sed -i "s|^exit 0$|sh ' + HD44_INIT_SCRIPT + ' </dev/null; exit 0|" "' + CX_INIT_SCRIPT + '"',
+    ': > "' + HD44_DIR + '/enabled"',
+    'sh "' + HD44_INIT_SCRIPT + '" </dev/null',
+    'echo "KMOD=$([ -d /sys/module/earc_route ] && echo 1 || echo 0)"',
+    'echo "LAST=$(tail -n1 /var/lib/webosbrew/dtsenabler/hd-4.4.log 2>/dev/null | cut -c1-200)"',
+    'echo OK'
   ].join("\n");
 }
 
@@ -4080,6 +4127,11 @@ service.register("status", function (message) {
         base.passthroughToReceiver = base.passthroughRequested && c1PtReceiver(kv.PT_OUT);
         base.active = hook && base.overridesMounted && rank === parseInt(CX_DCA_RANK, 10);
         base.verified = false;  // CX mechanism carried over, NOT verified on hardware
+        base.hd44Available = profile === PROFILE_C1 && kv.HD44_KERNEL === "4.4.84-229.kcl4tv.6";
+        base.hd44Requested = kv.HD44_ENABLED === "1";
+        base.hd44Output = kv.HD44_OUT || "";
+        base.kmodLoaded = kv.HD44_KMOD === "1";
+        base.hd44Last = kv.HD44_LAST || "";
         message.respond(base);
       });
     }
@@ -4375,6 +4427,35 @@ function c1PassthroughSteps(on) {
   lines.push("exit 0");
   return lines.join("\n");
 }
+
+/* setHd44Passthrough: {enabled:boolean}. Kernel 4.4 (webOS 6) only, experimental and off by default. */
+service.register("setHd44Passthrough", function (message) {
+  var want = !!(message.payload && message.payload.enabled);
+  detectProfile().then(function (d) {
+    if (d.profile !== PROFILE_C1) {
+      message.respond({ returnValue: false, profile: d.profile,
+        errorText: "DTS-HD for webOS 6 is only available on the C1 profile (found '" + d.profile + "')." });
+      return;
+    }
+    return rootExec(hd44Steps(want)).then(function (r) {
+      var kv = parseKv(r.stdout);
+      if (kv.ERROR || !/^OK$/m.test(r.stdout || "")) {
+        message.respond({ returnValue: false, errorText: kv.ERROR || "DTS-HD could not be changed." });
+        return;
+      }
+      logActionResult("hd-4.4", d.profile, want ? "on" : "off", kv.LAST || "");
+      message.respond({
+        returnValue: true, profile: d.profile, enabled: want,
+        summary: want
+          ? (kv.KMOD === "1" ? "DTS-HD on (experimental): whole DTS tracks go to the eARC receiver from the next video."
+            : "DTS-HD could not start: " + (kv.LAST || "see the log"))
+          : "DTS-HD off: DTS is decoded again. The kernel module stays loaded, idle, until the TV restarts."
+      });
+    });
+  }).catch(function (e) {
+    message.respond({ returnValue: false, errorText: e.errorText || e.message || String(e) });
+  });
+});
 
 service.register("setPassthrough", function (message) {
   var want = !!(message.payload && message.payload.enabled);

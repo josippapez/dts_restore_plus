@@ -23,7 +23,8 @@ webos25/restore/demux-out/   libgstisomp4.so, libgstmpegtsdemux.so (MP4/TS/M2TS 
 webos25/restore/ts114-out/   libgstmpegtsdemux.so                (1.14.4 build, C2 app profile)
 webos25/restore/gst116-out/  libgstdtsdec.so                     (GStreamer 1.16 dtsdec, C1/G1: root
                               installer and C1 app profile)
-webos25/restore/kmod-out/    earc_route-5.4.ko, earc_route-6.12.ko (webos25/kmod, GPL-2.0-only)
+webos25/restore/kmod-out/    earc_route-5.4.ko, earc_route-6.12.ko, earc_route-4.4.ko (webos25/kmod, GPL-2.0-only)
+webos25/restore/4.4-out/     libgstdtsdec.so                     (kernel 4.4/webOS 6 build, GStreamer 1.16)
 ```
 
 The app's `webos25/app/payload/**` `.so` are **git-ignored** generated copies. At
@@ -48,11 +49,11 @@ Never edit a generated `payload/**` binary.
 - the HEVC parser's Dolby Vision profile 7 RPU normalization in
   `webos25/restore/patch-p7-rpu-state.py` and `webos25/restore/src/dovi-rpu-normalize.h`
 - `webos25/restore/build.sh`, `build-truehd.sh`, `build-demux.sh`, `build-switch.sh`,
-  `build-edid.sh`, `build-ts114.sh`, `build-gst116.sh`
+  `build-edid.sh`, `build-ts114.sh`, `build-gst116.sh`, `build-4.4.sh` (and `src/lgroute-4.4.c`, `src/compat-4.4.h`)
   (toolchain, flags, pinned sources, ABI — for `build.sh` that includes the ffmpeg
   `n4.4.4` tag, its configure flags and the pinned Debian snapshot)
-- the kernel module in `webos25/kmod/`: `earc_route.c`, `earc_decode.h`, `earc_hdmi.h`,
-  `earc_probe.h`, `build.sh`, `build.py`. Rebuild with `webos25/kmod/build.sh` (see its
+- the kernel module in `webos25/kmod/`: `core/`, `platform/`, `target/`, `earc_route_brk.c`,
+  `build.sh`, `build.py`. Rebuild with `webos25/kmod/build.sh` (see its
   README), copy `out/earc_route-*.ko` into `webos25/restore/kmod-out/`, and run the
   module on a TV of that kernel generation (audit, self-test, the mode the opt-in
   loads, unload) before committing it
@@ -61,6 +62,12 @@ Never edit a generated `payload/**` binary.
 it from `webos25/kmod/` into the CLI tarball's `kmod-out/` and the app's
 `payload/webos25-hdmi/`. The 6.12 module has never run on a TV: it loads only after the
 user presses Try anyway in the app.
+
+**Exception: the kernel 4.4 (webOS 6) DTS-HD binaries ship before any TV has run them.**
+`4.4-out/libgstdtsdec.so` and `kmod-out/earc_route-4.4.ko` go into `payload/4.4/` with
+`init_4.4.sh`; the app stages and loads them only after the user turns on DTS-HD in the
+webOS 6 card and confirms twice. They are tested in QEMU against extracted C1 firmware
+only. Remove this exception once an owner has confirmed playback.
 
 Editing `install.sh` / `init_dts25.sh` / the app JS/HTML does **not** require a
 rebuild — but still cut a new release so the tarball/`.ipk` carry the change.
@@ -228,6 +235,9 @@ mkdir -p payload/c2-ts
 cp -f  ../restore/ts114-out/libgstmpegtsdemux.so                       payload/c2-ts/
 mkdir -p payload/c1
 cp -f  ../restore/gst116-out/libgstdtsdec.so                          payload/c1/
+mkdir -p payload/4.4
+cp -f  ../restore/4.4-out/libgstdtsdec.so ../restore/kmod-out/earc_route-4.4.ko \
+       ../kmod/earc-route-load.sh ../restore/init_4.4.sh                payload/4.4/
 npm install -g @webosose/ares-cli
 ares-package . service -o dist        # -> dist/io.github.josippapez.dtsenabler_<ver>_all.ipk
 ```

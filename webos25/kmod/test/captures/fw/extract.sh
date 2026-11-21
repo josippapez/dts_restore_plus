@@ -1,7 +1,8 @@
 #!/bin/sh
 # extract.sh NAME RELEASE -- inside the earc-fw image: /out/.zip/NAME.zip ->
-# /out/NAME/{kernel.bin,kallsyms.txt,stock-module.ko}. 5.4 firmwares keep the
-# rootfs in rootfs.pak; 6.12 ones in an Android super image (super.pak).
+# /out/NAME/{kernel.bin,kallsyms.txt,stock-module.ko}. 4.4 and 5.4 firmwares keep the
+# rootfs in rootfs.pak; 6.12 ones in an Android super image (super.pak). The stock
+# module is aspectratiodrv.ko, or on 4.4 lnbr.ko from bsppart.pak.
 set -eu
 name=$1 release=$2 work=/tmp/$1 out=/out/$1
 mkdir -p "$work" && cd "$work"
@@ -17,8 +18,12 @@ if [ -z "$rootfs" ]; then
 fi
 unsquashfs -q -f -d rfs "$rootfs" 'boot/*' "lib/modules/$release/kernel/aspectratiodrv.ko" \
   "usr/lib/modules/$release/kernel/aspectratiodrv.ko" >/dev/null 2>&1 || true
+case $release in
+  4.*) bsp=$(find zip -name bsppart.pak | head -n 1)
+       unsquashfs -q -f -d rfs "$bsp" "bsp/lib/modules/$release/kernel/lnbr.ko" >/dev/null 2>&1 || true ;;
+esac
 img=rfs/boot/Image.lz4-$release
-ko=$(find rfs -name aspectratiodrv.ko -path "*/$release/*" | head -n 1)
+ko=$(find rfs \( -name aspectratiodrv.ko -o -name lnbr.ko \) -path "*/$release/*" | head -n 1)
 [ -f "$img" ] && [ -n "$ko" ] || { echo "$name: no kernel $release or stock module"; find rfs/boot; exit 1; }
 mkdir -p "$out.tmp"
 python3 /fw/unlz4p.py "$img" "$out.tmp/kernel.bin" >/dev/null

@@ -1,8 +1,8 @@
 #!/bin/sh
 # fetch.sh [NAME...] -- download the firmwares in kernels.tsv and extract each
-# one's kernel into test/kernels/NAME/{kernel.bin,kallsyms.txt,stock-module.ko}.
+# one's kernel into test/captures/NAME/{kernel.bin,kallsyms.txt,stock-module.ko}.
 #
-# test/kernels/ is git-ignored: LG's files never enter the repository. Needs
+# The capture directories are git-ignored: LG's files never enter the repository. Needs
 # curl and docker; the extraction image (fw/Dockerfile) builds once. A zip is
 # fetched as FETCH_CONNECTIONS (20) parallel ranges, checked against its
 # sha256 and deleted after extraction, so only one is ever on disk.
@@ -10,7 +10,7 @@
 set -eu
 
 HERE=$(cd "$(dirname "$0")" && pwd)
-OUT=$HERE/kernels
+OUT=$HERE
 mkdir -p "$OUT/.zip"
 docker image inspect earc-fw >/dev/null 2>&1 || docker build -q -t earc-fw "$HERE/fw" >/dev/null
 

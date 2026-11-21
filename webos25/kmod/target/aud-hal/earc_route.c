@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* eARC route for rooted LG webOS 25 TVs, on the 5.4.268 and 6.12.44 kernel
- * generations (one source, two builds: see the EARC_* macros below).
+/* eARC route for rooted LG webOS 25 TVs (LG aud_hal driver), on the 5.4.268 and
+ * 6.12.44 kernel generations: platform/linux-5.4-6.12.h, built per generation by build.py.
  *
  * Hardcodes no LG address: the loader passes each LG function's address and
  * size from /proc/kallsyms (fn_<name>, sz_<name>), and earc_decode.h derives
@@ -8,100 +8,13 @@
  *
  * mode=0 (default) audits read-only, then returns -ECANCELED so the kernel
  * unloads it at once. mode=7 is the one session load for HDMI inputs and apps. */
-/* Per-generation build parameters, set by build.py with -D; the defaults are
- * the 5.4.268 generation. EARC_MODULE_SIZE, EARC_MODULE_INIT and EARC_MODULE_EXIT
- * are sizeof(struct module) and the offsets of its init and exit pointers in the
- * stock aspectratiodrv.ko of that generation; EARC_PRINTK_SYMBOL is the kernel's
- * name for printk (_printk on 6.12). */
-#ifndef EARC_MODULE_SIZE
-#define EARC_MODULE_SIZE 0x380
-#define EARC_MODULE_INIT 0x150
-#define EARC_MODULE_EXIT 0x338
-#endif
-#ifndef EARC_VERMAGIC
-#define EARC_VERMAGIC "5.4.268 SMP preempt mod_unload aarch64"
-#endif
-#ifndef EARC_PRINTK_SYMBOL
-#define EARC_PRINTK_SYMBOL "printk"
-#endif
-/* struct kprobe's size and the offset of its last field (flags), per generation,
- * measured from register_kprobe/arch_prepare_kprobe/kprobe_breakpoint_handler in
- * the captures (5.4: flags +0x80, size 0x88; 6.12: flags +0x78, size 0x80 after
- * fault_handler was dropped). The kernel touches nothing past flags, so this is
- * the full size. Only the session (mode 7) uses it. Defaults: 5.4. */
-#ifndef EARC_KPROBE_SIZE
-#define EARC_KPROBE_SIZE 0x88
-#define EARC_KPROBE_FLAGS 0x80
-#endif
+#include "../../platform/linux-5.4-6.12.h"
+#include "../../core/module.h"
 #include "earc_decode.h"
 #include "earc_hdmi.h"
 #include "earc_probe.h"
 
-typedef unsigned long u64;
-typedef unsigned int u32;
-typedef unsigned char u8;
 typedef void *(*block_fn)(const char *, unsigned int);
-extern int printk(const char *format, ...) __asm__(EARC_PRINTK_SYMBOL);
-extern void *kthread_create_on_node(int (*function)(void *), void *data, int node, const char *name, ...);
-extern int wake_up_process(void *task);
-extern int kthread_stop(void *task);
-extern _Bool kthread_should_stop(void);
-extern void msleep(unsigned int milliseconds);
-extern void mutex_lock(void *mutex);
-extern void mutex_unlock(void *mutex);
-/* Exported on every 5.4 and 6.12 kernel measured (build.py proves it); the
- * session calls them directly. register_kernel_break_hook,
- * unregister_kernel_break_hook and aarch64_insn_patch_text are NOT exported and
- * are called through their kallsyms addresses (fn_ below). */
-extern int register_kprobe(void *kp);
-extern void unregister_kprobe(void *kp);
-extern void cpus_read_lock(void);
-extern void cpus_read_unlock(void);
-/* Exported on both generations; copy_from_user is inlined there. Returns bytes not copied. */
-extern unsigned long __arch_copy_from_user(void *to, const void *from, unsigned long n);
-#define copy_from_user __arch_copy_from_user
-
-/* Kernel structs declared by hand, per generation, like struct target_module.
- * struct pt_regs and struct break_hook are identical across both generations;
- * only struct kprobe's size and last-field offset differ (the EARC_KPROBE_*
- * macros, set by build.py). We set only addr and pre_handler in a kprobe and
- * only fn/imm/mask in a break_hook; the rest the kernel fills or we leave zero. */
-/* x0..x30 at +0..+240, then sp, pc (+256) and pstate: the user_pt_regs prefix,
- * which is ABI. Measured too: kprobe_breakpoint_handler of both generations
- * looks the probe up from [regs, #256], writes the single-step slot there and
- * masks DAIF in [regs, #264]. */
-struct target_pt_regs { u64 regs[31]; u64 sp; u64 pc; u64 pstate; };
-_Static_assert(__builtin_offsetof(struct target_pt_regs, regs) == 0, "pt_regs regs");
-_Static_assert(__builtin_offsetof(struct target_pt_regs, pc) == 256, "pt_regs pc");
-_Static_assert(__builtin_offsetof(struct target_pt_regs, pstate) == 264, "pt_regs pstate");
-struct target_kprobe;
-typedef int (*prehandler_fn)(struct target_kprobe *, struct target_pt_regs *);
-struct target_kprobe {
-    u8 before_addr[0x28];
-    void *addr;                 /* +0x28 */
-    const char *symbol_name;    /* +0x30 */
-    u32 offset;                 /* +0x38 */
-    u8 pad_3c[4];
-    prehandler_fn pre_handler;  /* +0x40 */
-    u8 tail[EARC_KPROBE_SIZE - 0x48];
-};
-_Static_assert(sizeof(struct target_kprobe) == EARC_KPROBE_SIZE, "kprobe size");
-_Static_assert(__builtin_offsetof(struct target_kprobe, addr) == 0x28, "kprobe addr");
-_Static_assert(__builtin_offsetof(struct target_kprobe, offset) == 0x38, "kprobe offset");
-_Static_assert(__builtin_offsetof(struct target_kprobe, pre_handler) == 0x40, "kprobe pre_handler");
-_Static_assert(EARC_KPROBE_FLAGS + 4 <= EARC_KPROBE_SIZE, "kprobe flags within size");
-struct target_break_hook {
-    void *next;   /* +0 */
-    void *prev;   /* +8 */
-    void *fn;            /* +16 */
-    unsigned short imm;  /* +24 */
-    unsigned short mask; /* +26 */
-    u8 pad[4];
-};
-_Static_assert(sizeof(struct target_break_hook) == 32, "break_hook size");
-_Static_assert(__builtin_offsetof(struct target_break_hook, fn) == 16, "break_hook fn");
-_Static_assert(__builtin_offsetof(struct target_break_hook, imm) == 24, "break_hook imm");
-_Static_assert(__builtin_offsetof(struct target_break_hook, mask) == 26, "break_hook mask");
 
 /* Parameters set by earc-route-load.sh. */
 #define EARC_ADDRESS(name, analysed) static unsigned long fn_##name;
@@ -129,8 +42,7 @@ static int hd_native, gate_native;
 static u64 hd_name_last;           /* the name table's last entry: a string in the kernel image */
 static u32 hd_status_seen, hd_status_accepts, hd_name_seen, hd_name_fixes;
 static u32 hd_status_prints, hd_accept_prints, hd_name_prints, hd_fix_prints;
-/* Mode 7's app lease: renderer index + 1 while a /dev/earc_route holder has it open.
- * The low bits of lease_word decide; app_route is its copy for sysfs. */
+/* Mode 7's app lease (core/lease.h): renderer index + 1 while a /dev/earc_route holder has it open. */
 static u32 app_route, app_overrides, app_prints, lease_registered;
 static unsigned long lease_word;
 #define APP_ROUTE() ((u32)(__atomic_load_n(&lease_word, __ATOMIC_ACQUIRE) & 3))
@@ -922,42 +834,12 @@ static int window_thread(void *unused) {
     return 0;
 }
 
-/* /dev/earc_route: the app lease lives as long as the open file. Writing "1" or
- * "2" (renderer index + 1) takes it; the kernel's release on close, a crash or
- * kill included, drops it. The latest writer holds it: at a track switch the
- * new decoder takes it while the old one drains, and the old one's close then
- * leaves it alone. lease_word is the holder's file | its value, app_route a
- * copy of the value. struct
- * file_operations is laid out from the slots misc_open and __fput use (hdmi.fops_*);
- * struct miscdevice is minor, name, fops (+0, +8, +16) on both generations. */
-struct target_file;
-extern struct target_module __this_module;  /* the fops owner: pins the module while the file is open */
-static int lease_open(void *inode, struct target_file *file) {
-    (void)inode; (void)file;
-    return 0;
-}
-static int lease_release(void *inode, struct target_file *file) {
-    unsigned long word = __atomic_load_n(&lease_word, __ATOMIC_ACQUIRE);
-    (void)inode;
-    if ((word & ~3UL) == (unsigned long)file &&
-        __atomic_compare_exchange_n(&lease_word, &word, 0, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
-        __atomic_store_n(&app_route, 0, __ATOMIC_RELEASE);
-        if (word & 3) printk("\0016earc_route: app lease released\n");
-    }
-    return 0;
-}
-static long lease_write(struct target_file *file, const char *user, unsigned long length, long long *position) {
-    char value = 0;
-    (void)position;
-    if (length < 1 || length > 2 || copy_from_user(&value, user, 1)) return -22;
-    if (value < '0' || value > '2') return -22;
-    __atomic_store_n(&lease_word, (unsigned long)file | (unsigned long)(value - '0'), __ATOMIC_RELEASE);
-    __atomic_store_n(&app_route, (u32)(value - '0'), __ATOMIC_RELEASE);
-    return (long)length;
-}
-static void *lease_fops[0x100 / 8];
-struct target_miscdevice { int minor; u8 pad[4]; const char *name; void *fops; u8 tail[0x60]; };
-static struct target_miscdevice lease_device;
+/* The lease file's fops owner pins the module while it is open; slots come from misc_open and __fput (hdmi.fops_*). */
+extern struct target_module __this_module;
+#define EARC_LEASE_STATE_DEFINED
+#define EARC_LEASE_COPY_BYTE(to, from) copy_from_user(to, from, 1)
+#define EARC_LEASE_RELEASED(word) do { if ((word) & 3) printk("\0016earc_route: app lease released\n"); } while (0)
+#include "../../core/lease.h"
 #define MISC_REGISTER ((int (*)(struct target_miscdevice *))fn_misc_register)
 #define MISC_DEREGISTER ((void (*)(struct target_miscdevice *))fn_misc_deregister)
 
@@ -996,13 +878,7 @@ static int lease_register(void) {
         printk("\0013earc_route: refused; no lease device: %s\n", hdmi.fops_reason);
         return -22;
     }
-    lease_fops[0] = &__this_module;
-    lease_fops[hdmi.fops_write / 8] = (void *)lease_write;
-    lease_fops[hdmi.fops_open / 8] = (void *)lease_open;
-    lease_fops[hdmi.fops_release / 8] = (void *)lease_release;
-    lease_device.minor = 255;  /* MISC_DYNAMIC_MINOR */
-    lease_device.name = "earc_route";
-    lease_device.fops = lease_fops;
+    lease_prepare(&__this_module, hdmi.fops_write, hdmi.fops_open, hdmi.fops_release);
     if (MISC_REGISTER(&lease_device) < 0) {
         printk("\0013earc_route: misc_register for /dev/earc_route failed\n");
         return -16;
@@ -1242,54 +1118,8 @@ void cleanup_module(void) {
     printk("\0016earc_route: unloaded\n");
 }
 
-/* Linux's loader initialises the remaining fields. The size and the init and
- * exit offsets are those of the stock aspectratiodrv.ko of the generation
- * (5.4.268: 0x380/0x150/0x338; 6.12.44: 0x4c0/0x138/0x480; name at 24 in both);
- * build.py and the loader check them. */
-struct target_module {
-    u8 prefix[24];
-    char name[56];
-    u8 before_init[EARC_MODULE_INIT - 80];
-    int (*initialise)(void);
-    u8 before_exit[EARC_MODULE_EXIT - EARC_MODULE_INIT - 8];
-    void (*finish)(void);
-    u8 suffix[EARC_MODULE_SIZE - EARC_MODULE_EXIT - 8];
-};
-_Static_assert(sizeof(struct target_module) == EARC_MODULE_SIZE, "module size");
-_Static_assert(__builtin_offsetof(struct target_module, name) == 24, "module name");
-_Static_assert(__builtin_offsetof(struct target_module, initialise) == EARC_MODULE_INIT, "module init");
-_Static_assert(__builtin_offsetof(struct target_module, finish) == EARC_MODULE_EXIT, "module exit");
-struct target_module __this_module __attribute__((section(".gnu.linkonce.this_module"), aligned(64), used)) = {
-    .name = "earc_route", .initialise = init_module, .finish = cleanup_module
-};
+EARC_THIS_MODULE("earc_route", init_module, cleanup_module);
 
-/* Linux 5.4 and 6.12 moduleparam.h: struct kernel_param_ops is {flags, set, get,
- * free}; struct kernel_param is three pointers, u16 perm, s8 level, u8 flags,
- * then the argument pointer. Permission 0 keeps the addresses out of sysfs. */
-extern int param_set_uint(const char *value, const void *parameter);
-extern int param_get_uint(char *value, const void *parameter);
-extern int param_set_ulong(const char *value, const void *parameter);
-extern int param_get_ulong(char *value, const void *parameter);
-struct target_parameter_operations {
-    unsigned int flags;
-    int (*set)(const char *, const void *);
-    int (*get)(char *, const void *);
-    void (*free)(void *);
-};
-static const struct target_parameter_operations uint_operations = {0, param_set_uint, param_get_uint, (void *)0};
-static const struct target_parameter_operations ulong_operations = {0, param_set_ulong, param_get_ulong, (void *)0};
-_Static_assert(sizeof(struct target_parameter_operations) == 32, "parameter operations size");
-_Static_assert(__builtin_offsetof(struct target_parameter_operations, get) == 16, "parameter operations get");
-struct target_parameter {
-    const char *name;
-    struct target_module *module;
-    const void *operations;
-    unsigned short permissions;
-    signed char level;
-    unsigned char flags;
-    void *argument;
-};
-_Static_assert(sizeof(struct target_parameter) == 40, "parameter size");
 #define EARC_SIZE_PARAMETER_1(name) {"sz_" #name, &__this_module, &uint_operations, 0, -1, 0, &sz_##name},
 #define EARC_SIZE_PARAMETER_0(name)
 #define EARC_PARAMETERS(name, analysed) \
@@ -1300,7 +1130,7 @@ _Static_assert(sizeof(struct target_parameter) == 40, "parameter size");
 #define EARC_HDMI_PARAMETERS(name, analysed) \
     {"fn_" #name, &__this_module, &ulong_operations, 0, -1, 0, &fn_##name}, \
     EARC_HDMI_SIZE_PARAMETER_##analysed(name)
-static const struct target_parameter parameters[] __attribute__((section("__param"), aligned(8), used)) = {
+EARC_PARAM_TABLE = {
     EARC_FUNCTIONS(EARC_PARAMETERS)
     EARC_HDMI_FUNCTIONS(EARC_HDMI_PARAMETERS)
     {"fn__stext", &__this_module, &ulong_operations, 0, -1, 0, &fn__stext},
@@ -1330,10 +1160,7 @@ static const struct target_parameter parameters[] __attribute__((section("__para
     {"input_properties", &__this_module, &uint_operations, 0400, -1, 0, &input_properties},
     {"format_changes", &__this_module, &uint_operations, 0400, -1, 0, &format_changes}
 };
-static const char module_license[] __attribute__((section(".modinfo"), used)) = "license=GPL";
-static const char module_vermagic[] __attribute__((section(".modinfo"), used)) = "vermagic=" EARC_VERMAGIC;
-static const char module_description[] __attribute__((section(".modinfo"), used)) =
-    "description=Self-adapting port of Glasshouse's native DTS eARC forwarding route";
-__asm__(".pushsection .plt,\"ax\",%progbits\n.byte 0\n.popsection\n"
-        ".pushsection .init.plt,\"a\",%progbits\n.byte 0\n.popsection\n"
-        ".pushsection .text.ftrace_trampoline,\"ax\",%progbits\n.byte 0\n.popsection\n");
+EARC_MODINFO(
+    static const char module_description[] __attribute__((section(".modinfo"), used)) =
+        "description=Self-adapting port of Glasshouse's native DTS eARC forwarding route";,
+    ".pushsection .text.ftrace_trampoline,\"ax\",%progbits\n.byte 0\n.popsection\n");

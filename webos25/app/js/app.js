@@ -294,6 +294,19 @@
     $("btnKmodTry").hidden = !canW25Test || !s.kmodCanTry
       || s.passthroughOutput !== "external_arc passThrough";
     kmodTryPending = false;
+    // 4.4 DTS-HD: its own card, only where the service says the kernel fits.
+    $("cardHd44").hidden = !s.hd44Available;
+    $("btnHd44On").disabled = !s.hd44Available || s.hd44Requested === true;
+    $("btnHd44Off").disabled = !s.hd44Available || s.hd44Requested !== true;
+    hd44Pending = false;
+    $("btnHd44On").textContent = "Turn on";
+    setVal("sHd44", !s.hd44Requested ? "off"
+      : s.hd44Output === "external_arc passThrough" ? "on, eARC receiver in Pass Through"
+      : "on, waiting for an eARC receiver in Pass Through",
+      s.hd44Requested ? (s.hd44Output === "external_arc passThrough" ? "ok" : "warn") : null);
+    setVal("sHd44Kmod", s.kmodLoaded ? "loaded until restart" : "not loaded",
+      s.hd44Requested && !s.kmodLoaded ? "warn" : s.kmodLoaded ? "ok" : null);
+    setVal("sHd44Last", s.hd44Last || "—");
     $("btnKmodTry").textContent = "Try anyway (experimental)";
     // A/B compare renders through the patched dtsdec, so it needs the same profile.
     $("btnAb").disabled = !canW25Test;
@@ -506,6 +519,23 @@
       return;
     }
     doPassthrough(true, true, true);
+  }
+
+  var hd44Pending = false;
+  function doHd44(on) {
+    if (on && !hd44Pending) {
+      hd44Pending = true;
+      $("btnHd44On").textContent = "Press again: untested, stays loaded until restart";
+      return;
+    }
+    toast(on ? "Turning on DTS-HD…" : "Turning off DTS-HD…", "busy");
+    callService("setHd44Passthrough", { enabled: on }).then(function (res) {
+      toast(res.summary || res.errorText || "Done", res.returnValue ? "ok" : "err");
+      return refreshStatus();
+    }).catch(function (e) {
+      toast("Could not change it: " + errText(e), "err");
+      refreshStatus();
+    });
   }
 
   function doPassthrough(on, hd, tryUnverified) {
@@ -916,6 +946,8 @@
         box.textContent = "Could not read the log: " + (e && (e.errorText || e.message) || e);
       });
     });
+    $("btnHd44On").addEventListener("click", function () { doHd44(true); });
+    $("btnHd44Off").addEventListener("click", function () { doHd44(false); });
     $("btnPtOn").addEventListener("click", function () { doPassthrough(true); });
     $("btnPtOff").addEventListener("click", function () { doPassthrough(false); });
     $("hdPassthrough").addEventListener("change", function () {

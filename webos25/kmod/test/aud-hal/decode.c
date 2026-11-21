@@ -2,7 +2,7 @@
 /* Host test for earc_decode.h against captured kernels (raw arm64 Image +
  * /proc/kallsyms; private LG files, never in this repository).
  *
- *   test_decode [--kernel SHA256 DIR]...
+ *   decode [--kernel SHA256 DIR]...
  *
  * DIR holds kernel.bin and kallsyms.txt of one TV and SHA256 is the sha256 of
  * its kernel.bin (test/run.sh computes it). A kernel in the oracle table below
@@ -13,9 +13,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "../earc_decode.h"
-#include "../earc_hdmi.h"
-#include "../earc_probe.h"
+#include "../../target/aud-hal/earc_decode.h"
+#include "../../target/aud-hal/earc_hdmi.h"
+#include "../../target/aud-hal/earc_probe.h"
 
 
 static int failures;
@@ -1566,7 +1566,7 @@ int main(int argc, char **argv) {
         const struct hdmi_oracle *ho = 0;
         size_t j;
         int loaded;
-        if (strcmp(argv[i], "--kernel")) { printf("FAIL usage: test_decode [--kernel SHA256 DIR]...\n"); return 2; }
+        if (strcmp(argv[i], "--kernel")) { printf("FAIL usage: decode [--kernel SHA256 DIR]...\n"); return 2; }
         for (j = 0; j < sizeof(oracles) / sizeof(oracles[0]); j++)
             if (!strcmp(oracles[j].sha256, sha)) o = &oracles[j];
         for (j = 0; j < sizeof(hdmi_oracles) / sizeof(hdmi_oracles[0]); j++)
@@ -1620,7 +1620,7 @@ int main(int argc, char **argv) {
         }
         n++;
     }
-    if (argc < 2 || (argc - 1) % 3) { printf("FAIL usage: test_decode [--kernel SHA256 DIR]...\n"); return 2; }
+    if (argc < 2 || (argc - 1) % 3) { printf("FAIL usage: decode [--kernel SHA256 DIR]...\n"); return 2; }
     for (i = 0; i < 2; i++) {
         if (first[i][0] >= 0 && first[i][1] >= 0) difference_test(i ? "6.12" : "5.4", &layouts[first[i][0]], &layouts[first[i][1]]);
         else printf("SKIP %s C5/G5 difference test: needs both oracle kernels\n", i ? "6.12" : "5.4");

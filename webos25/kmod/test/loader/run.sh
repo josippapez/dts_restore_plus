@@ -13,11 +13,12 @@ trap 'rm -rf "$WORK"' EXIT
 FAILURES=0
 CASES=0
 
+V44='4.4.84 SMP preempt mod_unload aarch64'
 V54='5.4.268 SMP preempt mod_unload aarch64'
 V612='6.12.44 SMP preempt mod_unload aarch64'
 
 # The loader's two function lists must equal the module's X-macro lists.
-python3 -I - "$LOADER" "$HERE/../../earc_decode.h" "$HERE/../../earc_hdmi.h" <<'PY' || exit 1
+python3 -I - "$LOADER" "$HERE/../../target/aud-hal/earc_decode.h" "$HERE/../../target/aud-hal/earc_hdmi.h" <<'PY' || exit 1
 import re, sys
 loader, decode, hdmi = (open(p).read() for p in sys.argv[1:4])
 def header(text, macro):
@@ -38,11 +39,12 @@ print('PASS loader function lists equal EARC_FUNCTIONS and EARC_HDMI_FUNCTIONS')
 print('PASS forced PCM bypasses property rewriting')
 PY
 
-# fake_module PATH VERMAGIC SIZE INIT EXIT
+# fake_module PATH VERMAGIC SIZE INIT EXIT; EXIT none leaves out the cleanup relocation (the 4.4 build).
 fake_module() {
   python3 -I - "$@" <<'PY'
 import struct, sys
-path, magic, size, init, exit_ = sys.argv[1], sys.argv[2], int(sys.argv[3], 16), int(sys.argv[4], 16), int(sys.argv[5], 16)
+path, magic, size, init = sys.argv[1], sys.argv[2], int(sys.argv[3], 16), int(sys.argv[4], 16)
+exit_ = None if sys.argv[5] == 'none' else int(sys.argv[5], 16)
 names = [b'', b'.modinfo', b'.gnu.linkonce.this_module', b'.symtab', b'.strtab', b'.rela.gnu.linkonce.this_module', b'.shstrtab']
 shstr = b'\0'.join(names) + b'\0'
 offs = {}
@@ -53,7 +55,9 @@ for n in names:
 modinfo = b'license=GPL\0vermagic=' + magic.encode() + b'\0'
 strtab = b'\0init_module\0cleanup_module\0'
 symtab = bytes(24) + struct.pack('<IBBHQQ', 1, 0x12, 0, 0, 0, 0) + struct.pack('<IBBHQQ', 13, 0x12, 0, 0, 0, 0)
-rela = struct.pack('<QQq', init, (1 << 32) | 257, 0) + struct.pack('<QQq', exit_, (2 << 32) | 257, 0)
+rela = struct.pack('<QQq', init, (1 << 32) | 257, 0)
+if exit_ is not None:
+    rela += struct.pack('<QQq', exit_, (2 << 32) | 257, 0)
 body = b''
 placed = {}
 for name, blob in ((b'.modinfo', modinfo), (b'.symtab', symtab), (b'.strtab', strtab),
@@ -129,7 +133,7 @@ expect() {
 }
 loaded() {  # loaded KO: the stub insmod was called with that module
   CASES=$((CASES + 1))
-  if [ -f "$WORK/insmod.args" ] && grep -q "/$1 " "$WORK/insmod.args"; then echo "PASS   insmod got $1"
+  if [ -f "$WORK/insmod.args" ] && grep -qE "/$1( |\$)" "$WORK/insmod.args"; then echo "PASS   insmod got $1"
   else echo "FAIL   insmod did not get $1: $(cat "$WORK/insmod.args" 2>/dev/null || echo 'not called')"; FAILURES=$((FAILURES + 1)); fi
 }
 not_loaded() {
@@ -226,6 +230,28 @@ done
 setup 5.4.268-329.ptl4tv.5 /lib/modules "$V54" 0x380 0x150 0x338
 insmod_stub "p=$WORK/root/sys/module/earc_route/parameters; mkdir -p \$p; echo 1 > \$p/probe_registered; echo 1 > \$p/hd_probes_registered"
 expect "mode 7 with one status probe only is a failure" 1 "PASSTHROUGH FAILED" --dts-hd
+
+# 4.4 (webOS 6): the build has no exit; it needs none of the aud-hal symbols and takes no parameters.
+setup 4.4.84-229.kcl4tv.6 /lib/modules "$V44" 0x300 0x158 0x2d8
+fake_module "$WORK/app/earc_route-4.4.ko" "$V44" 0x300 0x158 none
+printf 'ffffffc000088000 T _text\n' > "$WORK/root/proc/kallsyms"
+insmod_stub "p=$WORK/root/sys/module/earc_route/parameters; mkdir -p \$p; echo 1 > \$p/enabled"
+expect "4.4 kernel: --check picks the exit-less 4.4 build" 0 "takes earc_route-4.4.ko" --check
+not_loaded
+expect "4.4 kernel: no audit, the build cannot be unloaded" 1 "has no audit"
+not_loaded
+expect "4.4 kernel: --dts-hd loads it until reboot" 0 "PASSTHROUGH ACTIVE (until reboot)" --dts-hd
+loaded earc_route-4.4.ko
+CASES=$((CASES + 1))
+if [ "$(cat "$WORK/insmod.args")" = "$WORK/app/earc_route-4.4.ko" ]; then echo "PASS   no mode or fn_ parameters"
+else echo "FAIL   parameters given: $(cat "$WORK/insmod.args")"; FAILURES=$((FAILURES + 1)); fi
+rm -rf "$WORK/root/sys/module/earc_route"
+insmod_stub "p=$WORK/root/sys/module/earc_route/parameters; mkdir -p \$p; echo 0 > \$p/enabled"
+expect "4.4 kernel: a partial patch (enabled=0) is a failure" 1 "PASSTHROUGH FAILED" --dts-hd
+setup 4.4.84-229.kcl4tv.6 /lib/modules "$V44" 0x300 0x158 0x2d8
+insmod_stub "$CANCEL"
+expect "4.4 kernel without the 4.4 build refuses" 1 "0 of earc_route-5.4.ko, earc_route-6.12.ko match this kernel" --dts-hd
+not_loaded
 
 if [ "$FAILURES" = 0 ]; then echo "earc-route-load test passed: $CASES cases (${LOADER_SHELL:-sh} $(readlink -f "$(command -v "${LOADER_SHELL:-sh}")"))"
 else echo "earc-route-load test FAILED: $FAILURES of $CASES"; exit 1; fi

@@ -12,5 +12,8 @@ webos25/restore/licenses/
 
 /webos25/app/payload/webos25/lgroute-control
 
-# Kernel captures fetched by webos25/kmod/test/fetch.sh: LG firmware, never committed.
-webos25/kmod/test/kernels
+# Kernel captures fetched by webos25/kmod/test/captures/fetch.sh: LG firmware, never committed.
+webos25/kmod/test/captures/*
+!webos25/kmod/test/captures/fetch.sh
+!webos25/kmod/test/captures/kernels.tsv
+!webos25/kmod/test/captures/fw/
