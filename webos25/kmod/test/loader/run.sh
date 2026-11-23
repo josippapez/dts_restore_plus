@@ -220,6 +220,25 @@ insmod_stub "$CANCEL"
 expect "already loaded refuses" 1 "earc_route is already loaded"
 not_loaded
 
+# sig_enforce SETTING: the kernel's module signature switch.
+sig_enforce() {
+  mkdir -p "$WORK/root/sys/module/module/parameters"
+  echo "$1" > "$WORK/root/sys/module/module/parameters/sig_enforce"
+}
+for args in '' --dts-hd --check; do
+  setup 6.12.44-352 /usr/lib/modules "$V612" 0x4c0 0x138 0x480
+  sig_enforce Y
+  insmod_stub "$CANCEL"
+  # shellcheck disable=SC2086 # args is one word or none
+  expect "sig_enforce=Y refuses before insmod (${args:-audit})" 1 "only loads modules signed by LG" $args
+  not_loaded
+done
+setup 5.4.268-329.ptl4tv.5 /lib/modules "$V54" 0x380 0x150 0x338
+sig_enforce N
+insmod_stub "$CANCEL"
+expect "sig_enforce=N still loads" 0 "AUDIT OK"
+loaded earc_route-5.4.ko
+
 setup 5.4.268-329.ptl4tv.5 /lib/modules "$V54" 0x380 0x150 0x338
 mkdir -p "$WORK/root/sys/module/dts_gate"
 insmod_stub "$CANCEL"

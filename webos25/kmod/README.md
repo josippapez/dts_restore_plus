@@ -558,6 +558,9 @@ and only counts for the rest. The builds are:
 
 The loader refuses, before `insmod`, unless:
 
+- `/sys/module/module/parameters/sig_enforce` is not `Y`: our builds are
+  unsigned, and a kernel that enforces signatures (the C6 on 43.21.79, the G6 on
+  43.99.98) rejects them with "Key was rejected by service";
 - the kernel has stock modules, at least one has an init, and they all agree on
   vermagic and layout;
 - exactly one `earc_route-*.ko` has that vermagic and layout;

@@ -25,7 +25,9 @@ test("the loader's check decides the fit; only kernels run on are enabled", func
     var kmod = path.join(dir, "hdmi"), core = path.join(dir, "lg-dts-core"), gh = path.join(dir, "lg-dts-native");
     var loader = path.join(kmod, "earc-route-load.sh");
     function loaderSays(line) { write(loader, '[ "$1" = --check ] || exit 9\necho "' + line + '"\n' + (/REFUSED/.test(line) ? "exit 1\n" : "")); }
-    var fn = initFn("w25_kmod_refusal").split("/var/lib/lg-dts-core").join(core).split("/var/lib/lg-dts-native").join(gh);
+    var sig = path.join(dir, "sig_enforce");
+    var fn = initFn("w25_kmod_refusal").split("/var/lib/lg-dts-core").join(core).split("/var/lib/lg-dts-native").join(gh)
+      .split("/sys/module/module/parameters/sig_enforce").join(sig);
     function refusal(kernel) {
       var r = sh(['uname() { echo "' + kernel + '"; }', "KMOD_DIR=" + kmod, fn, 'printf "[%s]" "$(w25_kmod_refusal)"'].join("\n"));
       assert.strictEqual(r.status, 0, r.stderr);
@@ -48,6 +50,12 @@ test("the loader's check decides the fit; only kernels run on are enabled", func
     assert.strictEqual(refusal("5.4.268-329.ptl4tv.5"), "[glasshouse]");
     write(path.join(core, "enabled"));
     assert.strictEqual(refusal("5.4.268-329.ptl4tv.5"), "[lg-dts-core]");
+    // G6 43.99.98 and C6 43.21.79: the check passes, then insmod rejects the unsigned module.
+    write(sig, "N\n");
+    assert.strictEqual(refusal("5.4.268-329.ptl4tv.5"), "[lg-dts-core]", "N changes nothing");
+    write(sig, "Y\n");
+    write(path.join(kmod, "try-unverified"), "");
+    assert.strictEqual(refusal("6.12.44-352"), "[signed]", "signing outranks Try anyway and the check");
   } finally {
     fs.rmSync(dir, {recursive: true, force: true});
   }
@@ -274,6 +282,14 @@ test("turning DTS-HD on refuses where the module cannot run; status says whether
     }),
     call(mockedService({KMOD_KERNEL: "6.6.1", KMOD_REFUSAL: "kernel", KMOD_LOADED: "0"}, ""), "status").then(function (s) {
       assert.match(s.kmodRefusal, /does not fit/);
+    }),
+    call(mockedService({}, "KMOD_REFUSED=signed\nKMOD_KERNEL=6.12.44-352\n"), "setPassthrough", {enabled: true, hd: true}).then(function (res) {
+      assert.strictEqual(res.returnValue, false);
+      assert.match(res.errorText, /only loads kernel modules signed by LG/);
+    }),
+    call(mockedService({KMOD_KERNEL: "6.12.44-352", KMOD_REFUSAL: "signed", KMOD_LOADED: "0"}, "HD_FLAG=1\n"), "status").then(function (s) {
+      assert.match(s.kmodRefusal, /only loads kernel modules signed by LG/);
+      assert.strictEqual(s.kmodCanTry, false);
     }),
     call(mockedService({KMOD_KERNEL: "5.4.268-320", KMOD_REFUSAL: "unverified", KMOD_LOADED: "0"}, ""), "status").then(function (s) {
       assert.match(s.kmodRefusal, /fits this TV's kernel \(5\.4\.268-320\) but has not been tested/);

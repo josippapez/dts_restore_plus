@@ -33,6 +33,10 @@ case "$*" in
   *) refuse "usage: $0 [--dts-hd|--check]" ;;
 esac
 [ "$want_mode" = check ] || [ ! -e "$ROOT/sys/module/earc_route" ] || refuse "earc_route is already loaded"
+# Our builds are unsigned. A kernel that enforces module signatures (C6 on 43.21.79,
+# G6 on 43.99.98) rejects them at insmod with "Key was rejected by service".
+[ "$(cat "$ROOT/sys/module/module/parameters/sig_enforce" 2>/dev/null)" != Y ] ||
+  refuse "this kernel only loads modules signed by LG (sig_enforce=Y), and earc_route is unsigned"
 
 # The session refuses to load beside another DTS tool, whose kprobes or gate
 # change would collide with ours.

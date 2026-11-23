@@ -127,7 +127,8 @@ EXPECT_GST=1.24
 #   59 earc_route only on ptl4tv.5 unless the user opts in (try-unverified);
 #      stopping it also stops 2.78's hdmi-watch.sh.
 #   60 refreshes idle media workers after registry commit for MP4 TrueHD activation.
-W25_GATE_VERSION=60
+#   61 earc_route is refused as "signed" where the kernel enforces module signatures.
+W25_GATE_VERSION=61
 FP=/var/lib/webosbrew/dts25/stock.fp
 # Where the installed copy of THIS script lives, and the boot hook that symlinks
 # to it. Named here, in the shared block, so the read-only probe can fingerprint
@@ -273,6 +274,7 @@ KMOD_UNIT=dts25-earc.service
 # kernels the module has been run on.
 w25_kmod_refusal() {
   if [ ! -f "$KMOD_DIR/earc-route-load.sh" ]; then echo payload; return 0; fi
+  [ "$(cat /sys/module/module/parameters/sig_enforce 2>/dev/null)" != Y ] || { echo signed; return 0; }
   sh "$KMOD_DIR/earc-route-load.sh" --check >/dev/null 2>&1 || { echo kernel; return 0; }
   case $(uname -r) in
     5.4.268-329.ptl4tv.5) ;;

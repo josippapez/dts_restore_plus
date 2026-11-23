@@ -391,7 +391,8 @@ var W25_COMPAT_SH = [
   "#   59 earc_route only on ptl4tv.5 unless the user opts in (try-unverified);",
   "#      stopping it also stops 2.78's hdmi-watch.sh.",
   "#   60 refreshes idle media workers after registry commit for MP4 TrueHD activation.",
-  "W25_GATE_VERSION=60",
+  "#   61 earc_route is refused as \"signed\" where the kernel enforces module signatures.",
+  "W25_GATE_VERSION=61",
   "FP=/var/lib/webosbrew/dts25/stock.fp",
   "# Where the installed copy of THIS script lives, and the boot hook that symlinks",
   "# to it. Named here, in the shared block, so the read-only probe can fingerprint",
@@ -537,6 +538,7 @@ var W25_COMPAT_SH = [
   "# kernels the module has been run on.",
   "w25_kmod_refusal() {",
   "  if [ ! -f \"$KMOD_DIR/earc-route-load.sh\" ]; then echo payload; return 0; fi",
+  "  [ \"$(cat /sys/module/module/parameters/sig_enforce 2>/dev/null)\" != Y ] || { echo signed; return 0; }",
   "  sh \"$KMOD_DIR/earc-route-load.sh\" --check >/dev/null 2>&1 || { echo kernel; return 0; }",
   "  case $(uname -r) in",
   "    5.4.268-329.ptl4tv.5) ;;",
@@ -4561,6 +4563,7 @@ service.register("setAppDts", function (message) {
 function w25KmodReason(code, kernel) {
   switch (code) {
     case "unverified": return "The DTS-HD kernel module fits this TV's kernel (" + (kernel || "unknown") + ") but has not been tested on it yet, so it is disabled. Use Try anyway to load it at your own risk.";
+    case "signed": return "This TV only loads kernel modules signed by LG, so the DTS-HD kernel module cannot run here. Receivers get the DTS core.";
     case "kernel": return "The DTS-HD kernel module does not fit this TV's kernel (" + (kernel || "unknown") + ").";
     case "crashed": return "The TV restarted while the DTS-HD kernel module was loading, so it is not loaded again. Turn DTS-HD off and on to retry.";
     case "lg-dts-core": return "lg-dts-core is enabled on this TV. Disable it first: its kernel hooks would collide.";
