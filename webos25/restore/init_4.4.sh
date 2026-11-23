@@ -74,9 +74,12 @@ else hd44_log "HD refused: untested LG sink build (${SHA%% *})"; rm -f "$RUN/sin
 # LG ships no dtsdec on webOS 6. As on webOS 25, the registry is rescanned with our directory
 # added and bound over LG's, so the read-only /usr is never written.
 if [ -n "$REG_LIVE" ] && [ -f "$REG_LIVE" ]; then
+  # The C1's busybox predates 1.30: its timeout takes the seconds as -t SECS.
+  if timeout -t 1 true 2>/dev/null; then T60='timeout -t 60'; else T60='timeout 60'; fi
+  # shellcheck disable=SC2086 # T60 is the command and its options
   GST_REGISTRY_1_0=$REG_TMP.c1 GST_REGISTRY_FORK=no GST_REGISTRY_UPDATE=yes \
     GST_PLUGIN_PATH_1_0=/usr/lib/gstreamer-1.0:/mnt/lg/res/lglib/gstreamer-1.0:$HD44_DIR \
-    timeout 60 /usr/bin/gst-inspect-1.0 dtsdec >/dev/null 2>>"$LOG"
+    $T60 /usr/bin/gst-inspect-1.0 dtsdec >/dev/null 2>>"$LOG"
   if GST_REGISTRY_1_0=$REG_TMP.c1 GST_REGISTRY_UPDATE=no GST_REGISTRY_FORK=no /usr/bin/gst-inspect-1.0 dtsdec >/dev/null 2>&1; then
     mv -f "$REG_TMP.c1" "$REG_TMP" && chmod 644 "$REG_TMP" && chown :compositor "$REG_TMP" 2>/dev/null
     # mv gives $REG_TMP a new inode and an existing bind keeps showing the old one: bind again.

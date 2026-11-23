@@ -544,10 +544,12 @@ In dmesg, the session prints `earc_route: pass nomatch ...` for the first 8 `_se
 
 `earc_route-5.4.ko` and `earc_route-6.12.ko` sit next to the script. There is
 no release allowlist: the loader reads the running kernel's own modules under
-`/lib/modules/$(uname -r)` and `/usr/lib/modules/$(uname -r)` (up to eight,
-sorted) and loads the one `earc_route-*.ko` whose vermagic and `struct module`
-layout (`.gnu.linkonce.this_module` size, `init_module`/`cleanup_module`
-offsets) equal theirs. The builds are:
+`/lib/modules/$(uname -r)` and `/usr/lib/modules/$(uname -r)` (sorted, until
+eight with an init have been read) and loads the one `earc_route-*.ko` whose
+vermagic and `struct module` layout (`.gnu.linkonce.this_module` size,
+`init_module`/`cleanup_module` offsets) equal theirs. A stock module without an
+init or exit (the C1's `atsc_dtv_soc_chip.ko` has neither) has no offset for it
+and only counts for the rest. The builds are:
 
 | module | vermagic | size/init/exit |
 |---|---|---|
@@ -556,7 +558,8 @@ offsets) equal theirs. The builds are:
 
 The loader refuses, before `insmod`, unless:
 
-- the kernel has stock modules and they all agree on vermagic and layout;
+- the kernel has stock modules, at least one has an init, and they all agree on
+  vermagic and layout;
 - exactly one `earc_route-*.ko` has that vermagic and layout;
 - every needed symbol is in `/proc/kallsyms` exactly once, in the core kernel,
   with type T/t (`_etext`: T/t/D/d) and a non-zero address.

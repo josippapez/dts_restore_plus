@@ -39,13 +39,20 @@ print('PASS loader function lists equal EARC_FUNCTIONS and EARC_HDMI_FUNCTIONS')
 print('PASS forced PCM bypasses property rewriting')
 PY
 
-# fake_module PATH VERMAGIC SIZE INIT EXIT; EXIT none leaves out the cleanup relocation (the 4.4 build).
+# fake_module PATH VERMAGIC SIZE INIT EXIT; INIT or EXIT none leaves out that relocation (the 4.4
+# build has no exit), and both none leave out the relocation section (C1 atsc_dtv_soc_chip.ko).
 fake_module() {
   python3 -I - "$@" <<'PY'
 import struct, sys
-path, magic, size, init = sys.argv[1], sys.argv[2], int(sys.argv[3], 16), int(sys.argv[4], 16)
-exit_ = None if sys.argv[5] == 'none' else int(sys.argv[5], 16)
-names = [b'', b'.modinfo', b'.gnu.linkonce.this_module', b'.symtab', b'.strtab', b'.rela.gnu.linkonce.this_module', b'.shstrtab']
+path, magic, size = sys.argv[1], sys.argv[2], int(sys.argv[3], 16)
+init, exit_ = (None if a == 'none' else int(a, 16) for a in sys.argv[4:6])
+rela = b''
+if init is not None:
+    rela += struct.pack('<QQq', init, (1 << 32) | 257, 0)
+if exit_ is not None:
+    rela += struct.pack('<QQq', exit_, (2 << 32) | 257, 0)
+names = [b'', b'.modinfo', b'.gnu.linkonce.this_module', b'.symtab', b'.strtab'] + \
+    [b'.rela.gnu.linkonce.this_module'] * bool(rela) + [b'.shstrtab']
 shstr = b'\0'.join(names) + b'\0'
 offs = {}
 pos = 0
@@ -55,15 +62,13 @@ for n in names:
 modinfo = b'license=GPL\0vermagic=' + magic.encode() + b'\0'
 strtab = b'\0init_module\0cleanup_module\0'
 symtab = bytes(24) + struct.pack('<IBBHQQ', 1, 0x12, 0, 0, 0, 0) + struct.pack('<IBBHQQ', 13, 0x12, 0, 0, 0, 0)
-rela = struct.pack('<QQq', init, (1 << 32) | 257, 0)
-if exit_ is not None:
-    rela += struct.pack('<QQq', exit_, (2 << 32) | 257, 0)
 body = b''
 placed = {}
 for name, blob in ((b'.modinfo', modinfo), (b'.symtab', symtab), (b'.strtab', strtab),
                    (b'.rela.gnu.linkonce.this_module', rela), (b'.shstrtab', shstr)):
-    placed[name] = (64 + len(body), len(blob))
-    body += blob
+    if name in names:
+        placed[name] = (64 + len(body), len(blob))
+        body += blob
 shoff = 64 + len(body)
 def sh(name, kind, off, sz, link=0, info=0, entsize=0):
     return struct.pack('<IIQQQQIIQQ', offs[name], kind, 0, 0, off, sz, link, info, 8, entsize)
@@ -72,13 +77,14 @@ headers += sh(b'.modinfo', 1, *placed[b'.modinfo'])
 headers += sh(b'.gnu.linkonce.this_module', 8, shoff, size)
 headers += sh(b'.symtab', 2, *placed[b'.symtab'], link=4, info=1, entsize=24)
 headers += sh(b'.strtab', 3, *placed[b'.strtab'])
-headers += sh(b'.rela.gnu.linkonce.this_module', 4, *placed[b'.rela.gnu.linkonce.this_module'], link=3, info=2, entsize=24)
+if rela:
+    headers += sh(b'.rela.gnu.linkonce.this_module', 4, *placed[b'.rela.gnu.linkonce.this_module'], link=3, info=2, entsize=24)
 headers += sh(b'.shstrtab', 3, *placed[b'.shstrtab'])
 elf = bytearray(64)
 elf[:16] = b'\x7fELF\x02\x01\x01' + bytes(9)
 struct.pack_into('<HHI', elf, 16, 1, 183, 1)
 struct.pack_into('<Q', elf, 0x28, shoff)
-struct.pack_into('<HHHHHH', elf, 0x34, 64, 0, 0, 64, 7, 6)
+struct.pack_into('<HHHHHH', elf, 0x34, 64, 0, 0, 64, len(names), len(names) - 1)
 open(path, 'wb').write(bytes(elf) + body + headers)
 PY
 }
@@ -251,6 +257,29 @@ expect "4.4 kernel: a partial patch (enabled=0) is a failure" 1 "PASSTHROUGH FAI
 setup 4.4.84-229.kcl4tv.6 /lib/modules "$V44" 0x300 0x158 0x2d8
 insmod_stub "$CANCEL"
 expect "4.4 kernel without the 4.4 build refuses" 1 "0 of earc_route-5.4.ko, earc_route-6.12.ko match this kernel" --dts-hd
+not_loaded
+
+# The C1 lists atsc_dtv_soc_chip.ko first: no init, no exit, so no this_module relocations at all.
+# Stock modules lacking a function only set the layout fields they have.
+setup 4.4.84-229.kcl4tv.6 /lib/modules "$V44" 0x300 none none "$V44" 0x300 0x158 none "$V44" 0x300 0x158 0x2d8
+fake_module "$WORK/app/earc_route-4.4.ko" "$V44" 0x300 0x158 none
+insmod_stub "p=$WORK/root/sys/module/earc_route/parameters; mkdir -p \$p; echo 1 > \$p/enabled"
+expect "4.4 kernel: stock modules without init or exit still pick the 4.4 build" 0 "PASSTHROUGH ACTIVE (until reboot)" --dts-hd
+loaded earc_route-4.4.ko
+setup 4.4.84-229.kcl4tv.6 /lib/modules "$V44" 0x300 none none "$V44" 0x300 0x160 0x2d8
+fake_module "$WORK/app/earc_route-4.4.ko" "$V44" 0x300 0x158 none
+insmod_stub "$CANCEL"
+expect "4.4 kernel: an init offset no build has still refuses" 1 "0 of .* match this kernel" --dts-hd
+not_loaded
+setup 4.4.84-229.kcl4tv.6 /lib/modules "$V44" 0x300 none none
+fake_module "$WORK/app/earc_route-4.4.ko" "$V44" 0x300 0x158 none
+insmod_stub "$CANCEL"
+expect "4.4 kernel: no stock module with an init refuses" 1 "has an init function" --dts-hd
+not_loaded
+setup 4.4.84-229.kcl4tv.6 /lib/modules "$V44" 0x300 none none "$V44" 0x308 0x158 0x2d8
+fake_module "$WORK/app/earc_route-4.4.ko" "$V44" 0x300 0x158 none
+insmod_stub "$CANCEL"
+expect "4.4 kernel: a module without init still has to agree on the size" 1 "stock modules disagree" --dts-hd
 not_loaded
 
 if [ "$FAILURES" = 0 ]; then echo "earc-route-load test passed: $CASES cases (${LOADER_SHELL:-sh} $(readlink -f "$(command -v "${LOADER_SHELL:-sh}")"))"

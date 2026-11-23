@@ -58,10 +58,17 @@ test("init_4.4.sh: off by default, exact kernel, never writes /usr, exits 0", fu
 
 // The CX boot hook has already bound its registry when init_4.4.sh runs, and the rescan
 // replaces the file under that bind, so only a fresh bind makes dtsdec reach LG's player.
-test("init_4.4.sh binds the rescanned registry over one the CX hook already bound", function () {
+// The C1's busybox timeout (before 1.30) takes -t SECS and runs "60" as the program otherwise.
+var TIMEOUTS = {
+  "busybox before 1.30": '[ "$1" = -t ] || { echo "timeout: can\'t execute \'$1\': No such file or directory" >&2; exit 127; }; shift 2; exec "$@"',
+  "busybox 1.30 and coreutils": 'case "$1" in -*) echo "timeout: invalid option -- \'${1#-}\'" >&2; exit 1;; esac; shift; exec "$@"',
+};
+Object.keys(TIMEOUTS).forEach(function (flavour) {
+test("init_4.4.sh binds the rescanned registry over one the CX hook already bound (" + flavour + " timeout)", function () {
   var r = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "dts-hd44-")));
   var bin = path.join(r, "bin"), live = path.join(r, "registry.bin");
   try {
+    exe(path.join(bin, "timeout"), TIMEOUTS[flavour]);
     write(path.join(r, "var/lib/webosbrew/dts25/4.4/enabled"), "");
     write(path.join(r, "var/lib/webosbrew/dts25/4.4/libgstdtsdec.so"), "dtsdec-4.4");
     write(path.join(r, "var/lib/webosbrew/dts25/4.4/earc-route-load.sh"), "echo loaded");
@@ -83,4 +90,5 @@ test("init_4.4.sh binds the rescanned registry over one the CX hook already boun
     assert.strictEqual(fs.readFileSync(reg, "utf8"), "with-dtsdec\n");
     assert.strictEqual(fs.existsSync(path.join(r, "binds")) && fs.readFileSync(path.join(r, "binds"), "utf8"), reg + " " + live + "\n");
   } finally { fs.rmSync(r, {recursive: true, force: true}); }
+});
 });

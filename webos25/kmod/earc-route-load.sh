@@ -90,7 +90,9 @@ def fail(reason):
 
 def module_abi(path):
     """(vermagic, this_module size, init offset, exit offset) of a 64-bit
-    little-endian AArch64 relocatable module."""
+    little-endian AArch64 relocatable module. An offset is None when the module
+    has no such function: modpost then leaves the pointer out, and a module with
+    neither (the C1's atsc_dtv_soc_chip.ko) has no this_module relocations."""
     data = open(path, 'rb').read()
     if data[:6] != b'\x7fELF\x02\x01' or struct.unpack_from('<HH', data, 16) != (1, 183):
         fail(path + ' is not an AArch64 relocatable ELF')
@@ -105,25 +107,28 @@ def module_abi(path):
     named = {}
     for section in sections:
         named.setdefault(string(shstrndx, section[0]), []).append(section)
-    for name in ('.modinfo', '.gnu.linkonce.this_module', '.rela.gnu.linkonce.this_module'):
+    for name in ('.modinfo', '.gnu.linkonce.this_module'):
         if len(named.get(name, [])) != 1:
             fail(path + ': expected one ' + name + ' section')
+    relas = named.get('.rela.gnu.linkonce.this_module', [])
+    if len(relas) > 1:
+        fail(path + ': expected at most one .rela.gnu.linkonce.this_module section')
     modinfo = named['.modinfo'][0]
     fields = data[modinfo[4]:modinfo[4] + modinfo[5]].split(b'\0')
     magic = [field[9:].decode() for field in fields if field.startswith(b'vermagic=')]
     if len(magic) != 1:
         fail(path + ': expected one vermagic')
-    rela = named['.rela.gnu.linkonce.this_module'][0]
-    symtab = sections[rela[6]]
     targets = {}
-    for i in range(rela[5] // 24):
-        offset, info, _ = struct.unpack_from('<QQq', data, rela[4] + 24 * i)
-        name_offset, = struct.unpack_from('<I', data, symtab[4] + 24 * (info >> 32))
-        targets.setdefault(string(symtab[6], name_offset), []).append(offset)
-    if len(targets.get('init_module', [])) != 1 or len(targets.get('cleanup_module', [None])) != 1:
-        fail(path + ': init_module/cleanup_module relocations not found once each')
-    # A module without exit (the 4.4 build) has no cleanup relocation: None matches any exit offset.
-    return magic[0], named['.gnu.linkonce.this_module'][0][5], targets['init_module'][0], targets.get('cleanup_module', [None])[0]
+    for rela in relas:
+        symtab = sections[rela[6]]
+        for i in range(rela[5] // 24):
+            offset, info, _ = struct.unpack_from('<QQq', data, rela[4] + 24 * i)
+            name_offset, = struct.unpack_from('<I', data, symtab[4] + 24 * (info >> 32))
+            targets.setdefault(string(symtab[6], name_offset), []).append(offset)
+    if len(targets.get('init_module', [None])) != 1 or len(targets.get('cleanup_module', [None])) != 1:
+        fail(path + ': init_module/cleanup_module relocated more than once')
+    return (magic[0], named['.gnu.linkonce.this_module'][0][5],
+            targets.get('init_module', [None])[0], targets.get('cleanup_module', [None])[0])
 
 
 def same_abi(build, stock):
@@ -133,22 +138,34 @@ def same_abi(build, stock):
 root, release, here = sys.argv[1:4]
 
 # The running kernel's own modules: every one is built against the same struct
-# module, so their vermagic and this_module size, init and exit offsets must
-# agree. Up to eight are read (sorted, so the choice is repeatable); one that
-# disagrees refuses, as the layout would then be ambiguous.
+# module, so their vermagic, this_module size, and init and exit offsets (where
+# a module has them) must agree. They are read in sorted order, so the choice is
+# repeatable, until eight with an init have been read; one that disagrees
+# refuses, as the layout would then be ambiguous.
 stock_paths = []
 for tree in ('/lib/modules/', '/usr/lib/modules/'):
     top = root + tree + release
     for directory, _, files in os.walk(top):
         stock_paths += [os.path.join(directory, name) for name in files
                         if name.endswith('.ko') and not name.startswith('earc_route')]
-stock_paths = sorted(set(stock_paths))[:8]
+stock_paths = sorted(set(stock_paths))
 if not stock_paths:
     fail('no stock module under /lib/modules/%s or /usr/lib/modules/%s' % (release, release))
-stock = module_abi(stock_paths[0])
-for path in stock_paths[1:]:
-    if module_abi(path) != stock:
-        fail('stock modules disagree on vermagic/layout: %s %r, %s %r' % (stock_paths[0], stock, path, module_abi(path)))
+stock = [None] * 4
+with_init = 0
+for path in stock_paths:
+    abi = module_abi(path)
+    for i, value in enumerate(abi):
+        if value is not None and stock[i] is not None and value != stock[i]:
+            fail('stock modules disagree on vermagic/layout: %s %r, read before it %r' % (path, abi, tuple(stock)))
+        if stock[i] is None:
+            stock[i] = value
+    with_init += abi[2] is not None
+    if with_init == 8:
+        break
+if stock[2] is None:
+    fail('no stock module under /lib/modules/%s or /usr/lib/modules/%s has an init function' % (release, release))
+stock = tuple(stock)
 
 # Exactly one shipped build must equal the running kernel's ABI.
 candidates = sorted(os.path.join(here, name) for name in os.listdir(here)
