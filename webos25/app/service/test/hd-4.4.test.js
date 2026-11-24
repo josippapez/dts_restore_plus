@@ -40,6 +40,26 @@ test("Enable keeps the 4.4 chain, Disable stops it before the hook, Uninstall re
   assert.ok(service.cxUninstall().includes('rm -rf "/var/lib/webosbrew/dts25/4.4"'));
 });
 
+// A C1 tester updated the app and pressed Enable: the boot chain kept running 2.86.1's init_4.4.sh.
+test("Enable with DTS-HD on refreshes the staged 4.4 files from the updated app", function () {
+  var enable = service.cxEnable(true);
+  var refresh = service.hd44RefreshSteps();
+  var at = enable.indexOf(refresh);
+  assert.ok(at >= 0 && at < enable.indexOf('sh "/var/lib/webosbrew/dtsenabler/cx/init_dts.sh"\n'), "refresh before the apply");
+  var r = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "dts-hd44-refresh-")));
+  var files = ["libgstdtsdec.so", "earc_route-4.4.ko", "earc-route-load.sh", "init_4.4.sh"];
+  var staged = path.join(r, "var/lib/webosbrew/dts25/4.4");
+  try {
+    files.forEach(function (f) { write(path.join(r, "app/payload/4.4", f), "new " + f); write(path.join(staged, f), "old " + f); });
+    var script = 'log() { :; }\nAPPBASE="' + r + '/app"\n' + refresh.split("/var/lib/webosbrew").join(r + "/var/lib/webosbrew");
+    assert.strictEqual(sh(script).status, 0);
+    files.forEach(function (f) { assert.strictEqual(fs.readFileSync(path.join(staged, f), "utf8"), "old " + f, "DTS-HD off: untouched"); });
+    write(path.join(staged, "enabled"), "");
+    assert.strictEqual(sh(script).status, 0);
+    files.forEach(function (f) { assert.strictEqual(fs.readFileSync(path.join(staged, f), "utf8"), "new " + f); });
+  } finally { fs.rmSync(r, {recursive: true, force: true}); }
+});
+
 test("init_4.4.sh: off by default, exact kernel, never writes /usr, exits 0", function () {
   var script = fs.readFileSync(path.join(ROOT, "webos25/restore/init_4.4.sh"), "utf8");
   assert.strictEqual(spawnSync("sh", ["-n", "-c", script], { encoding: "utf8" }).status, 0);

@@ -162,6 +162,7 @@ var PAYLOAD_TESTS   = APP_INSTALL + "/payload/testfiles";        // DTS containe
 var PAYLOAD_44      = APP_INSTALL + "/payload/4.4";
 var HD44_DIR          = "/var/lib/webosbrew/dts25/4.4";
 var HD44_INIT_SCRIPT  = HD44_DIR + "/init_4.4.sh";
+var HD44_FILES        = "libgstdtsdec.so earc_route-4.4.ko earc-route-load.sh init_4.4.sh";
 
 var LOG = "/tmp/dtsenabler.log";
 
@@ -3744,6 +3745,7 @@ function cxEnable(c1) {
     b64,
     "B64EOF",
     'chmod 0755 "' + CX_INIT_SCRIPT + '" && log "wrote ' + CX_INIT_SCRIPT + '"',
+    hd44RefreshSteps(),
     // The 4.4 DTS-HD opt-in chains its own boot script; a rewrite here keeps it.
     '[ -f "' + HD44_DIR + '/enabled" ] && sed -i "s|^exit 0$|sh ' + HD44_INIT_SCRIPT + ' </dev/null; exit 0|" "' + CX_INIT_SCRIPT + '"',
     // 4. Boot stub (exec our init script) + apply now.
@@ -3859,6 +3861,17 @@ function cxStatusProbe() {
   ].join("\n");
 }
 
+/* Enable with the 4.4 opt-in on refreshes the files its boot chain runs. Only Turn on
+ * staged them, so after an app update Enable kept running the old init_4.4.sh. */
+function hd44RefreshSteps() {
+  return [
+    'if [ -f "' + HD44_DIR + '/enabled" ]; then',
+    '  for f in ' + HD44_FILES + '; do [ -f "' + PAYLOAD_44 + '/$f" ] && cp -f "' + PAYLOAD_44 + '/$f" "' + HD44_DIR + '/$f"; done',
+    '  chmod 0755 "' + HD44_INIT_SCRIPT + '"; log "refreshed the 4.4 DTS-HD files"',
+    'fi'
+  ].join("\n");
+}
+
 /* 4.4 DTS-HD opt-in: stage the 4.4 payload, chain init_4.4.sh after the CX boot hook, apply.
  * Off stops the watcher; earc_route-4.4.ko has no exit and stays loaded until reboot. */
 function hd44Steps(on) {
@@ -3876,7 +3889,7 @@ function hd44Steps(on) {
     '[ -e "' + CX_HOOK + '" ] || { echo "ERROR=Press Enable first: DTS-HD builds on the DTS restore it installs."; exit 1; }',
     'case "$(cut -d" " -f2- /run/dts25/sound-output 2>/dev/null)" in "external_arc passThrough"|"") ;; *) echo "ERROR=DTS-HD needs an eARC receiver with Digital Sound Output on Pass Through."; exit 1 ;; esac',
     'mkdir -p "' + HD44_DIR + '" || exit 1',
-    'for f in libgstdtsdec.so earc_route-4.4.ko earc-route-load.sh init_4.4.sh; do',
+    'for f in ' + HD44_FILES + '; do',
     '  [ -f "' + PAYLOAD_44 + '/$f" ] || { echo "ERROR=The 4.4 payload is incomplete ($f)."; exit 1; }',
     '  cp -f "' + PAYLOAD_44 + '/$f" "' + HD44_DIR + '/$f" || exit 1',
     'done',
