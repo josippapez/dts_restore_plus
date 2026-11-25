@@ -318,5 +318,17 @@ $CC -std=c11 -O2 -Wall -Wextra -Werror -o "$WORK/test-dtsdec-track" "$HERE/test-
 "$WORK/test-dtsdec-track"
 
 echo
+echo "=== 16. webOS 6 route: log times, sink wait (Linux + GStreamer development files) ==="
+# Debian buster's GStreamer 1.14 / GLib 2.58 is the closest to the C1's.
+if [ "$(uname -s)" = Linux ] && pkg-config --exists gstreamer-1.0 2>/dev/null; then
+  $CC -std=gnu11 -O2 -Wall -Wextra -Werror -Wno-unused-parameter \
+      -o "$WORK/test-lgroute-4.4" "$HERE/test-lgroute-4.4.c" \
+      $(pkg-config --cflags --libs gstreamer-1.0)
+  G_DEBUG=fatal-warnings "$WORK/test-lgroute-4.4"
+else
+  echo "skip  Linux GStreamer development files required"
+fi
+
+echo
 echo "=== ALL CHECKS PASSED ==="
 exit 0

@@ -21,6 +21,9 @@
 #define LGROUTE_LEASE "/dev/earc_route"
 #endif
 #define SINK_PLUGIN "/usr/lib/gstreamer-1.0/libgstlxaudiosink.so"
+#ifndef LGROUTE_SINK_WAIT
+#define LGROUTE_SINK_WAIT (2 * G_TIME_SPAN_SECOND)
+#endif
 #define ROUTE_LOG LGROUTE_RUN "/lgroute.log"
 
 GST_DEBUG_CATEGORY_STATIC (lgroute_debug);
@@ -49,9 +52,10 @@ void lgroute_log (const gchar *format, ...)
   if (!log)
     return;
   GDateTime *now = g_date_time_new_now_local ();
-  gchar *when = g_date_time_format (now, "%T.%f");
+  /* Not "%T.%f": %f is GLib 2.66, and the C1's older GLib returned NULL, logging "(null)". */
+  gchar *when = g_date_time_format (now, "%T");
+  fprintf (log, "%s.%03d ", when, g_date_time_get_microsecond (now) / 1000);
   g_date_time_unref (now);
-  fprintf (log, "%.12s ", when);
   va_list args;
   va_start (args, format);
   vfprintf (log, format, args);
@@ -93,40 +97,60 @@ GstCaps *lgroute_carrier_caps (void)
       "channels", G_TYPE_INT, 8, "channel-mask", GST_TYPE_BITMASK, (guint64) 0xc3f, NULL);
 }
 
-/* The one verified LG sink in the pipeline, or NULL. The hash in sink-ok pins its
- * index and mixer properties. */
-static GstElement *find_sink (GstElement *element)
+/* The first verified LG sink under top; count the verified ones, total every audiosink.
+ * The hash in sink-ok pins its index and mixer properties. */
+static GstElement *find_sink (GstObject *top, unsigned *count, unsigned *total)
 {
-  GstObject *top = gst_object_ref (element), *parent;
-  while ((parent = gst_object_get_parent (top))) {
-    gst_object_unref (top);
-    top = parent;
-  }
   GstElement *sink = NULL;
-  guint count = 0;
-  if (GST_IS_BIN (top)) {
-    /* gst_bin_iterate_all_by_element_factory_name is 1.18; webOS 6 has 1.16. */
-    GstIterator *it = gst_bin_iterate_recurse (GST_BIN (top));
-    GValue value = G_VALUE_INIT;
-    for (GstIteratorResult r; (r = gst_iterator_next (it, &value)) != GST_ITERATOR_DONE && r != GST_ITERATOR_ERROR;) {
-      if (r == GST_ITERATOR_RESYNC) {
-        gst_iterator_resync (it);
-        g_clear_object (&sink);
-        count = 0;
-        continue;
-      }
-      GstElement *candidate = g_value_get_object (&value);
-      if (verified_sink (candidate) && !count++)
-        sink = gst_object_ref (candidate);
-      g_value_reset (&value);
+  *count = *total = 0;
+  if (!GST_IS_BIN (top))
+    return NULL;
+  /* gst_bin_iterate_all_by_element_factory_name is 1.18; webOS 6 has 1.16. */
+  GstIterator *it = gst_bin_iterate_recurse (GST_BIN (top));
+  GValue value = G_VALUE_INIT;
+  for (GstIteratorResult r; (r = gst_iterator_next (it, &value)) != GST_ITERATOR_DONE && r != GST_ITERATOR_ERROR;) {
+    if (r == GST_ITERATOR_RESYNC) {
+      gst_iterator_resync (it);
+      g_clear_object (&sink);
+      *count = *total = 0;
+      continue;
     }
-    g_value_unset (&value);
-    gst_iterator_free (it);
+    GstElement *candidate = g_value_get_object (&value);
+    GstElementFactory *factory = gst_element_get_factory (candidate);
+    if (factory && !strcmp (GST_OBJECT_NAME (factory), "audiosink"))
+      ++*total;
+    if (verified_sink (candidate) && !(*count)++)
+      sink = gst_object_ref (candidate);
+    g_value_reset (&value);
   }
-  gst_object_unref (top);
-  if (count != 1)
-    g_clear_object (&sink);
+  g_value_unset (&value);
+  gst_iterator_free (it);
   return sink;
+}
+
+/* The factories of the sinks under top, for the route log. */
+static gchar *sink_names (GstObject *top)
+{
+  GString *names = g_string_new (NULL);
+  GstIterator *iterator = GST_IS_BIN (top) ? gst_bin_iterate_recurse (GST_BIN (top)) : NULL;
+  GValue value = G_VALUE_INIT;
+  GstIteratorResult result;
+  while (iterator && (result = gst_iterator_next (iterator, &value)) != GST_ITERATOR_DONE
+      && result != GST_ITERATOR_ERROR) {
+    if (result == GST_ITERATOR_RESYNC) {
+      gst_iterator_resync (iterator);
+      g_string_truncate (names, 0);
+      continue;
+    }
+    GstElement *element = g_value_get_object (&value);
+    GstElementFactory *factory = gst_element_get_factory (element);
+    if (!GST_IS_BIN (element) && GST_OBJECT_FLAG_IS_SET (element, GST_ELEMENT_FLAG_SINK))
+      g_string_append_printf (names, " %s", factory ? GST_OBJECT_NAME (factory) : "?");
+    g_value_reset (&value);
+  }
+  g_value_unset (&value);
+  if (iterator) gst_iterator_free (iterator);
+  return g_string_free (names, FALSE);
 }
 
 /* Silence until LG's eARC is unmixed; a lasting mix gives up, as on webOS 25. */
@@ -193,11 +217,37 @@ gboolean lgroute_arm (LgRoute *route)
     lgroute_log ("not armed: eARC Pass Through unavailable (%s)", why);
     return FALSE;
   }
-  GstElement *sink = find_sink (route->element);
-  if (!sink) {
-    lgroute_log ("not armed: no unique verified LG sink in the pipeline");
+  GstObject *top = gst_object_ref (route->element), *parent;
+  while ((parent = gst_object_get_parent (top))) {
+    gst_object_unref (top);
+    top = parent;
+  }
+  /* A C1 tester's DTS-HD MA plays mostly went out as core DTS with no LG sink found.
+   * As on webOS 25 (a G5's sink came 100-300 ms after the first frame), wait for an
+   * audiosink while the pipeline starts or runs, never while it closes. */
+  unsigned count = 0, total = 0;
+  gint64 deadline = g_get_monotonic_time () + LGROUTE_SINK_WAIT;
+  GstPad *input = gst_element_get_static_pad (route->element, "sink");
+  gboolean starting = GST_IS_ELEMENT (top) && GST_STATE_TARGET (top) >= GST_STATE_PAUSED;
+  GstElement *sink;
+  while (!(sink = find_sink (top, &count, &total)) && !total && starting
+      && g_get_monotonic_time () < deadline && !(input && GST_PAD_IS_FLUSHING (input)))
+    g_usleep (50 * G_TIME_SPAN_MILLISECOND);
+  if (input)
+    gst_object_unref (input);
+  if (count != 1 || !sink) {
+    gchar *sinks = sink_names (top);
+    lgroute_log ("not armed: %u verified LG sinks in the pipeline (%u audiosink elements; %s is %s, going %s; sinks:%s)",
+        count, total, GST_OBJECT_NAME (top),
+        GST_IS_ELEMENT (top) ? gst_element_state_get_name (GST_STATE (top)) : "?",
+        GST_IS_ELEMENT (top) ? gst_element_state_get_name (GST_STATE_PENDING (top)) : "?",
+        sinks[0] ? sinks : " none");
+    g_free (sinks);
+    gst_object_unref (top);
+    g_clear_object (&sink);
     return FALSE;
   }
+  gst_object_unref (top);
   guint index = 0;
   gboolean mixer = FALSE;
   g_object_get (sink, "index", &index, "mixer", &mixer, NULL);
