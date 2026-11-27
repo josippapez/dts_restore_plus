@@ -521,13 +521,18 @@ static void hd_cb(const struct earc_code *fns, struct earc_hdmi_layout *out) {
     codec = ed_loaded(4, ed_raw(0), 0);
     if (codec == ED_UNK) { out->cb_reason = "event codec is not a 32-bit load from argument 0"; return; }
     for (i = 0; i + 2 < f->count; i++) {
-        ed_u64 pc = f->address + 4ULL * i, imm = 0, target, supported;
+        ed_u64 pc = f->address + 4ULL * i, imm = 0, target, supported, next = i + 2;
         ed_u32 branch = f->words[i + 1];
         int shape;
         if (!ed_reached[i] || (branch & 0xff000010) != 0x54000000 || hd_compared_at(pc, &imm) != codec) continue;
         target = pc + 4 + ((ed_u64)ed_sext(branch >> 5, 19) << 2);
+        /* C3 43.21.71 (O22A3) aligns the store with a nop after the b.ne. */
+        while (next < f->count && f->words[next] == 0xd503201f) next++;
         if ((branch & 15) == 9 && hd_stores_at(target, codec)) { shape = 1; supported = target; }      /* b.ls */
-        else if ((branch & 15) == 1 && hd_stores_at(pc + 8, codec)) { shape = 2; supported = pc + 8; }  /* b.ne */
+        else if ((branch & 15) == 1 && hd_stores_at(f->address + 4ULL * next, codec)) {                 /* b.ne */
+            shape = 2;
+            supported = f->address + 4ULL * next;
+        }
         else continue;
         compares++;
         out->hd_shape = shape;

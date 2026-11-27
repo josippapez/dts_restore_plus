@@ -1039,6 +1039,17 @@ HDMI_MUTATION(cb_second_compare) {
         if ((w[i] & 0xffc003ffU) == (w[c] & 0xffc003ffU) && (w[i + 1] & 0xff00001fU) == 0x54000000U) { w[i + 1] |= 9; return 1; }
     return 0;
 }
+/* 6.12: `cmp; b.ne; str` -> `cmp; b.ne; nop; str`, as the C3 43.21.71 (O22A3) kernel
+ * lays it out: the compare and branch move up one word over the word before them. */
+HDMI_MUTATION(cb_nop_before_store) {
+    ed_u32 c = (ed_u32)((g->hd_compare - f->address) / 4);
+    (void)n;
+    if (g->hd_shape != 2 || c < 1) return 0;
+    w[c - 1] = w[c];
+    w[c] = (w[c + 1] & ~(0x7ffffU << 5)) | ((((w[c + 1] >> 5) + 1) & 0x7ffffU) << 5);
+    w[c + 1] = NOP;
+    return 1;
+}
 HDMI_MUTATION(cb_no_name_load) {
     ed_u32 i = (ed_u32)((g->hd_name_load - f->address) / 4);
     if (i >= n) return 0;
@@ -1097,6 +1108,11 @@ static void hdmi_refusal_tests(const struct kernel *k, ed_u64 nonpcm, const stru
     hdmi_refuse(k, HF__cb_output_status, "acceptance branch condition changed", "no event-codec acceptance compare", cb_branch_condition, cb_reason, nonpcm, good);
     hdmi_refuse(k, HF__cb_output_status, "a second acceptance compare", "more than one event-codec acceptance", cb_second_compare, cb_reason, nonpcm, good);
     hdmi_refuse(k, HF__cb_output_status, "name load removed", "codec-name table load", cb_no_name_load, cb_reason, nonpcm, good);
+    if (good->hd_shape == 2) {
+        hdmi_refuse(k, HF__cb_output_status, "a nop between the b.ne and the codec store is not a refusal", 0,
+                    cb_nop_before_store, cb_reason, nonpcm, good);
+        check("hdmi refusal", "codec store found past the nop", hdmi_last.hd_supported_branch, good->hd_supported_branch);
+    }
     hdmi_refuse(k, HF__cb_output_status, "kprobe breakpoints at the compare and the name load", "holds a breakpoint", cb_two_probes, cb_reason, nonpcm, good);
     check("hdmi refusal", "breakpoints counted", hdmi_last.hd_brk_count, 2);
     check("hdmi refusal", "first breakpoint offset", hdmi_last.hd_brk_offset,
