@@ -187,6 +187,38 @@ static GstPadProbeReturn buffer_probe (GstPad *pad, GstPadProbeInfo *info, gpoin
   return GST_PAD_PROBE_OK;
 }
 
+/* LG's renderer reads pcm-multi-ch when our caps reach its sink. 2.86.5 armed on sinks
+ * that had only just appeared and a C1 tester heard silence, so the flag is checked
+ * here, after LG has set its sink up, as webOS 25 sets it at this point. */
+static GstPadProbeReturn event_probe (GstPad *pad, GstPadProbeInfo *info, gpointer data)
+{
+  LgRoute *route = data;
+  GstEvent *event = GST_PAD_PROBE_INFO_EVENT (info);
+  (void) pad;
+  if (GST_EVENT_TYPE (event) != GST_EVENT_CAPS || route->failed)
+    return GST_PAD_PROBE_OK;
+  GstCaps *caps = NULL, *carrier = lgroute_carrier_caps ();
+  gst_event_parse_caps (event, &caps);
+  gboolean is_carrier = gst_caps_is_equal (caps, carrier);
+  gst_caps_unref (carrier);
+  /* Disarm can run beside this probe, as on webOS 25's set_pcm. */
+  g_mutex_lock (&route_lock);
+  GstElement *sink = is_carrier && route->sink ? gst_object_ref (route->sink) : NULL;
+  gint lease = route->lease;
+  g_mutex_unlock (&route_lock);
+  if (!sink)
+    return GST_PAD_PROBE_OK;
+  guint index = 0;
+  gboolean mixer = FALSE, pcm = FALSE;
+  g_object_get (sink, "index", &index, "mixer", &mixer, "pcm-multi-ch", &pcm, NULL);
+  lgroute_log ("carrier caps reach %s%u, PCM bypass %s%s", mixer ? "AMIXER" : "ADEC", index,
+      pcm ? "on" : "off, turning it on", (gint) index + 1 == lease ? "" : " (not the leased renderer)");
+  if (!pcm)
+    g_object_set (sink, "pcm-multi-ch", TRUE, NULL);
+  gst_object_unref (sink);
+  return GST_PAD_PROBE_OK;
+}
+
 void lgroute_init (LgRoute *route, GstElement *element)
 {
   static gsize category;
@@ -230,9 +262,11 @@ gboolean lgroute_arm (LgRoute *route)
   GstPad *input = gst_element_get_static_pad (route->element, "sink");
   gboolean starting = GST_IS_ELEMENT (top) && GST_STATE_TARGET (top) >= GST_STATE_PAUSED;
   GstElement *sink;
+  gint64 looked = g_get_monotonic_time ();
   while (!(sink = find_sink (top, &count, &total)) && !total && starting
       && g_get_monotonic_time () < deadline && !(input && GST_PAD_IS_FLUSHING (input)))
     g_usleep (50 * G_TIME_SPAN_MILLISECOND);
+  gint64 found = g_get_monotonic_time ();
   if (input)
     gst_object_unref (input);
   if (count != 1 || !sink) {
@@ -267,8 +301,10 @@ gboolean lgroute_arm (LgRoute *route)
   route->sink = sink;
   route->sinkpad = pad;
   route->lease_fd = fd;
+  route->lease = (gint) index + 1;
   g_mutex_unlock (&route_lock);
   route->buffers = pad ? gst_pad_add_probe (pad, GST_PAD_PROBE_TYPE_BUFFER, buffer_probe, route, NULL) : 0;
+  route->events = pad ? gst_pad_add_probe (pad, GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM, event_probe, route, NULL) : 0;
   route->configured = TRUE;
   g_object_set (sink, "pcm-multi-ch", TRUE, NULL);
   /* New caps reopen LG's renderer with the flag; unchanged carrier caps (a replay) do not,
@@ -282,7 +318,8 @@ gboolean lgroute_arm (LgRoute *route)
     gst_pad_send_event (pad, gst_event_new_stream_start (id));
     g_free (id);
   }
-  lgroute_log ("armed on ADEC%u: PCM bypass on, earc_route holds the lease", index);
+  lgroute_log ("armed on ADEC%u: PCM bypass on, earc_route holds the lease (LG's sink found after %"
+      G_GINT64_FORMAT " ms)", index, (found - looked) / G_TIME_SPAN_MILLISECOND);
   return TRUE;
 }
 
@@ -291,11 +328,12 @@ void lgroute_disarm (LgRoute *route)
   g_mutex_lock (&route_lock);
   GstElement *sink = route->sink;
   GstPad *pad = route->sinkpad;
-  gulong buffers = route->buffers;
+  gulong buffers = route->buffers, events = route->events;
   int fd = route->lease_fd;
   route->sink = NULL;
   route->sinkpad = NULL;
-  route->buffers = 0;
+  route->buffers = route->events = 0;
+  route->lease = 0;
   route->lease_fd = -1;
   route->configured = route->unmixed = FALSE;
   route->mixed_since = 0;
@@ -304,6 +342,8 @@ void lgroute_disarm (LgRoute *route)
     close (fd);
   if (pad && buffers)
     gst_pad_remove_probe (pad, buffers);
+  if (pad && events)
+    gst_pad_remove_probe (pad, events);
   if (sink) {
     g_object_set (sink, "pcm-multi-ch", FALSE, NULL);
     lgroute_log ("disarmed");

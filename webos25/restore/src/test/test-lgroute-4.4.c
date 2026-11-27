@@ -14,24 +14,32 @@ int lgroute_control_receiver (void) { return 1; }
 int lgroute_control_unmix (void) { return 0; }
 int lgroute_control_unmixed_why (char why[LGROUTE_WHY]) { (void) why; return 1; }
 
-typedef struct { GstElement parent; gboolean pcm; } TestSink;
+typedef struct { GstElement parent; gboolean pcm, mixer; guint index; } TestSink;
 typedef struct { GstElementClass parent; } TestSinkClass;
 G_DEFINE_TYPE (TestSink, test_sink, GST_TYPE_ELEMENT)
 static void set_property (GObject *object, guint id, const GValue *value, GParamSpec *spec)
 {
-  (void) id; (void) spec;
-  ((TestSink *) object)->pcm = g_value_get_boolean (value);
+  TestSink *sink = (TestSink *) object;
+  (void) spec;
+  if (id == 1) sink->pcm = g_value_get_boolean (value);
+  else if (id == 2) sink->index = g_value_get_uint (value);
+  else sink->mixer = g_value_get_boolean (value);
 }
 static void get_property (GObject *object, guint id, GValue *value, GParamSpec *spec)
 {
-  (void) id; (void) spec;
-  g_value_set_boolean (value, ((TestSink *) object)->pcm);
+  TestSink *sink = (TestSink *) object;
+  (void) spec;
+  if (id == 1) g_value_set_boolean (value, sink->pcm);
+  else if (id == 2) g_value_set_uint (value, sink->index);
+  else g_value_set_boolean (value, sink->mixer);
 }
 static void test_sink_class_init (TestSinkClass *klass)
 {
   GObjectClass *object = G_OBJECT_CLASS (klass);
   object->set_property = set_property; object->get_property = get_property;
   g_object_class_install_property (object, 1, g_param_spec_boolean ("pcm-multi-ch", "pcm", "pcm", FALSE, G_PARAM_READWRITE));
+  g_object_class_install_property (object, 2, g_param_spec_uint ("index", "index", "index", 0, 8, 0, G_PARAM_READWRITE));
+  g_object_class_install_property (object, 3, g_param_spec_boolean ("mixer", "mixer", "mixer", FALSE, G_PARAM_READWRITE));
   gst_element_class_set_static_metadata (GST_ELEMENT_CLASS (klass), "test sink", "Sink/Audio", "stands in for LG's sink", "test");
 }
 static void test_sink_init (TestSink *self) { (void) self; }
@@ -105,8 +113,47 @@ int main (int argc, char **argv)
     gst_object_unref (pipeline);
   }
 
+  /* 2.86.5 armed on just-built sinks and the C1 tester heard silence: when the carrier's
+   * caps reach LG's sink, bypass is on again and the log says what LG had set. */
+  {
+    GstElement *sink = gst_element_factory_make ("audiosink", NULL);
+    GstPad *pad = gst_pad_new ("sink", GST_PAD_SINK);
+    LgRoute route;
+    lgroute_init (&route, sink);
+    route.sink = sink;
+    route.lease = 1;
+    g_object_set (sink, "pcm-multi-ch", FALSE, NULL);
+    GstCaps *caps = lgroute_carrier_caps ();
+    GstPadProbeInfo info = { 0 };
+    info.type = GST_PAD_PROBE_TYPE_EVENT_DOWNSTREAM;
+    info.data = gst_event_new_caps (caps);
+    gst_caps_unref (caps);
+    g_unlink (ROUTE_LOG);
+    g_assert_cmpint (event_probe (pad, &info, &route), ==, GST_PAD_PROBE_OK);
+    gboolean pcm = FALSE;
+    g_object_get (sink, "pcm-multi-ch", &pcm, NULL);
+    g_assert_true (pcm);
+    text = route_log ();
+    g_assert_nonnull (strstr (text, "carrier caps reach ADEC0, PCM bypass off, turning it on\n"));
+    g_free (text);
+    gst_event_unref (info.data);
+
+    /* LG's PCM caps (an earlier stream) leave the flag alone. */
+    g_object_set (sink, "pcm-multi-ch", FALSE, NULL);
+    caps = gst_caps_from_string ("audio/x-raw,format=S16LE,rate=48000,channels=2,layout=interleaved");
+    info.data = gst_event_new_caps (caps);
+    gst_caps_unref (caps);
+    g_assert_cmpint (event_probe (pad, &info, &route), ==, GST_PAD_PROBE_OK);
+    g_object_get (sink, "pcm-multi-ch", &pcm, NULL);
+    g_assert_false (pcm);
+    gst_event_unref (info.data);
+    route.sink = NULL;
+    gst_object_unref (pad);
+    gst_object_unref (sink);
+  }
+
   g_unlink (ROUTE_LOG);
   g_rmdir (LGROUTE_RUN);
-  g_print ("ok   lgroute-4.4: log times, sink wait, refusal detail\n");
+  g_print ("ok   lgroute-4.4: log times, sink wait, refusal detail, bypass at caps\n");
   return 0;
 }
