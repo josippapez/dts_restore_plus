@@ -268,7 +268,7 @@ jobs:
           cp "$GITHUB_WORKSPACE/packaging/homebrew/io.github.josippapez.dtsenabler.yml" mypackages/
           # content/schemas ships with the clone and is required by the import-time
           # assert — do NOT delete content/. Generate only the API into it.
-          python3 -c "from pathlib import Path; from repogen import pkg_info, apidata; apidata.generate(pkg_info.list_packages(Path('mypackages')), Path('content/api'))"
+          python3 -c "from pathlib import Path; from repogen import pkg_info, apidata, conf; apidata.generate(pkg_info.list_packages(Path('mypackages')), Path('content/api'), categories=conf.categories())"
           # assemble the Pages payload
           rm -rf /tmp/pages && mkdir -p /tmp/pages/api
           cp -r content/api/* /tmp/pages/api/
