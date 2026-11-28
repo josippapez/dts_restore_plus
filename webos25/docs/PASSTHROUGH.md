@@ -6,7 +6,7 @@
 
 **DTS core passthrough works; full DTS-HD / TrueHD is experimental.**
 Receiver-confirmed DTS-HD and TrueHD on a C2 OLED42C27LA (firmware 33.31.68)
-with a Samsung Q995GF. Three LG audio sink builds are on the allowlist
+with a Samsung Q995GF. Four LG audio sink builds are on the allowlist
 (`w25_pt_sink_verified` in `restore/init_dts25.sh`); besides the C2, a G2
 OLED55G26LA (33.22.95) with a Denon AVR-S770H confirmed DTS-HD and TrueHD 7.1
 bitstream, and a G3 OLED77G36LA (33.31.68) with a Marantz receiver reported TrueHD

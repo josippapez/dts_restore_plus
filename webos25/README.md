@@ -277,10 +277,11 @@ Media Player, through seeking, pausing and volume changes. Also tested over opti
   nothing more: DTS-HD MA, DTS:X and TrueHD need eARC.
 - **Core by default.** The experimental **Full DTS-HD / TrueHD** eARC opt-in uses
   LG-managed routing on an exact allowlist of LG audio sink builds
-  (`w25_pt_sink_verified` in `restore/init_dts25.sh`: three builds). Reported working:
+  (`w25_pt_sink_verified` in `restore/init_dts25.sh`: four builds). Reported working:
   a C2 with a Samsung Q995GF (DTS-HD and TrueHD; the code does not say which listed build that is); a G2
   (OLED55G26LA, 33.22.95) with a Denon AVR-S770H (DTS-HD and TrueHD 7.1 bitstream); a G3
-  (OLED77G36LA, 33.31.68) with a Marantz receiver (TrueHD Atmos reported by the tester).
+  (OLED77G36LA, 33.31.68) with a Marantz receiver (TrueHD Atmos reported by the tester); a C3
+  (OLED55C32LA, 43.21.71, webOS 26) with a Denon DHT-S517 (TrueHD Atmos).
   Separately, a CS (33.31.68) with a Samsung HW-Q930F played DTS, DTS-HD and DTS:X
   demos with app 2.7.71 or later (discussion #17).
   On any other sink build the boot script does not write `/run/dts25/sink-ok`, the app

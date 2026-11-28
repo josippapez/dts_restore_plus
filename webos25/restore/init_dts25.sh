@@ -128,7 +128,8 @@ EXPECT_GST=1.24
 #      stopping it also stops 2.78's hdmi-watch.sh.
 #   60 refreshes idle media workers after registry commit for MP4 TrueHD activation.
 #   61 earc_route is refused as "signed" where the kernel enforces module signatures.
-W25_GATE_VERSION=61
+#   62 DTS-HD/TrueHD over eARC allowed on the C3's LG sink build (43.21.71).
+W25_GATE_VERSION=62
 FP=/var/lib/webosbrew/dts25/stock.fp
 # Where the installed copy of THIS script lives, and the boot hook that symlinks
 # to it. Named here, in the shared block, so the read-only probe can fingerprint
@@ -902,6 +903,10 @@ w25_pt_sink_verified() {
     # tester's route log shows the carrier passing on every fresh play and the
     # tester reported TrueHD Atmos on the receiver (Discord, 2026-11-10).
     21ad477c010fc6cb2e6989ff263892981b9d26d28cd83d1736edc3331bf80745) return 0 ;;
+    # C3 OLED55C32LA, firmware 43.21.71 (webOS 26), Denon DHT-S517: TrueHD Atmos
+    # bitstream on the soundbar in LG's USB player, seeking included (Discord,
+    # 2026-11-27).
+    0180ba9fc389b7a9cf9a417adf1f2a576144d24b5b7aeefdf81adae53d83cbf2) return 0 ;;
   esac
   return 1
 }
