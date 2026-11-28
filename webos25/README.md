@@ -62,12 +62,15 @@ curl -fsSL https://raw.githubusercontent.com/josippapez/dts_restore_plus/main/we
 ```
 
 `report-tv.sh` is read-only: it writes nothing but a scratch file in `/tmp` that it
-removes, and it gives up on any read of LG's audio driver after 5 seconds. It prints the
+removes, and it gives up on any read of LG's audio driver after 5 seconds. Reading LG's
+HDMI audio status adds a few lines to the kernel log. It prints the
 loader/ABI, GStreamer and identity values, the stock plugin hashes, any existing
-install, the profile the app would pick, the app, boot and eARC route logs, LG audio
-sink and DSP crash lines, and the eARC state. It also prints `KERNEL_RELEASE` (`uname -r`,
-report version 5), which decides whether the HDMI kernel module in
-[`kmod/`](kmod/README.md) can support the TV.
+install, what the live registry loads, the profile the app would pick, the app, service,
+boot and eARC route logs, LG audio sink, output setup and DSP crash lines, the eARC and
+HDMI input state, and the DTS-HD kernel module's state with its kernel log lines. It also
+prints `KERNEL_RELEASE` (`uname -r`), which decides whether the kernel module in
+[`kmod/`](kmod/README.md) can support the TV. Run it right after the problem, before a
+restart: the route log and the kernel log start over at every boot.
 
 ## Folder layout
 

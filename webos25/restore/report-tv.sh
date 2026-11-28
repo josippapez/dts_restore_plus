@@ -52,7 +52,7 @@ bounded() { # $@=command or function; prints its output, or what it printed plus
 }
 
 echo "=== dts_restore_plus TV report ==="
-echo "report_version=5"
+echo "report_version=6"
 
 echo
 echo "--- loader / ABI ---"
@@ -136,6 +136,7 @@ for v in WEBOS_RELEASE WEBOS_MANUFACTURING_VERSION PRODUCT_ID HARDWARE_ID BOARD_
 done
 # The DTS-HD kernel module is built per kernel release, not per firmware.
 echo "KERNEL_RELEASE=$(uname -r 2>/dev/null || echo unknown)"
+echo "KERNEL_BUILD=$(uname -v 2>/dev/null || echo unknown)"
 
 echo
 echo "--- stock plugin hashes ---"
@@ -157,6 +158,13 @@ done
 [ -e /etc/gst/gstcool.conf ] && echo "gstcool.conf.sha256=$(hash_of sha256 /etc/gst/gstcool.conf)"
 # LG's own sink; DTS-HD/TrueHD to eARC only arms for builds on the boot script's list.
 [ -e "$G/libgstlgaudiosink.so" ] && echo "libgstlgaudiosink.so.sha256=$(hash_of sha256 "$G/libgstlgaudiosink.so")"
+# webOS 6 (C1/G1): the same list, for LG's older sink.
+[ -e "$G/libgstlxaudiosink.so" ] && echo "libgstlxaudiosink.so.sha256=$(hash_of sha256 "$G/libgstlxaudiosink.so")"
+# Dolby Vision profile 7 FEL decoding depends on LG's build of this library.
+[ -e /usr/lib/librpu_m.so ] && echo "librpu_m.so.sha256=$(hash_of sha256 /usr/lib/librpu_m.so)"
+# LG's media stack offers only the codecs named here.
+C=/etc/umediaserver/device_codec_capability_config.json
+[ -e "$C" ] && echo "codec_capability_names=$(grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' "$C" 2>/dev/null | sed 's/.*"\([^"]*\)"$/\1/' | sort -u | tr '\n' ' ')"
 
 echo
 echo "--- existing state (is something already installed?) ---"
@@ -166,6 +174,21 @@ for h in /var/lib/webosbrew/init.d/restore_dts25 \
   [ -e "$h" ] && echo "hook_present=$h" || echo "hook_absent=$h"
 done
 echo "our_mounts=$(grep -c 'gstreamer-1.0\|gst_1_0_registry\|gstcool.conf\|device_codec_capability' /proc/self/mountinfo 2>/dev/null || echo 0)"
+# Mount point, source root and propagation: a CS on the C2 profile needed all three.
+# Each one repeats in every app sandbox (/var/palm/jail), so those are only counted.
+grep 'gstreamer-1.0\|gst_1_0_registry\|gstcool.conf\|device_codec_capability' /proc/self/mountinfo 2>/dev/null |
+  awk '$5 ~ /\/var\/palm\/jail\// { jail++; next } { print "mount " $5 " <- " $4 " " $7 }
+       END { print "mounts in app sandboxes: " jail + 0 }'
+# What the media pipeline will load: the live registry, read without updating it.
+REG=/mnt/flash/data/gst_1_0_registry.arm.bin
+live_registry() {
+  for e in dtsdec adecswitch truehdmat avdec_truehd; do
+    r=$(GST_REGISTRY_1_0=$REG GST_REGISTRY_UPDATE=no GST_REGISTRY_FORK=no gst-inspect-1.0 "$e" 2>/dev/null |
+      grep -E '^  (Filename|Rank)' | tr -s ' ' | tr '\n' ' ')
+    echo "registry $e: ${r:-absent}"
+  done
+}
+[ -e "$REG" ] && command -v gst-inspect-1.0 >/dev/null 2>&1 && bounded live_registry
 HAS_DTS_AUDIODEC=no
 command -v gst-inspect-1.0 >/dev/null 2>&1 && GST_REGISTRY_FORK=no gst-inspect-1.0 dts_audiodec >/dev/null 2>&1 && HAS_DTS_AUDIODEC=yes
 echo "HAS_DTS_AUDIODEC=$HAS_DTS_AUDIODEC"
@@ -205,11 +228,11 @@ A=/media/developer/apps/usr/palm/applications/io.github.josippapez.dtsenabler/ap
 echo "app_version=$(sed -n 's/.*"version"[^"]*"\([^"]*\)".*/\1/p' "$A" 2>/dev/null | head -n1)"
 D=/var/lib/webosbrew/dts25
 echo "hook_gate_version=$(sed -n 's/^W25_GATE_VERSION=//p' "$D/init_dts25.sh" 2>/dev/null | head -n1)"
-for f in init_dts25.sh libgstadecswitch.so; do
+for f in init_dts25.sh libgstadecswitch.so libgstdtsdec.so; do
   [ -f "$D/$f" ] && echo "$f.md5=$(md5sum < "$D/$f" | cut -d' ' -f1)"
 done
 grep -hE '^(verified|forced)=' "$D/stock.fp" 2>/dev/null
-for f in passthrough multich appdts.enabled; do
+for f in passthrough passthrough-hd multich appdts.enabled; do
   [ -e "$D/$f" ] && echo "optin_$f=on" || echo "optin_$f=off"
 done
 sound_output() {
@@ -226,10 +249,18 @@ edid_type() {
 }
 echo "edidType=$(bounded edid_type)"
 echo "appdts_last=$(head -n1 "$D/appdts.last" 2>/dev/null)"
+echo "Show DTS tracks, one line per boot:"
+tail -n 10 "$D/appdts.log" 2>/dev/null
 echo "eim_env=$(cat /var/systemd/system/env/eim.env 2>/dev/null)"
 # pidof and maps take the target's memory lock, which a stuck task can hold.
 eim_hooked() { grep -c libedidaudio "/proc/$(pidof eim | cut -d' ' -f1)/maps" 2>/dev/null; }
 echo "eim_hooked=$(bounded eim_hooked)"
+# A late start means something restarted LG's HDMI input service after boot.
+eim_age() { awk -v up="$(cut -d' ' -f1 /proc/uptime)" '{ printf "started %.0f s after boot, %.0f s ago\n", $22 / 100, up - $22 / 100 }' "/proc/$(pidof eim | cut -d' ' -f1)/stat"; }
+echo "eim: $(bounded eim_age)"
+# The app reaches Homebrew Channel's exec service only through this group.
+P=/var/luna-service2-dev/client-permissions.d/io.github.josippapez.dtsenabler.service.service.json
+echo "hb_permission=$(grep -c org.webosbrew.hbchannel.service.group "$P" 2>/dev/null || echo missing)"
 echo "edid_hook=$(cat /run/dts25/edidaudio 2>/dev/null)"
 
 echo
@@ -299,14 +330,65 @@ if [ -f "$L" ]; then
 else
   echo "no app log at $L"
 fi
+# The service's own log, cleared at restart: what each shell step printed.
+echo "service log (last 40):"
+tail -n 40 /tmp/dtsenabler.log 2>/dev/null
 
 echo
 echo "--- boot hook log (since the last restart) ---"
 if [ -f /tmp/dts25.log ]; then tail -n 30 /tmp/dts25.log; else echo "no boot hook log"; fi
+# Tagged lines from earlier in the log, which the tail misses.
+echo "tagged lines:"
+grep -E "app-dts|multich:|hb-permission:|earc_route" /tmp/dts25.log 2>/dev/null | tail -n 30
+# webOS 3-6 (CX, C1) boot hook.
+[ -f /tmp/dts_restore.log ] && { echo "CX/webOS 6 boot hook log:"; tail -n 30 /tmp/dts_restore.log; }
 
 echo
 echo "--- DTS-HD/TrueHD eARC route log (since the last restart) ---"
 if [ -f /run/dts25/lgroute.log ]; then tail -n 200 /run/dts25/lgroute.log; else echo "no route log"; fi
+# Markers and watcher state; a .pid file says whether its watcher still runs.
+for f in /run/dts25/* /run/dtsc1/*; do
+  [ -f "$f" ] || continue
+  case "$f" in
+    *.log|*.out) ;;
+    *.pid) p=$(cat "$f" 2>/dev/null); [ -n "$p" ] && [ -d "/proc/$p" ] && echo "$f: $p alive" || echo "$f: $p gone" ;;
+    *) echo "$f: $(head -c 200 "$f" 2>/dev/null | tr '\n' ' ')" ;;
+  esac
+done
+
+# DTS-HD needs this module, and every refusal so far needed these by hand.
+echo
+echo "--- DTS-HD kernel module (earc_route) ---"
+K=$D/hdmi
+echo "sig_enforce=$(cat /sys/module/module/parameters/sig_enforce 2>/dev/null || echo absent)"
+echo "modules_disabled=$(cat /proc/sys/kernel/modules_disabled 2>/dev/null || echo absent)"
+for f in try-unverified loading; do [ -e "$K/$f" ] && echo "kmod_$f=yes" || echo "kmod_$f=no"; done
+loader_check() { sh "$K/earc-route-load.sh" --check 2>&1 | tail -n 1; }
+if [ -f "$K/earc-route-load.sh" ]; then echo "loader_check=$(bounded loader_check)"; else echo "loader_check=no loader installed"; fi
+echo "unit=$(systemctl is-active dts25-earc.service 2>/dev/null)"
+if [ -d /sys/module/earc_route ]; then
+  echo "loaded, parameters:"
+  for p in /sys/module/earc_route/parameters/*; do printf '%s=%s ' "${p##*/}" "$(cat "$p" 2>/dev/null)"; done
+  echo
+else
+  echo "not loaded"
+fi
+echo "last load output:"
+tail -n 20 /run/dts25/hdmi-watch.out 2>/dev/null
+# Also the kernel's own refusals: signing, missing symbols, and LG's audio
+# driver turning down DTS from HDMI ("suppported" is LG's spelling).
+echo "kernel log:"
+dmesg 2>/dev/null | grep -a -E "earc_route|Key was rejected|Unknown symbol|module verification|[Ll]ockdown|is not suppported" | tail -n 40
+# LG's audio functions the module needs; a new kernel generation can lack them.
+echo "kernel audio symbols: $(grep -E "_earc|earc_|bm_connect_block|aud_clock_update_output|output_set_earc_on|renderer_get_pcm_bypass|_cb_output_status|aud_hal_dts_supported" /proc/kallsyms 2>/dev/null | awk '{ print $3 }' | sort -u | head -n 60 | tr '\n' ' ')"
+
+# webOS 6 (C1/G1) DTS-HD keeps its own log and files.
+if [ -d "$D/4.4" ] || [ -f /var/lib/webosbrew/dtsenabler/hd-4.4.log ]; then
+  echo
+  echo "--- webOS 6 DTS-HD ---"
+  echo "files: $(ls "$D/4.4" 2>/dev/null | tr '\n' ' ')"
+  tail -n 40 /var/lib/webosbrew/dtsenabler/hd-4.4.log 2>/dev/null
+fi
 
 # What LG's side did with the route. Every receiver report so far needed a
 # follow-up asking for these by hand.
@@ -314,6 +396,14 @@ echo
 echo "--- LG audio sink: renderer restarts and what it told the DSP (last 40) ---"
 grep -a -E "lgao_push_first_event|Caps is first or updated|same caps for normal|Connect ES Renderer|Restart renderer|Set pcm" \
   /var/log/legacy-log 2>/dev/null | sed 's/^[^T]*T\([0-9:.]*\)Z.*) /\1 /' | cut -c1-600 | tail -n 40
+
+# How LG set up its outputs and what it reported to the sound settings. Testers
+# were asked for these after silence, noise or a freeze on resume and seek.
+echo
+echo "--- LG output setup and errors (last 60) ---"
+echo "legacy-log starts: $(head -n 1 /var/log/legacy-log 2>/dev/null | cut -c1-40)"
+grep -a -E "gst_lg_audio_render_set_caps|BYPASS|setArcOnOff|setEArcOutputType|outputType Error|CONTROL_ELEMENT_SET_ERROR|sndout_connect|sndout_disconnect|NL_SOUND|NL_SETTING_CHANGE|is not suppported" \
+  /var/log/legacy-log 2>/dev/null | sed 's/^[^T]*T\([0-9:.]*\)Z.*) /\1 /' | cut -c1-400 | tail -n 60
 
 echo
 echo "--- audio DSP crashes ---"
@@ -371,6 +461,20 @@ echo "media pipelines loaded (another app holding audio can block the route):"
 # ps reads every process's command line, which takes that process's memory lock.
 media_pipelines() { ps w 2>/dev/null | grep "[p]ipeline_process" | sed 's/.*pipeline_process//' | cut -c1-120; }
 bounded media_pipelines
+# Running with nothing playing, it makes install refuse with "media player is running".
+starfish_media() { ps w 2>/dev/null | grep -c "[s]tarfish-media"; }
+echo "starfish-media processes: $(bounded starfish_media)"
+# What an HDMI source sends and which decoder took it, for "audio not supported"
+# banners. Each read of LG's hdmi file adds lines to the kernel log, so it comes
+# after the kernel log above.
+echo "HDMI input:"
+hdmi_input() {
+  head -n 4 /proc/lgtv-driver/audio/hdmi 2>/dev/null | tr '\n' ' '; echo
+  grep -H -E '^(Connect|Start|UserCodec)=' /proc/lgtv-driver/audio/adec.p0 /proc/lgtv-driver/audio/adec.p1 2>/dev/null | tr '\n' ' '; echo
+}
+bounded hdmi_input
+# Failed system services: a tester's dead Home and remote keys showed up here.
+echo "failed services: $(bounded systemctl --failed --no-legend --plain 2>/dev/null | awk '{ print $1 }' | tr '\n' ' ')"
 
 # A tester's TV had Glasshouse's DTS forwarding switched on next to this tool:
 # it re-ranks the decoders and takes the eARC output itself.
