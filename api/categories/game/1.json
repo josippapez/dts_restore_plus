@@ -1,0 +1,16 @@
+{
+  "category": {
+    "id": "game",
+    "title": "Games",
+    "count": 0
+  },
+  "paging": {
+    "page": 1,
+    "count": 0,
+    "maxPage": 1,
+    "itemsTotal": 0,
+    "prevUrl": null,
+    "nextUrl": null
+  },
+  "packages": []
+}

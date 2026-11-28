@@ -1,0 +1,74 @@
+{
+  "categories": [
+    {
+      "id": "homemedia",
+      "title": "Home Media",
+      "count": 0,
+      "appsUrl": "categories/homemedia.json",
+      "pagesUrl": "categories/homemedia/1.json"
+    },
+    {
+      "id": "streaming",
+      "title": "Streaming",
+      "count": 0,
+      "appsUrl": "categories/streaming.json",
+      "pagesUrl": "categories/streaming/1.json"
+    },
+    {
+      "id": "multimedia",
+      "title": "Multimedia",
+      "count": 1,
+      "appsUrl": "categories/multimedia.json",
+      "pagesUrl": "categories/multimedia/1.json"
+    },
+    {
+      "id": "game",
+      "title": "Games",
+      "count": 0,
+      "appsUrl": "categories/game.json",
+      "pagesUrl": "categories/game/1.json"
+    },
+    {
+      "id": "amblight",
+      "title": "Ambient Light",
+      "count": 0,
+      "appsUrl": "categories/amblight.json",
+      "pagesUrl": "categories/amblight/1.json"
+    },
+    {
+      "id": "screensaver",
+      "title": "Screensavers",
+      "count": 0,
+      "appsUrl": "categories/screensaver.json",
+      "pagesUrl": "categories/screensaver/1.json"
+    },
+    {
+      "id": "launcher",
+      "title": "Launchers",
+      "count": 0,
+      "appsUrl": "categories/launcher.json",
+      "pagesUrl": "categories/launcher/1.json"
+    },
+    {
+      "id": "utility",
+      "title": "Utilities",
+      "count": 0,
+      "appsUrl": "categories/utility.json",
+      "pagesUrl": "categories/utility/1.json"
+    },
+    {
+      "id": "system",
+      "title": "System",
+      "count": 0,
+      "appsUrl": "categories/system.json",
+      "pagesUrl": "categories/system/1.json"
+    },
+    {
+      "id": "internet",
+      "title": "Internet",
+      "count": 0,
+      "appsUrl": "categories/internet.json",
+      "pagesUrl": "categories/internet/1.json"
+    }
+  ]
+}
